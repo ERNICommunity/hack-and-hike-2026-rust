@@ -1,0 +1,18 @@
+{
+  // show spaces as dots and tabs as arrows
+  "editor.renderWhitespace": "all",
+  // format files when saving
+  "editor.formatOnSave": true,
+  // automatically save files after 1 second
+  "files.autoSave": "afterDelay",
+  // do not scroll beyond last line because it could confuse beginners
+  "editor.scrollBeyondLastLine": false,
+  // Keep rust-analyzer snappy by using a separate target dir inside the cargo target dir
+  "rust-analyzer.cargo.targetDir": true,
+  // make the minimap align with the scrollbar position
+  "editor.minimap.size": "fill",
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+  },
+}

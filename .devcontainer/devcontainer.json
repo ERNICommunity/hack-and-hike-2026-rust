@@ -1,11 +1,17 @@
 {
     "name": "ERNI Rust Dev Container",
-    "image": "mcr.microsoft.com/devcontainers/rust:latest",
     // move cargo target folder into container to speed up builds
     "containerEnv": {
         "CARGO_TARGET_DIR": "/tmp/cargo-target"
     },
-    "runArgs": ["--userns=keep-id"],
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "runArgs": [
+        "--userns=keep-id",
+        // This allows the container to talk to applications running on your Mac's localhost
+        "--net=host"
+    ],
     "customizations": {
         "vscode": {
             "settings": {
@@ -48,20 +54,10 @@
                 "microhobby.taskrunnercodeplus",
                 "DavidAnson.vscode-markdownlint",
                 "MS-vsliveshare.vsliveshare",
-                "serayuzgur.crates"
+                "Slint.slint"
             ]
         }
     },
-    // Forwarded ports can be defined and labelled here
-    // "forwardPorts": [
-    //     3000
-    // ],
-    // "portsAttributes": {
-    //     "3000": {
-    //         "label": "View Book",
-    //         "onAutoForward": "ignore"
-    //     }
-    // },
     "updateContentCommand": "chmod +x .devcontainer/update_content.sh && .devcontainer/update_content.sh",
     "postCreateCommand": "chmod +x .devcontainer/post_create.sh && .devcontainer/post_create.sh"
 }
