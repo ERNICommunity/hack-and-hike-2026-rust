@@ -1,11 +1,14 @@
 import { LogView } from "./log-view.slint";
 import { NavigationRail } from "./navigation-rail.slint";
+import { MicrophoneView } from "./microphone-view.slint";
 
 export component AppWindow inherits Window {
     width: 320px;
     height: 240px;
 
     in-out property <[string]> log-lines: [];
+    in-out property <[float]> mic-left-samples: [];
+    in-out property <[float]> mic-right-samples: [];
 
     // 0 = Network, 1 = IMU, 2 = Microphone, 3 = Sound, 4 = Log
     in-out property <int> active-view: 4;
@@ -15,6 +18,13 @@ export component AppWindow inherits Window {
         width: parent.width - navigation.width;
         height: parent.height;
         clip: true;
+
+        if root.active-view == 2: MicrophoneView {
+            width: parent.width;
+            height: parent.height;
+            left-samples: root.mic-left-samples;
+            right-samples: root.mic-right-samples;
+        }
 
         if root.active-view == 4: LogView {
             width: parent.width;

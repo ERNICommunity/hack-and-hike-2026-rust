@@ -1,6 +1,8 @@
 use core::cell::RefCell;
 
 use critical_section::Mutex;
+use static_cell::ConstStaticCell;
+
 use esp_hal::{
     delay::Delay,
     i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s},
@@ -14,6 +16,9 @@ pub const CHANNELS: usize = 2;
 pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 
 const DMA_BUFFER_BYTES: usize = 32 * 1024;
+
+static DMA_DRAIN: ConstStaticCell<[u8; DMA_BUFFER_BYTES]> =
+    ConstStaticCell::new([0; DMA_BUFFER_BYTES]);
 
 const AXP2101_ADDR: u8 = 0x34;
 const AW9523_ADDR: u8 = 0x58;
@@ -196,16 +201,10 @@ pub async fn capture_task(
     );
 
     // `I2sReadDmaTransferAsync::pop()` in esp-hal 1.1.x requires the
-    // destination to be large enough for *all bytes currently available* in
-    // the circular DMA ring. A BLOCK_BYTES-sized destination (2048 bytes) is
-    // therefore not sufficient when a 4092-byte DMA descriptor, or several
-    // descriptors, have completed before the task runs.
-    //
-    // Size this drain buffer exactly like the DMA ring so any non-late amount
-    // reported by the driver can always be consumed in one pop(). Allocate it
-    // once on the heap so the Embassy task future itself does not contain a
-    // 32 KiB inline array.
-    let mut dma_drain = alloc::vec![0u8; DMA_BUFFER_BYTES];
+    // destination to be large enough for all bytes currently available. Keep
+    // the permanent 32 KiB drain scratch buffer in static zero-initialized RAM
+    // rather than consuming/fragmenting the general-purpose heap.
+    let dma_drain = DMA_DRAIN.take();
 
     let mut samples = [0i16; BLOCK_SAMPLES];
     let mut frame_index = 0usize;
@@ -215,7 +214,7 @@ pub async fn capture_task(
 
     loop {
         let count = transfer
-            .pop(dma_drain.as_mut_slice())
+            .pop(&mut dma_drain[..])
             .await
             .expect("I2S circular DMA read failed");
 

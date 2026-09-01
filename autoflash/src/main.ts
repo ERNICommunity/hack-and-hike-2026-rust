@@ -18,7 +18,142 @@ import { loadFirmwareHandle, saveFirmwareHandle } from "./file-store";
 import "./styles.css";
 
 type ConnectionState = "searching" | "needs-permission" | "connected" | "flashing" | "error";
-type FileState = "empty" | "permission" | "watching" | "settling" | "paused";
+type FileState = "empty" | "permission" | "watching" | "settling" | "queued" | "paused";
+
+type TransportInternals = {
+  buffer: Uint8Array;
+  reader?: ReadableStreamDefaultReader<Uint8Array>;
+  onDeviceLostCallback: (() => void) | null;
+  detectPanicHandler(input: Uint8Array): void;
+  SLIP_END: number;
+  SLIP_ESC: number;
+  SLIP_ESC_END: number;
+  SLIP_ESC_ESC: number;
+};
+
+/**
+ * esptool-js 0.6.1 polls its receive buffer with a 1 ms setTimeout. Chromium
+ * throttles that timer in background tabs, which can make a valid stub reply
+ * look like a serial timeout. This transport wakes reads when Web Serial
+ * delivers bytes instead, while keeping esptool-js's SLIP parsing behavior.
+ */
+class EventDrivenTransport extends Transport {
+  private readonly dataWaiters = new Set<() => void>();
+
+  private get internals(): TransportInternals {
+    return this as unknown as TransportInternals;
+  }
+
+  private signalData(): void {
+    for (const wake of this.dataWaiters) wake();
+    this.dataWaiters.clear();
+  }
+
+  private waitForData(timeout: number): Promise<boolean> {
+    if (this.internals.buffer.length > 0) return Promise.resolve(true);
+
+    return new Promise<boolean>((resolve) => {
+      let finished = false;
+      const finish = (available: boolean): void => {
+        if (finished) return;
+        finished = true;
+        window.clearTimeout(timeoutId);
+        this.dataWaiters.delete(wake);
+        resolve(available);
+      };
+      const wake = (): void => finish(this.internals.buffer.length > 0);
+      const timeoutId = window.setTimeout(() => finish(false), timeout);
+      this.dataWaiters.add(wake);
+
+      // Avoid missing bytes delivered between the initial check and waiter setup.
+      if (this.internals.buffer.length > 0) wake();
+    });
+  }
+
+  override async readLoop(): Promise<void> {
+    const state = this.internals;
+
+    while (this.device.readable) {
+      const reader = this.device.readable.getReader();
+      state.reader = reader;
+      try {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value?.length) {
+          state.buffer = this.appendArray(state.buffer, Uint8Array.from(value));
+          this.signalData();
+        }
+      } catch (error) {
+        if (error instanceof DOMException) {
+          state.onDeviceLostCallback?.();
+          break;
+        }
+        if (error instanceof Error) {
+          const recoverable = ["BufferOverrunError", "FramingError", "BreakError", "ParityError"];
+          if (recoverable.includes(error.name)) continue;
+        }
+        break;
+      } finally {
+        reader.releaseLock();
+        if (state.reader === reader) state.reader = undefined;
+      }
+    }
+
+    // Release a pending read immediately if the stream ends.
+    this.signalData();
+  }
+
+  override async read(timeout: number): Promise<Uint8Array> {
+    const state = this.internals;
+    let partialPacket: Uint8Array | null = null;
+    let isEscaping = false;
+
+    while (true) {
+      await this.waitForData(timeout);
+      const readBytes = state.buffer;
+      state.buffer = new Uint8Array(0);
+
+      if (readBytes.length === 0) {
+        throw new Error(partialPacket === null
+          ? "Serial data stream stopped: Possible serial noise or corruption."
+          : "No serial data received.");
+      }
+
+      for (let index = 0; index < readBytes.length; index += 1) {
+        const byte = readBytes[index];
+        if (partialPacket === null) {
+          if (byte === state.SLIP_END) {
+            partialPacket = new Uint8Array(0);
+          } else {
+            const remainingData = state.buffer;
+            state.detectPanicHandler(new Uint8Array([...readBytes, ...remainingData]));
+            throw new Error(`Invalid head of packet (0x${byte.toString(16)}): Possible serial noise or corruption.`);
+          }
+        } else if (isEscaping) {
+          isEscaping = false;
+          if (byte === state.SLIP_ESC_END) {
+            partialPacket = this.appendArray(partialPacket, new Uint8Array([state.SLIP_END]));
+          } else if (byte === state.SLIP_ESC_ESC) {
+            partialPacket = this.appendArray(partialPacket, new Uint8Array([state.SLIP_ESC]));
+          } else {
+            const remainingData = state.buffer;
+            state.detectPanicHandler(new Uint8Array([...readBytes, ...remainingData]));
+            throw new Error(`Invalid SLIP escape (0xdb, 0x${byte.toString(16)})`);
+          }
+        } else if (byte === state.SLIP_ESC) {
+          isEscaping = true;
+        } else if (byte === state.SLIP_END) {
+          if (index + 1 < readBytes.length) {
+            state.buffer = this.appendArray(readBytes.slice(index + 1), state.buffer);
+          }
+          return partialPacket;
+        } else {
+          partialPacket = this.appendArray(partialPacket, new Uint8Array([byte]));
+        }
+      }
+    }
+  }
+}
 
 const deviceSearch = parseDeviceSearch(SERIAL_PORT_SEARCH);
 const FINAL_FLASH_WRITE_LINE = /^Writing at 0x[0-9a-f]+\.\.\. \(100%\)$/i;
@@ -268,6 +403,7 @@ function setFileState(state: FileState): void {
     permission: "Permission needed",
     watching: "Watching",
     settling: "Change detected",
+    queued: "Waiting for tab",
     paused: "Paused",
   };
   ui.fileState.className = `state-chip ${state}`;
@@ -482,18 +618,27 @@ async function runFlashQueue(): Promise<void> {
   if (flashing) return;
   flashing = true;
   refreshActionAvailability();
+  let activeReason: "change" | "manual" = queuedFlashReason;
 
   try {
     while (queuedFlash) {
-      const reason = queuedFlashReason;
+      activeReason = queuedFlashReason;
       queuedFlash = false;
-      await flashLatestFirmware(reason);
+      await flashLatestFirmware(activeReason);
     }
   } catch (error) {
-    queuedFlash = false;
     appendSystem(`Flash failed: ${errorMessage(error)}`, "error");
-    updateProgress(undefined, "Flash failed — inspect the serial output");
-    setConnectionState("error", "Flash failed");
+    if (activeReason === "change" && document.hidden && ui.watchToggle.checked) {
+      queuedFlash = true;
+      queuedFlashReason = "change";
+      setFileState("queued");
+      updateProgress(undefined, "Retry queued — activate this tab to flash");
+      appendSystem("The tab became inactive during automatic flashing. It will retry automatically when active.");
+    } else {
+      queuedFlash = false;
+      updateProgress(undefined, "Flash failed — inspect the serial output");
+      setConnectionState("error", "Flash failed");
+    }
   } finally {
     flashing = false;
     refreshActionAvailability();
@@ -521,7 +666,7 @@ async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
 
   await stopMonitor(true);
   const activePort = port;
-  const transport = new Transport(activePort, false);
+  const transport = new EventDrivenTransport(activePort, false);
   let transportOpen = false;
   let finalWriteLineSeen = false;
   let resolveFinalWriteLine!: () => void;
@@ -665,6 +810,9 @@ ui.chooseAnotherButton.addEventListener("click", () => {
 ui.watchToggle.addEventListener("change", () => {
   if (!firmwareHandle) return;
   settlingSignature = undefined;
+  if (!ui.watchToggle.checked && queuedFlash && queuedFlashReason === "change" && !flashing) {
+    queuedFlash = false;
+  }
   setFileState(ui.watchToggle.checked ? "watching" : "paused");
   updateProgress(undefined, ui.watchToggle.checked ? "Watching for a stable file change" : "File watching is paused");
   appendSystem(`Automatic flashing ${ui.watchToggle.checked ? "enabled" : "paused"}.`);
@@ -683,6 +831,20 @@ ui.downloadLogButton.addEventListener("click", () => {
   link.download = `esp-autoflash-${new Date().toISOString().replace(/[:.]/g, "-")}.log`;
   link.click();
   URL.revokeObjectURL(url);
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+
+  // Poll now in case the browser suspended the interval entirely while hidden.
+  void pollFirmware().finally(() => {
+    if (queuedFlash && queuedFlashReason === "change" && ui.watchToggle.checked && !flashing) {
+      setFileState("watching");
+      updateProgress(undefined, "Tab active — starting queued firmware");
+      appendSystem("Tab active. Starting the queued automatic flash.");
+      void runFlashQueue();
+    }
+  });
 });
 
 if ("serial" in navigator) {

@@ -1,0 +1,59 @@
+import { Theme } from "./theme.slint";
+
+component WaveformPlot inherits Rectangle {
+    in property <[float]> samples: [];
+    in property <string> channel-name: "";
+
+    background: Theme.white;
+    clip: true;
+
+    Text {
+        x: 6px;
+        y: 4px;
+        text: root.channel-name;
+        color: Theme.black;
+        font-size: 9px;
+    }
+
+    // Zero-amplitude reference line.
+    Rectangle {
+        x: 6px;
+        y: parent.height / 2;
+        width: parent.width - 12px;
+        height: 1px;
+        background: Theme.light-gray;
+    }
+
+    // One Slint item per waveform point. The previous layout used an outer
+    // transparent Rectangle plus an inner point Rectangle for every sample,
+    // doubling the repeated item tree.
+    for sample[index] in root.samples: Rectangle {
+        x: 6px + index * 2px;
+        y: (parent.height / 2) - sample * (parent.height / 2 - 3px);
+        width: 2px;
+        height: 2px;
+        background: Theme.dark-blue;
+    }
+}
+
+export component MicrophoneView inherits Rectangle {
+    in property <[float]> left-samples: [];
+    in property <[float]> right-samples: [];
+
+    background: Theme.white;
+    clip: true;
+
+    VerticalLayout {
+        WaveformPlot {
+            height: 120px;
+            channel-name: "MIC L";
+            samples: root.left-samples;
+        }
+
+        WaveformPlot {
+            height: 120px;
+            channel-name: "MIC R";
+            samples: root.right-samples;
+        }
+    }
+}

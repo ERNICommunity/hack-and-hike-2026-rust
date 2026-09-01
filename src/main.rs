@@ -31,6 +31,8 @@ use trouble_host::prelude::*;
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 1;
 const CPU1_STACK_SIZE: usize = 16 * 1024;
+const WAVEFORM_POINTS: usize = 128;
+const WAVEFORM_UPDATE_MS: u64 = 32;
 
 static CPU1_STACK: StaticCell<Stack<CPU1_STACK_SIZE>> = StaticCell::new();
 static CPU1_EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
@@ -103,6 +105,57 @@ fn sync_log_model(model: &slint::VecModel<slint::SharedString>, logs: &str) {
         if let Some(line) = logs.lines().nth(index) {
             model.push(slint::SharedString::from(line));
         }
+    }
+}
+
+
+/// Convert the newest 512-frame stereo PCM block into two 128-point display
+/// waveforms. Four audio frames collapse into each display point; the sample
+/// with the largest magnitude wins so short transients remain visible.
+fn update_waveform_models(
+    left_model: &slint::VecModel<f32>,
+    right_model: &slint::VecModel<f32>,
+    samples: &[i16; audio::BLOCK_SAMPLES],
+    info: audio::AudioBlockInfo,
+) {
+    const FRAMES_PER_POINT: usize = audio::BLOCK_FRAMES / WAVEFORM_POINTS;
+
+    // A small floor prevents near-silence from being amplified to full scale.
+    // Each channel otherwise uses the peak of the current 32 ms block.
+    let left_scale = info.peak_left.max(1024) as f32;
+    let right_scale = info.peak_right.max(1024) as f32;
+
+    for point in 0..WAVEFORM_POINTS {
+        let first_frame = point * FRAMES_PER_POINT;
+        let last_frame = first_frame + FRAMES_PER_POINT;
+
+        let mut left_sample = 0i16;
+        let mut right_sample = 0i16;
+        let mut left_magnitude = 0u16;
+        let mut right_magnitude = 0u16;
+
+        for frame in first_frame..last_frame {
+            let left = samples[frame * audio::CHANNELS];
+            let right = samples[frame * audio::CHANNELS + 1];
+
+            let left_abs = left.unsigned_abs();
+            if left_abs > left_magnitude {
+                left_magnitude = left_abs;
+                left_sample = left;
+            }
+
+            let right_abs = right.unsigned_abs();
+            if right_abs > right_magnitude {
+                right_magnitude = right_abs;
+                right_sample = right;
+            }
+        }
+
+        let left_normalized = (left_sample as f32 / left_scale).clamp(-1.0, 1.0);
+        let right_normalized = (right_sample as f32 / right_scale).clamp(-1.0, 1.0);
+
+        left_model.set_row_data(point, left_normalized);
+        right_model.set_row_data(point, right_normalized);
     }
 }
 
@@ -237,6 +290,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         let screen = screen::init(
             &mut *i2c,
             peripherals.SPI2,
+            peripherals.DMA_CH1,
             peripherals.GPIO36,
             peripherals.GPIO37,
             peripherals.GPIO35,
@@ -323,6 +377,22 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     ui.set_log_lines(log_model.clone().into());
     log::with_logs(|logs| sync_log_model(&log_model, logs));
 
+    // Allocate the waveform models once. Updating rows in place lets Slint
+    // dirty only the repeated waveform items instead of replacing models and
+    // allocating 30 times per second.
+    let mic_left_model = Rc::new(slint::VecModel::<f32>::default());
+    let mic_right_model = Rc::new(slint::VecModel::<f32>::default());
+    for _ in 0..WAVEFORM_POINTS {
+        mic_left_model.push(0.0);
+        mic_right_model.push(0.0);
+    }
+    ui.set_mic_left_samples(mic_left_model.clone().into());
+    ui.set_mic_right_samples(mic_right_model.clone().into());
+
+    let mut audio_samples = [0i16; audio::BLOCK_SAMPLES];
+    let mut last_audio_sequence = 0u32;
+    let mut last_waveform_update = embassy_time::Instant::now();
+
     let mut ui_touch = UiTouchState::new();
     let mut count = 0;
     let mut last_heartbeat = embassy_time::Instant::now();
@@ -335,6 +405,28 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             info!("Heartbeat count: {}", count);
             count += 1;
             log::with_logs(|logs| sync_log_model(&log_model, logs));
+        }
+
+        // Pull only the newest complete PCM block while the microphone page
+        // is visible. No audio frames are queued for presentation: if CPU0 was
+        // busy rendering, stale blocks are deliberately skipped.
+        if ui.get_active_view() == 2
+            && now - last_waveform_update
+                >= embassy_time::Duration::from_millis(WAVEFORM_UPDATE_MS)
+        {
+            last_waveform_update = now;
+
+            if let Some(info) = audio::copy_latest_interleaved(&mut audio_samples) {
+                if info.sequence != last_audio_sequence {
+                    last_audio_sequence = info.sequence;
+                    update_waveform_models(
+                        &mic_left_model,
+                        &mic_right_model,
+                        &audio_samples,
+                        info,
+                    );
+                }
+            }
         }
 
         // Consume CPU1 touch messages and translate them into Slint events on
