@@ -3,7 +3,7 @@ use core::fmt::Write;
 use critical_section::Mutex;
 use log::{LevelFilter, Metadata, Record};
 
-const MAX_LOG_SIZE: usize = 1024;
+const MAX_LOG_SIZE: usize = 4096;
 
 struct LogStore {
     buffer: [u8; MAX_LOG_SIZE],

@@ -28,8 +28,15 @@ export component AppWindow inherits Window {
                 width: parent.width - 12px;
                 height: parent.height - 12px;
                 
-                // Set viewport height to match the inner content height
+                // The repeated model needs an explicit viewport height. Flickable is
+                // interactive by default, so press/move/release events from Rust can
+                // drag this viewport on the touch screen.
+                viewport-width: flickable.width;
                 viewport-height: layout.preferred-height;
+
+                // Start pinned to the newest entries. The first user drag overwrites
+                // this in-out property binding, so live log updates do not snap the
+                // view back to the bottom while the user is reading older lines.
                 viewport-y: min(0px, flickable.height - flickable.viewport-height);
                                 
                 layout := VerticalLayout {

@@ -69,7 +69,7 @@ async fn main(spawner: Spawner) -> ! {
     let mut screen_delay = esp_hal::delay::Delay::new();
 
     // Initialize the screen console
-    screen::init(
+    let mut touch = screen::init(
         peripherals.I2C0,
         peripherals.SPI2,
         peripherals.GPIO12,
@@ -136,7 +136,7 @@ async fn main(spawner: Spawner) -> ! {
 
     loop {
         let now = embassy_time::Instant::now();
-        if now - last_heartbeat >= embassy_time::Duration::from_millis(350) {
+        if now - last_heartbeat >= embassy_time::Duration::from_millis(50) && count < 100 {
             last_heartbeat = now;
 
             info!("Heartbeat count: {}", count);
@@ -146,7 +146,6 @@ async fn main(spawner: Spawner) -> ! {
             log::with_logs(|logs| {
                 let mut lines: alloc::vec::Vec<slint::SharedString> = logs
                     .lines()
-                    .take(20)
                     .map(|line| slint::SharedString::from(line))
                     .collect();
                 lines.reverse();
@@ -154,6 +153,9 @@ async fn main(spawner: Spawner) -> ! {
                 ui.set_log_lines(model.into());
             });
         }
+
+        // Forward FT6336 touch input to Slint before updating/rendering the UI.
+        touch.poll(&window);
 
         // Re-render UI & update animation ticks
         slint::platform::update_timers_and_animations();

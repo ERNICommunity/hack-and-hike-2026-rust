@@ -16,6 +16,7 @@ use esp_hal::{
     spi::master::{Config as SpiConfig, Spi},
     time::Rate,
 };
+use slint::platform::{PointerEventButton, WindowEvent};
 use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
 
 type SpiDeviceType =
@@ -27,10 +28,30 @@ type CoreDisplay = mipidsi::Display<
     mipidsi::NoResetPin,
 >;
 
+type SystemI2c = I2c<'static, Blocking>;
+
 static SCREEN: Mutex<RefCell<Option<CoreDisplay>>> = Mutex::new(RefCell::new(None));
 
 const AXP2101_ADDR: u8 = 0x34;
 const AW9523_ADDR: u8 = 0x58;
+const FT6336_ADDR: u8 = 0x38;
+
+const SCREEN_WIDTH: u16 = 320;
+const SCREEN_HEIGHT: u16 = 240;
+
+fn update_register_bits(
+    i2c: &mut impl embedded_hal::i2c::I2c,
+    address: u8,
+    register: u8,
+    mask: u8,
+    value: u8,
+) {
+    let mut current = [0u8; 1];
+    if i2c.write_read(address, &[register], &mut current).is_ok() {
+        let next = (current[0] & !mask) | (value & mask);
+        let _ = i2c.write(address, &[register, next]);
+    }
+}
 
 fn init_pmic_and_hardware_reset(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
     let _ = i2c.write(AXP2101_ADDR, &[0x93, 0x1C]);
@@ -42,12 +63,27 @@ fn init_pmic_and_hardware_reset(i2c: &mut impl embedded_hal::i2c::I2c, delay: &m
     }
 
     let _ = i2c.write(AW9523_ADDR, &[0x13, 0xFF]);
-    let _ = i2c.write(AW9523_ADDR, &[0x05, 0x00]);
 
-    let _ = i2c.write(AW9523_ADDR, &[0x03, 0x00]);
+    // AW9523 direction registers: 0 = output, 1 = input.
+    // P0_0 = FT6336 TOUCH_RST -> output.
+    update_register_bits(i2c, AW9523_ADDR, 0x04, 1 << 0, 0);
+
+    // P1_1 = LCD_RST -> output.
+    // P1_2 = FT6336 TOUCH_INT -> input. We poll the controller, but leave INT
+    // electrically configured as an input instead of driving against it.
+    update_register_bits(i2c, AW9523_ADDR, 0x05, (1 << 1) | (1 << 2), 1 << 2);
+
+    // Reset LCD and touch controller together, while preserving the other
+    // AW9523 output bits.
+    update_register_bits(i2c, AW9523_ADDR, 0x03, 1 << 1, 0);
+    update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 0, 0);
     delay.delay_millis(20u32);
-    let _ = i2c.write(AW9523_ADDR, &[0x03, 0xFF]);
-    delay.delay_millis(50u32);
+
+    update_register_bits(i2c, AW9523_ADDR, 0x03, 1 << 1, 1 << 1);
+    update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 0, 1 << 0);
+
+    // FT6336U needs about 300 ms after reset before it starts reporting points.
+    delay.delay_millis(300u32);
 }
 
 pub fn init(
@@ -60,11 +96,14 @@ pub fn init(
     gpio35: GPIO35<'static>,
     gpio3: GPIO3<'static>,
     delay: &mut Delay,
-) {
-    let mut i2c = I2c::new(i2c0, I2cConfig::default())
-        .unwrap()
-        .with_sda(gpio12)
-        .with_scl(gpio11);
+) -> TouchController {
+    let mut i2c = I2c::new(
+        i2c0,
+        I2cConfig::default().with_frequency(Rate::from_khz(400)),
+    )
+    .unwrap()
+    .with_sda(gpio12)
+    .with_scl(gpio11);
 
     init_pmic_and_hardware_reset(&mut i2c, delay);
 
@@ -97,6 +136,135 @@ pub fn init(
     critical_section::with(|cs| {
         *SCREEN.borrow(cs).borrow_mut() = Some(display);
     });
+
+    TouchController {
+        i2c,
+        state: TouchState::new(),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TouchSample {
+    Up,
+    Down { x: u16, y: u16 },
+    ReadError,
+}
+
+pub struct TouchController {
+    i2c: SystemI2c,
+    state: TouchState,
+}
+
+impl TouchController {
+    fn read_sample(&mut self) -> TouchSample {
+        // FT6336U registers 0x02..0x06:
+        // TD_STATUS, P1_XH, P1_XL, P1_YH, P1_YL.
+        let mut data = [0u8; 5];
+        if self
+            .i2c
+            .write_read(FT6336_ADDR, &[0x02], &mut data)
+            .is_err()
+        {
+            return TouchSample::ReadError;
+        }
+
+        let touch_count = data[0] & 0x0F;
+        if touch_count == 0 {
+            return TouchSample::Up;
+        }
+
+        let x = (((data[1] & 0x0F) as u16) << 8) | data[2] as u16;
+        let y = (((data[3] & 0x0F) as u16) << 8) | data[4] as u16;
+
+        if x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT {
+            return TouchSample::ReadError;
+        }
+
+        TouchSample::Down { x, y }
+    }
+
+    pub fn poll(&mut self, window: &MinimalSoftwareWindow) {
+        let sample = self.read_sample();
+
+        let transition = match sample {
+            TouchSample::ReadError => None,
+            TouchSample::Up if self.state.pressed => {
+                self.state.pressed = false;
+                Some(TouchTransition::Released {
+                    x: self.state.x,
+                    y: self.state.y,
+                })
+            }
+            TouchSample::Up => None,
+            TouchSample::Down { x, y } if !self.state.pressed => {
+                self.state.pressed = true;
+                self.state.x = x;
+                self.state.y = y;
+                Some(TouchTransition::Pressed { x, y })
+            }
+            TouchSample::Down { x, y } => {
+                if self.state.x == x && self.state.y == y {
+                    None
+                } else {
+                    self.state.x = x;
+                    self.state.y = y;
+                    Some(TouchTransition::Moved { x, y })
+                }
+            }
+        };
+
+        let Some(transition) = transition else {
+            return;
+        };
+
+        let event = match transition {
+            TouchTransition::Pressed { x, y } => WindowEvent::PointerPressed {
+                position: slint::LogicalPosition {
+                    x: x as f32,
+                    y: y as f32,
+                },
+                button: PointerEventButton::Left,
+            },
+            TouchTransition::Moved { x, y } => WindowEvent::PointerMoved {
+                position: slint::LogicalPosition {
+                    x: x as f32,
+                    y: y as f32,
+                },
+            },
+            TouchTransition::Released { x, y } => WindowEvent::PointerReleased {
+                position: slint::LogicalPosition {
+                    x: x as f32,
+                    y: y as f32,
+                },
+                button: PointerEventButton::Left,
+            },
+        };
+
+        window.dispatch_event(event);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TouchState {
+    pressed: bool,
+    x: u16,
+    y: u16,
+}
+
+impl TouchState {
+    const fn new() -> Self {
+        Self {
+            pressed: false,
+            x: 0,
+            y: 0,
+        }
+    }
+}
+
+enum TouchTransition {
+    Pressed { x: u16, y: u16 },
+    Moved { x: u16, y: u16 },
+    Released { x: u16, y: u16 },
 }
 
 // Concrete wrapper around CoreDisplay to implement Slint's LineBufferProvider
