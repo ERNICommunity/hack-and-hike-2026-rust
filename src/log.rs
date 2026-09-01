@@ -20,30 +20,35 @@ impl LogStore {
         }
     }
 
-    /// Evicts the oldest line (all bytes from `head` up to and including the next `\n`)
+    /// Evicts the oldest line from the tail (end) of the buffer
     fn pop_oldest_line(&mut self) {
         if self.len == 0 {
             return;
         }
 
-        let mut offset = 0;
-        while offset < self.len {
-            let idx = (self.head + offset) % MAX_LOG_SIZE;
-            if self.buffer[idx] == b'\n' {
-                let drop_count = offset + 1;
-                self.head = (self.head + drop_count) % MAX_LOG_SIZE;
-                self.len -= drop_count;
-                return;
+        // Search backwards from the tail (skipping the final newline) for the preceding newline
+        if self.len > 1 {
+            let mut offset = self.len - 2;
+            loop {
+                let idx = (self.head + offset) % MAX_LOG_SIZE;
+                if self.buffer[idx] == b'\n' {
+                    let drop_count = self.len - (offset + 1);
+                    self.len -= drop_count;
+                    return;
+                }
+                if offset == 0 {
+                    break;
+                }
+                offset -= 1;
             }
-            offset += 1;
         }
 
-        // If no newline exists (e.g. a single message filled the entire buffer), clear it
+        // If no preceding newline exists, clear the buffer
         self.head = 0;
         self.len = 0;
     }
 
-    /// Removes old lines from the beginning of the buffer until `needed` bytes can fit
+    /// Removes old lines from the tail until `needed` bytes can fit
     fn ensure_capacity(&mut self, needed: usize) {
         if needed > MAX_LOG_SIZE {
             self.head = 0;
@@ -56,25 +61,29 @@ impl LogStore {
         }
     }
 
-    /// Appends a byte slice to the circular buffer
-    fn push_bytes(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            let idx = (self.head + self.len) % MAX_LOG_SIZE;
+    /// Prepends a byte slice to the head of the circular buffer
+    fn push_bytes_front(&mut self, bytes: &[u8]) {
+        if bytes.len() > MAX_LOG_SIZE || bytes.is_empty() {
+            return;
+        }
+
+        // Move head backwards to allocate space for the incoming line
+        self.head = (self.head + MAX_LOG_SIZE - bytes.len()) % MAX_LOG_SIZE;
+        self.len += bytes.len();
+
+        for (i, &b) in bytes.iter().enumerate() {
+            let idx = (self.head + i) % MAX_LOG_SIZE;
             self.buffer[idx] = b;
-            self.len += 1;
         }
     }
 
     /// Returns a contiguous `&str` of the accumulated logs for Slint.
-    ///
-    /// If the data is wrapped around the end of the circular buffer, this rearranges
-    /// the buffer in-place so that `head` becomes `0`
     fn as_str(&mut self) -> &str {
         if self.len == 0 {
             return "";
         }
 
-        // If the data is wrapped around the end of the array, rotate in-place to linearize it
+        // Rotate in-place to linearize wrapped memory so head starts at 0
         if self.head + self.len > MAX_LOG_SIZE {
             self.buffer.rotate_left(self.head);
             self.head = 0;
@@ -98,18 +107,17 @@ impl log::Log for Logger {
             return;
         }
 
-        // Format once into a small temporary 256-byte stack buffer
         let mut line_buf = arrayvec::ArrayString::<256>::new();
-        let _ = writeln!(line_buf, "[{:<5}] {}", record.level(), record.args());
+        let _ = writeln!(line_buf, "[{}] {}", record.level(), record.args());
 
         // 1. Output to Serial Terminal
         esp_println::print!("{}\r\n", line_buf.trim_end_matches('\n'));
 
-        // 2. Append to Ring Buffer directly
+        // 2. Prepend to Ring Buffer (latest lines at index 0)
         critical_section::with(|cs| {
             let mut store = LOG_STORE.borrow(cs).borrow_mut();
             store.ensure_capacity(line_buf.len());
-            store.push_bytes(line_buf.as_bytes());
+            store.push_bytes_front(line_buf.as_bytes());
         });
     }
 
@@ -124,7 +132,6 @@ pub fn init(level: LevelFilter) {
         .expect("Failed to initialize logger");
 }
 
-/// Helper function for Slint to read the accumulated log buffer
 pub fn with_logs(f: impl FnOnce(&str)) {
     critical_section::with(|cs| {
         let mut store = LOG_STORE.borrow(cs).borrow_mut();

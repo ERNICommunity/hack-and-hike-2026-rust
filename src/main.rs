@@ -136,17 +136,20 @@ async fn main(spawner: Spawner) -> ! {
 
     loop {
         let now = embassy_time::Instant::now();
-        if now - last_heartbeat >= embassy_time::Duration::from_secs(1) {
+        if now - last_heartbeat >= embassy_time::Duration::from_millis(350) {
             last_heartbeat = now;
 
-            // Log standard rust macro calls from anywhere in your project!
             info!("Heartbeat count: {}", count);
             count += 1;
 
             // Fetch logs and update Slint string property
             log::with_logs(|logs| {
-                let lines: alloc::vec::Vec<slint::SharedString> =
-                    logs.lines().map(|line| slint::SharedString::from(line)).collect();
+                let mut lines: alloc::vec::Vec<slint::SharedString> = logs
+                    .lines()
+                    .take(20)
+                    .map(|line| slint::SharedString::from(line))
+                    .collect();
+                lines.reverse();
                 let model = alloc::rc::Rc::new(slint::VecModel::from(lines));
                 ui.set_log_lines(model.into());
             });

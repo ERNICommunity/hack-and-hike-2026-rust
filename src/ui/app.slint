@@ -27,17 +27,20 @@ export component AppWindow inherits Window {
                 y: 6px;
                 width: parent.width - 12px;
                 height: parent.height - 12px;
+                
+                // Set viewport height to match the inner content height
+                viewport-height: layout.preferred-height;
                 viewport-y: min(0px, flickable.height - flickable.viewport-height);
-                
-                animate viewport-y { duration: 350ms; easing: ease-out; }
-                
-                VerticalBox {
+                                
+                layout := VerticalLayout {
+                    padding: 0px;
+                    spacing: 0px;
+                    
                     for line in root.log-lines: Text {
                         text: line;
                         color: #3fb950;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                        height: 14px;
+                        font-size: 10px;
+                        wrap: no-wrap;
                     }
                 }
             }
