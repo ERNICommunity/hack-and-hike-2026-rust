@@ -7,12 +7,14 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
+mod audio;
 mod log;
 mod screen;
+mod system_i2c;
 
 extern crate alloc;
 
-use ::log::info;
+use ::log::{error, info};
 use alloc::rc::Rc;
 use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
@@ -22,10 +24,99 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_radio::ble::controller::BleConnector;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, WindowAdapter};
+use slint::Model;
 use trouble_host::prelude::*;
 
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 1;
+
+/// Synchronize the persistent Slint log model with the logger snapshot without
+/// rebuilding every SharedString on every refresh.
+///
+/// The logger stores newest lines first, while the UI model stores oldest lines
+/// first. Since new log entries are prepended and old entries are only evicted
+/// from the tail, most updates can be represented as:
+///   1. remove any evicted rows from the front of the model;
+///   2. append only the genuinely new rows.
+fn sync_log_model(model: &slint::VecModel<slint::SharedString>, logs: &str) {
+    let old_count = model.row_count();
+
+    // First population, or recovery after an unexpected discontinuity.
+    if old_count == 0 {
+        for line in logs.lines().rev() {
+            model.push(slint::SharedString::from(line));
+        }
+        return;
+    }
+
+    let Some(old_newest) = model.row_data(old_count - 1) else {
+        return;
+    };
+
+    // `logs` is newest -> oldest. Find the previous newest row in the new
+    // snapshot. Everything before it is newly-added data. Verify the older
+    // rows too, so an identical repeated log message does not create a false
+    // match.
+    let mut match_info = None;
+
+    for (new_prefix_count, line) in logs.lines().enumerate() {
+        if line != old_newest.as_str() {
+            continue;
+        }
+
+        let mut overlap = 1usize;
+        let mut old_index = old_count - 1;
+        let mut valid = true;
+
+        for older_line in logs.lines().skip(new_prefix_count + 1) {
+            if old_index == 0 {
+                break;
+            }
+
+            old_index -= 1;
+            let Some(old_line) = model.row_data(old_index) else {
+                valid = false;
+                break;
+            };
+
+            if old_line.as_str() != older_line {
+                valid = false;
+                break;
+            }
+
+            overlap += 1;
+        }
+
+        if valid {
+            match_info = Some((new_prefix_count, overlap));
+            break;
+        }
+    }
+
+    let Some((new_prefix_count, overlap)) = match_info else {
+        // This should be rare (for example if the logger rolled over by more
+        // than the entire previous model between UI refreshes). Rebuild once
+        // to recover, rather than carrying a stale model forward.
+        model.clear();
+        for line in logs.lines().rev() {
+            model.push(slint::SharedString::from(line));
+        }
+        return;
+    };
+
+    // Drop only rows that the logger evicted from its fixed-size ring buffer.
+    for _ in 0..old_count.saturating_sub(overlap) {
+        model.remove(0);
+    }
+
+    // The new prefix is newest -> oldest, but rows are appended to the Slint
+    // model oldest -> newest. Usually this loop executes exactly once.
+    for index in (0..new_prefix_count).rev() {
+        if let Some(line) = logs.lines().nth(index) {
+            model.push(slint::SharedString::from(line));
+        }
+    }
+}
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -68,18 +159,26 @@ async fn main(spawner: Spawner) -> ! {
     // Hardware blocking delay driver
     let mut screen_delay = esp_hal::delay::Delay::new();
 
-    // Initialize the screen console
+    // Initialize the internal 400 kHz I2C bus once. Touch, PMIC, ES7210,
+    // and later the IMU can all obtain lightweight device handles to it.
+    let system_i2c = system_i2c::init(peripherals.I2C0, peripherals.GPIO12, peripherals.GPIO11);
+
+    // Initialize display + touch using one handle to the shared system bus.
     let mut touch = screen::init(
-        peripherals.I2C0,
+        system_i2c::device(system_i2c),
         peripherals.SPI2,
-        peripherals.GPIO12,
-        peripherals.GPIO11,
         peripherals.GPIO36,
         peripherals.GPIO37,
         peripherals.GPIO35,
         peripherals.GPIO3,
         &mut screen_delay,
     );
+
+    // Power and configure the ES7210 microphone codec over the same I2C bus.
+    let mut codec_i2c = system_i2c::device(system_i2c);
+    audio::init_es7210(&mut codec_i2c, &mut screen_delay)
+        .expect("Failed to initialize ES7210 microphone codec");
+    drop(codec_i2c);
 
     // Broadcast immediately on CPU start
     info!("==========================================");
@@ -99,8 +198,6 @@ async fn main(spawner: Spawner) -> ! {
     let _ = peripherals.GPIO30;
     let _ = peripherals.GPIO31;
     let _ = peripherals.GPIO32;
-    let _ = peripherals.GPIO33;
-    let _ = peripherals.GPIO34;
     // let _ = peripherals.GPIO35;
     // let _ = peripherals.GPIO36;
     // let _ = peripherals.GPIO37;
@@ -117,8 +214,20 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Spawning tasks");
 
-    // TODO: Spawn some tasks
-    let _ = spawner;
+    // Continuously capture the two onboard microphones with circular I2S DMA.
+    // GPIO0=MCLK, GPIO34=BCLK, GPIO33=WS/LRCLK, GPIO14=ES7210 data out.
+    if let Ok(task) = audio::capture_task(
+        peripherals.I2S0,
+        peripherals.DMA_CH0,
+        peripherals.GPIO0,
+        peripherals.GPIO34,
+        peripherals.GPIO33,
+        peripherals.GPIO14,
+    )
+    .map_err(|err| error!("Audio Capture Spawn Error {}", err))
+    {
+        spawner.spawn(task);
+    }
 
     let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     window.set_size(slint::PhysicalSize::new(320, 240));
@@ -131,27 +240,30 @@ async fn main(spawner: Spawner) -> ! {
     let ui = AppWindow::new().unwrap();
     ui.show().unwrap();
 
+    // Keep one VecModel for the lifetime of the UI. Updating the model in
+    // place lets Slint preserve existing SharedStrings and the Vec capacity
+    // instead of allocating a complete replacement model on every log tick.
+    let log_model = Rc::new(slint::VecModel::<slint::SharedString>::default());
+    ui.set_log_lines(log_model.clone().into());
+
+    // Seed the model with the startup logs already collected above.
+    log::with_logs(|logs| sync_log_model(&log_model, logs));
+
     let mut count = 0;
     let mut last_heartbeat = embassy_time::Instant::now();
 
     loop {
         let now = embassy_time::Instant::now();
-        if now - last_heartbeat >= embassy_time::Duration::from_millis(50) && count < 100 {
+        if now - last_heartbeat >= embassy_time::Duration::from_millis(350) && count < 100 {
             last_heartbeat = now;
 
             info!("Heartbeat count: {}", count);
             count += 1;
 
-            // Fetch logs and update Slint string property
-            log::with_logs(|logs| {
-                let mut lines: alloc::vec::Vec<slint::SharedString> = logs
-                    .lines()
-                    .map(|line| slint::SharedString::from(line))
-                    .collect();
-                lines.reverse();
-                let model = alloc::rc::Rc::new(slint::VecModel::from(lines));
-                ui.set_log_lines(model.into());
-            });
+            // Incrementally synchronize the persistent model. Existing rows
+            // are retained; only evicted rows are removed and new rows allocate
+            // a new SharedString.
+            log::with_logs(|logs| sync_log_model(&log_model, logs));
         }
 
         // Forward FT6336 touch input to Slint before updating/rendering the UI.
