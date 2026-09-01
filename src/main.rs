@@ -11,37 +11,35 @@ mod audio;
 mod log;
 mod screen;
 mod system_i2c;
+mod touch;
 
 extern crate alloc;
 
-use ::log::{error, info};
+use ::log::info;
 use alloc::rc::Rc;
 use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
 use esp_backtrace as _;
-use esp_hal::clock::CpuClock;
-use esp_hal::timer::timg::TimerGroup;
+use esp_hal::{clock::CpuClock, system::Stack, timer::timg::TimerGroup};
 use esp_radio::ble::controller::BleConnector;
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{Platform, WindowAdapter};
 use slint::Model;
+use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
+use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 1;
+const CPU1_STACK_SIZE: usize = 16 * 1024;
+
+static CPU1_STACK: StaticCell<Stack<CPU1_STACK_SIZE>> = StaticCell::new();
+static CPU1_EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
 
 /// Synchronize the persistent Slint log model with the logger snapshot without
 /// rebuilding every SharedString on every refresh.
-///
-/// The logger stores newest lines first, while the UI model stores oldest lines
-/// first. Since new log entries are prepended and old entries are only evicted
-/// from the tail, most updates can be represented as:
-///   1. remove any evicted rows from the front of the model;
-///   2. append only the genuinely new rows.
 fn sync_log_model(model: &slint::VecModel<slint::SharedString>, logs: &str) {
     let old_count = model.row_count();
 
-    // First population, or recovery after an unexpected discontinuity.
     if old_count == 0 {
         for line in logs.lines().rev() {
             model.push(slint::SharedString::from(line));
@@ -53,10 +51,6 @@ fn sync_log_model(model: &slint::VecModel<slint::SharedString>, logs: &str) {
         return;
     };
 
-    // `logs` is newest -> oldest. Find the previous newest row in the new
-    // snapshot. Everything before it is newly-added data. Verify the older
-    // rows too, so an identical repeated log message does not create a false
-    // match.
     let mut match_info = None;
 
     for (new_prefix_count, line) in logs.lines().enumerate() {
@@ -94,9 +88,6 @@ fn sync_log_model(model: &slint::VecModel<slint::SharedString>, logs: &str) {
     }
 
     let Some((new_prefix_count, overlap)) = match_info else {
-        // This should be rare (for example if the logger rolled over by more
-        // than the entire previous model between UI refreshes). Rebuild once
-        // to recover, rather than carrying a stale model forward.
         model.clear();
         for line in logs.lines().rev() {
             model.push(slint::SharedString::from(line));
@@ -104,13 +95,10 @@ fn sync_log_model(model: &slint::VecModel<slint::SharedString>, logs: &str) {
         return;
     };
 
-    // Drop only rows that the logger evicted from its fixed-size ring buffer.
     for _ in 0..old_count.saturating_sub(overlap) {
         model.remove(0);
     }
 
-    // The new prefix is newest -> oldest, but rows are appended to the Slint
-    // model oldest -> newest. Usually this loop executes exactly once.
     for index in (0..new_prefix_count).rev() {
         if let Some(line) = logs.lines().nth(index) {
             model.push(slint::SharedString::from(line));
@@ -118,8 +106,84 @@ fn sync_log_model(model: &slint::VecModel<slint::SharedString>, logs: &str) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct UiTouchState {
+    pressed: bool,
+    last_point: touch::TouchPoint,
+}
+
+impl UiTouchState {
+    const fn new() -> Self {
+        Self {
+            pressed: false,
+            last_point: touch::TouchPoint { x: 0, y: 0 },
+        }
+    }
+}
+
+fn logical_position(point: touch::TouchPoint) -> slint::LogicalPosition {
+    slint::LogicalPosition {
+        x: point.x as f32,
+        y: point.y as f32,
+    }
+}
+
+fn dispatch_move_if_changed(
+    window: &MinimalSoftwareWindow,
+    state: &mut UiTouchState,
+    point: touch::TouchPoint,
+) {
+    if point.x == state.last_point.x && point.y == state.last_point.y {
+        return;
+    }
+
+    state.last_point = point;
+    window.dispatch_event(WindowEvent::PointerMoved {
+        position: logical_position(point),
+    });
+}
+
+/// CPU0-only bridge from plain cross-core touch messages into Slint events.
+/// No Slint object is ever shared with CPU1.
+fn dispatch_touch_input(window: &MinimalSoftwareWindow, state: &mut UiTouchState) {
+    // Preserve press/release ordering. If CPU0 was busy rendering for the whole
+    // gesture, synthesize a final move before release so Slint still observes
+    // the drag displacement instead of seeing only a tap.
+    while let Some(edge) = touch::try_take_edge() {
+        match edge {
+            touch::TouchEdge::Pressed(point) => {
+                state.pressed = true;
+                state.last_point = point;
+                window.dispatch_event(WindowEvent::PointerPressed {
+                    position: logical_position(point),
+                    button: PointerEventButton::Left,
+                });
+            }
+            touch::TouchEdge::Released(point) => {
+                if state.pressed {
+                    dispatch_move_if_changed(window, state, point);
+                }
+
+                window.dispatch_event(WindowEvent::PointerReleased {
+                    position: logical_position(point),
+                    button: PointerEventButton::Left,
+                });
+                state.pressed = false;
+                state.last_point = point;
+            }
+        }
+    }
+
+    // Movement is intentionally latest-value only. This prevents a blocking
+    // LCD render from creating a backlog of stale motion events.
+    if let Some(point) = touch::take_latest_point() {
+        if state.pressed {
+            dispatch_move_if_changed(window, state, point);
+        }
+    }
+}
+
 // This creates a default app-descriptor required by the esp-idf bootloader.
-// For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
 slint::include_modules!();
@@ -143,92 +207,107 @@ impl Platform for McuPlatform {
     reason = "it's not unusual to allocate larger buffers etc. in main"
 )]
 #[esp_rtos::main]
-async fn main(spawner: Spawner) -> ! {
-    // Reclaim bootloader
+async fn main(_cpu0_spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
     esp_alloc::heap_allocator!(size: 128 * 1024);
 
     log::init(::log::LevelFilter::Info);
+
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
+
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_interrupt =
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+
+    // Start the RTOS scheduler on CPU0 first. start_second_core() requires it.
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    // Hardware blocking delay driver
     let mut screen_delay = esp_hal::delay::Delay::new();
 
-    // Initialize the internal 400 kHz I2C bus once. Touch, PMIC, ES7210,
-    // and later the IMU can all obtain lightweight device handles to it.
-    let system_i2c = system_i2c::init(peripherals.I2C0, peripherals.GPIO12, peripherals.GPIO11);
+    // One physical I2C0 controller, protected by one cross-core async mutex.
+    let system_bus = system_i2c::init(peripherals.I2C0, peripherals.GPIO12, peripherals.GPIO11);
 
-    // Initialize display + touch using one handle to the shared system bus.
-    let mut touch = screen::init(
-        system_i2c::device(system_i2c),
-        peripherals.SPI2,
-        peripherals.GPIO36,
-        peripherals.GPIO37,
-        peripherals.GPIO35,
-        peripherals.GPIO3,
-        &mut screen_delay,
-    );
+    // Startup hardware initialization happens before CPU1 acquisition tasks are
+    // running, but still goes through the same physical-bus mutex. Screen gets
+    // exclusive ownership of SPI2/LCD; it does NOT retain the I2C guard.
+    let mut screen = {
+        let mut i2c = system_bus.lock().await;
 
-    // Power and configure the ES7210 microphone codec over the same I2C bus.
-    let mut codec_i2c = system_i2c::device(system_i2c);
-    audio::init_es7210(&mut codec_i2c, &mut screen_delay)
-        .expect("Failed to initialize ES7210 microphone codec");
-    drop(codec_i2c);
+        let screen = screen::init(
+            &mut *i2c,
+            peripherals.SPI2,
+            peripherals.GPIO36,
+            peripherals.GPIO37,
+            peripherals.GPIO35,
+            peripherals.GPIO3,
+            &mut screen_delay,
+        );
 
-    // Broadcast immediately on CPU start
+        audio::init_es7210(&mut *i2c, &mut screen_delay)
+            .expect("Failed to initialize ES7210 microphone codec");
+
+        screen
+    };
+
     info!("==========================================");
     info!(">>> M5Stack CoreS3 Lite Booting Up! <<<");
     info!("==========================================");
 
-    // The following pins are used to bootstrap the chip. They are available
-    // for use, but check the datasheet of the module for more information on them.
-    // - GPIO0
-    // - GPIO3
-    // - GPIO45
-    // - GPIO46
-    // These GPIO pins are in use by some feature of the module and should not be used.
+    // Reserved / currently unused module GPIOs.
     let _ = peripherals.GPIO27;
     let _ = peripherals.GPIO28;
     let _ = peripherals.GPIO29;
     let _ = peripherals.GPIO30;
     let _ = peripherals.GPIO31;
     let _ = peripherals.GPIO32;
-    // let _ = peripherals.GPIO35;
-    // let _ = peripherals.GPIO36;
-    // let _ = peripherals.GPIO37;
 
     let (mut _wifi_controller, _interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
-    // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
+
     let transport = BleConnector::new(peripherals.BT, Default::default()).unwrap();
     let ble_controller = ExternalController::<_, 1>::new(transport);
     let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();
     let _ble_stack = trouble_host::new(ble_controller, &mut resources);
 
-    info!("Spawning tasks");
+    info!("Starting CPU1 acquisition executor");
 
-    // Continuously capture the two onboard microphones with circular I2S DMA.
-    // GPIO0=MCLK, GPIO34=BCLK, GPIO33=WS/LRCLK, GPIO14=ES7210 data out.
-    if let Ok(task) = audio::capture_task(
-        peripherals.I2S0,
-        peripherals.DMA_CH0,
-        peripherals.GPIO0,
-        peripherals.GPIO34,
-        peripherals.GPIO33,
-        peripherals.GPIO14,
-    )
-    .map_err(|err| error!("Audio Capture Spawn Error {}", err))
-    {
-        spawner.spawn(task);
-    }
+    let cpu1_stack = CPU1_STACK.init(Stack::new());
 
+    // CPU1 owns hardware acquisition. The supplied function becomes the
+    // second core's pinned RTOS main thread, and this Embassy executor runs
+    // touch + I2S there. Task tokens are created on CPU1 so non-Send I2S state
+    // never crosses cores.
+    esp_rtos::start_second_core(
+        peripherals.CPU_CTRL,
+        sw_interrupt.software_interrupt1,
+        cpu1_stack,
+        move || {
+            let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
+
+            executor.run(move |cpu1_spawner| {
+                cpu1_spawner.spawn(
+                    touch::capture_task(system_bus).expect("Failed to allocate CPU1 touch task"),
+                );
+
+                cpu1_spawner.spawn(
+                    audio::capture_task(
+                        peripherals.I2S0,
+                        peripherals.DMA_CH0,
+                        peripherals.GPIO0,
+                        peripherals.GPIO34,
+                        peripherals.GPIO33,
+                        peripherals.GPIO14,
+                    )
+                    .expect("Failed to allocate CPU1 audio task"),
+                );
+            });
+        },
+    );
+
+    // Everything below this point is CPU0-only presentation state.
     let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     window.set_size(slint::PhysicalSize::new(320, 240));
 
@@ -240,15 +319,11 @@ async fn main(spawner: Spawner) -> ! {
     let ui = AppWindow::new().unwrap();
     ui.show().unwrap();
 
-    // Keep one VecModel for the lifetime of the UI. Updating the model in
-    // place lets Slint preserve existing SharedStrings and the Vec capacity
-    // instead of allocating a complete replacement model on every log tick.
     let log_model = Rc::new(slint::VecModel::<slint::SharedString>::default());
     ui.set_log_lines(log_model.clone().into());
-
-    // Seed the model with the startup logs already collected above.
     log::with_logs(|logs| sync_log_model(&log_model, logs));
 
+    let mut ui_touch = UiTouchState::new();
     let mut count = 0;
     let mut last_heartbeat = embassy_time::Instant::now();
 
@@ -259,22 +334,19 @@ async fn main(spawner: Spawner) -> ! {
 
             info!("Heartbeat count: {}", count);
             count += 1;
-
-            // Incrementally synchronize the persistent model. Existing rows
-            // are retained; only evicted rows are removed and new rows allocate
-            // a new SharedString.
             log::with_logs(|logs| sync_log_model(&log_model, logs));
         }
 
-        // Forward FT6336 touch input to Slint before updating/rendering the UI.
-        touch.poll(&window);
+        // Consume CPU1 touch messages and translate them into Slint events on
+        // CPU0. This is the only place touch meets Slint.
+        dispatch_touch_input(&window, &mut ui_touch);
 
-        // Re-render UI & update animation ticks
         slint::platform::update_timers_and_animations();
-        screen::render_slint_window(&window);
+
+        // Screen is directly owned by CPU0. No display mutex, and no global
+        // critical section around blocking SPI rendering.
+        screen.render_slint_window(&window);
 
         embassy_time::Timer::after(embassy_time::Duration::from_millis(5)).await;
     }
-
-    // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.1.0/examples
 }

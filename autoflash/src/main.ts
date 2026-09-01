@@ -1,5 +1,4 @@
 import { ESPLoader, Transport } from "esptool-js";
-import SparkMD5 from "spark-md5";
 import {
   FILE_POLL_INTERVAL_MS,
   FILE_STABLE_FOR_MS,
@@ -7,7 +6,6 @@ import {
   FLASH_BAUD_RATE,
   MAX_LOG_CHARACTERS,
   MONITOR_BAUD_RATE,
-  MONITOR_RESTART_DELAY_MS,
   SERIAL_PORT_SEARCH,
 } from "./config";
 import {
@@ -23,13 +21,12 @@ type ConnectionState = "searching" | "needs-permission" | "connected" | "flashin
 type FileState = "empty" | "permission" | "watching" | "settling" | "paused";
 
 const deviceSearch = parseDeviceSearch(SERIAL_PORT_SEARCH);
-
 const FINAL_FLASH_WRITE_LINE = /^Writing at 0x[0-9a-f]+\.\.\. \(100%\)$/i;
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div class="page-shell">
     <main>
-      <section class="workspace">
+      <section class="workspace" aria-label="ESP AutoFlash controls and serial monitor">
         <div class="controls-column">
           <article class="control-card" id="device-card">
             <div class="card-heading">
@@ -127,7 +124,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div class="terminal-title">
               <span class="terminal-glyph">›_</span>
               <div>
-                <p>Live output</p>
+                <p id="terminal-status">Waiting for port</p>
                 <h2>Serial monitor</h2>
               </div>
             </div>
@@ -146,11 +143,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <div class="terminal-body" id="terminal-body" role="log" aria-live="polite" aria-label="Serial output">
             <pre id="terminal-output"></pre>
-            <span class="terminal-cursor" aria-hidden="true"></span>
-          </div>
-          <div class="terminal-footer">
-            <span><i class="footer-dot" id="terminal-dot"></i><span id="terminal-status">Waiting for port</span></span>
-            <span>RX · ${MONITOR_BAUD_RATE.toLocaleString()} baud</span>
           </div>
         </article>
       </section>
@@ -182,7 +174,6 @@ const ui = {
   flashButton: element<HTMLButtonElement>("flash-button"),
   terminalBody: element("terminal-body"),
   terminalOutput: element<HTMLPreElement>("terminal-output"),
-  terminalDot: element("terminal-dot"),
   terminalStatus: element("terminal-status"),
   autoscrollToggle: element<HTMLInputElement>("autoscroll-toggle"),
   clearLogButton: element<HTMLButtonElement>("clear-log-button"),
@@ -264,7 +255,6 @@ function setConnectionState(state: ConnectionState, detail?: string): void {
 
   ui.deviceState.className = `state-chip ${state}`;
   ui.deviceState.textContent = labels[state];
-  ui.terminalDot.className = `footer-dot ${state}`;
   ui.terminalStatus.textContent = detail ?? headerLabels[state];
   ui.resetButton.disabled = !port || flashing || state === "searching";
   ui.authorizeButton.classList.toggle("hidden", state === "connected" || state === "flashing");
@@ -533,6 +523,19 @@ async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
   const activePort = port;
   const transport = new Transport(activePort, false);
   let transportOpen = false;
+  let finalWriteLineSeen = false;
+  let resolveFinalWriteLine!: () => void;
+  const finalWriteLine = new Promise<void>((resolve) => {
+    resolveFinalWriteLine = resolve;
+  });
+
+  const handleFlashLogLine = (data: string): void => {
+    appendOutput(`${data}\n`);
+    if (!finalWriteLineSeen && FINAL_FLASH_WRITE_LINE.test(data.trim())) {
+      finalWriteLineSeen = true;
+      resolveFinalWriteLine();
+    }
+  };
 
   const loader = new ESPLoader({
     transport,
@@ -541,7 +544,7 @@ async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
     terminal: {
       clean: () => undefined,
       write: (data: string) => appendOutput(data),
-      writeLine: (data: string) => appendOutput(`${data}\n`),
+      writeLine: handleFlashLogLine,
     },
   });
 
@@ -551,25 +554,35 @@ async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
     appendSystem(`Bootloader connected: ${chip}.`, "success");
     setConnectionState("flashing", "Writing flash at 0x0");
 
-    await loader.writeFlash({
+    const writeTask = loader.writeFlash({
       fileArray: [{ data: image, address: FLASH_ADDRESS }],
       flashMode: "keep",
       flashFreq: "keep",
       flashSize: "keep",
       eraseAll: false,
       compress: true,
-      calculateMD5Hash: (data) => {
-        const exact = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-        return SparkMD5.ArrayBuffer.hash(exact);
-      },
       reportProgress: (_fileIndex, written, total) => {
         const percent = total === 0 ? 0 : (written / total) * 100;
         updateProgress(percent, `Writing ${formatBytes(written)} of ${formatBytes(total)}`);
       },
     });
 
-    updateProgress(100, "Firmware written — restoring serial monitor");
-    appendSystem("Firmware write verified. Reopening the serial monitor…", "success");
+    const completion = await Promise.race([
+      finalWriteLine.then(() => "final-write-line" as const),
+      writeTask.then(() => "write-finished" as const),
+    ]);
+
+    if (completion === "final-write-line") {
+      // The requested handoff intentionally stops waiting for writeFlash as soon
+      // as esptool-js prints its final 100% write line. Closing the transport below
+      // ends any remaining flasher work while preventing an unhandled rejection.
+      void writeTask.catch(() => undefined);
+      updateProgress(100, "100% reached — restoring serial monitor");
+      appendSystem("100% write line received. Reopening the serial monitor now…", "success");
+    } else {
+      updateProgress(100, "Firmware written — restoring serial monitor");
+      appendSystem("Firmware written. Reopening the serial monitor…", "success");
+    }
   } finally {
     if (transportOpen || activePort.readable) {
       try {
@@ -580,7 +593,6 @@ async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
     }
   }
 
-  await sleep(MONITOR_RESTART_DELAY_MS);
   await startMonitor(true);
   await resetDevice(false);
   setConnectionState("connected", "Flash complete · monitor live");
@@ -610,6 +622,13 @@ async function restoreFirmware(): Promise<void> {
   } catch (error) {
     appendSystem(`Could not restore firmware selection: ${errorMessage(error)}`, "error");
   }
+}
+
+function showUnsupportedBrowser(): void {
+  ui.authorizeButton.disabled = true;
+  ui.filePicker.disabled = true;
+  appendSystem("Unsupported browser. Open this site in current Chrome or Edge on desktop; Web Serial and persistent file handles are required.", "error");
+  setConnectionState("error", "Browser APIs unavailable");
 }
 
 ui.authorizeButton.addEventListener("click", () => {
@@ -652,6 +671,9 @@ ui.watchToggle.addEventListener("change", () => {
 });
 
 ui.flashButton.addEventListener("click", () => queueFlash("manual"));
+ui.autoscrollToggle.addEventListener("change", () => {
+  if (ui.autoscrollToggle.checked) ui.terminalBody.scrollTop = ui.terminalBody.scrollHeight;
+});
 ui.clearLogButton.addEventListener("click", () => { ui.terminalOutput.textContent = ""; });
 ui.downloadLogButton.addEventListener("click", () => {
   const blob = new Blob([ui.terminalOutput.textContent ?? ""], { type: "text/plain;charset=utf-8" });
@@ -681,7 +703,7 @@ if ("serial" in navigator) {
 async function initialize(): Promise<void> {
   appendSystem(`Ready. Target is ${SERIAL_PORT_SEARCH}; firmware address is 0x${FLASH_ADDRESS.toString(16)}.`);
   if (!("serial" in navigator) || !window.showOpenFilePicker || !window.isSecureContext) {
-    alert("This site requires a secure context (HTTPS) and a Chromium-based browser with Web Serial and the File System Access API.");
+    showUnsupportedBrowser();
     return;
   }
   await Promise.all([

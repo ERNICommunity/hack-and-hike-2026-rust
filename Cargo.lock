@@ -2571,6 +2571,7 @@ dependencies = [
  "display-interface-spi",
  "embassy-executor",
  "embassy-net",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-graphics",
  "embedded-hal 1.0.0",

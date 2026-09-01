@@ -1,6 +1,7 @@
-use core::cell::RefCell;
-
-use embedded_hal_bus::i2c::RefCellDevice;
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex,
+    mutex::Mutex,
+};
 use esp_hal::{
     Blocking,
     i2c::master::{Config as I2cConfig, I2c},
@@ -10,13 +11,17 @@ use esp_hal::{
 use static_cell::StaticCell;
 
 pub type SystemI2c = I2c<'static, Blocking>;
-pub type SystemI2cBus = &'static RefCell<SystemI2c>;
-pub type SystemI2cDevice = RefCellDevice<'static, SystemI2c>;
+pub type SystemI2cMutex = Mutex<CriticalSectionRawMutex, SystemI2c>;
+pub type SystemI2cBus = &'static SystemI2cMutex;
 
-static SYSTEM_I2C: StaticCell<RefCell<SystemI2c>> = StaticCell::new();
+static SYSTEM_I2C: StaticCell<SystemI2cMutex> = StaticCell::new();
 
-/// Initializes the CoreS3-Lite internal 400 kHz I2C bus once and returns the
-/// shared bus cell used by all internal I2C devices.
+/// Initializes the one physical CoreS3-Lite internal I2C controller.
+///
+/// Every subsystem receives this same bus mutex rather than owning an I2C
+/// device wrapper. The async mutex is cross-core safe. Its raw critical-section
+/// mutex is used only while updating mutex state; it is not held for the whole
+/// blocking I2C transaction.
 pub fn init(
     i2c0: I2C0<'static>,
     gpio12: GPIO12<'static>,
@@ -30,15 +35,5 @@ pub fn init(
     .with_sda(gpio12)
     .with_scl(gpio11);
 
-    SYSTEM_I2C.init(RefCell::new(i2c))
-}
-
-/// Creates a lightweight handle to the shared internal I2C bus.
-///
-/// `RefCellDevice` is intentionally used here because all current I2C users
-/// (board init, touch polling, codec init) execute on the same Embassy executor
-/// thread and each transaction is blocking/no-await. This avoids wrapping every
-/// I2C transaction in a global critical section.
-pub fn device(bus: SystemI2cBus) -> SystemI2cDevice {
-    RefCellDevice::new(bus)
+    SYSTEM_I2C.init(Mutex::new(i2c))
 }

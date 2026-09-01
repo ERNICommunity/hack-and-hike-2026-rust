@@ -24,6 +24,7 @@ esp-println = { version = "0.17.0", features = ["esp32s3", "log-04", "jtag-seria
 bt-hci = "0.8.0"
 embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-time = { version = "0.5.0", features = ["log"] }
+embassy-sync = { version = "0.8.0" }
 esp-radio = { version = "0.18.0", features = ["ble", "coex", "esp-alloc", "esp32s3", "log-04", "unstable", "wifi"] }
 smoltcp = { version = "0.13.0", default-features = false, features = ["log", "medium-ethernet", "multicast", "proto-dhcpv4", "proto-dns", "proto-ipv4", "socket-dns", "socket-icmp", "socket-raw", "socket-tcp", "socket-udp"] }
 trouble-host = { version = "0.6.0", features = ["gatt"] }

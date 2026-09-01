@@ -1,7 +1,6 @@
 use core::cell::RefCell;
 
 use critical_section::Mutex;
-use static_cell::ConstStaticCell;
 use esp_hal::{
     delay::Delay,
     i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s},
@@ -46,13 +45,6 @@ impl LatestAudio {
 }
 
 static LATEST_AUDIO: Mutex<RefCell<LatestAudio>> = Mutex::new(RefCell::new(LatestAudio::new()));
-
-// Scratch space used when draining the circular DMA receiver. Keep this out of
-// the general-purpose heap: Slint and the log model need that heap at runtime.
-// ConstStaticCell is ideal for a large zero-filled buffer because it lives in
-// .bss and `take()` returns the one &'static mut reference to it.
-static DMA_DRAIN: ConstStaticCell<[u8; DMA_BUFFER_BYTES]> =
-    ConstStaticCell::new([0; DMA_BUFFER_BYTES]);
 
 fn update_register_bits<I2C>(
     i2c: &mut I2C,
@@ -205,9 +197,15 @@ pub async fn capture_task(
 
     // `I2sReadDmaTransferAsync::pop()` in esp-hal 1.1.x requires the
     // destination to be large enough for *all bytes currently available* in
-    // the circular DMA ring. Size the drain buffer like the ring, but keep it
-    // in static .bss rather than consuming 32 KiB of the application heap.
-    let dma_drain = DMA_DRAIN.take();
+    // the circular DMA ring. A BLOCK_BYTES-sized destination (2048 bytes) is
+    // therefore not sufficient when a 4092-byte DMA descriptor, or several
+    // descriptors, have completed before the task runs.
+    //
+    // Size this drain buffer exactly like the DMA ring so any non-late amount
+    // reported by the driver can always be consumed in one pop(). Allocate it
+    // once on the heap so the Embassy task future itself does not contain a
+    // 32 KiB inline array.
+    let mut dma_drain = alloc::vec![0u8; DMA_BUFFER_BYTES];
 
     let mut samples = [0i16; BLOCK_SAMPLES];
     let mut frame_index = 0usize;
@@ -215,16 +213,9 @@ pub async fn capture_task(
     let mut peak_right = 0u16;
     let mut first_block = true;
 
-    // Aggregate 32 x 512-frame blocks = 16,384 frames, which is about
-    // 1.024 seconds at 16 kHz. This gives us a useful health signal without
-    // flooding the logger/UI with one message every 32 ms.
-    let mut diagnostic_blocks = 0u8;
-    let mut diagnostic_peak_left = 0u16;
-    let mut diagnostic_peak_right = 0u16;
-
     loop {
         let count = transfer
-            .pop(&mut dma_drain[..])
+            .pop(dma_drain.as_mut_slice())
             .await
             .expect("I2S circular DMA read failed");
 
@@ -251,23 +242,6 @@ pub async fn capture_task(
                         peak_left,
                         peak_right
                     );
-                }
-
-                diagnostic_peak_left = diagnostic_peak_left.max(peak_left);
-                diagnostic_peak_right = diagnostic_peak_right.max(peak_right);
-                diagnostic_blocks += 1;
-
-                if diagnostic_blocks == 32 {
-                    ::log::info!(
-                        "Audio level: seq={}, peak L={}, R={}",
-                        sequence,
-                        diagnostic_peak_left,
-                        diagnostic_peak_right
-                    );
-
-                    diagnostic_blocks = 0;
-                    diagnostic_peak_left = 0;
-                    diagnostic_peak_right = 0;
                 }
 
                 // Start assembling the next 512-frame visualization block.

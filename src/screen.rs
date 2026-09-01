@@ -1,12 +1,9 @@
-use core::cell::RefCell;
-use critical_section::Mutex;
 use embedded_graphics::{
     draw_target::DrawTarget,
     geometry::{Point, Size},
     pixelcolor::Rgb565,
     primitives::Rectangle,
 };
-use crate::system_i2c::SystemI2cDevice;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::{
     Blocking,
@@ -16,9 +13,7 @@ use esp_hal::{
     spi::master::{Config as SpiConfig, Spi},
     time::Rate,
 };
-use slint::platform::{PointerEventButton, WindowEvent};
 use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
-use embedded_hal::i2c::I2c;
 
 type SpiDeviceType =
     ExclusiveDevice<Spi<'static, Blocking>, Output<'static>, embedded_hal_bus::spi::NoDelay>;
@@ -29,14 +24,8 @@ type CoreDisplay = mipidsi::Display<
     mipidsi::NoResetPin,
 >;
 
-static SCREEN: Mutex<RefCell<Option<CoreDisplay>>> = Mutex::new(RefCell::new(None));
-
 const AXP2101_ADDR: u8 = 0x34;
 const AW9523_ADDR: u8 = 0x58;
-const FT6336_ADDR: u8 = 0x38;
-
-const SCREEN_WIDTH: u16 = 320;
-const SCREEN_HEIGHT: u16 = 240;
 
 fn update_register_bits(
     i2c: &mut impl embedded_hal::i2c::I2c,
@@ -68,12 +57,10 @@ fn init_pmic_and_hardware_reset(i2c: &mut impl embedded_hal::i2c::I2c, delay: &m
     update_register_bits(i2c, AW9523_ADDR, 0x04, 1 << 0, 0);
 
     // P1_1 = LCD_RST -> output.
-    // P1_2 = FT6336 TOUCH_INT -> input. We poll the controller, but leave INT
-    // electrically configured as an input instead of driving against it.
+    // P1_2 = FT6336 TOUCH_INT -> input.
     update_register_bits(i2c, AW9523_ADDR, 0x05, (1 << 1) | (1 << 2), 1 << 2);
 
-    // Reset LCD and touch controller together, while preserving the other
-    // AW9523 output bits.
+    // Reset LCD and touch controller together, preserving unrelated outputs.
     update_register_bits(i2c, AW9523_ADDR, 0x03, 1 << 1, 0);
     update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 0, 0);
     delay.delay_millis(20u32);
@@ -81,20 +68,27 @@ fn init_pmic_and_hardware_reset(i2c: &mut impl embedded_hal::i2c::I2c, delay: &m
     update_register_bits(i2c, AW9523_ADDR, 0x03, 1 << 1, 1 << 1);
     update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 0, 1 << 0);
 
-    // FT6336U needs about 300 ms after reset before it starts reporting points.
     delay.delay_millis(300u32);
 }
 
+/// The one and only owner of SPI2 and the LCD.
+///
+/// `Screen` stays on CPU0. There is no global display mutex and no other task
+/// can obtain the display object.
+pub struct Screen {
+    display: CoreDisplay,
+}
+
 pub fn init(
-    mut i2c: SystemI2cDevice,
+    i2c: &mut impl embedded_hal::i2c::I2c,
     spi2: SPI2<'static>,
     gpio36: GPIO36<'static>,
     gpio37: GPIO37<'static>,
     gpio35: GPIO35<'static>,
     gpio3: GPIO3<'static>,
     delay: &mut Delay,
-) -> TouchController {
-    init_pmic_and_hardware_reset(&mut i2c, delay);
+) -> Screen {
+    init_pmic_and_hardware_reset(i2c, delay);
 
     let spi = Spi::new(
         spi2,
@@ -115,148 +109,13 @@ pub fn init(
     let display = mipidsi::Builder::new(mipidsi::models::ILI9342CRgb565, di)
         .color_order(mipidsi::options::ColorOrder::Bgr)
         .invert_colors(mipidsi::options::ColorInversion::Inverted)
-        .orientation(
-            mipidsi::options::Orientation::new(),
-            // .rotate(mipidsi::options::Rotation::Deg90)
-        )
+        .orientation(mipidsi::options::Orientation::new())
         .init(delay)
         .unwrap();
 
-    critical_section::with(|cs| {
-        *SCREEN.borrow(cs).borrow_mut() = Some(display);
-    });
-
-    TouchController {
-        i2c,
-        state: TouchState::new(),
-    }
+    Screen { display }
 }
 
-#[derive(Clone, Copy)]
-enum TouchSample {
-    Up,
-    Down { x: u16, y: u16 },
-    ReadError,
-}
-
-pub struct TouchController {
-    i2c: SystemI2cDevice,
-    state: TouchState,
-}
-
-impl TouchController {
-    fn read_sample(&mut self) -> TouchSample {
-        // FT6336U registers 0x02..0x06:
-        // TD_STATUS, P1_XH, P1_XL, P1_YH, P1_YL.
-        let mut data = [0u8; 5];
-        if self
-            .i2c
-            .write_read(FT6336_ADDR, &[0x02], &mut data)
-            .is_err()
-        {
-            return TouchSample::ReadError;
-        }
-
-        let touch_count = data[0] & 0x0F;
-        if touch_count == 0 {
-            return TouchSample::Up;
-        }
-
-        let x = (((data[1] & 0x0F) as u16) << 8) | data[2] as u16;
-        let y = (((data[3] & 0x0F) as u16) << 8) | data[4] as u16;
-
-        if x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT {
-            return TouchSample::ReadError;
-        }
-
-        TouchSample::Down { x, y }
-    }
-
-    pub fn poll(&mut self, window: &MinimalSoftwareWindow) {
-        let sample = self.read_sample();
-
-        let transition = match sample {
-            TouchSample::ReadError => None,
-            TouchSample::Up if self.state.pressed => {
-                self.state.pressed = false;
-                Some(TouchTransition::Released {
-                    x: self.state.x,
-                    y: self.state.y,
-                })
-            }
-            TouchSample::Up => None,
-            TouchSample::Down { x, y } if !self.state.pressed => {
-                self.state.pressed = true;
-                self.state.x = x;
-                self.state.y = y;
-                Some(TouchTransition::Pressed { x, y })
-            }
-            TouchSample::Down { x, y } => {
-                if self.state.x == x && self.state.y == y {
-                    None
-                } else {
-                    self.state.x = x;
-                    self.state.y = y;
-                    Some(TouchTransition::Moved { x, y })
-                }
-            }
-        };
-
-        let Some(transition) = transition else {
-            return;
-        };
-
-        let event = match transition {
-            TouchTransition::Pressed { x, y } => WindowEvent::PointerPressed {
-                position: slint::LogicalPosition {
-                    x: x as f32,
-                    y: y as f32,
-                },
-                button: PointerEventButton::Left,
-            },
-            TouchTransition::Moved { x, y } => WindowEvent::PointerMoved {
-                position: slint::LogicalPosition {
-                    x: x as f32,
-                    y: y as f32,
-                },
-            },
-            TouchTransition::Released { x, y } => WindowEvent::PointerReleased {
-                position: slint::LogicalPosition {
-                    x: x as f32,
-                    y: y as f32,
-                },
-                button: PointerEventButton::Left,
-            },
-        };
-
-        window.dispatch_event(event);
-    }
-}
-
-#[derive(Clone, Copy)]
-struct TouchState {
-    pressed: bool,
-    x: u16,
-    y: u16,
-}
-
-impl TouchState {
-    const fn new() -> Self {
-        Self {
-            pressed: false,
-            x: 0,
-            y: 0,
-        }
-    }
-}
-
-enum TouchTransition {
-    Pressed { x: u16, y: u16 },
-    Moved { x: u16, y: u16 },
-    Released { x: u16, y: u16 },
-}
-
-// Concrete wrapper around CoreDisplay to implement Slint's LineBufferProvider
 struct DisplayWrapper<'a> {
     display: &'a mut CoreDisplay,
     line_buffer: &'a mut [Rgb565Pixel; 320],
@@ -289,18 +148,17 @@ impl<'a> LineBufferProvider for DisplayWrapper<'a> {
     }
 }
 
-pub fn render_slint_window(window: &MinimalSoftwareWindow) {
-    let mut line_buffer = [Rgb565Pixel(0); 320];
+impl Screen {
+    /// CPU0-only Slint rendering. The display is ordinary owned state, so a
+    /// blocking SPI transfer cannot hold a cross-core/global mutex.
+    pub fn render_slint_window(&mut self, window: &MinimalSoftwareWindow) {
+        let mut line_buffer = [Rgb565Pixel(0); 320];
 
-    critical_section::with(|cs| {
-        let mut guard = SCREEN.borrow(cs).borrow_mut();
-        if let Some(display) = guard.as_mut() {
-            window.draw_if_needed(|renderer| {
-                renderer.render_by_line(DisplayWrapper {
-                    display,
-                    line_buffer: &mut line_buffer,
-                });
+        window.draw_if_needed(|renderer| {
+            renderer.render_by_line(DisplayWrapper {
+                display: &mut self.display,
+                line_buffer: &mut line_buffer,
             });
-        }
-    });
+        });
+    }
 }
