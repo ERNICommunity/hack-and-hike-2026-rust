@@ -1,0 +1,30 @@
+import { Theme } from "./theme.slint";
+
+export component LogView inherits Rectangle {
+    in property <[string]> log-lines: [];
+
+    background: Theme.white;
+    clip: true;
+
+    flickable := Flickable {
+        x: 6px;
+        y: 6px;
+        width: parent.width - 12px;
+        height: parent.height - 12px;
+
+        viewport-width: flickable.width;
+        viewport-height: lines.preferred-height;
+
+        // Begin at the newest entry. Dragging takes control of viewport-y.
+        viewport-y: min(0px, flickable.height - flickable.viewport-height);
+
+        lines := VerticalLayout {
+            for line in root.log-lines: Text {
+                text: line;
+                color: black;
+                font-size: 10px;
+                wrap: no-wrap;
+            }
+        }
+    }
+}

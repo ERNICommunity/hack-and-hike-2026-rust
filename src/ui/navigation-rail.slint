@@ -1,0 +1,78 @@
+import { Theme } from "./theme.slint";
+import { NavigationButton } from "./navigation-button.slint";
+import {
+    AccelerometerIcon,
+    LogIcon,
+    MicrophoneIcon,
+    NetworkIcon,
+    SpeakerIcon,
+} from "./navigation-icons.slint";
+
+export component NavigationRail inherits Rectangle {
+    in property <int> active-view;
+    callback view-selected(int);
+
+    background: Theme.dark-blue;
+
+    VerticalLayout {
+        network-button := NavigationButton {
+            view-index: 0;
+            active-view: root.active-view;
+            selected(view) => { root.view-selected(view); }
+
+            NetworkIcon {
+                width: parent.width;
+                height: parent.height;
+                icon-color: network-button.icon-color;
+            }
+        }
+
+        accelerometer-button := NavigationButton {
+            view-index: 1;
+            active-view: root.active-view;
+            selected(view) => { root.view-selected(view); }
+
+            AccelerometerIcon {
+                width: parent.width;
+                height: parent.height;
+                icon-color: accelerometer-button.icon-color;
+            }
+        }
+
+        microphone-button := NavigationButton {
+            view-index: 2;
+            active-view: root.active-view;
+            selected(view) => { root.view-selected(view); }
+
+            MicrophoneIcon {
+                width: parent.width;
+                height: parent.height;
+                icon-color: microphone-button.icon-color;
+            }
+        }
+
+        speaker-button := NavigationButton {
+            view-index: 3;
+            active-view: root.active-view;
+            selected(view) => { root.view-selected(view); }
+
+            SpeakerIcon {
+                width: parent.width;
+                height: parent.height;
+                icon-color: speaker-button.icon-color;
+            }
+        }
+
+        log-button := NavigationButton {
+            view-index: 4;
+            active-view: root.active-view;
+            selected(view) => { root.view-selected(view); }
+
+            LogIcon {
+                width: parent.width;
+                height: parent.height;
+                icon-color: log-button.icon-color;
+            }
+        }
+    }
+}

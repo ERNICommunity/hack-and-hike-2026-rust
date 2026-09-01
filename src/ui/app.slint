@@ -1,296 +1,36 @@
+import { LogView } from "./log-view.slint";
+import { NavigationRail } from "./navigation-rail.slint";
+
 export component AppWindow inherits Window {
     width: 320px;
     height: 240px;
-    background: #0d1117;
 
     in-out property <[string]> log-lines: [];
 
-    // 0 = Network
-    // 1 = 9-axis Accelerometer
-    // 2 = Microphone input
-    // 3 = Sound output
-    // 4 = Log View
+    // 0 = Network, 1 = IMU, 2 = Microphone, 3 = Sound, 4 = Log
     in-out property <int> active-view: 4;
 
-    // Main content area. The first four views are intentionally empty for now.
     content := Rectangle {
-        x: 44px;
-        y: 0px;
-        width: parent.width - 44px;
+        x: navigation.width;
+        width: parent.width - navigation.width;
         height: parent.height;
-        background: #0d1117;
         clip: true;
 
-        // Log View
-        if root.active-view == 4 : Rectangle {
-            x: 4px;
-            y: 4px;
-            width: parent.width - 8px;
-            height: parent.height - 8px;
-            background: #161b22;
-            border-radius: 4px;
-            clip: true;
-
-            flickable := Flickable {
-                x: 6px;
-                y: 6px;
-                width: parent.width - 12px;
-                height: parent.height - 12px;
-
-                viewport-width: flickable.width;
-                viewport-height: layout.preferred-height;
-
-                // Start at the newest entries. A user drag then controls viewport-y.
-                viewport-y: min(0px, flickable.height - flickable.viewport-height);
-
-                layout := VerticalLayout {
-                    padding: 0px;
-                    spacing: 0px;
-
-                    for line in root.log-lines: Text {
-                        text: line;
-                        color: #3fb950;
-                        font-size: 10px;
-                        wrap: no-wrap;
-                    }
-                }
-            }
+        if root.active-view == 4: LogView {
+            width: parent.width;
+            height: parent.height;
+            log-lines: root.log-lines;
         }
     }
 
-    // Touch navigation rail. Five 48px-high buttons fill the 240px screen height.
-    nav := Rectangle {
+    navigation := NavigationRail {
         x: 0px;
-        y: 0px;
         width: 44px;
         height: parent.height;
-        background: #161b22;
+        active-view: root.active-view;
 
-        // ------------------------------------------------------------
-        // Network
-        // ------------------------------------------------------------
-        Rectangle {
-            x: 0px;
-            y: 0px;
-            width: 44px;
-            height: 48px;
-            background: root.active-view == 0 ? #21262d : #161b22;
-
-            // Network icon: three connected nodes.
-            Rectangle {
-                x: 12px; y: 16px; width: 20px; height: 2px;
-                background: root.active-view == 0 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 13px; y: 17px; width: 2px; height: 13px;
-                background: root.active-view == 0 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 29px; y: 17px; width: 2px; height: 13px;
-                background: root.active-view == 0 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 10px; y: 12px; width: 7px; height: 7px; border-radius: 4px;
-                background: root.active-view == 0 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 27px; y: 12px; width: 7px; height: 7px; border-radius: 4px;
-                background: root.active-view == 0 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 18px; y: 27px; width: 8px; height: 8px; border-radius: 4px;
-                background: root.active-view == 0 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 14px; y: 29px; width: 16px; height: 2px;
-                background: root.active-view == 0 ? #ffffff : #8b949e;
-            }
-
-            if root.active-view == 0 : Rectangle {
-                x: 41px; y: 4px; width: 3px; height: 40px;
-                background: #58a6ff;
-            }
-
-            TouchArea {
-                x: 0px; y: 0px; width: parent.width; height: parent.height;
-                clicked => { root.active-view = 0; }
-            }
-        }
-
-        // ------------------------------------------------------------
-        // 9-axis accelerometer / IMU
-        // ------------------------------------------------------------
-        Rectangle {
-            x: 0px;
-            y: 48px;
-            width: 44px;
-            height: 48px;
-            background: root.active-view == 1 ? #21262d : #161b22;
-
-            // Three-axis icon.
-            Rectangle {
-                x: 11px; y: 23px; width: 22px; height: 2px;
-                background: root.active-view == 1 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 21px; y: 13px; width: 2px; height: 22px;
-                background: root.active-view == 1 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 13px; y: 31px; width: 5px; height: 5px; border-radius: 3px;
-                background: root.active-view == 1 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 29px; y: 12px; width: 5px; height: 5px; border-radius: 3px;
-                background: root.active-view == 1 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 19px; y: 21px; width: 6px; height: 6px; border-radius: 3px;
-                background: root.active-view == 1 ? #58a6ff : #8b949e;
-            }
-
-            if root.active-view == 1 : Rectangle {
-                x: 41px; y: 4px; width: 3px; height: 40px;
-                background: #58a6ff;
-            }
-
-            TouchArea {
-                x: 0px; y: 0px; width: parent.width; height: parent.height;
-                clicked => { root.active-view = 1; }
-            }
-        }
-
-        // ------------------------------------------------------------
-        // Microphone input
-        // ------------------------------------------------------------
-        Rectangle {
-            x: 0px;
-            y: 96px;
-            width: 44px;
-            height: 48px;
-            background: root.active-view == 2 ? #21262d : #161b22;
-
-            // Microphone capsule and stand.
-            Rectangle {
-                x: 17px; y: 9px; width: 10px; height: 20px; border-radius: 5px;
-                background: root.active-view == 2 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 13px; y: 23px; width: 2px; height: 7px;
-                background: root.active-view == 2 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 29px; y: 23px; width: 2px; height: 7px;
-                background: root.active-view == 2 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 14px; y: 29px; width: 16px; height: 2px;
-                background: root.active-view == 2 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 21px; y: 30px; width: 2px; height: 6px;
-                background: root.active-view == 2 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 17px; y: 35px; width: 10px; height: 2px;
-                background: root.active-view == 2 ? #ffffff : #8b949e;
-            }
-
-            if root.active-view == 2 : Rectangle {
-                x: 41px; y: 4px; width: 3px; height: 40px;
-                background: #58a6ff;
-            }
-
-            TouchArea {
-                x: 0px; y: 0px; width: parent.width; height: parent.height;
-                clicked => { root.active-view = 2; }
-            }
-        }
-
-        // ------------------------------------------------------------
-        // Sound output
-        // ------------------------------------------------------------
-        Rectangle {
-            x: 0px;
-            y: 144px;
-            width: 44px;
-            height: 48px;
-            background: root.active-view == 3 ? #21262d : #161b22;
-
-            // Speaker / level icon.
-            Rectangle {
-                x: 10px; y: 20px; width: 7px; height: 9px;
-                background: root.active-view == 3 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 17px; y: 16px; width: 5px; height: 17px;
-                background: root.active-view == 3 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 27px; y: 21px; width: 2px; height: 7px;
-                background: root.active-view == 3 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 32px; y: 17px; width: 2px; height: 15px;
-                background: root.active-view == 3 ? #ffffff : #8b949e;
-            }
-
-            if root.active-view == 3 : Rectangle {
-                x: 41px; y: 4px; width: 3px; height: 40px;
-                background: #58a6ff;
-            }
-
-            TouchArea {
-                x: 0px; y: 0px; width: parent.width; height: parent.height;
-                clicked => { root.active-view = 3; }
-            }
-        }
-
-        // ------------------------------------------------------------
-        // Log View
-        // ------------------------------------------------------------
-        Rectangle {
-            x: 0px;
-            y: 192px;
-            width: 44px;
-            height: 48px;
-            background: root.active-view == 4 ? #21262d : #161b22;
-
-            // Log/list icon.
-            Rectangle {
-                x: 10px; y: 14px; width: 4px; height: 4px; border-radius: 2px;
-                background: root.active-view == 4 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 17px; y: 15px; width: 17px; height: 2px;
-                background: root.active-view == 4 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 10px; y: 22px; width: 4px; height: 4px; border-radius: 2px;
-                background: root.active-view == 4 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 17px; y: 23px; width: 17px; height: 2px;
-                background: root.active-view == 4 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 10px; y: 30px; width: 4px; height: 4px; border-radius: 2px;
-                background: root.active-view == 4 ? #ffffff : #8b949e;
-            }
-            Rectangle {
-                x: 17px; y: 31px; width: 17px; height: 2px;
-                background: root.active-view == 4 ? #ffffff : #8b949e;
-            }
-
-            if root.active-view == 4 : Rectangle {
-                x: 41px; y: 4px; width: 3px; height: 40px;
-                background: #58a6ff;
-            }
-
-            TouchArea {
-                x: 0px; y: 0px; width: parent.width; height: parent.height;
-                clicked => { root.active-view = 4; }
-            }
+        view-selected(view) => {
+            root.active-view = view;
         }
     }
 }

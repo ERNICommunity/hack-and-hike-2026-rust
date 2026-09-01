@@ -1,0 +1,27 @@
+import { Theme } from "./theme.slint";
+
+export component NavigationButton inherits Rectangle {
+    in property <int> view-index;
+    in property <int> active-view;
+    callback selected(int);
+
+    width: 44px;
+    height: 48px;
+    background: root.active-view == root.view-index
+        ? Theme.light-blue
+        : Theme.dark-blue;
+
+    out property <color> icon-color: root.active-view == root.view-index
+        ? Theme.white
+        : Theme.dark-gray;
+
+    @children
+
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            root.selected(root.view-index);
+        }
+    }
+}
