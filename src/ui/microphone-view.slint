@@ -1,59 +1,53 @@
-import { Theme } from "./theme.slint";
+import { Theme } from "generated-theme.slint";
 
 component WaveformPlot inherits Rectangle {
-    in property <[float]> samples: [];
     in property <string> channel-name: "";
 
-    background: Theme.white;
+    background: Theme.black;
+    border-color: Theme.dark-gray;
+    border-width: 1px;
     clip: true;
 
     Text {
         x: 6px;
         y: 4px;
         text: root.channel-name;
-        color: Theme.black;
+        color: Theme.light-gray;
         font-size: 9px;
     }
 
-    // Zero-amplitude reference line.
+    // Direct-render canvas. Rust's waveform.rs geometry must match this:
+    // x = content(44) + layout padding(4) + 6 = 54
+    // width = 256
+    // y = plot top + 18
+    //
+    // Slint owns only the stable black canvas/chrome. Screen draws the grid
+    // and realtime trace directly into these LCD pixels.
     Rectangle {
         x: 6px;
-        y: parent.height / 2;
-        width: parent.width - 12px;
-        height: 1px;
-        background: Theme.light-gray;
-    }
-
-    // One Slint item per waveform point. The previous layout used an outer
-    // transparent Rectangle plus an inner point Rectangle for every sample,
-    // doubling the repeated item tree.
-    for sample[index] in root.samples: Rectangle {
-        x: 6px + index * 2px;
-        y: (parent.height / 2) - sample * (parent.height / 2 - 3px);
-        width: 2px;
-        height: 2px;
-        background: Theme.dark-blue;
+        y: 18px;
+        width: 256px;
+        height: 90px;
+        background: Theme.white;
     }
 }
 
 export component MicrophoneView inherits Rectangle {
-    in property <[float]> left-samples: [];
-    in property <[float]> right-samples: [];
-
     background: Theme.white;
     clip: true;
 
     VerticalLayout {
+        padding: 4px;
+        spacing: 4px;
+
         WaveformPlot {
-            height: 120px;
+            height: 114px;
             channel-name: "MIC L";
-            samples: root.left-samples;
         }
 
         WaveformPlot {
-            height: 120px;
+            height: 114px;
             channel-name: "MIC R";
-            samples: root.right-samples;
         }
     }
 }

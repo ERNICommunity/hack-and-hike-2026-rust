@@ -14,6 +14,8 @@ mod screen;
 mod system_i2c;
 mod touch;
 mod ui;
+mod waveform;
+mod theme;
 
 extern crate alloc;
 
@@ -145,7 +147,17 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     loop {
         ui.update(Instant::now());
-        screen.render_slint_window(ui.window());
+
+        // Slint renders only normal UI chrome/widgets. If it repainted while
+        // the microphone page is active, the direct waveform overlay must be
+        // restored afterwards because the LCD itself is our retained buffer.
+        let slint_redrawn = screen.render_slint_window(ui.window());
+        ui.note_slint_redraw(slint_redrawn);
+
+        if let Some(frame) = ui.take_waveform_frame() {
+            screen.render_waveform(&frame);
+        }
+
         Timer::after(UI_IDLE_DELAY).await;
     }
 }

@@ -16,6 +16,8 @@ use esp_hal::{
 };
 use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
 
+use crate::{theme, waveform};
+
 const AXP2101_ADDR: u8 = 0x34;
 const AW9523_ADDR: u8 = 0x58;
 
@@ -432,22 +434,93 @@ impl LineBufferProvider for DisplayWrapper<'_> {
     }
 }
 
+const WAVEFORM_BACKGROUND: Rgb565Pixel =
+    Rgb565Pixel(theme::WHITE_RGB565);
+const WAVEFORM_GRID: Rgb565Pixel = Rgb565Pixel(theme::LIGHT_GRAY_RGB565);
+const WAVEFORM_TRACE: Rgb565Pixel = Rgb565Pixel(theme::DARK_BLUE_RGB565);
+
+fn render_waveform_channel(
+    pipeline: &mut DisplayPipeline,
+    line_buffer: &mut [Rgb565Pixel; SCREEN_WIDTH],
+    top: usize,
+    samples: &[i8; waveform::POINTS],
+) {
+    let x_start = waveform::CANVAS_X;
+    let x_end = x_start + waveform::CANVAS_WIDTH;
+
+    for local_y in 0..waveform::CANVAS_HEIGHT {
+        let pixels = &mut line_buffer[x_start..x_end];
+        pixels.fill(WAVEFORM_BACKGROUND);
+
+        if local_y as i32 == waveform::CENTER_Y {
+            pixels.fill(WAVEFORM_GRID);
+        }
+
+        // Render a continuous 2-pixel-wide trace. The source remains only
+        // 128 i8 values; interpolation happens directly into the line scratch.
+        for point in 0..waveform::POINTS {
+            let current_y = waveform::CENTER_Y - i32::from(samples[point]);
+            let previous_y = if point == 0 {
+                current_y
+            } else {
+                waveform::CENTER_Y - i32::from(samples[point - 1])
+            };
+
+            let low = current_y.min(previous_y);
+            let high = current_y.max(previous_y);
+
+            if (local_y as i32) >= low && (local_y as i32) <= high {
+                let x = point * 2;
+                pixels[x] = WAVEFORM_TRACE;
+                pixels[x + 1] = WAVEFORM_TRACE;
+            }
+        }
+
+        pipeline.queue_line(top + local_y, x_start..x_end, pixels);
+    }
+}
+
 impl Screen {
     /// CPU0-only Slint rendering with double-buffered SPI DMA.
     ///
-    /// For every dirty scanline, Slint renders/converts the next line while the
-    /// previous line is in flight on DMA_CH1. Only the final line of a redraw
-    /// is explicitly waited for before returning.
-    pub fn render_slint_window(&mut self, window: &MinimalSoftwareWindow) {
+    /// Returns true when Slint actually repainted anything. Direct overlays use
+    /// this to know when they must be restored after the normal UI renderer.
+    pub fn render_slint_window(&mut self, window: &MinimalSoftwareWindow) -> bool {
         let pipeline = &mut self.pipeline;
         let line_buffer = &mut self.line_buffer;
 
-        window.draw_if_needed(|renderer| {
+        let redrawn = window.draw_if_needed(|renderer| {
             renderer.render_by_line(DisplayWrapper {
                 pipeline,
                 line_buffer,
             });
         });
+
+        self.pipeline.finish();
+        redrawn
+    }
+
+    /// Draw both microphone waveforms directly into the LCD retained buffer.
+    ///
+    /// This bypasses Slint's item tree entirely: no model rows, no repeated
+    /// Rectangle objects, and no per-frame heap activity. The existing scanline
+    /// DMA pipeline is reused, so CPU conversion overlaps SPI transmission.
+    pub fn render_waveform(&mut self, frame: &waveform::WaveformFrame) {
+        let pipeline = &mut self.pipeline;
+        let line_buffer = &mut self.line_buffer;
+
+        render_waveform_channel(
+            pipeline,
+            line_buffer,
+            waveform::LEFT_CANVAS_Y,
+            &frame.left,
+        );
+        render_waveform_channel(
+            pipeline,
+            line_buffer,
+            waveform::RIGHT_CANVAS_Y,
+            &frame.right,
+        );
 
         self.pipeline.finish();
     }

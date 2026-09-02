@@ -5,19 +5,18 @@ use slint::Model;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 
-use crate::{audio, logger, touch};
+use crate::{
+    audio, logger, touch,
+    waveform::{AMPLITUDE_PIXELS, POINTS, WaveformFrame},
+};
 
 const SCREEN_WIDTH: u32 = 320;
 const SCREEN_HEIGHT: u32 = 240;
 const VIEW_MICROPHONE: i32 = 2;
 const VIEW_LOG: i32 = 4;
 
-const WAVEFORM_POINTS: usize = 128;
 const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
-// WaveformPlot is 114 px high: half-height 57 minus the 3 px margin.
-const WAVEFORM_AMPLITUDE_PIXELS: i32 = 54;
-
 const LOG_REFRESH: Duration = Duration::from_millis(100);
 
 slint::include_modules!();
@@ -51,35 +50,32 @@ impl TouchState {
     }
 }
 
+/// Fixed-size microphone visualization state.
+///
+/// No Slint model is involved anymore. CPU0 converts the latest 512-frame
+/// stereo audio block into two 128-point integer traces and hands a copy to
+/// `Screen` only when the direct LCD overlay actually needs repainting.
 struct WaveformState {
-    left_model: Rc<slint::VecModel<f32>>,
-    right_model: Rc<slint::VecModel<f32>>,
-    left_pixels: [i8; WAVEFORM_POINTS],
-    right_pixels: [i8; WAVEFORM_POINTS],
+    frame: WaveformFrame,
     samples: [i16; audio::BLOCK_SAMPLES],
     last_sequence: u32,
     last_update: Instant,
+    dirty: bool,
 }
 
 impl WaveformState {
-    fn new(app: &AppWindow) -> Self {
-        // Allocate the final vector sizes in one shot instead of repeatedly
-        // growing VecModel storage with 128 push() operations per channel.
-        let left_model = Rc::new(slint::VecModel::from(alloc::vec![0.0; WAVEFORM_POINTS]));
-        let right_model = Rc::new(slint::VecModel::from(alloc::vec![0.0; WAVEFORM_POINTS]));
-
-        app.set_mic_left_samples(left_model.clone().into());
-        app.set_mic_right_samples(right_model.clone().into());
-
+    fn new() -> Self {
         Self {
-            left_model,
-            right_model,
-            left_pixels: [0; WAVEFORM_POINTS],
-            right_pixels: [0; WAVEFORM_POINTS],
+            frame: WaveformFrame::silent(),
             samples: [0; audio::BLOCK_SAMPLES],
             last_sequence: 0,
             last_update: Instant::now(),
+            dirty: true,
         }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     fn update_if_due(&mut self, now: Instant) {
@@ -96,16 +92,19 @@ impl WaveformState {
         }
         self.last_sequence = info.sequence;
 
-        self.update_models(info);
+        if self.update_frame(info) {
+            self.dirty = true;
+        }
     }
 
-    fn update_models(&mut self, info: audio::AudioBlockInfo) {
-        const FRAMES_PER_POINT: usize = audio::BLOCK_FRAMES / WAVEFORM_POINTS;
+    fn update_frame(&mut self, info: audio::AudioBlockInfo) -> bool {
+        const FRAMES_PER_POINT: usize = audio::BLOCK_FRAMES / POINTS;
 
         let left_scale = i32::from(info.peak_left.max(WAVEFORM_PEAK_FLOOR));
         let right_scale = i32::from(info.peak_right.max(WAVEFORM_PEAK_FLOOR));
+        let mut changed = false;
 
-        for point in 0..WAVEFORM_POINTS {
+        for point in 0..POINTS {
             let first_frame = point * FRAMES_PER_POINT;
             let last_frame = first_frame + FRAMES_PER_POINT;
 
@@ -135,30 +134,33 @@ impl WaveformState {
             let left_pixel = quantize_waveform(left_sample, left_scale);
             let right_pixel = quantize_waveform(right_sample, right_scale);
 
-            // Slint only needs a model notification if the plotted y pixel
-            // actually changed. This suppresses sub-pixel/noise churn.
-            if left_pixel != self.left_pixels[point] {
-                self.left_pixels[point] = left_pixel;
-                self.left_model.set_row_data(
-                    point,
-                    left_pixel as f32 / WAVEFORM_AMPLITUDE_PIXELS as f32,
-                );
+            if left_pixel != self.frame.left[point] {
+                self.frame.left[point] = left_pixel;
+                changed = true;
             }
 
-            if right_pixel != self.right_pixels[point] {
-                self.right_pixels[point] = right_pixel;
-                self.right_model.set_row_data(
-                    point,
-                    right_pixel as f32 / WAVEFORM_AMPLITUDE_PIXELS as f32,
-                );
+            if right_pixel != self.frame.right[point] {
+                self.frame.right[point] = right_pixel;
+                changed = true;
             }
         }
+
+        changed
+    }
+
+    fn take_frame(&mut self) -> Option<WaveformFrame> {
+        if !self.dirty {
+            return None;
+        }
+
+        self.dirty = false;
+        Some(self.frame)
     }
 }
 
 fn quantize_waveform(sample: i16, scale: i32) -> i8 {
-    ((i32::from(sample) * WAVEFORM_AMPLITUDE_PIXELS) / scale)
-        .clamp(-WAVEFORM_AMPLITUDE_PIXELS, WAVEFORM_AMPLITUDE_PIXELS) as i8
+    ((i32::from(sample) * AMPLITUDE_PIXELS) / scale)
+        .clamp(-AMPLITUDE_PIXELS, AMPLITUDE_PIXELS) as i8
 }
 
 struct LogState {
@@ -202,8 +204,8 @@ impl LogState {
 }
 
 /// Incrementally reconcile the persistent Slint model with an oldest-to-newest
-/// logger snapshot. Normal append and ring-buffer eviction only touch changed
-/// rows; no complete model/string rebuild is needed.
+/// logger snapshot. The visual side is a ListView, so only visible delegates
+/// exist even if the model contains many rows.
 fn sync_log_model(model: &slint::VecModel<slint::SharedString>, logs: &str) {
     let old_count = model.row_count();
     let new_count = logs.lines().count();
@@ -299,6 +301,7 @@ pub struct Ui {
     touch: TouchState,
     waveform: WaveformState,
     logs: LogState,
+    active_view: i32,
 }
 
 impl Ui {
@@ -314,30 +317,58 @@ impl Ui {
         let app = AppWindow::new().expect("Failed to construct Slint AppWindow");
         app.show().expect("Failed to show Slint AppWindow");
 
-        let waveform = WaveformState::new(&app);
         let logs = LogState::new(&app);
+        let active_view = app.get_active_view();
 
         Self {
             window,
             app,
             touch: TouchState::new(),
-            waveform,
+            waveform: WaveformState::new(),
             logs,
+            active_view,
         }
     }
 
     /// Prepare one UI frame: consume input, refresh only the active view's
-    /// dynamic model, then advance Slint timers/animations.
+    /// dynamic state, then advance Slint timers/animations.
     pub fn update(&mut self, now: Instant) {
         dispatch_touch_input(&self.window, &mut self.touch);
 
-        match self.app.get_active_view() {
+        let active_view = self.app.get_active_view();
+        if active_view != self.active_view {
+            self.active_view = active_view;
+
+            if active_view == VIEW_MICROPHONE {
+                // Slint is about to paint the microphone page chrome over the
+                // LCD region, so restore the direct waveform afterwards.
+                self.waveform.mark_dirty();
+            }
+        }
+
+        match active_view {
             VIEW_MICROPHONE => self.waveform.update_if_due(now),
             VIEW_LOG => self.logs.update_if_due(now),
             _ => {}
         }
 
         slint::platform::update_timers_and_animations();
+    }
+
+    /// If Slint repainted while the microphone page is visible, its retained
+    /// LCD pixels may have covered the direct overlay. Mark it for restoration.
+    pub fn note_slint_redraw(&mut self, redrawn: bool) {
+        if redrawn && self.active_view == VIEW_MICROPHONE {
+            self.waveform.mark_dirty();
+        }
+    }
+
+    pub fn take_waveform_frame(&mut self) -> Option<WaveformFrame> {
+        if self.active_view != VIEW_MICROPHONE {
+            return None;
+        }
+
+        self.waveform.take_frame()
     }
 
     pub fn window(&self) -> &MinimalSoftwareWindow {

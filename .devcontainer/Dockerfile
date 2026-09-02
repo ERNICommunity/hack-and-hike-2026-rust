@@ -25,10 +25,8 @@ RUN cargo binstall -y --secure \
 # Install nightly for Rust-Analyzer
 RUN rustup toolchain install nightly --component rustfmt
 
-# Install ESP target toolchain
-RUN espup install -v 1.96.0.0
-# RUN espup install
-# RUN espup update -v 1.96.0.0
+# Install ESP target toolchain without regression bugs
+espup install -v 1.93.0.0 -t esp32s3
 
 # Add espup environment variables to shell profile
 RUN echo 'source $HOME/export-esp.sh' >> /home/$USER_NAME/.bashrc && \

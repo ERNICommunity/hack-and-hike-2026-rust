@@ -1,4 +1,4 @@
-import { Theme } from "./theme.slint";
+import { Theme } from "generated-theme.slint";
 import { LogView } from "./log-view.slint";
 import { NavigationRail } from "./navigation-rail.slint";
 import { MicrophoneView } from "./microphone-view.slint";
@@ -8,8 +8,6 @@ export component AppWindow inherits Window {
     height: 240px;
 
     in property <[string]> log-lines: [];
-    in property <[float]> mic-left-samples: [];
-    in property <[float]> mic-right-samples: [];
 
     // 0 = Network, 1 = IMU, 2 = Microphone, 3 = Sound, 4 = Log
     in-out property <int> active-view: 4;
@@ -21,22 +19,20 @@ export component AppWindow inherits Window {
         background: Theme.white;
         clip: true;
 
-        // Keep the expensive repeated microphone item tree instantiated. Page
-        // switches only toggle its visibility, avoiding heap churn on every
-        // return to the realtime waveform.
+        // Page shells stay allocated and are intentionally small. The realtime
+        // microphone trace itself is drawn directly by Screen, outside Slint.
         MicrophoneView {
             width: parent.width;
             height: parent.height;
             visible: root.active-view == 2;
-            left-samples: root.mic-left-samples;
-            right-samples: root.mic-right-samples;
         }
 
-        // Log text items are much cheaper and remain lazy, so they don't occupy
-        // renderer/item memory while realtime views are active.
-        if root.active-view == 4: LogView {
+        // ListView virtualizes the row delegates, so retaining this page does
+        // not retain one visual item tree per log entry.
+        LogView {
             width: parent.width;
             height: parent.height;
+            visible: root.active-view == 4;
             log-lines: root.log-lines;
         }
     }

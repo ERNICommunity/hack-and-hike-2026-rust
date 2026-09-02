@@ -1,0 +1,12 @@
+# Single source of truth for firmware/UI colors.
+# build.rs generates:
+#   - OUT_DIR/generated-theme.slint
+#   - OUT_DIR/theme_generated.rs
+
+[colors]
+dark-blue = "#033778"
+light-blue = "#00AADB"
+dark-gray = "#515455"
+light-gray = "#B1B0B1"
+white = "#FFFFFF"
+black = "#3C3C3B"
