@@ -20,6 +20,7 @@ const AXP2101_ADDR: u8 = 0x34;
 const AW9523_ADDR: u8 = 0x58;
 
 const SCREEN_WIDTH: usize = 320;
+const DISPLAY_SPI_MHZ: u32 = 40;
 const PIXEL_DMA_BYTES: usize = SCREEN_WIDTH * 2;
 const CONTROL_DMA_BYTES: usize = 256;
 
@@ -344,6 +345,9 @@ impl DisplayPipeline {
 /// Screen remains CPU0-only and mutex-free.
 pub struct Screen {
     pipeline: DisplayPipeline,
+    // Persistent CPU render scratch avoids re-zeroing/re-creating a 640-byte
+    // scanline array on every draw_if_needed() call.
+    line_buffer: [Rgb565Pixel; SCREEN_WIDTH],
 }
 
 pub fn init(
@@ -360,7 +364,7 @@ pub fn init(
 
     let spi = Spi::new(
         spi2,
-        SpiConfig::default().with_frequency(Rate::from_mhz(40)),
+        SpiConfig::default().with_frequency(Rate::from_mhz(DISPLAY_SPI_MHZ)),
     )
     .unwrap()
     .with_sck(gpio36)
@@ -402,6 +406,7 @@ pub fn init(
 
     Screen {
         pipeline: DisplayPipeline::new(spi, control_rx, control_tx, first, second, cs, dc),
+        line_buffer: [Rgb565Pixel(0); SCREEN_WIDTH],
     }
 }
 
@@ -419,9 +424,11 @@ impl LineBufferProvider for DisplayWrapper<'_> {
         range: Range<usize>,
         render_fn: impl FnOnce(&mut [Self::TargetPixel]),
     ) {
-        render_fn(&mut self.line_buffer[range.clone()]);
+        let start = range.start;
+        let end = range.end;
+        render_fn(&mut self.line_buffer[start..end]);
         self.pipeline
-            .queue_line(line, range.clone(), &self.line_buffer[range]);
+            .queue_line(line, range, &self.line_buffer[start..end]);
     }
 }
 
@@ -432,12 +439,13 @@ impl Screen {
     /// previous line is in flight on DMA_CH1. Only the final line of a redraw
     /// is explicitly waited for before returning.
     pub fn render_slint_window(&mut self, window: &MinimalSoftwareWindow) {
-        let mut line_buffer = [Rgb565Pixel(0); SCREEN_WIDTH];
+        let pipeline = &mut self.pipeline;
+        let line_buffer = &mut self.line_buffer;
 
         window.draw_if_needed(|renderer| {
             renderer.render_by_line(DisplayWrapper {
-                pipeline: &mut self.pipeline,
-                line_buffer: &mut line_buffer,
+                pipeline,
+                line_buffer,
             });
         });
 

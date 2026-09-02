@@ -1,20 +1,19 @@
-use core::cell::RefCell;
-
-use critical_section::Mutex;
-use static_cell::ConstStaticCell;
-
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use esp_hal::{
     delay::Delay,
     i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s},
     peripherals::{DMA_CH0, GPIO0, GPIO14, GPIO33, GPIO34, I2S0},
     time::Rate,
 };
+use static_cell::ConstStaticCell;
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const BLOCK_FRAMES: usize = 512;
 pub const CHANNELS: usize = 2;
 pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 
+// Keep the generous ring that already proved stable with radio + dual-core
+// scheduling. Both the DMA ring and its drain scratch live outside the heap.
 const DMA_BUFFER_BYTES: usize = 32 * 1024;
 
 static DMA_DRAIN: ConstStaticCell<[u8; DMA_BUFFER_BYTES]> =
@@ -49,7 +48,10 @@ impl LatestAudio {
     }
 }
 
-static LATEST_AUDIO: Mutex<RefCell<LatestAudio>> = Mutex::new(RefCell::new(LatestAudio::new()));
+// Unlike critical_section::Mutex, Embassy's async mutex only uses the raw
+// critical-section mutex briefly to update lock state. The 2 KiB PCM copies do
+// not run with interrupts / the other core excluded.
+static LATEST_AUDIO: Mutex<CriticalSectionRawMutex, LatestAudio> = Mutex::new(LatestAudio::new());
 
 fn update_register_bits<I2C>(
     i2c: &mut I2C,
@@ -67,9 +69,7 @@ where
     i2c.write(address, &[register, next])
 }
 
-/// Powers the microphone path and configures the ES7210 for the two onboard
-/// microphones. The register sequence follows the CoreS3 setup used by
-/// M5Unified: MIC1/MIC2 enabled, MIC3/MIC4 powered down, stereo I2S output.
+/// Power the microphone path and configure ES7210 MIC1/MIC2 for stereo I2S.
 pub fn init_es7210<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
@@ -78,14 +78,11 @@ where
     i2c.write(AXP2101_ADDR, &[0x93, 0x1C])?;
     update_register_bits(i2c, AXP2101_ADDR, 0x90, 1 << 1, 1 << 1)?;
 
-    // CoreS3(-Lite) routes AW9523 P0_2 to the AW88298 amplifier reset.
-    // Keep the amplifier released during board audio bring-up. AW9523 direction:
-    // 0 = output, 1 = input.
+    // Keep the onboard amplifier released during board audio bring-up.
     update_register_bits(i2c, AW9523_ADDR, 0x04, 1 << 2, 0)?;
     update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 2, 1 << 2)?;
     delay.delay_millis(10u32);
 
-    // Reset before programming the codec.
     i2c.write(ES7210_ADDR, &[0x00, 0xFF])?;
 
     const ES7210_INIT: &[(u8, u8)] = &[
@@ -127,37 +124,26 @@ where
     Ok(())
 }
 
-fn publish(samples: &[i16; BLOCK_SAMPLES], peak_left: u16, peak_right: u16) -> u32 {
-    critical_section::with(|cs| {
-        let mut latest = LATEST_AUDIO.borrow(cs).borrow_mut();
-        latest.samples.copy_from_slice(samples);
-        latest.info.sequence = latest.info.sequence.wrapping_add(1);
-        latest.info.peak_left = peak_left;
-        latest.info.peak_right = peak_right;
-        latest.info.sequence
-    })
+async fn publish(samples: &[i16; BLOCK_SAMPLES], peak_left: u16, peak_right: u16) -> u32 {
+    let mut latest = LATEST_AUDIO.lock().await;
+    latest.samples.copy_from_slice(samples);
+    latest.info.sequence = latest.info.sequence.wrapping_add(1);
+    latest.info.peak_left = peak_left;
+    latest.info.peak_right = peak_right;
+    latest.info.sequence
 }
 
-/// Copies the newest complete 512-frame stereo block into `out`.
-///
-/// This is the hand-off point intended for the later waveform renderer. It
-/// copies under a short critical section so the consumer never observes a
-/// half-published audio block. Returns `None` until the first DMA block arrives
-/// or when `out` is too small.
-pub fn copy_latest_interleaved(out: &mut [i16]) -> Option<AudioBlockInfo> {
-    if out.len() < BLOCK_SAMPLES {
+/// Copy the newest complete stereo block without waiting. If CPU1 is in the
+/// middle of publishing, CPU0 simply skips this presentation tick and will pick
+/// up a newer block next time.
+pub fn copy_latest_interleaved(out: &mut [i16; BLOCK_SAMPLES]) -> Option<AudioBlockInfo> {
+    let latest = LATEST_AUDIO.try_lock().ok()?;
+    if latest.info.sequence == 0 {
         return None;
     }
 
-    critical_section::with(|cs| {
-        let latest = LATEST_AUDIO.borrow(cs).borrow();
-        if latest.info.sequence == 0 {
-            return None;
-        }
-
-        out[..BLOCK_SAMPLES].copy_from_slice(&latest.samples);
-        Some(latest.info)
-    })
+    out.copy_from_slice(&latest.samples);
+    Some(latest.info)
 }
 
 #[embassy_executor::task]
@@ -200,10 +186,8 @@ pub async fn capture_task(
         BLOCK_FRAMES
     );
 
-    // `I2sReadDmaTransferAsync::pop()` in esp-hal 1.1.x requires the
-    // destination to be large enough for all bytes currently available. Keep
-    // the permanent 32 KiB drain scratch buffer in static zero-initialized RAM
-    // rather than consuming/fragmenting the general-purpose heap.
+    // pop() requires enough destination space for every byte currently
+    // available in the circular ring, hence a drain buffer the size of the ring.
     let dma_drain = DMA_DRAIN.take();
 
     let mut samples = [0i16; BLOCK_SAMPLES];
@@ -218,20 +202,19 @@ pub async fn capture_task(
             .await
             .expect("I2S circular DMA read failed");
 
-        // The configured stereo 16-bit I2S stream is four bytes per frame and
-        // esp-hal's I2S DMA buffers/descriptors are 4-byte aligned.
         for frame_bytes in dma_drain[..count].chunks_exact(4) {
             let left = i16::from_le_bytes([frame_bytes[0], frame_bytes[1]]);
             let right = i16::from_le_bytes([frame_bytes[2], frame_bytes[3]]);
+            let sample_index = frame_index * CHANNELS;
 
-            samples[frame_index * 2] = left;
-            samples[frame_index * 2 + 1] = right;
+            samples[sample_index] = left;
+            samples[sample_index + 1] = right;
             peak_left = peak_left.max(left.unsigned_abs());
             peak_right = peak_right.max(right.unsigned_abs());
             frame_index += 1;
 
             if frame_index == BLOCK_FRAMES {
-                let sequence = publish(&samples, peak_left, peak_right);
+                let sequence = publish(&samples, peak_left, peak_right).await;
 
                 if first_block {
                     first_block = false;
@@ -243,7 +226,6 @@ pub async fn capture_task(
                     );
                 }
 
-                // Start assembling the next 512-frame visualization block.
                 frame_index = 0;
                 peak_left = 0;
                 peak_right = 0;

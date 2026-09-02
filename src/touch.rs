@@ -8,19 +8,17 @@ use embassy_time::{Duration, Timer};
 use crate::system_i2c::SystemI2cBus;
 
 const FT6336_ADDR: u8 = 0x38;
+const FT6336_TOUCH_DATA: u8 = 0x02;
 const SCREEN_WIDTH: u16 = 320;
 const SCREEN_HEIGHT: u16 = 240;
-const POLL_INTERVAL_MS: u64 = 5;
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-// Only edge events are queued. Motion is a latest-value signal below, so a
-// blocked UI never creates an unbounded/stale queue of pointer movements.
+// Queue only transitions; movement is latest-value state so a busy UI never
+// accumulates stale pointer motion.
 static TOUCH_EDGES: Channel<CriticalSectionRawMutex, TouchEdge, 8> = Channel::new();
-
-// Movement is overwrite-with-latest state. CPU1 never waits for CPU0 to
-// consume an older position.
 static LATEST_POINT: Signal<CriticalSectionRawMutex, TouchPoint> = Signal::new();
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TouchPoint {
     pub x: u16,
     pub y: u16,
@@ -39,19 +37,10 @@ enum TouchSample {
     ReadError,
 }
 
-fn publish_latest_point(point: TouchPoint) {
-    LATEST_POINT.signal(point);
-}
-
-/// Returns the newest movement sample since the previous call, if any.
-///
-/// There is intentionally no queue for move events: CPU0 only needs the most
-/// recent finger position after it becomes available again.
 pub fn take_latest_point() -> Option<TouchPoint> {
     LATEST_POINT.try_take()
 }
 
-/// Nonblocking CPU0-side edge receive.
 pub fn try_take_edge() -> Option<TouchEdge> {
     TOUCH_EDGES.try_receive().ok()
 }
@@ -61,32 +50,30 @@ async fn read_sample(bus: SystemI2cBus) -> TouchSample {
 
     let result = {
         let mut i2c = bus.lock().await;
-        i2c.write_read(FT6336_ADDR, &[0x02], &mut data)
+        i2c.write_read(FT6336_ADDR, &[FT6336_TOUCH_DATA], &mut data)
     };
 
     if result.is_err() {
         return TouchSample::ReadError;
     }
 
-    let touch_count = data[0] & 0x0F;
-    if touch_count == 0 {
+    if data[0] & 0x0F == 0 {
         return TouchSample::Up;
     }
 
-    let x = (((data[1] & 0x0F) as u16) << 8) | data[2] as u16;
-    let y = (((data[3] & 0x0F) as u16) << 8) | data[4] as u16;
+    let x = (u16::from(data[1] & 0x0F) << 8) | u16::from(data[2]);
+    let y = (u16::from(data[3] & 0x0F) << 8) | u16::from(data[4]);
+    let point = TouchPoint { x, y };
 
     if x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT {
-        return TouchSample::ReadError;
+        TouchSample::ReadError
+    } else {
+        TouchSample::Down(point)
     }
-
-    TouchSample::Down(TouchPoint { x, y })
 }
 
-/// CPU1 touch acquisition task.
-///
-/// This task never sees a Slint type and never waits for the UI. Press/release
-/// edges are sent with try_send(), while move samples overwrite LATEST_POINT.
+/// CPU1 touch acquisition. This task never touches Slint and never waits for
+/// CPU0 to consume movement samples.
 #[embassy_executor::task]
 pub async fn capture_task(bus: SystemI2cBus) {
     let mut pressed = false;
@@ -103,17 +90,16 @@ pub async fn capture_task(bus: SystemI2cBus) {
             TouchSample::Down(point) if !pressed => {
                 pressed = true;
                 last_point = point;
-                publish_latest_point(point);
+                LATEST_POINT.signal(point);
                 let _ = TOUCH_EDGES.try_send(TouchEdge::Pressed(point));
             }
-            TouchSample::Down(point) => {
-                if point.x != last_point.x || point.y != last_point.y {
-                    last_point = point;
-                    publish_latest_point(point);
-                }
+            TouchSample::Down(point) if point != last_point => {
+                last_point = point;
+                LATEST_POINT.signal(point);
             }
+            TouchSample::Down(_) => {}
         }
 
-        Timer::after(Duration::from_millis(POLL_INTERVAL_MS)).await;
+        Timer::after(POLL_INTERVAL).await;
     }
 }
