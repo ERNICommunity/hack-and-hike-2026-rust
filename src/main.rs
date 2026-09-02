@@ -54,10 +54,8 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    // Initialize/map PSRAM before configuring SPI2/LCD. ESP32-S3 PSRAM auto
-    // detection may briefly probe Octal mode, whose pins overlap the CoreS3
-    // LCD GPIOs. Configuring the display afterwards guarantees its GPIO matrix
-    // setup is the final one.
+    // Initialize/map Quad-SPI PSRAM before configuring SPI2/LCD so display
+    // GPIO/SPI setup is the final peripheral configuration on those pins.
     memory::enable_psram(peripherals.PSRAM);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -68,29 +66,27 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     let mut delay = esp_hal::delay::Delay::new();
-    let system_bus = system_i2c::init(peripherals.I2C0, peripherals.GPIO12, peripherals.GPIO11);
 
-    // One-time board/display/audio initialization shares the same physical I2C
-    // mutex later used by CPU1 touch acquisition. Screen retains only SPI2 + DMA1.
-    let mut screen = {
-        let mut i2c = system_bus.lock().await;
+    // Build I2C0 in blocking mode on CPU0 for one-time board initialization.
+    // No runtime I2C task exists yet, so no mutex is needed during this phase.
+    // The still-blocking driver is moved to CPU1 below and converted to async
+    // there so ESP-HAL installs its async interrupt handler on the correct core.
+    let mut system_i2c =
+        system_i2c::init(peripherals.I2C0, peripherals.GPIO12, peripherals.GPIO11);
 
-        let screen = screen::init(
-            &mut *i2c,
-            peripherals.SPI2,
-            peripherals.DMA_CH1,
-            peripherals.GPIO36,
-            peripherals.GPIO37,
-            peripherals.GPIO35,
-            peripherals.GPIO3,
-            &mut delay,
-        );
+    let mut screen = screen::init(
+        &mut system_i2c,
+        peripherals.SPI2,
+        peripherals.DMA_CH1,
+        peripherals.GPIO36,
+        peripherals.GPIO37,
+        peripherals.GPIO35,
+        peripherals.GPIO3,
+        &mut delay,
+    );
 
-        audio::init_es7210(&mut *i2c, &mut delay)
-            .expect("Failed to initialize ES7210 microphone codec");
-
-        screen
-    };
+    audio::init_es7210(&mut system_i2c, &mut delay)
+        .expect("Failed to initialize ES7210 microphone codec");
 
     info!("==========================================");
     info!(">>> M5Stack CoreS3 Lite Booting Up! <<<");
@@ -119,6 +115,12 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
             executor.run(move |spawner| {
+                // Async ESP-HAL drivers are pinned to the core where
+                // `into_async()` installs their interrupt handler. Convert I2C
+                // here, on CPU1, and keep the resulting bus local to this
+                // executor for touch and the future IMU task.
+                let system_bus = system_i2c::into_async(system_i2c);
+
                 spawner.spawn(
                     touch::capture_task(system_bus).expect("Failed to allocate CPU1 touch task"),
                 );

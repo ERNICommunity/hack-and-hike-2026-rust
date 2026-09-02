@@ -13,8 +13,9 @@ const SCREEN_WIDTH: u16 = 320;
 const SCREEN_HEIGHT: u16 = 240;
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-// Queue only transitions; movement is latest-value state so a busy UI never
-// accumulates stale pointer motion.
+// These outputs cross from CPU1 acquisition to CPU0 presentation, therefore
+// they still use CriticalSectionRawMutex. Only the physical I2C bus mutex is
+// executor-local.
 static TOUCH_EDGES: Channel<CriticalSectionRawMutex, TouchEdge, 8> = Channel::new();
 static LATEST_POINT: Signal<CriticalSectionRawMutex, TouchPoint> = Signal::new();
 
@@ -48,9 +49,14 @@ pub fn try_take_edge() -> Option<TouchEdge> {
 async fn read_sample(bus: SystemI2cBus) -> TouchSample {
     let mut data = [0u8; 5];
 
+    // The bus guard remains held for the whole transaction so no future sensor
+    // task can interleave bytes on the physical bus. Unlike the previous
+    // blocking driver, the I2C transfer itself yields CPU1 while hardware is
+    // waiting for bus events.
     let result = {
         let mut i2c = bus.lock().await;
-        i2c.write_read(FT6336_ADDR, &[FT6336_TOUCH_DATA], &mut data)
+        i2c.write_read_async(FT6336_ADDR, &[FT6336_TOUCH_DATA], &mut data)
+            .await
     };
 
     if result.is_err() {
