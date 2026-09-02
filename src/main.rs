@@ -9,6 +9,7 @@
 
 mod audio;
 mod logger;
+mod memory;
 mod screen;
 mod system_i2c;
 mod touch;
@@ -43,6 +44,8 @@ esp_bootloader_esp_idf::esp_app_desc!();
 )]
 #[esp_rtos::main]
 async fn main(_cpu0_spawner: Spawner) -> ! {
+    // Ordinary/global allocations are intentionally internal-only. PSRAM is
+    // initialized separately below and is reserved for explicit allocations.
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
     esp_alloc::heap_allocator!(size: 128 * 1024);
 
@@ -50,6 +53,12 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
+
+    // Initialize/map PSRAM before configuring SPI2/LCD. ESP32-S3 PSRAM auto
+    // detection may briefly probe Octal mode, whose pins overlap the CoreS3
+    // LCD GPIOs. Configuring the display afterwards guarantees its GPIO matrix
+    // setup is the final one.
+    memory::enable_psram(peripherals.PSRAM);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_interrupt =
