@@ -7,6 +7,7 @@ use log::{LevelFilter, Metadata, Record};
 use crate::data_plane::PsramByteRing;
 
 pub const HISTORY_BYTES: usize = 32 * 1024;
+const SNAPSHOT_CHUNK_BYTES: usize = 512;
 
 struct LogStore {
     history: PsramByteRing,
@@ -87,15 +88,45 @@ pub fn revision() -> u32 {
     })
 }
 
-pub fn snapshot<'a>(out: &'a mut [u8]) -> (&'a str, u32) {
+/// Copy one consistent log-history revision into `out` using short critical
+/// sections. If a writer changes the ring while the snapshot is in progress,
+/// return `None` and let the UI retry on its next refresh tick.
+pub fn snapshot<'a>(out: &'a mut [u8]) -> Option<(&'a str, u32)> {
     let (len, revision) = critical_section::with(|cs| {
         let store = LOG_STORE.borrow(cs).borrow();
-        let Some(store) = store.as_ref() else {
-            return (0, 0);
-        };
+        let store = store.as_ref()?;
+        Some((store.history.len().min(out.len()), store.revision))
+    })?;
 
-        (store.history.copy_to(out), store.revision)
-    });
+    let mut offset = 0usize;
+    while offset < len {
+        let end = (offset + SNAPSHOT_CHUNK_BYTES).min(len);
+        let copied = critical_section::with(|cs| {
+            let store = LOG_STORE.borrow(cs).borrow();
+            let Some(store) = store.as_ref() else {
+                return 0;
+            };
 
-    (core::str::from_utf8(&out[..len]).unwrap_or(""), revision)
+            if store.revision != revision {
+                return 0;
+            }
+
+            store
+                .history
+                .copy_range_to(offset, &mut out[offset..end])
+        });
+
+        if copied != end - offset {
+            return None;
+        }
+
+        offset = end;
+    }
+
+    if self::revision() != revision {
+        return None;
+    }
+
+    let text = core::str::from_utf8(&out[..len]).ok()?;
+    Some((text, revision))
 }
