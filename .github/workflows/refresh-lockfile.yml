@@ -18,6 +18,8 @@ jobs:
           ref: runtime/foundation-hygiene
 
       - name: Refresh Cargo.lock from manifests
+        env:
+          RUSTUP_TOOLCHAIN: stable
         run: cargo metadata --format-version=1 > /dev/null
 
       - name: Commit lockfile update
