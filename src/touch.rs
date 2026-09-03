@@ -87,7 +87,7 @@ pub async fn capture_task(bus: SystemI2cBus) {
 
     loop {
         match read_sample(bus).await {
-            TouchSample::ReadError => diagnostics::record_touch_read_error()
+            TouchSample::ReadError => diagnostics::record_touch_read_error(),
             TouchSample::Up if pressed => {
                 pressed = false;
                 if TOUCH_EDGES.try_send(TouchEdge::Released(last_point)).is_err() {
