@@ -16,7 +16,7 @@ env:
 
 jobs:
   build:
-    name: ESP32-S3 release build
+    name: ESP32-S3 compile and link
     runs-on: ubuntu-latest
 
     steps:
@@ -34,16 +34,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-deps-
 
-      - name: Restore Cargo build cache
+      - name: Restore Xtensa toolchain
+        id: xtensa-cache
         uses: actions/cache@v4
         with:
-          path: target/
-          key: ${{ runner.os }}-esp32s3-target-1.93.0.0-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-esp32s3-target-1.93.0.0-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-esp32s3-target-1.93.0.0-
+          path: |
+            ~/.rustup/toolchains/esp
+            ~/exports
+          key: ${{ runner.os }}-xtensa-esp32s3-1.93.0.0-v1
 
       - name: Install Xtensa Rust toolchain
+        if: steps.xtensa-cache.outputs.cache-hit != 'true'
         uses: esp-rs/xtensa-toolchain@v1.7
         with:
           default: true
@@ -51,11 +52,30 @@ jobs:
           version: "1.93.0.0"
           ldproxy: false
 
+      - name: Activate cached Xtensa toolchain
+        if: steps.xtensa-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          source "$HOME/exports"
+          printf '%s\n' "${PATH//:/$'\n'}" >> "$GITHUB_PATH"
+          echo "ESPUP_EXPORT_FILE=$HOME/exports" >> "$GITHUB_ENV"
+          if [ -n "${LIBCLANG_PATH:-}" ]; then
+            echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${CLANG_PATH:-}" ]; then
+            echo "CLANG_PATH=$CLANG_PATH" >> "$GITHUB_ENV"
+          fi
+          rustup default esp
+
       - name: Set up compiler cache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      - name: Build firmware
-        run: cargo build --locked --release
+      # CI only needs to prove that the firmware compiles and links for the
+      # real ESP32-S3 target. Avoid the production release profile here:
+      # fat LTO + codegen-units=1 adds substantial latency without improving
+      # the compile/link validity signal.
+      - name: Compile and link firmware
+        run: cargo build --locked
 
       - name: Show compiler cache stats
         if: always()
