@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -16,7 +20,7 @@ env:
 
 jobs:
   build:
-    name: ESP32-S3 compile and link
+    name: ESP32-S3 release build
     runs-on: ubuntu-latest
 
     steps:
@@ -67,15 +71,20 @@ jobs:
           fi
           rustup default esp
 
+      # Restore a release build tree produced by the exact same dependency and
+      # toolchain configuration. Cargo's fingerprints still decide what is
+      # valid, so source changes rebuild only the affected crates.
+      - name: Restore release build tree
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ runner.os }}-esp32s3-release-1.93.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-v1
+
       - name: Set up compiler cache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      # CI only needs to prove that the firmware compiles and links for the
-      # real ESP32-S3 target. Avoid the production release profile here:
-      # fat LTO + codegen-units=1 adds substantial latency without improving
-      # the compile/link validity signal.
-      - name: Compile and link firmware
-        run: cargo build --locked
+      - name: Build firmware
+        run: cargo build --locked --release
 
       - name: Show compiler cache stats
         if: always()
