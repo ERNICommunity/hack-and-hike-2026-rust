@@ -11,6 +11,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   build:
@@ -49,5 +51,12 @@ jobs:
           version: "1.93.0.0"
           ldproxy: false
 
+      - name: Set up compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Build firmware
         run: cargo build --locked --release
+
+      - name: Show compiler cache stats
+        if: always()
+        run: sccache --show-stats
