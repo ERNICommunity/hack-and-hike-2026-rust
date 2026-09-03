@@ -9,7 +9,7 @@
 
 mod audio;
 mod board;
-mod cross_core;
+pub mod cross_core;
 mod data_plane;
 mod diagnostics;
 mod logger;
