@@ -1,0 +1,33 @@
+name: Firmware Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build:
+    name: ESP32-S3 release build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Xtensa Rust toolchain
+        uses: esp-rs/xtensa-toolchain@v1.7
+        with:
+          default: true
+          buildtargets: esp32s3
+          version: "1.93.0.0"
+          ldproxy: false
+
+      - name: Build firmware
+        run: cargo build --locked --release
