@@ -26,7 +26,8 @@ RUN cargo binstall -y --secure \
 RUN rustup toolchain install nightly --component rustfmt
 RUN rustup toolchain install 1.93.0 --component rust-analyzer --component rust-src
 
-# Install ESP target toolchain without regression bugs
+# Install ESP target toolchain which does not have regression bugs as newer versions have
+# This is also the version set in the rust-analyzer path in .vscode/settings.json
 espup install -v 1.93.0.0 -t esp32s3
 
 # Add espup environment variables to shell profile
