@@ -16,8 +16,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: "sccache"
 
 jobs:
   build:
@@ -46,22 +44,10 @@ jobs:
           path: |
             ~/.rustup/toolchains/esp
             ~/exports
-          key: ${{ runner.os }}-xtensa-esp32s3-1.93.0.0-v2
-          restore-keys: |
-            ${{ runner.os }}-xtensa-esp32s3-1.93.0.0-v1
-
-      - name: Detect restored Xtensa toolchain
-        id: xtensa-present
-        shell: bash
-        run: |
-          if [ -x "$HOME/.rustup/toolchains/esp/bin/rustc" ] && [ -f "$HOME/exports" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
+          key: ${{ runner.os }}-xtensa-esp32s3-1.93.0.0-v1
 
       - name: Install Xtensa Rust toolchain
-        if: steps.xtensa-present.outputs.present != 'true'
+        if: steps.xtensa-cache.outputs.cache-hit != 'true'
         uses: esp-rs/xtensa-toolchain@v1.7
         with:
           default: true
@@ -69,15 +55,8 @@ jobs:
           version: "1.93.0.0"
           ldproxy: false
 
-      - name: Slim Xtensa toolchain cache
-        if: steps.xtensa-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          # Bare-metal cargo/rustc linking does not use the separately bundled
-          # GNU Xtensa compiler. Keep Rust + Espressif LLVM/Clang, drop GCC.
-          rm -rf "$HOME/.rustup/toolchains/esp/xtensa-esp-elf"
-
-      - name: Activate Xtensa toolchain
+      - name: Activate cached Xtensa toolchain
+        if: steps.xtensa-cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
           source "$HOME/exports"
@@ -89,22 +68,25 @@ jobs:
           if [ -n "${CLANG_PATH:-}" ]; then
             echo "CLANG_PATH=$CLANG_PATH" >> "$GITHUB_ENV"
           fi
-          rustup default esp
+
+      # GitHub checkout gives every file a fresh mtime. Cargo uses mtimes in
+      # fingerprints, so that would force the local firmware crate to rebuild
+      # even when an exact build-tree cache is restored. Normalize tracked file
+      # mtimes to the checked-out commit time before restoring target/.
+      - name: Normalize source mtimes
+        shell: bash
+        run: |
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
+          git ls-files -z | xargs -0 touch -d "@$SOURCE_DATE_EPOCH"
 
       - name: Restore release build tree
         uses: actions/cache@v4
         with:
           path: target/
-          key: ${{ runner.os }}-esp32s3-release-1.93.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-v1
+          key: ${{ runner.os }}-esp32s3-release-1.93.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-esp32s3-release-1.93.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-
             ${{ runner.os }}-esp32s3-target-1.93.0.0-${{ hashFiles('Cargo.lock') }}-
-
-      - name: Set up compiler cache
-        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Build firmware
         run: cargo build --locked --release
-
-      - name: Show compiler cache stats
-        if: always()
-        run: sccache --show-stats
