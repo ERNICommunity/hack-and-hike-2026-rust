@@ -16,10 +16,7 @@ use esp_hal::{
 };
 use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
 
-use crate::{theme, waveform};
-
-const AXP2101_ADDR: u8 = 0x34;
-const AW9523_ADDR: u8 = 0x58;
+use crate::{board, theme, waveform};
 
 const SCREEN_WIDTH: usize = 320;
 const DISPLAY_SPI_MHZ: u32 = 40;
@@ -107,50 +104,6 @@ where
             Ok(()) => cs_result,
         }
     }
-}
-
-fn update_register_bits(
-    i2c: &mut impl embedded_hal::i2c::I2c,
-    address: u8,
-    register: u8,
-    mask: u8,
-    value: u8,
-) {
-    let mut current = [0u8; 1];
-    if i2c.write_read(address, &[register], &mut current).is_ok() {
-        let next = (current[0] & !mask) | (value & mask);
-        let _ = i2c.write(address, &[register, next]);
-    }
-}
-
-fn init_pmic_and_hardware_reset(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
-    // LCD backlight rail (DLDO1) at 3.3 V. Microphone power is owned by audio.rs.
-    let _ = i2c.write(AXP2101_ADDR, &[0x99, 0x1C]);
-
-    let mut reg90 = [0u8; 1];
-    if i2c.write_read(AXP2101_ADDR, &[0x90], &mut reg90).is_ok() {
-        let _ = i2c.write(AXP2101_ADDR, &[0x90, reg90[0] | (1 << 7)]);
-    }
-
-    let _ = i2c.write(AW9523_ADDR, &[0x13, 0xFF]);
-
-    // AW9523 direction registers: 0 = output, 1 = input.
-    // P0_0 = FT6336 TOUCH_RST -> output.
-    update_register_bits(i2c, AW9523_ADDR, 0x04, 1 << 0, 0);
-
-    // P1_1 = LCD_RST -> output.
-    // P1_2 = FT6336 TOUCH_INT -> input.
-    update_register_bits(i2c, AW9523_ADDR, 0x05, (1 << 1) | (1 << 2), 1 << 2);
-
-    // Reset LCD and touch controller together, preserving unrelated outputs.
-    update_register_bits(i2c, AW9523_ADDR, 0x03, 1 << 1, 0);
-    update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 0, 0);
-    delay.delay_millis(20u32);
-
-    update_register_bits(i2c, AW9523_ADDR, 0x03, 1 << 1, 1 << 1);
-    update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 0, 1 << 0);
-
-    delay.delay_millis(300u32);
 }
 
 enum PipelineState {
@@ -362,7 +315,8 @@ pub fn init(
     gpio3: GPIO3<'static>,
     delay: &mut Delay,
 ) -> Screen {
-    init_pmic_and_hardware_reset(i2c, delay);
+    board::power::enable_lcd_backlight(i2c);
+    board::io_expander::reset_display_and_touch(i2c, delay);
 
     let spi = Spi::new(
         spi2,
