@@ -2,6 +2,7 @@ name: Firmware Build
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -9,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -71,14 +72,13 @@ jobs:
           fi
           rustup default esp
 
-      # Restore a release build tree produced by the exact same dependency and
-      # toolchain configuration. Cargo's fingerprints still decide what is
-      # valid, so source changes rebuild only the affected crates.
       - name: Restore release build tree
         uses: actions/cache@v4
         with:
           path: target/
           key: ${{ runner.os }}-esp32s3-release-1.93.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-v1
+          restore-keys: |
+            ${{ runner.os }}-esp32s3-target-1.93.0.0-${{ hashFiles('Cargo.lock') }}-
 
       - name: Set up compiler cache
         uses: mozilla-actions/sccache-action@v0.0.11
