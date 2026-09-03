@@ -5,9 +5,7 @@ use esp_hal::{
     peripherals::{DMA_CH0, GPIO0, GPIO14, GPIO33, GPIO34, I2S0},
     time::Rate,
 };
-use static_cell::ConstStaticCell;
-
-use crate::diagnostics;
+use crate::{data_plane, diagnostics};
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const BLOCK_FRAMES: usize = 512;
@@ -15,11 +13,9 @@ pub const CHANNELS: usize = 2;
 pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 
 // Keep the generous ring that already proved stable with radio + dual-core
-// scheduling. Both the DMA ring and its drain scratch live outside the heap.
+// scheduling. The actual DMA ring/descriptors remain in internal DMA-capable
+// RAM; only the CPU-side drain scratch is allocated from PSRAM.
 const DMA_BUFFER_BYTES: usize = 32 * 1024;
-
-static DMA_DRAIN: ConstStaticCell<[u8; DMA_BUFFER_BYTES]> =
-    ConstStaticCell::new([0; DMA_BUFFER_BYTES]);
 
 const AXP2101_ADDR: u8 = 0x34;
 const AW9523_ADDR: u8 = 0x58;
@@ -190,7 +186,9 @@ pub async fn capture_task(
 
     // pop() requires enough destination space for every byte currently
     // available in the circular ring, hence a drain buffer the size of the ring.
-    let dma_drain = DMA_DRAIN.take();
+    // This destination is CPU-accessed only, so keep its 32 KiB backing storage
+    // in PSRAM while the actual DMA ring/descriptors above remain internal.
+    let mut dma_drain = data_plane::FixedPsramBuffer::filled(DMA_BUFFER_BYTES, 0u8);
 
     let mut samples = [0i16; BLOCK_SAMPLES];
     let mut frame_index = 0usize;
@@ -199,7 +197,7 @@ pub async fn capture_task(
     let mut first_block = true;
 
     loop {
-        let count = match transfer.pop(&mut dma_drain[..]).await {
+        let count = match transfer.pop(dma_drain.as_mut_slice()).await {
             Ok(count) => count,
             Err(_) => {
                 diagnostics::record_audio_capture_error();
@@ -211,7 +209,7 @@ pub async fn capture_task(
             diagnostics::record_audio_full_drain();
         }
 
-        for frame_bytes in dma_drain[..count].chunks_exact(4) {
+        for frame_bytes in dma_drain.as_slice()[..count].chunks_exact(4) {
             let left = i16::from_le_bytes([frame_bytes[0], frame_bytes[1]]);
             let right = i16::from_le_bytes([frame_bytes[2], frame_bytes[3]]);
             let sample_index = frame_index * CHANNELS;
