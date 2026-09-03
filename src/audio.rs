@@ -5,7 +5,7 @@ use esp_hal::{
     peripherals::{DMA_CH0, GPIO0, GPIO14, GPIO33, GPIO34, I2S0},
     time::Rate,
 };
-use crate::{data_plane, diagnostics};
+use crate::{board, data_plane, diagnostics};
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const BLOCK_FRAMES: usize = 512;
@@ -17,8 +17,6 @@ pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 // RAM; only the CPU-side drain scratch is allocated from PSRAM.
 const DMA_BUFFER_BYTES: usize = 32 * 1024;
 
-const AXP2101_ADDR: u8 = 0x34;
-const AW9523_ADDR: u8 = 0x58;
 const ES7210_ADDR: u8 = 0x40;
 
 #[derive(Clone, Copy, Debug)]
@@ -51,35 +49,13 @@ impl LatestAudio {
 // not run with interrupts / the other core excluded.
 static LATEST_AUDIO: Mutex<CriticalSectionRawMutex, LatestAudio> = Mutex::new(LatestAudio::new());
 
-fn update_register_bits<I2C>(
-    i2c: &mut I2C,
-    address: u8,
-    register: u8,
-    mask: u8,
-    value: u8,
-) -> Result<(), I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    let mut current = [0u8; 1];
-    i2c.write_read(address, &[register], &mut current)?;
-    let next = (current[0] & !mask) | (value & mask);
-    i2c.write(address, &[register, next])
-}
-
 /// Power the microphone path and configure ES7210 MIC1/MIC2 for stereo I2S.
 pub fn init_es7210<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    // CoreS3-Lite microphone power: AXP2101 ALDO2 = 3.3 V and enabled.
-    i2c.write(AXP2101_ADDR, &[0x93, 0x1C])?;
-    update_register_bits(i2c, AXP2101_ADDR, 0x90, 1 << 1, 1 << 1)?;
-
-    // Keep the onboard amplifier released during board audio bring-up.
-    update_register_bits(i2c, AW9523_ADDR, 0x04, 1 << 2, 0)?;
-    update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 2, 1 << 2)?;
-    delay.delay_millis(10u32);
+    board::power::enable_microphone(i2c)?;
+    board::io_expander::release_audio_amplifier(i2c, delay)?;
 
     i2c.write(ES7210_ADDR, &[0x00, 0xFF])?;
 
