@@ -19,7 +19,6 @@ const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
 const LOG_REFRESH: Duration = Duration::from_millis(100);
 
-pub const MAX_LOG_ROWS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -173,7 +172,7 @@ struct LineRange {
 
 struct LogData {
     bytes: data_plane::FixedPsramBuffer<u8>,
-    lines: data_plane::FixedPsramRing<LineRange, MAX_LOG_ROWS>,
+    lines: data_plane::FixedPsramRing<LineRange, { logger::MAX_LOG_ROWS }>,
     revision: u32,
 }
 
