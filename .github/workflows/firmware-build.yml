@@ -46,10 +46,22 @@ jobs:
           path: |
             ~/.rustup/toolchains/esp
             ~/exports
-          key: ${{ runner.os }}-xtensa-esp32s3-1.93.0.0-v1
+          key: ${{ runner.os }}-xtensa-esp32s3-1.93.0.0-v2
+          restore-keys: |
+            ${{ runner.os }}-xtensa-esp32s3-1.93.0.0-v1
+
+      - name: Detect restored Xtensa toolchain
+        id: xtensa-present
+        shell: bash
+        run: |
+          if [ -x "$HOME/.rustup/toolchains/esp/bin/rustc" ] && [ -f "$HOME/exports" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install Xtensa Rust toolchain
-        if: steps.xtensa-cache.outputs.cache-hit != 'true'
+        if: steps.xtensa-present.outputs.present != 'true'
         uses: esp-rs/xtensa-toolchain@v1.7
         with:
           default: true
@@ -57,8 +69,15 @@ jobs:
           version: "1.93.0.0"
           ldproxy: false
 
-      - name: Activate cached Xtensa toolchain
-        if: steps.xtensa-cache.outputs.cache-hit == 'true'
+      - name: Slim Xtensa toolchain cache
+        if: steps.xtensa-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          # Bare-metal cargo/rustc linking does not use the separately bundled
+          # GNU Xtensa compiler. Keep Rust + Espressif LLVM/Clang, drop GCC.
+          rm -rf "$HOME/.rustup/toolchains/esp/xtensa-esp-elf"
+
+      - name: Activate Xtensa toolchain
         shell: bash
         run: |
           source "$HOME/exports"
