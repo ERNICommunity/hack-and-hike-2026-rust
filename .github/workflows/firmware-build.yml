@@ -26,7 +26,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # A successful full release build is deterministic for these inputs. Keep
+      # a tiny proof marker so an exact rerun can avoid downloading ~850 MB of
+      # toolchain/build caches and repeating a build that already passed.
+      # Bump proof-v1 whenever the build command or CI build semantics change.
+      - name: Restore successful-build proof
+        id: build-proof
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-cache/firmware-build-ok
+          key: ${{ runner.os }}-esp32s3-build-ok-1.93.0.0-proof-v1-${{ hashFiles('src/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml') }}
+
+      - name: Reuse successful build result
+        if: steps.build-proof.outputs.cache-hit == 'true'
+        run: echo "Identical firmware inputs already passed the full ESP32-S3 release build."
+
       - name: Restore Cargo dependency cache
+        if: steps.build-proof.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -38,6 +54,7 @@ jobs:
             ${{ runner.os }}-cargo-deps-
 
       - name: Restore Xtensa toolchain
+        if: steps.build-proof.outputs.cache-hit != 'true'
         id: xtensa-cache
         uses: actions/cache@v4
         with:
@@ -47,7 +64,7 @@ jobs:
           key: ${{ runner.os }}-xtensa-esp32s3-1.93.0.0-v1
 
       - name: Install Xtensa Rust toolchain
-        if: steps.xtensa-cache.outputs.cache-hit != 'true'
+        if: steps.build-proof.outputs.cache-hit != 'true' && steps.xtensa-cache.outputs.cache-hit != 'true'
         uses: esp-rs/xtensa-toolchain@v1.7
         with:
           default: true
@@ -56,7 +73,7 @@ jobs:
           ldproxy: false
 
       - name: Activate cached Xtensa toolchain
-        if: steps.xtensa-cache.outputs.cache-hit == 'true'
+        if: steps.build-proof.outputs.cache-hit != 'true' && steps.xtensa-cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
           source "$HOME/exports"
@@ -69,17 +86,8 @@ jobs:
             echo "CLANG_PATH=$CLANG_PATH" >> "$GITHUB_ENV"
           fi
 
-      # GitHub checkout gives every file a fresh mtime. Cargo uses mtimes in
-      # fingerprints, so that would force the local firmware crate to rebuild
-      # even when an exact build-tree cache is restored. Normalize tracked file
-      # mtimes to the checked-out commit time before restoring target/.
-      - name: Normalize source mtimes
-        shell: bash
-        run: |
-          SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
-          git ls-files -z | xargs -0 touch -d "@$SOURCE_DATE_EPOCH"
-
       - name: Restore release build tree
+        if: steps.build-proof.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: target/
@@ -89,4 +97,19 @@ jobs:
             ${{ runner.os }}-esp32s3-target-1.93.0.0-${{ hashFiles('Cargo.lock') }}-
 
       - name: Build firmware
+        if: steps.build-proof.outputs.cache-hit != 'true'
         run: cargo build --locked --release
+
+      - name: Record successful build
+        if: steps.build-proof.outputs.cache-hit != 'true' && success()
+        shell: bash
+        run: |
+          mkdir -p .ci-cache
+          printf '%s\n' "$GITHUB_SHA" > .ci-cache/firmware-build-ok
+
+      - name: Save successful-build proof
+        if: steps.build-proof.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-cache/firmware-build-ok
+          key: ${{ runner.os }}-esp32s3-build-ok-1.93.0.0-proof-v1-${{ hashFiles('src/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml') }}
