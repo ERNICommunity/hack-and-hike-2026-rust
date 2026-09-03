@@ -8,6 +8,8 @@
 #![deny(clippy::large_stack_frames)]
 
 mod audio;
+mod board;
+mod cross_core;
 mod data_plane;
 mod diagnostics;
 mod logger;
