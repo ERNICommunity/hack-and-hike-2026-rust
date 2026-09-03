@@ -26,6 +26,7 @@ jobs:
         with:
           default: true
           buildtargets: esp32s3
+          version: "1.93.0.0"
           ldproxy: false
 
       - name: Build firmware
