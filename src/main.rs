@@ -8,8 +8,10 @@
 #![deny(clippy::large_stack_frames)]
 
 mod audio;
+mod data_plane;
 mod logger;
 mod memory;
+mod models;
 mod screen;
 mod system_i2c;
 mod touch;
@@ -37,7 +39,6 @@ const UI_IDLE_DELAY: Duration = Duration::from_millis(5);
 static CPU1_STACK: StaticCell<Stack<CPU1_STACK_SIZE>> = StaticCell::new();
 static CPU1_EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
 
-// This creates the app descriptor required by the esp-idf bootloader.
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[allow(
@@ -46,33 +47,31 @@ esp_bootloader_esp_idf::esp_app_desc!();
 )]
 #[esp_rtos::main]
 async fn main(_cpu0_spawner: Spawner) -> ! {
-    // Ordinary/global allocations are intentionally internal-only. PSRAM is
-    // initialized separately below and is reserved for explicit allocations.
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
-    esp_alloc::heap_allocator!(size: 128 * 1024);
+    // Internal DRAM is shared between statics/global heap and the CPU0 stack.
+    // Keep the global heap deliberately smaller now that bulk application data
+    // lives in PSRAM. The previous 128 KiB reservation left only ~20 KiB for
+    // the ProCpu stack and Slint's software renderer could cross its guard.
+    //
+    // 104 KiB returns 24 KiB to the linker-defined CPU0 stack while retaining
+    // substantial internal-heap headroom for Slint/radio/runtime objects.
+    esp_alloc::heap_allocator!(size: 104 * 1024);
 
     logger::init(::log::LevelFilter::Info);
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    // Initialize/map Quad-SPI PSRAM before configuring SPI2/LCD so display
-    // GPIO/SPI setup is the final peripheral configuration on those pins.
     memory::enable_psram(peripherals.PSRAM);
+    logger::enable_psram_history();
+    memory::report("PSRAM/data-plane ready");
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_interrupt =
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-
-    // start_second_core() requires the CPU0 RTOS scheduler to be running first.
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     let mut delay = esp_hal::delay::Delay::new();
-
-    // Build I2C0 in blocking mode on CPU0 for one-time board initialization.
-    // No runtime I2C task exists yet, so no mutex is needed during this phase.
-    // The still-blocking driver is moved to CPU1 below and converted to async
-    // there so ESP-HAL installs its async interrupt handler on the correct core.
     let mut system_i2c =
         system_i2c::init(peripherals.I2C0, peripherals.GPIO12, peripherals.GPIO11);
 
@@ -94,8 +93,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     info!(">>> M5Stack CoreS3 Lite Booting Up! <<<");
     info!("==========================================");
 
-    // Keep radio/network initialization unchanged; these resources stay alive
-    // for the upcoming networking work.
     let (_wifi_controller, _interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
@@ -105,6 +102,8 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let mut ble_resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();
     let _ble_stack = trouble_host::new(ble_controller, &mut ble_resources);
+
+    memory::report("after radio setup");
 
     info!("Starting CPU1 acquisition executor");
 
@@ -117,10 +116,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
             executor.run(move |spawner| {
-                // Async ESP-HAL drivers are pinned to the core where
-                // `into_async()` installs their interrupt handler. Convert I2C
-                // here, on CPU1, and keep the resulting bus local to this
-                // executor for touch and the future IMU task.
                 let system_bus = system_i2c::into_async(system_i2c);
 
                 spawner.spawn(
@@ -142,21 +137,39 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         },
     );
 
-    // Everything from here down is CPU0-only presentation state.
-    let mut ui = ui::Ui::new();
+    let model = models::AppModel::new();
+    let mut ui = ui::Ui::new(model);
+
+    let now = Instant::now();
+    let mut heap_monitor = memory::HeapMonitor::new(now);
+    heap_monitor.checkpoint("after model + UI construction");
+
+    // This is intentionally stack-heavy because it drives Slint's software
+    // renderer through every persistent page. The memory report above now
+    // includes both CPU0 stack size and current headroom.
+    ui.prewarm_navigation(&mut screen);
+    heap_monitor.checkpoint("after navigation prewarm");
 
     loop {
-        ui.update(Instant::now());
+        let now = Instant::now();
 
-        // Slint renders only normal UI chrome/widgets. If it repainted while
-        // the microphone page is active, the direct waveform overlay must be
-        // restored afterwards because the LCD itself is our retained buffer.
+        if let Some(change) = ui.prepare_frame(now) {
+            // Capture allocator counters before even setting the Slint view
+            // property, then measure again after the resulting render.
+            heap_monitor.begin_navigation(change.to.as_i32());
+            ui.apply_navigation(change);
+            info!("View {:?} -> {:?}", change.from, change.to);
+        }
+
         let slint_redrawn = screen.render_slint_window(ui.window());
         ui.note_slint_redraw(slint_redrawn);
 
         if let Some(frame) = ui.take_waveform_frame() {
             screen.render_waveform(&frame);
         }
+
+        heap_monitor.end_navigation();
+        heap_monitor.poll(now);
 
         Timer::after(UI_IDLE_DELAY).await;
     }

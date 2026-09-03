@@ -24,6 +24,7 @@ RUN cargo binstall -y --secure \
 
 # Install nightly for Rust-Analyzer
 RUN rustup toolchain install nightly --component rustfmt
+RUN rustup toolchain install 1.93.0 --component rust-analyzer --component rust-src
 
 # Install ESP target toolchain without regression bugs
 espup install -v 1.93.0.0 -t esp32s3

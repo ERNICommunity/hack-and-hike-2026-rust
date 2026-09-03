@@ -1,34 +1,53 @@
-import { Theme } from "generated-theme.slint";
 import { LogView } from "./log-view.slint";
 import { NavigationRail } from "./navigation-rail.slint";
 import { MicrophoneView } from "./microphone-view.slint";
+import { PlaceholderView } from "./placeholder-view.slint";
 
 export component AppWindow inherits Window {
     width: 320px;
     height: 240px;
 
     in property <[string]> log-lines: [];
-
-    // 0 = Network, 1 = IMU, 2 = Microphone, 3 = Sound, 4 = Log
-    in-out property <int> active-view: 4;
+    in property <int> active-view: 4;
+    callback navigate(int);
 
     content := Rectangle {
         x: navigation.width;
         width: parent.width - navigation.width;
         height: parent.height;
-        background: Theme.white;
+        background: #ffffff;
         clip: true;
 
-        // Page shells stay allocated and are intentionally small. The realtime
-        // microphone trace itself is drawn directly by Screen, outside Slint.
+        PlaceholderView {
+            width: parent.width;
+            height: parent.height;
+            visible: root.active-view == 0;
+            title: "NETWORK";
+            subtitle: "Peer communication";
+        }
+
+        PlaceholderView {
+            width: parent.width;
+            height: parent.height;
+            visible: root.active-view == 1;
+            title: "9-AXIS IMU";
+            subtitle: "BMI270 + BMM150";
+        }
+
         MicrophoneView {
             width: parent.width;
             height: parent.height;
             visible: root.active-view == 2;
         }
 
-        // ListView virtualizes the row delegates, so retaining this page does
-        // not retain one visual item tree per log entry.
+        PlaceholderView {
+            width: parent.width;
+            height: parent.height;
+            visible: root.active-view == 3;
+            title: "SOUND";
+            subtitle: "Speaker output";
+        }
+
         LogView {
             width: parent.width;
             height: parent.height;
@@ -44,7 +63,7 @@ export component AppWindow inherits Window {
         active-view: root.active-view;
 
         view-selected(view) => {
-            root.active-view = view;
+            root.navigate(view);
         }
     }
 }

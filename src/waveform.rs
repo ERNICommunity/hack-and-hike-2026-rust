@@ -1,7 +1,6 @@
 //! Allocation-free CPU0 contract for the realtime microphone overlay.
 //!
 //! Slint owns the page chrome/labels. `Screen` owns the actual waveform pixels.
-//! The geometry constants below must match `ui/microphone-view.slint`.
 
 pub const POINTS: usize = 128;
 
