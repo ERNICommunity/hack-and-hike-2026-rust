@@ -248,9 +248,11 @@ impl LogModel {
         }
 
         let mut data = self.data.borrow_mut();
-        let (len, revision) = {
-            let (logs, revision) = logger::snapshot(data.bytes.as_mut_slice());
-            (logs.len(), revision)
+        let Some((len, revision)) = ({
+            logger::snapshot(data.bytes.as_mut_slice())
+                .map(|(logs, revision)| (logs.len(), revision))
+        }) else {
+            return;
         };
 
         data.rebuild_lines(len);
