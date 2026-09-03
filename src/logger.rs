@@ -6,7 +6,14 @@ use log::{LevelFilter, Metadata, Record};
 
 use crate::data_plane::PsramByteRing;
 
-pub const HISTORY_BYTES: usize = 32 * 1024;
+/// Maximum number of rows retained by the on-device log model.
+pub const MAX_LOG_ROWS: usize = 64;
+
+/// PSRAM byte budget per retained row. Log lines may be longer or shorter than
+/// this; this constant only sizes the byte ring from the row-count policy.
+const LOG_BYTES_PER_ROW_BUDGET: usize = 64;
+
+pub const HISTORY_BYTES: usize = MAX_LOG_ROWS * LOG_BYTES_PER_ROW_BUDGET;
 const SNAPSHOT_CHUNK_BYTES: usize = 512;
 
 struct LogStore {
@@ -75,7 +82,11 @@ pub fn enable_psram_history() {
         *LOG_STORE.borrow(cs).borrow_mut() = Some(store);
     });
 
-    ::log::info!("PSRAM log history enabled: {} KiB", HISTORY_BYTES / 1024);
+    ::log::info!(
+        "PSRAM log history enabled: {} rows, {} KiB",
+        MAX_LOG_ROWS,
+        HISTORY_BYTES / 1024
+    );
 }
 
 pub fn revision() -> u32 {
