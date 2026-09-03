@@ -5,7 +5,7 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Timer};
 
-use crate::system_i2c::SystemI2cBus;
+use crate::{diagnostics, system_i2c::SystemI2cBus};
 
 const FT6336_ADDR: u8 = 0x38;
 const FT6336_TOUCH_DATA: u8 = 0x02;
@@ -87,17 +87,21 @@ pub async fn capture_task(bus: SystemI2cBus) {
 
     loop {
         match read_sample(bus).await {
-            TouchSample::ReadError => {}
+            TouchSample::ReadError => diagnostics::record_touch_read_error(),
             TouchSample::Up if pressed => {
                 pressed = false;
-                let _ = TOUCH_EDGES.try_send(TouchEdge::Released(last_point));
+                if TOUCH_EDGES.try_send(TouchEdge::Released(last_point)).is_err() {
+                    diagnostics::record_touch_edge_drop();
+                }
             }
             TouchSample::Up => {}
             TouchSample::Down(point) if !pressed => {
                 pressed = true;
                 last_point = point;
                 LATEST_POINT.signal(point);
-                let _ = TOUCH_EDGES.try_send(TouchEdge::Pressed(point));
+                if TOUCH_EDGES.try_send(TouchEdge::Pressed(point)).is_err() {
+                    diagnostics::record_touch_edge_drop();
+                }
             }
             TouchSample::Down(point) if point != last_point => {
                 last_point = point;

@@ -185,14 +185,23 @@ impl PsramByteRing {
     }
 
     pub fn copy_to(&self, out: &mut [u8]) -> usize {
-        let count = self.len.min(out.len());
-        if count == 0 {
+        self.copy_range_to(0, out)
+    }
+
+    /// Copy a logical range from the oldest byte onward without exposing the
+    /// ring's physical wrap point.
+    pub fn copy_range_to(&self, logical_offset: usize, out: &mut [u8]) -> usize {
+        if logical_offset >= self.len || out.is_empty() {
             return 0;
         }
 
+        let count = (self.len - logical_offset).min(out.len());
         let capacity = self.capacity();
-        let first_len = count.min(capacity - self.start);
-        out[..first_len].copy_from_slice(&self.storage[self.start..self.start + first_len]);
+        let physical_start = (self.start + logical_offset) % capacity;
+        let first_len = count.min(capacity - physical_start);
+
+        out[..first_len]
+            .copy_from_slice(&self.storage[physical_start..physical_start + first_len]);
 
         let remaining = count - first_len;
         if remaining != 0 {

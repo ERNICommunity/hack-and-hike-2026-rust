@@ -6,7 +6,15 @@ use log::{LevelFilter, Metadata, Record};
 
 use crate::data_plane::PsramByteRing;
 
-pub const HISTORY_BYTES: usize = 32 * 1024;
+/// Maximum number of rows retained by the on-device log model.
+pub const MAX_LOG_ROWS: usize = 64;
+
+/// PSRAM byte budget per retained row. Log lines may be longer or shorter than
+/// this; this constant only sizes the byte ring from the row-count policy.
+const LOG_BYTES_PER_ROW_BUDGET: usize = 64;
+
+pub const HISTORY_BYTES: usize = MAX_LOG_ROWS * LOG_BYTES_PER_ROW_BUDGET;
+const SNAPSHOT_CHUNK_BYTES: usize = 512;
 
 struct LogStore {
     history: PsramByteRing,
@@ -74,7 +82,11 @@ pub fn enable_psram_history() {
         *LOG_STORE.borrow(cs).borrow_mut() = Some(store);
     });
 
-    ::log::info!("PSRAM log history enabled: {} KiB", HISTORY_BYTES / 1024);
+    ::log::info!(
+        "PSRAM log history enabled: {} rows, {} KiB",
+        MAX_LOG_ROWS,
+        HISTORY_BYTES / 1024
+    );
 }
 
 pub fn revision() -> u32 {
@@ -87,15 +99,45 @@ pub fn revision() -> u32 {
     })
 }
 
-pub fn snapshot<'a>(out: &'a mut [u8]) -> (&'a str, u32) {
+/// Copy one consistent log-history revision into `out` using short critical
+/// sections. If a writer changes the ring while the snapshot is in progress,
+/// return `None` and let the UI retry on its next refresh tick.
+pub fn snapshot<'a>(out: &'a mut [u8]) -> Option<(&'a str, u32)> {
     let (len, revision) = critical_section::with(|cs| {
         let store = LOG_STORE.borrow(cs).borrow();
-        let Some(store) = store.as_ref() else {
-            return (0, 0);
-        };
+        let store = store.as_ref()?;
+        Some((store.history.len().min(out.len()), store.revision))
+    })?;
 
-        (store.history.copy_to(out), store.revision)
-    });
+    let mut offset = 0usize;
+    while offset < len {
+        let end = (offset + SNAPSHOT_CHUNK_BYTES).min(len);
+        let copied = critical_section::with(|cs| {
+            let store = LOG_STORE.borrow(cs).borrow();
+            let Some(store) = store.as_ref() else {
+                return 0;
+            };
 
-    (core::str::from_utf8(&out[..len]).unwrap_or(""), revision)
+            if store.revision != revision {
+                return 0;
+            }
+
+            store
+                .history
+                .copy_range_to(offset, &mut out[offset..end])
+        });
+
+        if copied != end - offset {
+            return None;
+        }
+
+        offset = end;
+    }
+
+    if self::revision() != revision {
+        return None;
+    }
+
+    let text = core::str::from_utf8(&out[..len]).ok()?;
+    Some((text, revision))
 }

@@ -7,6 +7,8 @@ use esp_hal::{
 };
 use static_cell::ConstStaticCell;
 
+use crate::diagnostics;
+
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const BLOCK_FRAMES: usize = 512;
 pub const CHANNELS: usize = 2;
@@ -197,10 +199,17 @@ pub async fn capture_task(
     let mut first_block = true;
 
     loop {
-        let count = transfer
-            .pop(&mut dma_drain[..])
-            .await
-            .expect("I2S circular DMA read failed");
+        let count = match transfer.pop(&mut dma_drain[..]).await {
+            Ok(count) => count,
+            Err(_) => {
+                diagnostics::record_audio_capture_error();
+                panic!("I2S circular DMA read failed");
+            }
+        };
+
+        if count == DMA_BUFFER_BYTES {
+            diagnostics::record_audio_full_drain();
+        }
 
         for frame_bytes in dma_drain[..count].chunks_exact(4) {
             let left = i16::from_le_bytes([frame_bytes[0], frame_bytes[1]]);

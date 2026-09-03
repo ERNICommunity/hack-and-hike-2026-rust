@@ -9,6 +9,7 @@
 
 mod audio;
 mod data_plane;
+mod diagnostics;
 mod logger;
 mod memory;
 mod models;
@@ -22,17 +23,12 @@ mod theme;
 extern crate alloc;
 
 use ::log::info;
-use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
 use esp_backtrace as _;
 use esp_hal::{clock::CpuClock, system::Stack, timer::timg::TimerGroup};
-use esp_radio::ble::controller::BleConnector;
 use static_cell::StaticCell;
-use trouble_host::prelude::*;
 
-const CONNECTIONS_MAX: usize = 1;
-const L2CAP_CHANNELS_MAX: usize = 1;
 const CPU1_STACK_SIZE: usize = 16 * 1024;
 const UI_IDLE_DELAY: Duration = Duration::from_millis(5);
 
@@ -41,10 +37,6 @@ static CPU1_EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new(
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[allow(
-    clippy::large_stack_frames,
-    reason = "main owns long-lived board/radio state and the CPU0 presentation runtime"
-)]
 #[esp_rtos::main]
 async fn main(_cpu0_spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
@@ -58,6 +50,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(size: 104 * 1024);
 
     logger::init(::log::LevelFilter::Info);
+    memory::init_cpu0_stack_watermark();
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
@@ -93,29 +86,26 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     info!(">>> M5Stack CoreS3 Lite Booting Up! <<<");
     info!("==========================================");
 
-    let (_wifi_controller, _interfaces) =
-        esp_radio::wifi::new(peripherals.WIFI, Default::default())
-            .expect("Failed to initialize Wi-Fi controller");
-
-    let transport = BleConnector::new(peripherals.BT, Default::default()).unwrap();
-    let ble_controller = ExternalController::<_, 1>::new(transport);
-    let mut ble_resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-        HostResources::new();
-    let _ble_stack = trouble_host::new(ble_controller, &mut ble_resources);
-
-    memory::report("after radio setup");
+    memory::report("before CPU1 startup");
 
     info!("Starting CPU1 acquisition executor");
 
     let cpu1_stack = CPU1_STACK.init(Stack::new());
+    memory::register_cpu1_stack(&mut *cpu1_stack);
     esp_rtos::start_second_core(
         peripherals.CPU_CTRL,
         sw_interrupt.software_interrupt1,
         cpu1_stack,
         move || {
+            memory::init_cpu1_stack_watermark();
             let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
             executor.run(move |spawner| {
+                spawner.spawn(
+                    memory::cpu1_stack_monitor_task()
+                        .expect("Failed to allocate CPU1 stack monitor task"),
+                );
+
                 let system_bus = system_i2c::into_async(system_i2c);
 
                 spawner.spawn(
