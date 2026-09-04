@@ -1,61 +1,113 @@
-//! Minimal semantic contracts between CPU0 and CPU1.
+//! Typed semantic boundary between CPU0 application code and CPU1 services.
 //!
-//! # CPU ownership
+//! The architecture is intentionally visible in the names of the endpoint and
+//! message types:
 //!
-//! CPU0 owns application coordination, presentation, and display I/O.
-//! CPU1 owns non-display peripheral services and timing-sensitive
-//! acquisition/communication.
+//! - [`Cpu0ApplicationCrossCoreEndpoint`] belongs with CPU0 application/model,
+//!   Slint presentation, and display coordination.
+//! - [`Cpu1PeripheralServicesCrossCoreEndpoint`] belongs with CPU1 touch,
+//!   audio, future IMU, future ESP-NOW, and runtime system-I2C services.
 //!
-//! Hardware handles never cross this boundary. Only small, bounded semantic
-//! commands/events do.
+//! These are directional application-level lanes, not a generic event bus and
+//! not CPU capability tokens. They express which side should send/receive each
+//! semantic message; they do not claim to prove which physical core is running.
 //!
-//! These lanes deliberately do **not** replace service-specific fast paths:
-//! - touch press/release edges stay on their bounded ordered channel;
-//! - touch movement stays latest-value;
-//! - audio waveform data stays on the specialized latest-audio snapshot.
+//! High-rate/service-specific data deliberately stays outside these lanes:
+//! - touch press/release edges remain a bounded ordered channel in `touch`;
+//! - touch movement remains a latest-value signal in `touch`;
+//! - audio waveform data remains the specialized latest snapshot in `audio`.
+//! Raw audio blocks, network packets, IMU sample streams, and hardware handles
+//! do not belong in these semantic channels.
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 
-const APP_COMMAND_CAPACITY: usize = 4;
-const APP_EVENT_CAPACITY: usize = 8;
+const CPU0_TO_CPU1_APPLICATION_COMMAND_CAPACITY: usize = 4;
+const CPU1_TO_CPU0_PERIPHERAL_EVENT_CAPACITY: usize = 8;
 
-/// Small CPU0 -> CPU1 application intent.
+/// Small semantic intent sent from CPU0 application coordination to CPU1
+/// peripheral services.
 ///
-/// Keep variants semantic and compact. Bulk payloads belong in fixed storage or
-/// PSRAM with only a small handle/index crossing cores.
+/// Keep variants compact. Bulk payloads belong in fixed storage/PSRAM with only
+/// small semantic identifiers crossing the core boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AppCommand {
+pub enum Cpu0ToCpu1ApplicationCommand {
     SetImuEnabled(bool),
     SetTelemetryEnabled(bool),
 }
 
-/// Small CPU1 -> CPU0 semantic events.
+/// Small semantic event sent from CPU1 peripheral services to the CPU0
+/// application/model side.
 ///
-/// High-rate samples and packet/audio payloads must not be added here.
+/// High-rate samples and transport payloads must use their specialized paths
+/// instead of becoming variants here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AppEvent {
+pub enum Cpu1ToCpu0PeripheralEvent {
     AudioFault,
     ImuFault,
     NetworkFault,
 }
 
-static APP_COMMANDS: Channel<CriticalSectionRawMutex, AppCommand, APP_COMMAND_CAPACITY> =
-    Channel::new();
-static APP_EVENTS: Channel<CriticalSectionRawMutex, AppEvent, APP_EVENT_CAPACITY> =
-    Channel::new();
+static CPU0_TO_CPU1_APPLICATION_COMMANDS: Channel<
+    CriticalSectionRawMutex,
+    Cpu0ToCpu1ApplicationCommand,
+    CPU0_TO_CPU1_APPLICATION_COMMAND_CAPACITY,
+> = Channel::new();
 
-pub fn try_send_command(command: AppCommand) -> bool {
-    APP_COMMANDS.try_send(command).is_ok()
+static CPU1_TO_CPU0_PERIPHERAL_EVENTS: Channel<
+    CriticalSectionRawMutex,
+    Cpu1ToCpu0PeripheralEvent,
+    CPU1_TO_CPU0_PERIPHERAL_EVENT_CAPACITY,
+> = Channel::new();
+
+/// CPU0-facing half of the semantic cross-core boundary.
+///
+/// Its API exposes only CPU0's intended direction: send application commands
+/// to CPU1 and receive semantic peripheral-service events from CPU1.
+pub struct Cpu0ApplicationCrossCoreEndpoint {
+    _private: (),
 }
 
-pub fn try_take_command() -> Option<AppCommand> {
-    APP_COMMANDS.try_receive().ok()
+impl Cpu0ApplicationCrossCoreEndpoint {
+    pub fn try_send_command_to_cpu1(&self, command: Cpu0ToCpu1ApplicationCommand) -> bool {
+        CPU0_TO_CPU1_APPLICATION_COMMANDS
+            .try_send(command)
+            .is_ok()
+    }
+
+    pub fn try_receive_event_from_cpu1(&self) -> Option<Cpu1ToCpu0PeripheralEvent> {
+        CPU1_TO_CPU0_PERIPHERAL_EVENTS.try_receive().ok()
+    }
 }
 
-pub fn try_send_event(event: AppEvent) -> bool {
-    APP_EVENTS.try_send(event).is_ok()
+/// CPU1-facing half of the semantic cross-core boundary.
+///
+/// Its API exposes only CPU1's intended direction: receive application commands
+/// from CPU0 and send semantic peripheral-service events back to CPU0.
+pub struct Cpu1PeripheralServicesCrossCoreEndpoint {
+    _private: (),
 }
 
-pub fn try_take_event() -> Option<AppEvent> {
-    APP_EVENTS.try_receive().ok()
+impl Cpu1PeripheralServicesCrossCoreEndpoint {
+    pub fn try_receive_command_from_cpu0(&self) -> Option<Cpu0ToCpu1ApplicationCommand> {
+        CPU0_TO_CPU1_APPLICATION_COMMANDS.try_receive().ok()
+    }
+
+    pub fn try_send_event_to_cpu0(&self, event: Cpu1ToCpu0PeripheralEvent) -> bool {
+        CPU1_TO_CPU0_PERIPHERAL_EVENTS.try_send(event).is_ok()
+    }
+}
+
+/// Create the two typed views of the static semantic channels.
+///
+/// The returned values are endpoint APIs, not proofs of CPU affinity. Their
+/// verbose types make the intended placement and message direction explicit at
+/// call sites without introducing capability-token machinery.
+pub fn split_application_and_peripheral_service_endpoints() -> (
+    Cpu0ApplicationCrossCoreEndpoint,
+    Cpu1PeripheralServicesCrossCoreEndpoint,
+) {
+    (
+        Cpu0ApplicationCrossCoreEndpoint { _private: () },
+        Cpu1PeripheralServicesCrossCoreEndpoint { _private: () },
+    )
 }
