@@ -370,12 +370,13 @@ pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
     let _ = with_state(NetworkState::mark_ready);
     publish_snapshot(Instant::now());
 
-    spawner
-        .spawn(receive_task(manager, receiver, config))
-        .expect("Failed to allocate CPU1 ESP-NOW receive task");
-    spawner
-        .spawn(beacon_task(sender, config))
-        .expect("Failed to allocate CPU1 ESP-NOW beacon task");
+    spawner.spawn(
+        receive_task(manager, receiver, config)
+            .expect("Failed to allocate CPU1 ESP-NOW receive task"),
+    );
+    spawner.spawn(
+        beacon_task(sender, config).expect("Failed to allocate CPU1 ESP-NOW beacon task"),
+    );
 
     ::log::info!(
         "ESP-NOW started: id={} channel={} version={}",
