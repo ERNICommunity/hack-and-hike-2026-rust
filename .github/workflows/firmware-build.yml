@@ -99,8 +99,10 @@ jobs:
           set +e
           cargo build --release
           status=$?
-          echo '--- CARGO LOCK DIFF ---'
-          git diff -- Cargo.lock
+          echo '--- CARGO LOCK BEGIN ---'
+          base64 -w0 Cargo.lock
+          echo
+          echo '--- CARGO LOCK END ---'
           exit $status
 
       - name: Record successful build
