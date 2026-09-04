@@ -10,13 +10,12 @@ use esp_hal::{
     delay::Delay,
     dma::{DmaRxBuf, DmaTxBuf},
     gpio::{Level, Output, OutputConfig},
-    peripherals::{DMA_CH1, GPIO3, GPIO35, GPIO36, GPIO37, SPI2},
     spi::master::{Config as SpiConfig, Spi, SpiDma, SpiDmaBus, SpiDmaTransfer},
     time::Rate,
 };
 use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
 
-use crate::{board, theme, waveform};
+use crate::{board, resources::DisplayResources, theme, waveform};
 
 const SCREEN_WIDTH: usize = 320;
 const DISPLAY_SPI_MHZ: u32 = 40;
@@ -307,14 +306,18 @@ pub struct Screen {
 
 pub fn init(
     i2c: &mut impl embedded_hal::i2c::I2c,
-    spi2: SPI2<'static>,
-    dma_ch1: DMA_CH1<'static>,
-    gpio36: GPIO36<'static>,
-    gpio37: GPIO37<'static>,
-    gpio35: GPIO35<'static>,
-    gpio3: GPIO3<'static>,
+    resources: DisplayResources,
     delay: &mut Delay,
 ) -> Screen {
+    let DisplayResources {
+        spi2,
+        dma,
+        sck,
+        mosi,
+        dc,
+        cs,
+    } = resources;
+
     board::power::enable_lcd_backlight(i2c);
     board::io_expander::reset_display_and_touch(i2c, delay);
 
@@ -323,9 +326,9 @@ pub fn init(
         SpiConfig::default().with_frequency(Rate::from_mhz(DISPLAY_SPI_MHZ)),
     )
     .unwrap()
-    .with_sck(gpio36)
-    .with_mosi(gpio37)
-    .with_dma(dma_ch1);
+    .with_sck(sck)
+    .with_mosi(mosi)
+    .with_dma(dma);
 
     // Small internal DMA buffers back the blocking SpiDmaBus used for DCS
     // commands and for mipidsi's one-time controller initialization.
@@ -335,8 +338,8 @@ pub fn init(
     let control_tx = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
     let dma_bus = spi.with_buffers(control_rx, control_tx);
 
-    let dc = Output::new(gpio35, Level::Low, OutputConfig::default());
-    let cs = Output::new(gpio3, Level::High, OutputConfig::default());
+    let dc = Output::new(dc, Level::Low, OutputConfig::default());
+    let cs = Output::new(cs, Level::High, OutputConfig::default());
     let spi_device = OwnedSpiDevice::new(dma_bus, cs).expect("Failed to initialize LCD SPI device");
     let di = display_interface_spi::SPIInterface::new(spi_device, dc);
 
