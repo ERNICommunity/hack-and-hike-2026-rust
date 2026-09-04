@@ -322,6 +322,8 @@ enum HeapPressure {
 pub struct HeapMonitor {
     min_internal_free: usize,
     last_periodic_report: Instant,
+    last_periodic_allocated: u64,
+    last_periodic_freed: u64,
     pending_navigation: Option<NavigationProbe>,
     pressure: HeapPressure,
 }
@@ -333,6 +335,8 @@ impl HeapMonitor {
         Self {
             min_internal_free: snapshot.internal_free,
             last_periodic_report: now,
+            last_periodic_allocated: snapshot.internal_total_allocated,
+            last_periodic_freed: snapshot.internal_total_freed,
             pending_navigation: None,
             pressure: pressure_for(snapshot.internal_free),
         }
@@ -342,6 +346,8 @@ impl HeapMonitor {
         update_cpu0_stack_watermark();
         let snapshot = HeapSnapshot::capture();
         self.observe(snapshot);
+        self.last_periodic_allocated = snapshot.internal_total_allocated;
+        self.last_periodic_freed = snapshot.internal_total_freed;
         report(label);
     }
 
@@ -412,14 +418,25 @@ impl HeapMonitor {
 
         if periodic_report {
             self.last_periodic_report = now;
+            let allocated_delta = snapshot
+                .internal_total_allocated
+                .saturating_sub(self.last_periodic_allocated);
+            let freed_delta = snapshot
+                .internal_total_freed
+                .saturating_sub(self.last_periodic_freed);
+            self.last_periodic_allocated = snapshot.internal_total_allocated;
+            self.last_periodic_freed = snapshot.internal_total_freed;
+
             let counters = diagnostics::snapshot();
             ::log::info!(
-                "MEM runtime: internal free={} KiB min={} KiB peak={} KiB alloc={} KiB freed={} KiB | PSRAM free={} KiB | CPU0 stack current={} KiB min={} KiB | CPU1 stack={} KiB min={} KiB | diag touch-read={} touch-drops={} audio-errors={} audio-full-drains={}",
+                "MEM runtime: internal free={} KiB min={} KiB peak={} KiB alloc={} KiB freed={} KiB dalloc={} B dfree={} B | PSRAM free={} KiB | CPU0 stack current={} KiB min={} KiB | CPU1 stack={} KiB min={} KiB | diag touch-read={} touch-drops={} audio-errors={} audio-full-drains={}",
                 snapshot.internal_free / 1024,
                 self.min_internal_free / 1024,
                 snapshot.internal_peak_used / 1024,
                 snapshot.internal_total_allocated / 1024,
                 snapshot.internal_total_freed / 1024,
+                allocated_delta,
+                freed_delta,
                 snapshot.psram_free / 1024,
                 snapshot.cpu0_stack_headroom / 1024,
                 snapshot.cpu0_stack_min_headroom / 1024,

@@ -8,7 +8,6 @@ use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 
 use embassy_time::{Duration, Instant};
-use slint::SharedString;
 
 use crate::{
     audio, data_plane, imu, logger,
@@ -19,8 +18,8 @@ const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
 const IMU_UI_UPDATE: Duration = Duration::from_millis(40);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
-/// Number of complete trailing log lines rendered by the fixed MCU log view.
-const LOG_VISIBLE_LINES: usize = 15;
+/// Number of complete trailing log lines rendered by the direct MCU log view.
+const LOG_VISIBLE_LINES: usize = 23;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -57,8 +56,8 @@ impl ViewId {
     }
 }
 
-/// CPU0 presentation-sized IMU state. Values are quantized to whole units so
-/// Slint property updates remain small and allocation-free.
+/// CPU0 presentation-sized IMU state. Values are quantized to whole units and
+/// consumed by the allocation-free direct renderer rather than Slint bindings.
 #[derive(Clone, Copy)]
 pub struct ImuDisplay {
     pub roll_deg: i32,
@@ -287,12 +286,13 @@ fn trailing_lines(text: &str, line_count: usize) -> &str {
 
 /// Fixed-size MCU log presentation model.
 ///
-/// The complete byte snapshot remains in PSRAM, but CPU0 publishes only one
-/// bounded `SharedString` containing the newest visible lines. This avoids
-/// Slint `ListView`/repeater dependency-node churn on every model reset.
+/// The complete byte snapshot remains in PSRAM. The visible portion is stored
+/// only as byte offsets into that fixed buffer, so a logger revision never
+/// creates a `SharedString` or any other heap-owned UI value.
 struct LogModel {
     bytes: data_plane::FixedPsramBuffer<u8>,
-    text: SharedString,
+    visible_start: usize,
+    visible_len: usize,
     revision: u32,
     last_check: Instant,
     dirty: bool,
@@ -302,7 +302,8 @@ impl LogModel {
     fn new() -> Self {
         Self {
             bytes: data_plane::FixedPsramBuffer::filled(logger::HISTORY_BYTES, 0),
-            text: SharedString::default(),
+            visible_start: 0,
+            visible_len: 0,
             revision: u32::MAX,
             last_check: Instant::now(),
             dirty: true,
@@ -330,19 +331,23 @@ impl LogModel {
             return;
         };
 
-        let visible = SharedString::from(trailing_lines(logs, LOG_VISIBLE_LINES));
-        self.text = visible;
+        let visible = trailing_lines(logs, LOG_VISIBLE_LINES);
+        self.visible_start = visible.as_ptr() as usize - logs.as_ptr() as usize;
+        self.visible_len = visible.len();
         self.revision = revision;
         self.dirty = true;
     }
 
-    fn take_text(&mut self) -> Option<SharedString> {
+    fn with_text<R>(&mut self, render: impl FnOnce(&str) -> R) -> Option<R> {
         if !self.dirty {
             return None;
         }
-
         self.dirty = false;
-        Some(self.text.clone())
+
+        let end = self.visible_start.saturating_add(self.visible_len);
+        let bytes = self.bytes.as_slice().get(self.visible_start..end)?;
+        let text = core::str::from_utf8(bytes).ok()?;
+        Some(render(text))
     }
 }
 
@@ -397,12 +402,12 @@ impl AppModel {
         }
     }
 
-    pub fn take_log_text(&self) -> Option<SharedString> {
+    pub fn with_log_text<R>(&self, render: impl FnOnce(&str) -> R) -> Option<R> {
         if self.active_view.get() != ViewId::Log {
             return None;
         }
 
-        self.log.borrow_mut().take_text()
+        self.log.borrow_mut().with_text(render)
     }
 
     pub fn take_imu_display(&self) -> Option<ImuDisplay> {
@@ -414,8 +419,13 @@ impl AppModel {
     }
 
     pub fn note_slint_redraw(&self, redrawn: bool) {
-        if redrawn && self.active_view.get() == ViewId::Microphone {
-            self.waveform.borrow_mut().mark_dirty();
+        if redrawn {
+            match self.active_view.get() {
+                ViewId::Microphone => self.waveform.borrow_mut().mark_dirty(),
+                ViewId::Imu => self.imu.borrow_mut().mark_dirty(),
+                ViewId::Log => self.log.borrow_mut().mark_dirty(),
+                _ => {}
+            }
         }
     }
 

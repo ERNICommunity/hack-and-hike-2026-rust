@@ -16,7 +16,7 @@ use esp_hal::{
 };
 use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
 
-use crate::{board, theme, waveform};
+use crate::{board, live_views, models::ImuDisplay, theme, waveform};
 
 const SCREEN_WIDTH: usize = 320;
 const DISPLAY_SPI_MHZ: u32 = 40;
@@ -316,6 +316,9 @@ pub struct Screen {
     // Persistent CPU render scratch avoids re-zeroing/re-creating a 640-byte
     // scanline array on every draw_if_needed() call.
     line_buffer: [Rgb565Pixel; SCREEN_WIDTH],
+    // High-rate Log/IMU pages share one fixed PSRAM framebuffer. It is created
+    // once and never resized, keeping live rendering off the global heap.
+    live_frame: live_views::Framebuffer,
 }
 
 pub fn init(
@@ -380,6 +383,7 @@ pub fn init(
     Screen {
         pipeline: DisplayPipeline::new(spi, control_rx, control_tx, first, second, cs, dc),
         line_buffer: [Rgb565Pixel(0); SCREEN_WIDTH],
+        live_frame: live_views::Framebuffer::new(),
     }
 }
 
@@ -491,6 +495,39 @@ impl Screen {
             waveform::RIGHT_CANVAS_Y,
             &frame.right,
         );
+
+        self.pipeline.finish();
+    }
+
+    /// Render and publish the CPU0 IMU presentation without touching Slint's
+    /// dynamic property/binding graph.
+    pub fn render_imu(&mut self, imu: &ImuDisplay) {
+        self.live_frame.render_imu(imu);
+        self.blit_live_frame();
+    }
+
+    /// Render the newest bounded log snapshot without constructing a Slint
+    /// string/model. The logger/model storage remains fixed in PSRAM.
+    pub fn render_log(&mut self, text: &str) {
+        self.live_frame.render_log(text);
+        self.blit_live_frame();
+    }
+
+    fn blit_live_frame(&mut self) {
+        let frame = &self.live_frame;
+        let pipeline = &mut self.pipeline;
+        let line_buffer = &mut self.line_buffer;
+        let x_start = live_views::CONTENT_X;
+        let x_end = x_start + live_views::WIDTH;
+
+        for y in 0..live_views::HEIGHT {
+            let source = &frame.pixels()[y * live_views::WIDTH..(y + 1) * live_views::WIDTH];
+            let destination = &mut line_buffer[x_start..x_end];
+            for (dst, src) in destination.iter_mut().zip(source.iter().copied()) {
+                *dst = Rgb565Pixel(src);
+            }
+            pipeline.queue_line(y, x_start..x_end, destination);
+        }
 
         self.pipeline.finish();
     }

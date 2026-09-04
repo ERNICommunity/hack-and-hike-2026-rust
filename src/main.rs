@@ -13,6 +13,7 @@ pub mod cross_core;
 mod data_plane;
 mod diagnostics;
 mod imu;
+mod live_views;
 mod logger;
 mod memory;
 mod models;
@@ -195,10 +196,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         let slint_redrawn = screen.render_slint_window(ui.window());
         ui.note_slint_redraw(slint_redrawn);
-
-        if let Some(frame) = ui.take_waveform_frame() {
-            screen.render_waveform(&frame);
-        }
+        ui.render_direct_view(&mut screen);
 
         heap_monitor.end_navigation();
         heap_monitor.poll(now);
