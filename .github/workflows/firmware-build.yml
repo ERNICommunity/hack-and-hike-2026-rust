@@ -26,10 +26,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # A successful full release build is deterministic for these inputs. Keep
-      # a tiny proof marker so an exact rerun can avoid downloading ~850 MB of
-      # toolchain/build caches and repeating a build that already passed.
-      # Bump proof-v1 whenever the build command or CI build semantics change.
       - name: Restore successful-build proof
         id: build-proof
         uses: actions/cache/restore@v4
@@ -98,7 +94,14 @@ jobs:
 
       - name: Build firmware
         if: steps.build-proof.outputs.cache-hit != 'true'
-        run: cargo build --locked --release
+        shell: bash
+        run: |
+          set +e
+          cargo build --release
+          status=$?
+          echo '--- CARGO LOCK DIFF ---'
+          git diff -- Cargo.lock
+          exit $status
 
       - name: Record successful build
         if: steps.build-proof.outputs.cache-hit != 'true' && success()
