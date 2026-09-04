@@ -15,12 +15,13 @@ mod diagnostics;
 mod logger;
 mod memory;
 mod models;
+mod runtime_architecture;
 mod screen;
 mod system_i2c;
+mod theme;
 mod touch;
 mod ui;
 mod waveform;
-mod theme;
 
 extern crate alloc;
 
@@ -66,18 +67,78 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
+    // Express the runtime ownership split in concrete Rust types before
+    // constructing services. These are ordinary resource containers, not CPU
+    // capability tokens: the types document and shape the architecture while
+    // the bootstrap code remains responsible for placing them on the right core.
+    let runtime_resources = runtime_architecture::RuntimeArchitectureResources {
+        cpu0_application_presentation_and_display:
+            runtime_architecture::Cpu0ApplicationPresentationAndDisplayResources {
+                display_io: runtime_architecture::Cpu0DisplayIoResources {
+                    spi2: peripherals.SPI2,
+                    display_dma: peripherals.DMA_CH1,
+                    display_sck: peripherals.GPIO36,
+                    display_mosi: peripherals.GPIO37,
+                    display_dc: peripherals.GPIO35,
+                    display_cs: peripherals.GPIO3,
+                },
+            },
+        cpu1_non_display_peripheral_services:
+            runtime_architecture::Cpu1NonDisplayPeripheralServicesResources {
+                runtime_system_i2c: runtime_architecture::Cpu1RuntimeSystemI2cResources {
+                    i2c0: peripherals.I2C0,
+                    system_i2c_sda: peripherals.GPIO12,
+                    system_i2c_scl: peripherals.GPIO11,
+                },
+                audio_acquisition: runtime_architecture::Cpu1AudioAcquisitionResources {
+                    i2s0: peripherals.I2S0,
+                    audio_dma: peripherals.DMA_CH0,
+                    microphone_mclk: peripherals.GPIO0,
+                    microphone_bclk: peripherals.GPIO34,
+                    microphone_word_select: peripherals.GPIO33,
+                    microphone_data_in: peripherals.GPIO14,
+                },
+            },
+    };
+
+    let runtime_architecture::RuntimeArchitectureResources {
+        cpu0_application_presentation_and_display,
+        cpu1_non_display_peripheral_services,
+    } = runtime_resources;
+
+    let runtime_architecture::Cpu0ApplicationPresentationAndDisplayResources { display_io } =
+        cpu0_application_presentation_and_display;
+    let runtime_architecture::Cpu1NonDisplayPeripheralServicesResources {
+        runtime_system_i2c,
+        audio_acquisition,
+    } = cpu1_non_display_peripheral_services;
+
+    let runtime_architecture::Cpu1RuntimeSystemI2cResources {
+        i2c0,
+        system_i2c_sda,
+        system_i2c_scl,
+    } = runtime_system_i2c;
+
     let mut delay = esp_hal::delay::Delay::new();
-    let mut system_i2c =
-        system_i2c::init(peripherals.I2C0, peripherals.GPIO12, peripherals.GPIO11);
+    let mut system_i2c = system_i2c::init(i2c0, system_i2c_sda, system_i2c_scl);
+
+    let runtime_architecture::Cpu0DisplayIoResources {
+        spi2,
+        display_dma,
+        display_sck,
+        display_mosi,
+        display_dc,
+        display_cs,
+    } = display_io;
 
     let mut screen = screen::init(
         &mut system_i2c,
-        peripherals.SPI2,
-        peripherals.DMA_CH1,
-        peripherals.GPIO36,
-        peripherals.GPIO37,
-        peripherals.GPIO35,
-        peripherals.GPIO3,
+        spi2,
+        display_dma,
+        display_sck,
+        display_mosi,
+        display_dc,
+        display_cs,
         &mut delay,
     );
 
@@ -92,6 +153,9 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     info!("Starting CPU1 acquisition executor");
 
+    let (_cpu0_application_cross_core_endpoint, cpu1_peripheral_services_cross_core_endpoint) =
+        cross_core::split_application_and_peripheral_service_endpoints();
+
     let cpu1_stack = CPU1_STACK.init(Stack::new());
     memory::register_cpu1_stack(&mut *cpu1_stack);
     esp_rtos::start_second_core(
@@ -103,6 +167,12 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
             executor.run(move |spawner| {
+                // This typed endpoint belongs with the CPU1 peripheral-service
+                // side. It is not used yet; future IMU/ESP-NOW service control
+                // should use it instead of growing a generic sample queue.
+                let _cpu1_peripheral_services_cross_core_endpoint =
+                    cpu1_peripheral_services_cross_core_endpoint;
+
                 spawner.spawn(
                     memory::cpu1_stack_monitor_task()
                         .expect("Failed to allocate CPU1 stack monitor task"),
@@ -114,14 +184,23 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                     touch::capture_task(system_bus).expect("Failed to allocate CPU1 touch task"),
                 );
 
+                let runtime_architecture::Cpu1AudioAcquisitionResources {
+                    i2s0,
+                    audio_dma,
+                    microphone_mclk,
+                    microphone_bclk,
+                    microphone_word_select,
+                    microphone_data_in,
+                } = audio_acquisition;
+
                 spawner.spawn(
                     audio::capture_task(
-                        peripherals.I2S0,
-                        peripherals.DMA_CH0,
-                        peripherals.GPIO0,
-                        peripherals.GPIO34,
-                        peripherals.GPIO33,
-                        peripherals.GPIO14,
+                        i2s0,
+                        audio_dma,
+                        microphone_mclk,
+                        microphone_bclk,
+                        microphone_word_select,
+                        microphone_data_in,
                     )
                     .expect("Failed to allocate CPU1 audio task"),
                 );
