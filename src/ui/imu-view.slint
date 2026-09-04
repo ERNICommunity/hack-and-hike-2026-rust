@@ -41,7 +41,9 @@ export component ImuView inherits Rectangle {
     // Slint's MCU software renderer does not implement rotation transforms.
     // The attitude indicator therefore builds a sloped artificial horizon from
     // nine fixed columns whose top edges move with roll and pitch. The item
-    // count stays fixed and only inexpensive geometry properties animate.
+    // count stays fixed and CPU0 updates geometry directly at the 25 Hz model
+    // presentation rate. Avoid Slint property animations here: on hardware
+    // they caused substantial transient heap churn despite stable live usage.
     property <int> visual-roll: root.roll-deg < -45 ? -45 : root.roll-deg > 45 ? 45 : root.roll-deg;
     property <int> visual-pitch: root.pitch-deg < -40 ? -40 : root.pitch-deg > 40 ? 40 : root.pitch-deg;
 
@@ -119,55 +121,46 @@ export component ImuView inherits Rectangle {
             x: 0px; width: parent.width / 9 + 1px;
             y: parent.height / 2 + root.visual-pitch * 0.80px - root.visual-roll * 0.44px;
             height: parent.height - self.y; background: Theme.dark-gray;
-            animate y, height { duration: 90ms; easing: ease-out; }
         }
         ground1 := Rectangle {
             x: parent.width / 9; width: parent.width / 9 + 1px;
             y: parent.height / 2 + root.visual-pitch * 0.80px - root.visual-roll * 0.33px;
             height: parent.height - self.y; background: Theme.dark-gray;
-            animate y, height { duration: 90ms; easing: ease-out; }
         }
         ground2 := Rectangle {
             x: parent.width * 2 / 9; width: parent.width / 9 + 1px;
             y: parent.height / 2 + root.visual-pitch * 0.80px - root.visual-roll * 0.22px;
             height: parent.height - self.y; background: Theme.dark-gray;
-            animate y, height { duration: 90ms; easing: ease-out; }
         }
         ground3 := Rectangle {
             x: parent.width * 3 / 9; width: parent.width / 9 + 1px;
             y: parent.height / 2 + root.visual-pitch * 0.80px - root.visual-roll * 0.11px;
             height: parent.height - self.y; background: Theme.dark-gray;
-            animate y, height { duration: 90ms; easing: ease-out; }
         }
         ground4 := Rectangle {
             x: parent.width * 4 / 9; width: parent.width / 9 + 1px;
             y: parent.height / 2 + root.visual-pitch * 0.80px;
             height: parent.height - self.y; background: Theme.dark-gray;
-            animate y, height { duration: 90ms; easing: ease-out; }
         }
         ground5 := Rectangle {
             x: parent.width * 5 / 9; width: parent.width / 9 + 1px;
             y: parent.height / 2 + root.visual-pitch * 0.80px + root.visual-roll * 0.11px;
             height: parent.height - self.y; background: Theme.dark-gray;
-            animate y, height { duration: 90ms; easing: ease-out; }
         }
         ground6 := Rectangle {
             x: parent.width * 6 / 9; width: parent.width / 9 + 1px;
             y: parent.height / 2 + root.visual-pitch * 0.80px + root.visual-roll * 0.22px;
             height: parent.height - self.y; background: Theme.dark-gray;
-            animate y, height { duration: 90ms; easing: ease-out; }
         }
         ground7 := Rectangle {
             x: parent.width * 7 / 9; width: parent.width / 9 + 1px;
             y: parent.height / 2 + root.visual-pitch * 0.80px + root.visual-roll * 0.33px;
             height: parent.height - self.y; background: Theme.dark-gray;
-            animate y, height { duration: 90ms; easing: ease-out; }
         }
         ground8 := Rectangle {
             x: parent.width * 8 / 9; width: parent.width / 9 + 1px;
             y: parent.height / 2 + root.visual-pitch * 0.80px + root.visual-roll * 0.44px;
             height: parent.height - self.y; background: Theme.dark-gray;
-            animate y, height { duration: 90ms; easing: ease-out; }
         }
 
         // Fixed aircraft reference and pitch ladder.
@@ -185,7 +178,6 @@ export component ImuView inherits Rectangle {
             width: 5px;
             height: 10px;
             background: Theme.white;
-            animate x { duration: 90ms; easing: ease-out; }
         }
 
         Text {
@@ -241,22 +233,18 @@ export component ImuView inherits Rectangle {
         Text {
             x: parent.width / 2 + root.north-delta * 0.58px - 5px;
             y: 3px; width: 10px; text: "N"; color: Theme.dark-blue; font-size: 8px; horizontal-alignment: center;
-            animate x { duration: 110ms; easing: ease-out; }
         }
         Text {
             x: parent.width / 2 + root.east-delta * 0.58px - 5px;
             y: 3px; width: 10px; text: "E"; color: Theme.dark-gray; font-size: 8px; horizontal-alignment: center;
-            animate x { duration: 110ms; easing: ease-out; }
         }
         Text {
             x: parent.width / 2 + root.south-delta * 0.58px - 5px;
             y: 3px; width: 10px; text: "S"; color: Theme.dark-gray; font-size: 8px; horizontal-alignment: center;
-            animate x { duration: 110ms; easing: ease-out; }
         }
         Text {
             x: parent.width / 2 + root.west-delta * 0.58px - 5px;
             y: 3px; width: 10px; text: "W"; color: Theme.dark-gray; font-size: 8px; horizontal-alignment: center;
-            animate x { duration: 110ms; easing: ease-out; }
         }
 
         // Fixed lubber line: compass labels move beneath it as yaw changes.
