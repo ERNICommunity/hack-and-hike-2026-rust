@@ -15,7 +15,7 @@ mod diagnostics;
 mod logger;
 mod memory;
 mod models;
-mod runtime_architecture;
+mod resources;
 mod screen;
 mod system_i2c;
 mod theme;
@@ -67,78 +67,66 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    // Express the runtime ownership split in concrete Rust types before
-    // constructing services. These are ordinary resource containers, not CPU
-    // capability tokens: the types document and shape the architecture while
-    // the bootstrap code remains responsible for placing them on the right core.
-    let runtime_resources = runtime_architecture::RuntimeArchitectureResources {
-        cpu0_application_presentation_and_display:
-            runtime_architecture::Cpu0ApplicationPresentationAndDisplayResources {
-                display_io: runtime_architecture::Cpu0DisplayIoResources {
-                    spi2: peripherals.SPI2,
-                    display_dma: peripherals.DMA_CH1,
-                    display_sck: peripherals.GPIO36,
-                    display_mosi: peripherals.GPIO37,
-                    display_dc: peripherals.GPIO35,
-                    display_cs: peripherals.GPIO3,
-                },
+    // Partition raw HAL handles into the two intended architectural sides.
+    // These resource types make ownership visible but do not try to prove which
+    // physical core is executing.
+    let runtime_resources = resources::RuntimeResources {
+        cpu0: resources::Cpu0Resources {
+            display: resources::DisplayResources {
+                spi2: peripherals.SPI2,
+                dma: peripherals.DMA_CH1,
+                sck: peripherals.GPIO36,
+                mosi: peripherals.GPIO37,
+                dc: peripherals.GPIO35,
+                cs: peripherals.GPIO3,
             },
-        cpu1_non_display_peripheral_services:
-            runtime_architecture::Cpu1NonDisplayPeripheralServicesResources {
-                runtime_system_i2c: runtime_architecture::Cpu1RuntimeSystemI2cResources {
-                    i2c0: peripherals.I2C0,
-                    system_i2c_sda: peripherals.GPIO12,
-                    system_i2c_scl: peripherals.GPIO11,
-                },
-                audio_acquisition: runtime_architecture::Cpu1AudioAcquisitionResources {
-                    i2s0: peripherals.I2S0,
-                    audio_dma: peripherals.DMA_CH0,
-                    microphone_mclk: peripherals.GPIO0,
-                    microphone_bclk: peripherals.GPIO34,
-                    microphone_word_select: peripherals.GPIO33,
-                    microphone_data_in: peripherals.GPIO14,
-                },
+        },
+        cpu1: resources::Cpu1Resources {
+            system_i2c: resources::SystemI2cResources {
+                i2c0: peripherals.I2C0,
+                sda: peripherals.GPIO12,
+                scl: peripherals.GPIO11,
             },
+            audio: resources::AudioResources {
+                i2s0: peripherals.I2S0,
+                dma: peripherals.DMA_CH0,
+                mclk: peripherals.GPIO0,
+                bclk: peripherals.GPIO34,
+                word_select: peripherals.GPIO33,
+                data_in: peripherals.GPIO14,
+            },
+        },
     };
 
-    let runtime_architecture::RuntimeArchitectureResources {
-        cpu0_application_presentation_and_display,
-        cpu1_non_display_peripheral_services,
-    } = runtime_resources;
+    let resources::RuntimeResources { cpu0, cpu1 } = runtime_resources;
+    let resources::Cpu0Resources { display } = cpu0;
+    let resources::Cpu1Resources {
+        system_i2c: system_i2c_resources,
+        audio: audio_resources,
+    } = cpu1;
 
-    let runtime_architecture::Cpu0ApplicationPresentationAndDisplayResources { display_io } =
-        cpu0_application_presentation_and_display;
-    let runtime_architecture::Cpu1NonDisplayPeripheralServicesResources {
-        runtime_system_i2c,
-        audio_acquisition,
-    } = cpu1_non_display_peripheral_services;
-
-    let runtime_architecture::Cpu1RuntimeSystemI2cResources {
-        i2c0,
-        system_i2c_sda,
-        system_i2c_scl,
-    } = runtime_system_i2c;
+    let resources::SystemI2cResources { i2c0, sda, scl } = system_i2c_resources;
 
     let mut delay = esp_hal::delay::Delay::new();
-    let mut system_i2c = system_i2c::init(i2c0, system_i2c_sda, system_i2c_scl);
+    let mut system_i2c = system_i2c::init(i2c0, sda, scl);
 
-    let runtime_architecture::Cpu0DisplayIoResources {
+    let resources::DisplayResources {
         spi2,
-        display_dma,
-        display_sck,
-        display_mosi,
-        display_dc,
-        display_cs,
-    } = display_io;
+        dma,
+        sck,
+        mosi,
+        dc,
+        cs,
+    } = display;
 
     let mut screen = screen::init(
         &mut system_i2c,
         spi2,
-        display_dma,
-        display_sck,
-        display_mosi,
-        display_dc,
-        display_cs,
+        dma,
+        sck,
+        mosi,
+        dc,
+        cs,
         &mut delay,
     );
 
@@ -153,8 +141,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     info!("Starting CPU1 acquisition executor");
 
-    let (_cpu0_application_cross_core_endpoint, cpu1_peripheral_services_cross_core_endpoint) =
-        cross_core::split_application_and_peripheral_service_endpoints();
+    let (_cpu0_app_endpoint, cpu1_service_endpoint) = cross_core::split();
 
     let cpu1_stack = CPU1_STACK.init(Stack::new());
     memory::register_cpu1_stack(&mut *cpu1_stack);
@@ -167,11 +154,9 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
             executor.run(move |spawner| {
-                // This typed endpoint belongs with the CPU1 peripheral-service
-                // side. It is not used yet; future IMU/ESP-NOW service control
-                // should use it instead of growing a generic sample queue.
-                let _cpu1_peripheral_services_cross_core_endpoint =
-                    cpu1_peripheral_services_cross_core_endpoint;
+                // Reserved for future low-rate application/service commands.
+                // Touch/audio keep their specialized cross-core data paths.
+                let _cpu1_service_endpoint = cpu1_service_endpoint;
 
                 spawner.spawn(
                     memory::cpu1_stack_monitor_task()
@@ -184,25 +169,18 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                     touch::capture_task(system_bus).expect("Failed to allocate CPU1 touch task"),
                 );
 
-                let runtime_architecture::Cpu1AudioAcquisitionResources {
+                let resources::AudioResources {
                     i2s0,
-                    audio_dma,
-                    microphone_mclk,
-                    microphone_bclk,
-                    microphone_word_select,
-                    microphone_data_in,
-                } = audio_acquisition;
+                    dma,
+                    mclk,
+                    bclk,
+                    word_select,
+                    data_in,
+                } = audio_resources;
 
                 spawner.spawn(
-                    audio::capture_task(
-                        i2s0,
-                        audio_dma,
-                        microphone_mclk,
-                        microphone_bclk,
-                        microphone_word_select,
-                        microphone_data_in,
-                    )
-                    .expect("Failed to allocate CPU1 audio task"),
+                    audio::capture_task(i2s0, dma, mclk, bclk, word_select, data_in)
+                        .expect("Failed to allocate CPU1 audio task"),
                 );
             });
         },
