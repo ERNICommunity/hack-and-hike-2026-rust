@@ -15,6 +15,11 @@ export component AppWindow inherits Window {
     in property <int> imu-yaw-deg: 0;
     in property <int> imu-status: 0;
     in property <int> imu-read-errors: 0;
+    in property <int> imu-mag-errors: 0;
+    in property <int> imu-mag-status: 0;
+    in property <int> imu-mag-field-ut: 0;
+    in property <int> imu-mag-calibration: 0;
+    in property <bool> imu-gyro-bias-ready: false;
     callback navigate(int);
 
     content := Rectangle {
@@ -41,6 +46,11 @@ export component AppWindow inherits Window {
             yaw-deg: root.imu-yaw-deg;
             status: root.imu-status;
             read-errors: root.imu-read-errors;
+            mag-errors: root.imu-mag-errors;
+            mag-status: root.imu-mag-status;
+            mag-field-ut: root.imu-mag-field-ut;
+            mag-calibration: root.imu-mag-calibration;
+            gyro-bias-ready: root.imu-gyro-bias-ready;
         }
 
         MicrophoneView {
