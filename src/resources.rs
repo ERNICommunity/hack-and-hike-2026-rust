@@ -17,6 +17,17 @@
 use crate::{audio, cross_core, screen, system_i2c};
 
 /// Complete runtime split between the two architectural sides.
+///
+/// ```text
+/// RuntimeResources
+/// ├── Cpu0Resources
+/// │   ├── screen::Resources
+/// │   └── Cpu0AppEndpoint
+/// └── Cpu1Resources
+///     ├── system_i2c::Resources
+///     ├── audio::Resources
+///     └── Cpu1ServiceEndpoint
+/// ```
 pub struct RuntimeResources {
     pub cpu0: Cpu0Resources,
     pub cpu1: Cpu1Resources,
