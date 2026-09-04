@@ -46,66 +46,6 @@ impl<T> FixedPsramBuffer<T> {
     }
 }
 
-/// Fixed-capacity ring whose complete backing array is allocated once in
-/// PSRAM. Pushing when full overwrites the oldest element; it never reallocates.
-pub struct FixedPsramRing<T: Copy + Default, const N: usize> {
-    storage: PsramVec<T>,
-    start: usize,
-    len: usize,
-}
-
-impl<T: Copy + Default, const N: usize> FixedPsramRing<T, N> {
-    pub fn new() -> Self {
-        assert!(N > 0);
-
-        let mut storage = vec_with_capacity(N);
-        storage.resize(N, T::default());
-
-        Self {
-            storage,
-            start: 0,
-            len: 0,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn capacity(&self) -> usize {
-        N
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub fn clear(&mut self) {
-        self.start = 0;
-        self.len = 0;
-    }
-
-    pub fn push_back(&mut self, value: T) {
-        if self.len < N {
-            let index = (self.start + self.len) % N;
-            self.storage[index] = value;
-            self.len += 1;
-        } else {
-            self.storage[self.start] = value;
-            self.start = (self.start + 1) % N;
-        }
-    }
-
-    pub fn get(&self, logical_index: usize) -> Option<&T> {
-        if logical_index >= self.len {
-            return None;
-        }
-
-        let index = (self.start + logical_index) % N;
-        self.storage.get(index)
-    }
-}
-
 /// Fixed-capacity byte ring whose backing bytes live in PSRAM.
 pub struct PsramByteRing {
     storage: PsramVec<u8>,
