@@ -12,6 +12,7 @@ mod board;
 pub mod cross_core;
 mod data_plane;
 mod diagnostics;
+mod imu;
 mod logger;
 mod memory;
 mod models;
@@ -141,7 +142,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
             executor.run(move |spawner| {
                 // Reserved for future low-rate application/service commands.
-                // Touch/audio keep their specialized cross-core data paths.
+                // Touch/audio/IMU keep their specialized cross-core data paths.
                 let _cpu1_service_endpoint = cpu1_service_endpoint;
 
                 spawner.spawn(
@@ -150,6 +151,11 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                 );
 
                 let system_bus = system_i2c::into_async(system_i2c);
+
+                spawner.spawn(
+                    imu::capture_task(system_bus, imu::DEFAULT_CONFIG)
+                        .expect("Failed to allocate CPU1 IMU task"),
+                );
 
                 spawner.spawn(
                     touch::capture_task(system_bus).expect("Failed to allocate CPU1 touch task"),
