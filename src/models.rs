@@ -8,7 +8,7 @@ use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 
 use embassy_time::{Duration, Instant};
-use slint::{Model, ModelNotify, ModelTracker};
+use slint::SharedString;
 
 use crate::{
     audio, data_plane, imu, logger,
@@ -19,6 +19,8 @@ const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
 const IMU_UI_UPDATE: Duration = Duration::from_millis(40);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
+/// Number of complete trailing log lines rendered by the fixed MCU log view.
+const LOG_VISIBLE_LINES: usize = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -259,124 +261,88 @@ fn quantize_waveform(sample: i16, scale: i32) -> i8 {
         .clamp(-AMPLITUDE_PIXELS, AMPLITUDE_PIXELS) as i8
 }
 
-#[derive(Clone, Copy, Default)]
-struct LineRange {
-    start: u16,
-    end: u16,
+/// Return a UTF-8 slice containing at most the newest `line_count` complete
+/// logger lines. Logger records always end in `\n`, so newline byte boundaries
+/// are also UTF-8 character boundaries.
+fn trailing_lines(text: &str, line_count: usize) -> &str {
+    if line_count == 0 || text.is_empty() {
+        return "";
+    }
+
+    let bytes = text.as_bytes();
+    let mut seen = 0usize;
+    for index in (0..bytes.len()).rev() {
+        if bytes[index] != b'\n' {
+            continue;
+        }
+
+        seen += 1;
+        if seen > line_count {
+            return &text[index + 1..];
+        }
+    }
+
+    text
 }
 
-struct LogData {
+/// Fixed-size MCU log presentation model.
+///
+/// The complete byte snapshot remains in PSRAM, but CPU0 publishes only one
+/// bounded `SharedString` containing the newest visible lines. This avoids
+/// Slint `ListView`/repeater dependency-node churn on every model reset.
+struct LogModel {
     bytes: data_plane::FixedPsramBuffer<u8>,
-    lines: data_plane::FixedPsramRing<LineRange, { logger::MAX_LOG_ROWS }>,
+    text: SharedString,
     revision: u32,
-}
-
-impl LogData {
-    fn new() -> Self {
-        Self {
-            bytes: data_plane::FixedPsramBuffer::filled(logger::HISTORY_BYTES, 0),
-            lines: data_plane::FixedPsramRing::new(),
-            revision: u32::MAX,
-        }
-    }
-
-    fn rebuild_lines(&mut self, len: usize) {
-        self.lines.clear();
-
-        let bytes = self.bytes.as_slice();
-        let mut start = 0usize;
-
-        for end in 0..len {
-            if bytes[end] != b'\n' {
-                continue;
-            }
-
-            if end > start {
-                self.lines.push_back(LineRange {
-                    start: start as u16,
-                    end: end as u16,
-                });
-            }
-
-            start = end + 1;
-        }
-
-        if start < len {
-            self.lines.push_back(LineRange {
-                start: start as u16,
-                end: len as u16,
-            });
-        }
-    }
-}
-
-/// Bounded virtualized log model. Its backing byte snapshot and complete line
-/// index are preallocated in PSRAM. Only visible ListView rows become
-/// SharedStrings in internal RAM.
-pub struct LogModel {
-    data: RefCell<LogData>,
-    notify: ModelNotify,
-    last_check: Cell<Instant>,
+    last_check: Instant,
+    dirty: bool,
 }
 
 impl LogModel {
     fn new() -> Self {
         Self {
-            data: RefCell::new(LogData::new()),
-            notify: ModelNotify::default(),
-            last_check: Cell::new(Instant::now()),
+            bytes: data_plane::FixedPsramBuffer::filled(logger::HISTORY_BYTES, 0),
+            text: SharedString::default(),
+            revision: u32::MAX,
+            last_check: Instant::now(),
+            dirty: true,
         }
     }
 
-    fn update_if_due(&self, now: Instant) {
-        if now - self.last_check.get() < LOG_REFRESH {
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    fn update_if_due(&mut self, now: Instant) {
+        if now - self.last_check < LOG_REFRESH {
             return;
         }
-        self.last_check.set(now);
+        self.last_check = now;
         self.refresh();
     }
 
-    fn refresh(&self) {
-        if logger::revision() == self.data.borrow().revision {
+    fn refresh(&mut self) {
+        if logger::revision() == self.revision {
             return;
         }
 
-        let mut data = self.data.borrow_mut();
-        let Some((len, revision)) = ({
-            logger::snapshot(data.bytes.as_mut_slice())
-                .map(|(logs, revision)| (logs.len(), revision))
-        }) else {
+        let Some((logs, revision)) = logger::snapshot(self.bytes.as_mut_slice()) else {
             return;
         };
 
-        data.rebuild_lines(len);
-        data.revision = revision;
-        drop(data);
-
-        self.notify.reset();
-    }
-}
-
-impl Model for LogModel {
-    type Data = slint::SharedString;
-
-    fn row_count(&self) -> usize {
-        self.data.borrow().lines.len()
+        let visible = SharedString::from(trailing_lines(logs, LOG_VISIBLE_LINES));
+        self.text = visible;
+        self.revision = revision;
+        self.dirty = true;
     }
 
-    fn row_data(&self, row: usize) -> Option<Self::Data> {
-        let data = self.data.borrow();
-        let range = *data.lines.get(row)?;
-        let text = core::str::from_utf8(
-            &data.bytes.as_slice()[usize::from(range.start)..usize::from(range.end)],
-        )
-        .ok()?;
+    fn take_text(&mut self) -> Option<SharedString> {
+        if !self.dirty {
+            return None;
+        }
 
-        Some(slint::SharedString::from(text))
-    }
-
-    fn model_tracker(&self) -> &dyn ModelTracker {
-        &self.notify
+        self.dirty = false;
+        Some(self.text.clone())
     }
 }
 
@@ -388,19 +354,19 @@ pub struct AppModel {
     active_view: Cell<ViewId>,
     imu: RefCell<ImuModel>,
     waveform: RefCell<WaveformModel>,
-    log: Rc<LogModel>,
+    log: RefCell<LogModel>,
 }
 
 impl AppModel {
     pub fn new() -> Rc<Self> {
-        let log = Rc::new(LogModel::new());
+        let mut log = LogModel::new();
         log.refresh();
 
         Rc::new(Self {
             active_view: Cell::new(ViewId::Log),
             imu: RefCell::new(ImuModel::new()),
             waveform: RefCell::new(WaveformModel::new()),
-            log,
+            log: RefCell::new(log),
         })
     }
 
@@ -415,6 +381,7 @@ impl AppModel {
                 match view {
                     ViewId::Imu => self.imu.borrow_mut().mark_dirty(),
                     ViewId::Microphone => self.waveform.borrow_mut().mark_dirty(),
+                    ViewId::Log => self.log.borrow_mut().mark_dirty(),
                     _ => {}
                 }
             }
@@ -425,13 +392,17 @@ impl AppModel {
         match self.active_view.get() {
             ViewId::Imu => self.imu.borrow_mut().update_if_due(now),
             ViewId::Microphone => self.waveform.borrow_mut().update_if_due(now),
-            ViewId::Log => self.log.update_if_due(now),
+            ViewId::Log => self.log.borrow_mut().update_if_due(now),
             _ => {}
         }
     }
 
-    pub fn log_model(&self) -> Rc<LogModel> {
-        self.log.clone()
+    pub fn take_log_text(&self) -> Option<SharedString> {
+        if self.active_view.get() != ViewId::Log {
+            return None;
+        }
+
+        self.log.borrow_mut().take_text()
     }
 
     pub fn take_imu_display(&self) -> Option<ImuDisplay> {
