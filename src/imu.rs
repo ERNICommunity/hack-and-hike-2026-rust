@@ -635,6 +635,9 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                     let dt_seconds = elapsed_ms as f32 * 0.001;
 
                     let corrected_gyro = gyro_bias.correct(sample.accel_g, sample.gyro_dps);
+                    // Yaw correction is intentionally single-shot per fresh 30 Hz
+                    // BMM150 frame; the 100 Hz fusion ticks between frames are gyro-only.
+                    magnetic_for_fusion = None;
 
                     if let Some(trim) = mag_trim {
                         let is_new_frame = last_mag_frame != Some(sample.mag_data);
@@ -652,7 +655,14 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                                         -mag.field_ut[1],
                                         -mag.field_ut[2],
                                     ];
-                                    mag_calibration.observe(body_field);
+                                    // Once calibrated, do not let an abnormal external
+                                    // magnetic field move the learned extrema.
+                                    if !mag_calibration.is_ready()
+                                        || (bmm150::GOOD_FIELD_MIN_UT..=bmm150::GOOD_FIELD_MAX_UT)
+                                            .contains(&mag.field_strength_ut)
+                                    {
+                                        mag_calibration.observe(body_field);
+                                    }
                                     let corrected_field = mag_calibration.apply(body_field);
                                     mag_field_ut = bmm150::vector_length(corrected_field);
 
@@ -855,16 +865,14 @@ fn atan2_approx(y: f32, x: f32) -> f32 {
 
 fn sin_approx(value: f32) -> f32 {
     let mut x = wrap_radians(value);
-    let mut sign = 1.0;
     if x > PI * 0.5 {
         x = PI - x;
     } else if x < -PI * 0.5 {
         x = -PI - x;
-        sign = -1.0;
     }
 
     let x2 = x * x;
-    sign * x * (1.0 - x2 / 6.0 + x2 * x2 / 120.0 - x2 * x2 * x2 / 5040.0)
+    x * (1.0 - x2 / 6.0 + x2 * x2 / 120.0 - x2 * x2 * x2 / 5040.0)
 }
 
 fn cos_approx(value: f32) -> f32 {
