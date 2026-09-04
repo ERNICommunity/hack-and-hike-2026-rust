@@ -125,8 +125,10 @@ impl Ui {
         .expect("Failed to initialize Slint platform");
 
         let app = AppWindow::new().expect("Failed to construct Slint AppWindow");
-        app.set_log_lines(model.log_model().into());
         app.set_active_view(model.active_view().as_i32());
+        if let Some(log_text) = model.take_log_text() {
+            app.set_log_text(log_text);
+        }
 
         let navigation_model = model.clone();
         app.on_navigate(move |view| navigation_model.request_view(view));
@@ -143,9 +145,8 @@ impl Ui {
         }
     }
 
-    /// Force each permanent page and virtualized delegate set through layout
-    /// once. After this returns, interactive navigation should not construct
-    /// page/model trees.
+    /// Force each permanent page through layout once. After this returns,
+    /// interactive navigation should not construct new page trees.
     pub fn prewarm_navigation(&mut self, screen: &mut Screen) {
         let initial = self.presented_view;
 
@@ -167,6 +168,10 @@ impl Ui {
     pub fn prepare_frame(&mut self, now: Instant) -> Option<NavigationChange> {
         dispatch_touch_input(&self.window, &mut self.touch);
         self.model.update(now);
+
+        if let Some(log_text) = self.model.take_log_text() {
+            self.app.set_log_text(log_text);
+        }
 
         if let Some(imu) = self.model.take_imu_display() {
             self.app.set_imu_roll_deg(imu.roll_deg);
