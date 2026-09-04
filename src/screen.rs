@@ -16,10 +16,7 @@ use esp_hal::{
 };
 use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
 
-use crate::{theme, waveform};
-
-const AXP2101_ADDR: u8 = 0x34;
-const AW9523_ADDR: u8 = 0x58;
+use crate::{board, theme, waveform};
 
 const SCREEN_WIDTH: usize = 320;
 const DISPLAY_SPI_MHZ: u32 = 40;
@@ -33,6 +30,19 @@ const DCS_MEMORY_WRITE: u8 = 0x2C;
 type DisplaySpiDma = SpiDma<'static, Blocking>;
 type DisplaySpiDmaBus = SpiDmaBus<'static, Blocking>;
 type PixelTransfer = SpiDmaTransfer<'static, Blocking, DmaTxBuf>;
+
+/// CPU0-owned physical resources required by the display service.
+///
+/// Keeping this type in `screen` makes the service boundary explicit: the
+/// resource bundle stays intact until `screen::init()` consumes it.
+pub struct Resources {
+    pub spi2: SPI2<'static>,
+    pub dma: DMA_CH1<'static>,
+    pub sck: GPIO36<'static>,
+    pub mosi: GPIO37<'static>,
+    pub dc: GPIO35<'static>,
+    pub cs: GPIO3<'static>,
+}
 
 /// Small owned SpiDevice adapter used only during mipidsi initialization.
 ///
@@ -107,50 +117,6 @@ where
             Ok(()) => cs_result,
         }
     }
-}
-
-fn update_register_bits(
-    i2c: &mut impl embedded_hal::i2c::I2c,
-    address: u8,
-    register: u8,
-    mask: u8,
-    value: u8,
-) {
-    let mut current = [0u8; 1];
-    if i2c.write_read(address, &[register], &mut current).is_ok() {
-        let next = (current[0] & !mask) | (value & mask);
-        let _ = i2c.write(address, &[register, next]);
-    }
-}
-
-fn init_pmic_and_hardware_reset(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
-    // LCD backlight rail (DLDO1) at 3.3 V. Microphone power is owned by audio.rs.
-    let _ = i2c.write(AXP2101_ADDR, &[0x99, 0x1C]);
-
-    let mut reg90 = [0u8; 1];
-    if i2c.write_read(AXP2101_ADDR, &[0x90], &mut reg90).is_ok() {
-        let _ = i2c.write(AXP2101_ADDR, &[0x90, reg90[0] | (1 << 7)]);
-    }
-
-    let _ = i2c.write(AW9523_ADDR, &[0x13, 0xFF]);
-
-    // AW9523 direction registers: 0 = output, 1 = input.
-    // P0_0 = FT6336 TOUCH_RST -> output.
-    update_register_bits(i2c, AW9523_ADDR, 0x04, 1 << 0, 0);
-
-    // P1_1 = LCD_RST -> output.
-    // P1_2 = FT6336 TOUCH_INT -> input.
-    update_register_bits(i2c, AW9523_ADDR, 0x05, (1 << 1) | (1 << 2), 1 << 2);
-
-    // Reset LCD and touch controller together, preserving unrelated outputs.
-    update_register_bits(i2c, AW9523_ADDR, 0x03, 1 << 1, 0);
-    update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 0, 0);
-    delay.delay_millis(20u32);
-
-    update_register_bits(i2c, AW9523_ADDR, 0x03, 1 << 1, 1 << 1);
-    update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 0, 1 << 0);
-
-    delay.delay_millis(300u32);
 }
 
 enum PipelineState {
@@ -354,24 +320,29 @@ pub struct Screen {
 
 pub fn init(
     i2c: &mut impl embedded_hal::i2c::I2c,
-    spi2: SPI2<'static>,
-    dma_ch1: DMA_CH1<'static>,
-    gpio36: GPIO36<'static>,
-    gpio37: GPIO37<'static>,
-    gpio35: GPIO35<'static>,
-    gpio3: GPIO3<'static>,
+    resources: Resources,
     delay: &mut Delay,
 ) -> Screen {
-    init_pmic_and_hardware_reset(i2c, delay);
+    let Resources {
+        spi2,
+        dma,
+        sck,
+        mosi,
+        dc,
+        cs,
+    } = resources;
+
+    board::power::enable_lcd_backlight(i2c);
+    board::io_expander::reset_display_and_touch(i2c, delay);
 
     let spi = Spi::new(
         spi2,
         SpiConfig::default().with_frequency(Rate::from_mhz(DISPLAY_SPI_MHZ)),
     )
     .unwrap()
-    .with_sck(gpio36)
-    .with_mosi(gpio37)
-    .with_dma(dma_ch1);
+    .with_sck(sck)
+    .with_mosi(mosi)
+    .with_dma(dma);
 
     // Small internal DMA buffers back the blocking SpiDmaBus used for DCS
     // commands and for mipidsi's one-time controller initialization.
@@ -381,8 +352,8 @@ pub fn init(
     let control_tx = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
     let dma_bus = spi.with_buffers(control_rx, control_tx);
 
-    let dc = Output::new(gpio35, Level::Low, OutputConfig::default());
-    let cs = Output::new(gpio3, Level::High, OutputConfig::default());
+    let dc = Output::new(dc, Level::Low, OutputConfig::default());
+    let cs = Output::new(cs, Level::High, OutputConfig::default());
     let spi_device = OwnedSpiDevice::new(dma_bus, cs).expect("Failed to initialize LCD SPI device");
     let di = display_interface_spi::SPIInterface::new(spi_device, dc);
 
@@ -434,8 +405,7 @@ impl LineBufferProvider for DisplayWrapper<'_> {
     }
 }
 
-const WAVEFORM_BACKGROUND: Rgb565Pixel =
-    Rgb565Pixel(theme::WHITE_RGB565);
+const WAVEFORM_BACKGROUND: Rgb565Pixel = Rgb565Pixel(theme::WHITE_RGB565);
 const WAVEFORM_GRID: Rgb565Pixel = Rgb565Pixel(theme::LIGHT_GRAY_RGB565);
 const WAVEFORM_TRACE: Rgb565Pixel = Rgb565Pixel(theme::DARK_BLUE_RGB565);
 

@@ -5,7 +5,8 @@ use esp_hal::{
     peripherals::{DMA_CH0, GPIO0, GPIO14, GPIO33, GPIO34, I2S0},
     time::Rate,
 };
-use crate::{data_plane, diagnostics};
+
+use crate::{board, data_plane, diagnostics};
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const BLOCK_FRAMES: usize = 512;
@@ -17,9 +18,20 @@ pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 // RAM; only the CPU-side drain scratch is allocated from PSRAM.
 const DMA_BUFFER_BYTES: usize = 32 * 1024;
 
-const AXP2101_ADDR: u8 = 0x34;
-const AW9523_ADDR: u8 = 0x58;
 const ES7210_ADDR: u8 = 0x40;
+
+/// CPU1-owned physical resources required by the audio acquisition service.
+///
+/// ES7210 register configuration remains in this module, while this bundle
+/// describes the I2S/DMA/GPIO resources consumed by `capture_task`.
+pub struct Resources {
+    pub i2s0: I2S0<'static>,
+    pub dma: DMA_CH0<'static>,
+    pub mclk: GPIO0<'static>,
+    pub bclk: GPIO34<'static>,
+    pub word_select: GPIO33<'static>,
+    pub data_in: GPIO14<'static>,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct AudioBlockInfo {
@@ -51,35 +63,13 @@ impl LatestAudio {
 // not run with interrupts / the other core excluded.
 static LATEST_AUDIO: Mutex<CriticalSectionRawMutex, LatestAudio> = Mutex::new(LatestAudio::new());
 
-fn update_register_bits<I2C>(
-    i2c: &mut I2C,
-    address: u8,
-    register: u8,
-    mask: u8,
-    value: u8,
-) -> Result<(), I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    let mut current = [0u8; 1];
-    i2c.write_read(address, &[register], &mut current)?;
-    let next = (current[0] & !mask) | (value & mask);
-    i2c.write(address, &[register, next])
-}
-
 /// Power the microphone path and configure ES7210 MIC1/MIC2 for stereo I2S.
 pub fn init_es7210<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    // CoreS3-Lite microphone power: AXP2101 ALDO2 = 3.3 V and enabled.
-    i2c.write(AXP2101_ADDR, &[0x93, 0x1C])?;
-    update_register_bits(i2c, AXP2101_ADDR, 0x90, 1 << 1, 1 << 1)?;
-
-    // Keep the onboard amplifier released during board audio bring-up.
-    update_register_bits(i2c, AW9523_ADDR, 0x04, 1 << 2, 0)?;
-    update_register_bits(i2c, AW9523_ADDR, 0x02, 1 << 2, 1 << 2)?;
-    delay.delay_millis(10u32);
+    board::power::enable_microphone(i2c)?;
+    board::io_expander::release_audio_amplifier(i2c, delay)?;
 
     i2c.write(ES7210_ADDR, &[0x00, 0xFF])?;
 
@@ -145,19 +135,21 @@ pub fn copy_latest_interleaved(out: &mut [i16; BLOCK_SAMPLES]) -> Option<AudioBl
 }
 
 #[embassy_executor::task]
-pub async fn capture_task(
-    i2s0: I2S0<'static>,
-    dma_channel: DMA_CH0<'static>,
-    mclk: GPIO0<'static>,
-    bclk: GPIO34<'static>,
-    ws: GPIO33<'static>,
-    din: GPIO14<'static>,
-) {
+pub async fn capture_task(resources: Resources) {
+    let Resources {
+        i2s0,
+        dma,
+        mclk,
+        bclk,
+        word_select,
+        data_in,
+    } = resources;
+
     let (rx_buffer, rx_descriptors, _, _) = esp_hal::dma_buffers!(DMA_BUFFER_BYTES, 0);
 
     let i2s = I2s::new(
         i2s0,
-        dma_channel,
+        dma,
         I2sConfig::new_tdm_philips()
             .with_sample_rate(Rate::from_hz(SAMPLE_RATE_HZ))
             .with_data_format(DataFormat::Data16Channel16)
@@ -170,8 +162,8 @@ pub async fn capture_task(
     let i2s_rx = i2s
         .i2s_rx
         .with_bclk(bclk)
-        .with_ws(ws)
-        .with_din(din)
+        .with_ws(word_select)
+        .with_din(data_in)
         .build(rx_descriptors);
 
     let mut transfer = i2s_rx

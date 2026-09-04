@@ -8,17 +8,20 @@
 #![deny(clippy::large_stack_frames)]
 
 mod audio;
+mod board;
+pub mod cross_core;
 mod data_plane;
 mod diagnostics;
 mod logger;
 mod memory;
 mod models;
+mod resources;
 mod screen;
 mod system_i2c;
+mod theme;
 mod touch;
 mod ui;
 mod waveform;
-mod theme;
 
 extern crate alloc;
 
@@ -64,20 +67,56 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    let mut delay = esp_hal::delay::Delay::new();
-    let mut system_i2c =
-        system_i2c::init(peripherals.I2C0, peripherals.GPIO12, peripherals.GPIO11);
+    let (cpu0_app_endpoint, cpu1_service_endpoint) = cross_core::split();
 
-    let mut screen = screen::init(
-        &mut system_i2c,
-        peripherals.SPI2,
-        peripherals.DMA_CH1,
-        peripherals.GPIO36,
-        peripherals.GPIO37,
-        peripherals.GPIO35,
-        peripherals.GPIO3,
-        &mut delay,
-    );
+    // Partition hardware and communication endpoints into the two intended
+    // architectural sides. These resource types make ownership visible but do
+    // not try to prove which physical core is executing.
+    let runtime_resources = resources::RuntimeResources {
+        cpu0: resources::Cpu0Resources {
+            display: screen::Resources {
+                spi2: peripherals.SPI2,
+                dma: peripherals.DMA_CH1,
+                sck: peripherals.GPIO36,
+                mosi: peripherals.GPIO37,
+                dc: peripherals.GPIO35,
+                cs: peripherals.GPIO3,
+            },
+            app: cpu0_app_endpoint,
+        },
+        cpu1: resources::Cpu1Resources {
+            system_i2c: system_i2c::Resources {
+                i2c0: peripherals.I2C0,
+                sda: peripherals.GPIO12,
+                scl: peripherals.GPIO11,
+            },
+            audio: audio::Resources {
+                i2s0: peripherals.I2S0,
+                dma: peripherals.DMA_CH0,
+                mclk: peripherals.GPIO0,
+                bclk: peripherals.GPIO34,
+                word_select: peripherals.GPIO33,
+                data_in: peripherals.GPIO14,
+            },
+            services: cpu1_service_endpoint,
+        },
+    };
+
+    let resources::RuntimeResources { cpu0, cpu1 } = runtime_resources;
+    let resources::Cpu0Resources {
+        display,
+        app: _cpu0_app_endpoint,
+    } = cpu0;
+    let resources::Cpu1Resources {
+        system_i2c: system_i2c_resources,
+        audio: audio_resources,
+        services: cpu1_service_endpoint,
+    } = cpu1;
+
+    let mut delay = esp_hal::delay::Delay::new();
+    let mut system_i2c = system_i2c::init(system_i2c_resources);
+
+    let mut screen = screen::init(&mut system_i2c, display, &mut delay);
 
     audio::init_es7210(&mut system_i2c, &mut delay)
         .expect("Failed to initialize ES7210 microphone codec");
@@ -101,6 +140,10 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
             executor.run(move |spawner| {
+                // Reserved for future low-rate application/service commands.
+                // Touch/audio keep their specialized cross-core data paths.
+                let _cpu1_service_endpoint = cpu1_service_endpoint;
+
                 spawner.spawn(
                     memory::cpu1_stack_monitor_task()
                         .expect("Failed to allocate CPU1 stack monitor task"),
@@ -113,15 +156,8 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                 );
 
                 spawner.spawn(
-                    audio::capture_task(
-                        peripherals.I2S0,
-                        peripherals.DMA_CH0,
-                        peripherals.GPIO0,
-                        peripherals.GPIO34,
-                        peripherals.GPIO33,
-                        peripherals.GPIO14,
-                    )
-                    .expect("Failed to allocate CPU1 audio task"),
+                    audio::capture_task(audio_resources)
+                        .expect("Failed to allocate CPU1 audio task"),
                 );
             });
         },

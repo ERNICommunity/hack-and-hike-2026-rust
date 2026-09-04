@@ -10,6 +10,17 @@ use esp_hal::{
 };
 use static_cell::StaticCell;
 
+/// Physical resources for the board's runtime system-I2C service.
+///
+/// CPU0 uses the resulting blocking driver temporarily during board/display/
+/// codec startup. The driver is then moved to CPU1 and converted to async for
+/// runtime touch/IMU use.
+pub struct Resources {
+    pub i2c0: I2C0<'static>,
+    pub sda: GPIO12<'static>,
+    pub scl: GPIO11<'static>,
+}
+
 /// CPU0 startup form. Blocking drivers are Send, so this can be moved to CPU1
 /// after one-time board initialization is complete.
 pub type SystemI2cBlocking = I2c<'static, Blocking>;
@@ -32,18 +43,16 @@ static SYSTEM_I2C: StaticCell<SystemI2cMutex> = StaticCell::new();
 ///
 /// CPU0 uses this directly for one-time PMIC/AW9523/display/ES7210 setup. The
 /// returned driver must then be moved to CPU1 and passed to [`into_async`].
-pub fn init(
-    i2c0: I2C0<'static>,
-    gpio12: GPIO12<'static>,
-    gpio11: GPIO11<'static>,
-) -> SystemI2cBlocking {
+pub fn init(resources: Resources) -> SystemI2cBlocking {
+    let Resources { i2c0, sda, scl } = resources;
+
     I2c::new(
         i2c0,
         I2cConfig::default().with_frequency(Rate::from_khz(400)),
     )
     .expect("Failed to configure system I2C")
-    .with_sda(gpio12)
-    .with_scl(gpio11)
+    .with_sda(sda)
+    .with_scl(scl)
 }
 
 /// Convert the already-configured system bus to async mode on CPU1 and publish
