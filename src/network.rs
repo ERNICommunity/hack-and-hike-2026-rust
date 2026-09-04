@@ -10,16 +10,13 @@ use critical_section::Mutex;
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Instant, Ticker};
-use esp_hal::{
-    efuse,
-    peripherals::WIFI,
-};
+use esp_hal::{efuse, peripherals::WIFI};
 use esp_radio::{
     esp_now::{
         BROADCAST_ADDRESS, EspNowManager, EspNowReceiver, EspNowSender, EspNowWifiInterface,
         PeerInfo,
     },
-    wifi::WifiController,
+    wifi::{self, WifiController},
 };
 use static_cell::StaticCell;
 
@@ -102,7 +99,6 @@ struct PeerState {
     mac: [u8; 6],
     rssi_dbm: i16,
     last_seen_ms: u64,
-    last_sequence: u32,
     rx_packets: u32,
     remote_uptime_ms: u32,
     capabilities: u32,
@@ -115,7 +111,6 @@ impl PeerState {
         mac: [0; 6],
         rssi_dbm: 0,
         last_seen_ms: 0,
-        last_sequence: 0,
         rx_packets: 0,
         remote_uptime_ms: 0,
         capabilities: 0,
@@ -141,7 +136,7 @@ impl NetworkState {
     fn new(local_id: protocol::DeviceId, config: Config) -> Self {
         Self {
             revision: 0,
-            status: Status::Ready,
+            status: Status::Starting,
             local_id,
             channel: config.channel,
             peer_timeout_ms: config.peer_timeout.as_millis(),
@@ -153,6 +148,11 @@ impl NetworkState {
             rx_invalid: 0,
             peer_evictions: 0,
         }
+    }
+
+    fn mark_ready(&mut self) {
+        self.status = Status::Ready;
+        self.bump_revision();
     }
 
     fn mark_fault(&mut self) {
@@ -204,7 +204,6 @@ impl NetworkState {
             peer.mac = mac;
             peer.rssi_dbm = rssi_dbm;
             peer.last_seen_ms = now_ms;
-            peer.last_sequence = packet.sequence;
             peer.rx_packets = peer.rx_packets.wrapping_add(1);
             peer.remote_uptime_ms = packet.uptime_ms;
             peer.capabilities = packet.capabilities;
@@ -236,7 +235,6 @@ impl NetworkState {
             mac,
             rssi_dbm,
             last_seen_ms: now_ms,
-            last_sequence: packet.sequence,
             rx_packets: 1,
             remote_uptime_ms: packet.uptime_ms,
             capabilities: packet.capabilities,
@@ -282,7 +280,7 @@ impl NetworkState {
             };
         }
 
-        if self.status != Status::Fault {
+        if self.status != Status::Fault && self.status != Status::Starting {
             self.status = if peer_count == 0 {
                 Status::Ready
             } else {
@@ -309,7 +307,6 @@ impl NetworkState {
 static STATE: Mutex<RefCell<Option<NetworkState>>> = Mutex::new(RefCell::new(None));
 static LATEST: Signal<CriticalSectionRawMutex, Snapshot> = Signal::new();
 static WIFI_CONTROLLER: StaticCell<WifiController<'static>> = StaticCell::new();
-static ESP_NOW_MANAGER: StaticCell<EspNowManager<'static>> = StaticCell::new();
 
 fn with_state<R>(f: impl FnOnce(&mut NetworkState) -> R) -> Option<R> {
     critical_section::with(|cs| {
@@ -347,8 +344,8 @@ pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
     });
     publish_snapshot(Instant::now());
 
-    let controller = match WifiController::new(resources.wifi, Default::default()) {
-        Ok(controller) => WIFI_CONTROLLER.init(controller),
+    let (controller, interfaces) = match wifi::new(resources.wifi, Default::default()) {
+        Ok(result) => result,
         Err(error) => {
             diagnostics::record_network_init_error();
             let _ = with_state(NetworkState::mark_fault);
@@ -357,8 +354,9 @@ pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
             return;
         }
     };
+    let _controller = WIFI_CONTROLLER.init(controller);
 
-    let esp_now = controller.esp_now();
+    let esp_now = interfaces.esp_now;
     if let Err(error) = esp_now.set_channel(config.channel) {
         diagnostics::record_network_init_error();
         let _ = with_state(NetworkState::mark_fault);
@@ -369,7 +367,8 @@ pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
 
     let version = esp_now.version().unwrap_or(0);
     let (manager, sender, receiver) = esp_now.split();
-    let manager = ESP_NOW_MANAGER.init(manager);
+    let _ = with_state(NetworkState::mark_ready);
+    publish_snapshot(Instant::now());
 
     spawner
         .spawn(receive_task(manager, receiver, config))
@@ -416,7 +415,7 @@ async fn beacon_task(mut sender: EspNowSender<'static>, config: Config) {
 
 #[embassy_executor::task]
 async fn receive_task(
-    manager: &'static EspNowManager<'static>,
+    manager: EspNowManager<'static>,
     mut receiver: EspNowReceiver<'static>,
     config: Config,
 ) {
