@@ -1,0 +1,105 @@
+import { Theme } from "generated-theme.slint";
+
+component OrientationValue inherits Rectangle {
+    in property <string> label: "";
+    in property <int> value-deg: 0;
+
+    background: Theme.white;
+    border-color: Theme.light-gray;
+    border-width: 1px;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+        alignment: center;
+
+        Text {
+            text: root.label;
+            color: Theme.dark-gray;
+            font-size: 9px;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "\{root.value-deg}°";
+            color: Theme.black;
+            font-size: 22px;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component ImuView inherits Rectangle {
+    in property <int> roll-deg: 0;
+    in property <int> pitch-deg: 0;
+    in property <int> yaw-deg: 0;
+    in property <int> status: 0;
+    in property <int> read-errors: 0;
+
+    background: Theme.white;
+    clip: true;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 8px;
+
+        Rectangle {
+            height: 52px;
+            background: Theme.dark-blue;
+
+            VerticalLayout {
+                padding: 7px;
+                spacing: 2px;
+
+                Text {
+                    text: "BMI270 IMU";
+                    color: Theme.white;
+                    font-size: 14px;
+                }
+
+                Text {
+                    text: root.status == 1 ? "RUNNING • 100 Hz fusion"
+                        : root.status == 2 ? "DEGRADED • I²C read errors"
+                        : root.status == 3 ? "FAULT • retrying sensor"
+                        : "STARTING • configuring sensor";
+                    color: Theme.light-gray;
+                    font-size: 9px;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+
+            OrientationValue {
+                label: "ROLL";
+                value-deg: root.roll-deg;
+            }
+
+            OrientationValue {
+                label: "PITCH";
+                value-deg: root.pitch-deg;
+            }
+
+            OrientationValue {
+                label: "YAW*";
+                value-deg: root.yaw-deg;
+            }
+        }
+
+        Text {
+            text: "6-axis accel + gyro fusion • *yaw is gyro-integrated and will drift";
+            color: Theme.dark-gray;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            visible: root.read-errors > 0;
+            text: "I²C read errors: \{root.read-errors}";
+            color: Theme.dark-gray;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+    }
+}
