@@ -9,12 +9,20 @@ use crate::data_plane::PsramByteRing;
 /// Maximum number of rows retained by the on-device log model.
 pub const MAX_LOG_ROWS: usize = 64;
 
+/// Fixed stack budget for formatting one log record.
+///
+/// The runtime memory diagnostic is intentionally verbose and exceeded the old
+/// 256-byte buffer. A larger fixed buffer keeps that record intact without any
+/// heap allocation on either CPU.
+const LOG_RECORD_BYTES: usize = 512;
+
 /// PSRAM byte budget per retained row. Log lines may be longer or shorter than
 /// this; this constant only sizes the byte ring from the row-count policy.
-const LOG_BYTES_PER_ROW_BUDGET: usize = 64;
+const LOG_BYTES_PER_ROW_BUDGET: usize = 256;
 
 pub const HISTORY_BYTES: usize = MAX_LOG_ROWS * LOG_BYTES_PER_ROW_BUDGET;
 const SNAPSHOT_CHUNK_BYTES: usize = 512;
+const TRUNCATION_SUFFIX: &str = "...\n";
 
 struct LogStore {
     history: PsramByteRing,
@@ -52,8 +60,22 @@ impl log::Log for Logger {
             return;
         }
 
-        let mut line = arrayvec::ArrayString::<256>::new();
-        let _ = writeln!(line, "[{}] {}", record.level(), record.args());
+        // Keep record framing independent from formatting success. `write!`
+        // may leave a full ArrayString when the message is too long; storing
+        // that buffer without a trailing newline would make the PSRAM history
+        // merge this record with every following one. Always reserve/append a
+        // newline, truncating with an explicit marker only when necessary.
+        let mut line = arrayvec::ArrayString::<LOG_RECORD_BYTES>::new();
+        let formatted = write!(line, "[{}] {}", record.level(), record.args());
+
+        if formatted.is_err() || line.len() == LOG_RECORD_BYTES {
+            while line.len() > LOG_RECORD_BYTES - TRUNCATION_SUFFIX.len() {
+                let _ = line.pop();
+            }
+            line.push_str(TRUNCATION_SUFFIX);
+        } else {
+            line.push('\n');
+        }
 
         esp_println::print!("{}\r\n", line.trim_end_matches('\n'));
 
