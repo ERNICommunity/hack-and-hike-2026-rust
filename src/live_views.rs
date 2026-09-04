@@ -27,14 +27,14 @@ pub const WIDTH: usize = 320 - CONTENT_X;
 pub const HEIGHT: usize = 240;
 const PIXELS: usize = WIDTH * HEIGHT;
 
-const WHITE: Rgb565 = raw_color(theme::WHITE_RGB565);
-const BLACK: Rgb565 = raw_color(theme::BLACK_RGB565);
-const DARK_BLUE: Rgb565 = raw_color(theme::DARK_BLUE_RGB565);
-const LIGHT_BLUE: Rgb565 = raw_color(theme::LIGHT_BLUE_RGB565);
-const DARK_GRAY: Rgb565 = raw_color(theme::DARK_GRAY_RGB565);
-const LIGHT_GRAY: Rgb565 = raw_color(theme::LIGHT_GRAY_RGB565);
+const WHITE_RAW: u16 = theme::WHITE_RGB565;
+const BLACK_RAW: u16 = theme::BLACK_RGB565;
+const DARK_BLUE_RAW: u16 = theme::DARK_BLUE_RGB565;
+const LIGHT_BLUE_RAW: u16 = theme::LIGHT_BLUE_RGB565;
+const DARK_GRAY_RAW: u16 = theme::DARK_GRAY_RGB565;
+const LIGHT_GRAY_RAW: u16 = theme::LIGHT_GRAY_RGB565;
 
-const fn raw_color(raw: u16) -> Rgb565 {
+fn color(raw: u16) -> Rgb565 {
     Rgb565::from(RawU16::new(raw))
 }
 
@@ -45,7 +45,7 @@ pub struct Framebuffer {
 impl Framebuffer {
     pub fn new() -> Self {
         Self {
-            pixels: data_plane::FixedPsramBuffer::filled(PIXELS, theme::WHITE_RGB565),
+            pixels: data_plane::FixedPsramBuffer::filled(PIXELS, WHITE_RAW),
         }
     }
 
@@ -53,14 +53,14 @@ impl Framebuffer {
         self.pixels.as_slice()
     }
 
-    fn clear_fast(&mut self, color: Rgb565) {
-        self.pixels.as_mut_slice().fill(color.into_storage());
+    fn clear_fast(&mut self, raw: u16) {
+        self.pixels.as_mut_slice().fill(raw);
     }
 
     pub fn render_log(&mut self, text: &str) {
-        self.clear_fast(WHITE);
+        self.clear_fast(WHITE_RAW);
 
-        let style = MonoTextStyle::new(&FONT_6X10, BLACK);
+        let style = MonoTextStyle::new(&FONT_6X10, color(BLACK_RAW));
         let mut y = 4i32;
         for line in text.lines().take(23) {
             let _ = Text::with_baseline(line, Point::new(4, y), style, Baseline::Top).draw(self);
@@ -69,7 +69,7 @@ impl Framebuffer {
     }
 
     pub fn render_imu(&mut self, imu: &ImuDisplay) {
-        self.clear_fast(WHITE);
+        self.clear_fast(WHITE_RAW);
 
         self.draw_header(imu);
         self.draw_attitude(imu);
@@ -79,12 +79,12 @@ impl Framebuffer {
     fn draw_header(&mut self, imu: &ImuDisplay) {
         let header = Rectangle::new(Point::new(6, 6), Size::new((WIDTH - 12) as u32, 44));
         let _ = header
-            .into_styled(PrimitiveStyle::with_fill(DARK_BLUE))
+            .into_styled(PrimitiveStyle::with_fill(color(DARK_BLUE_RAW)))
             .draw(self);
 
-        let small = MonoTextStyle::new(&FONT_6X10, LIGHT_GRAY);
-        let white_small = MonoTextStyle::new(&FONT_6X10, WHITE);
-        let value = MonoTextStyle::new(&FONT_8X13_BOLD, WHITE);
+        let small = MonoTextStyle::new(&FONT_6X10, color(LIGHT_GRAY_RAW));
+        let white_small = MonoTextStyle::new(&FONT_6X10, color(WHITE_RAW));
+        let value = MonoTextStyle::new(&FONT_8X13_BOLD, color(WHITE_RAW));
 
         let _ = Text::with_baseline("IMU 9-AXIS", Point::new(12, 10), white_small, Baseline::Top)
             .draw(self);
@@ -131,13 +131,9 @@ impl Framebuffer {
         const W: usize = WIDTH - 12;
         const H: usize = 140;
 
-        let sky = LIGHT_BLUE.into_storage();
-        let ground = DARK_GRAY.into_storage();
-        let white = WHITE.into_storage();
-
         for local_y in 0..H {
             let row = (Y + local_y) * WIDTH + X;
-            self.pixels.as_mut_slice()[row..row + W].fill(sky);
+            self.pixels.as_mut_slice()[row..row + W].fill(LIGHT_BLUE_RAW);
         }
 
         let roll = imu.roll_deg.clamp(-45, 45);
@@ -152,29 +148,29 @@ impl Framebuffer {
             let horizon = (center_y + pitch_offset + roll_offset).clamp(0, H as i32);
 
             for local_y in horizon as usize..H {
-                self.pixels.as_mut_slice()[(Y + local_y) * WIDTH + X + local_x] = ground;
+                self.pixels.as_mut_slice()[(Y + local_y) * WIDTH + X + local_x] = DARK_GRAY_RAW;
             }
         }
 
         // Border and fixed aircraft reference.
-        self.hline(X, Y, W, theme::LIGHT_GRAY_RGB565);
-        self.hline(X, Y + H - 1, W, theme::LIGHT_GRAY_RGB565);
-        self.vline(X, Y, H, theme::LIGHT_GRAY_RGB565);
-        self.vline(X + W - 1, Y, H, theme::LIGHT_GRAY_RGB565);
+        self.hline(X, Y, W, LIGHT_GRAY_RAW);
+        self.hline(X, Y + H - 1, W, LIGHT_GRAY_RAW);
+        self.vline(X, Y, H, LIGHT_GRAY_RAW);
+        self.vline(X + W - 1, Y, H, LIGHT_GRAY_RAW);
 
         let center_abs_x = X + W / 2;
         let center_abs_y = Y + H / 2;
-        self.hline(center_abs_x - 36, center_abs_y, 26, white);
-        self.hline(center_abs_x + 10, center_abs_y, 26, white);
-        self.vline(center_abs_x, center_abs_y - 5, 11, white);
-        self.hline(center_abs_x - 20, center_abs_y - 23, 40, white);
-        self.hline(center_abs_x - 12, center_abs_y + 22, 24, white);
+        self.hline(center_abs_x - 36, center_abs_y, 26, WHITE_RAW);
+        self.hline(center_abs_x + 10, center_abs_y, 26, WHITE_RAW);
+        self.vline(center_abs_x, center_abs_y - 5, 11, WHITE_RAW);
+        self.hline(center_abs_x - 20, center_abs_y - 23, 40, WHITE_RAW);
+        self.hline(center_abs_x - 12, center_abs_y + 22, 24, WHITE_RAW);
 
         let roll_x = (center_abs_x as i32 + roll * 21 / 20 - 2)
             .clamp(X as i32, (X + W - 5) as i32) as usize;
-        self.fill_rect(roll_x, Y + 5, 5, 10, white);
+        self.fill_rect(roll_x, Y + 5, 5, 10, WHITE_RAW);
 
-        let white_small = MonoTextStyle::new(&FONT_6X10, WHITE);
+        let white_small = MonoTextStyle::new(&FONT_6X10, color(WHITE_RAW));
         let _ = Text::with_baseline("PITCH / ROLL", Point::new((X + 5) as i32, (Y + 4) as i32), white_small, Baseline::Top)
             .draw(self);
 
@@ -199,7 +195,7 @@ impl Framebuffer {
             let _ = Text::with_baseline(
                 errors.as_str(),
                 Point::new((X + W - 88) as i32, (Y + 4) as i32),
-                MonoTextStyle::new(&FONT_6X10, WHITE),
+                MonoTextStyle::new(&FONT_6X10, color(WHITE_RAW)),
                 Baseline::Top,
             )
             .draw(self);
@@ -212,16 +208,16 @@ impl Framebuffer {
         const W: usize = WIDTH - 12;
         const H: usize = 32;
 
-        self.fill_rect(X, Y, W, H, theme::WHITE_RGB565);
-        self.hline(X, Y, W, theme::LIGHT_GRAY_RGB565);
-        self.hline(X, Y + H - 1, W, theme::LIGHT_GRAY_RGB565);
-        self.vline(X, Y, H, theme::LIGHT_GRAY_RGB565);
-        self.vline(X + W - 1, Y, H, theme::LIGHT_GRAY_RGB565);
-        self.hline(X + 8, Y + 19, W - 16, theme::LIGHT_GRAY_RGB565);
+        self.fill_rect(X, Y, W, H, WHITE_RAW);
+        self.hline(X, Y, W, LIGHT_GRAY_RAW);
+        self.hline(X, Y + H - 1, W, LIGHT_GRAY_RAW);
+        self.vline(X, Y, H, LIGHT_GRAY_RAW);
+        self.vline(X + W - 1, Y, H, LIGHT_GRAY_RAW);
+        self.hline(X + 8, Y + 19, W - 16, LIGHT_GRAY_RAW);
 
         let center = (X + W / 2) as i32;
-        let style_n = MonoTextStyle::new(&FONT_6X10, DARK_BLUE);
-        let style = MonoTextStyle::new(&FONT_6X10, DARK_GRAY);
+        let style_n = MonoTextStyle::new(&FONT_6X10, color(DARK_BLUE_RAW));
+        let style = MonoTextStyle::new(&FONT_6X10, color(DARK_GRAY_RAW));
 
         for (label, heading, label_style) in [
             ("N", 0, style_n),
@@ -242,7 +238,7 @@ impl Framebuffer {
             }
         }
 
-        self.fill_rect(X + W / 2 - 2, Y + 16, 4, 13, theme::DARK_BLUE_RGB565);
+        self.fill_rect(X + W / 2 - 2, Y + 16, 4, 13, DARK_BLUE_RAW);
     }
 
     fn hline(&mut self, x: usize, y: usize, width: usize, color: u16) {
