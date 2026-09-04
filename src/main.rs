@@ -110,25 +110,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let mut delay = esp_hal::delay::Delay::new();
     let mut system_i2c = system_i2c::init(i2c0, sda, scl);
 
-    let resources::DisplayResources {
-        spi2,
-        dma,
-        sck,
-        mosi,
-        dc,
-        cs,
-    } = display;
-
-    let mut screen = screen::init(
-        &mut system_i2c,
-        spi2,
-        dma,
-        sck,
-        mosi,
-        dc,
-        cs,
-        &mut delay,
-    );
+    let mut screen = screen::init(&mut system_i2c, display, &mut delay);
 
     audio::init_es7210(&mut system_i2c, &mut delay)
         .expect("Failed to initialize ES7210 microphone codec");
@@ -169,17 +151,8 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                     touch::capture_task(system_bus).expect("Failed to allocate CPU1 touch task"),
                 );
 
-                let resources::AudioResources {
-                    i2s0,
-                    dma,
-                    mclk,
-                    bclk,
-                    word_select,
-                    data_in,
-                } = audio_resources;
-
                 spawner.spawn(
-                    audio::capture_task(i2s0, dma, mclk, bclk, word_select, data_in)
+                    audio::capture_task(audio_resources)
                         .expect("Failed to allocate CPU1 audio task"),
                 );
             });
