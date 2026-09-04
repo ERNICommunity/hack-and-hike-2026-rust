@@ -12,11 +12,11 @@
 //!   cross-core communication.
 //!
 //! Service-specific raw hardware requirements live with the owning service as
-//! `screen::Resources`, `audio::Resources`, and `system_i2c::Resources`. The IMU
-//! has no separate raw peripheral bundle: it is a CPU1 service using the shared
-//! CPU1-local `system_i2c::SystemI2cBus`.
+//! `screen::Resources`, `audio::Resources`, `network::Resources`, and
+//! `system_i2c::Resources`. The IMU has no separate raw peripheral bundle: it is
+//! a CPU1 service using the shared CPU1-local `system_i2c::SystemI2cBus`.
 
-use crate::{audio, cross_core, screen, system_i2c};
+use crate::{audio, cross_core, network, screen, system_i2c};
 
 /// Complete runtime split between the two architectural sides.
 ///
@@ -28,6 +28,7 @@ use crate::{audio, cross_core, screen, system_i2c};
 /// └── Cpu1Resources
 ///     ├── system_i2c::Resources  (touch + IMU runtime bus)
 ///     ├── audio::Resources
+///     ├── network::Resources     (ESP-NOW radio)
 ///     └── Cpu1ServiceEndpoint
 /// ```
 pub struct RuntimeResources {
@@ -44,10 +45,11 @@ pub struct Cpu0Resources {
 /// Resources belonging to CPU1's non-display service side.
 ///
 /// The IMU deliberately does not appear as a raw resource field because its
-/// hardware transport is the shared runtime system-I2C bus. Future ESP-NOW raw
-/// resources should be represented by a resource type defined by that service.
+/// hardware transport is the shared runtime system-I2C bus. ESP-NOW does own a
+/// dedicated radio peripheral, so its resource bundle is explicit here.
 pub struct Cpu1Resources {
     pub system_i2c: system_i2c::Resources,
     pub audio: audio::Resources,
+    pub network: network::Resources,
     pub services: cross_core::Cpu1ServiceEndpoint,
 }
