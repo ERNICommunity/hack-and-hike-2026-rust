@@ -1,3 +1,4 @@
+import { ImuView } from "./imu-view.slint";
 import { LogView } from "./log-view.slint";
 import { NavigationRail } from "./navigation-rail.slint";
 import { MicrophoneView } from "./microphone-view.slint";
@@ -9,6 +10,11 @@ export component AppWindow inherits Window {
 
     in property <[string]> log-lines: [];
     in property <int> active-view: 4;
+    in property <int> imu-roll-deg: 0;
+    in property <int> imu-pitch-deg: 0;
+    in property <int> imu-yaw-deg: 0;
+    in property <int> imu-status: 0;
+    in property <int> imu-read-errors: 0;
     callback navigate(int);
 
     content := Rectangle {
@@ -26,12 +32,15 @@ export component AppWindow inherits Window {
             subtitle: "Peer communication";
         }
 
-        PlaceholderView {
+        ImuView {
             width: parent.width;
             height: parent.height;
             visible: root.active-view == 1;
-            title: "9-AXIS IMU";
-            subtitle: "BMI270 + BMM150";
+            roll-deg: root.imu-roll-deg;
+            pitch-deg: root.imu-pitch-deg;
+            yaw-deg: root.imu-yaw-deg;
+            status: root.imu-status;
+            read-errors: root.imu-read-errors;
         }
 
         MicrophoneView {
