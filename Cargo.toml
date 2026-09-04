@@ -11,8 +11,8 @@ bench = false
 
 [dependencies]
 esp-hal = { version = "~1.1.0", features = ["esp32s3", "log-04", "unstable"] }
-esp-rtos = { version = "0.3.0", features = ["embassy", "esp-alloc", "esp32s3", "log-04"] }
-esp-radio = { version = "0.18.0", default-features = false, features = ["esp32s3", "esp-now", "log-04", "unstable"] }
+esp-rtos = { version = "0.3.0", features = ["embassy", "esp-alloc", "esp-radio", "esp32s3", "log-04"] }
+esp-radio = { version = "0.18.0", default-features = false, features = ["esp32s3", "esp-now", "esp-alloc", "log-04", "unstable"] }
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3", "log-04"] }
 log = "0.4.27"
 esp-alloc = { version = "0.10.0", features = ["internal-heap-stats"] }
