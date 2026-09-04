@@ -10,12 +10,13 @@ use esp_hal::{
     delay::Delay,
     dma::{DmaRxBuf, DmaTxBuf},
     gpio::{Level, Output, OutputConfig},
+    peripherals::{DMA_CH1, GPIO3, GPIO35, GPIO36, GPIO37, SPI2},
     spi::master::{Config as SpiConfig, Spi, SpiDma, SpiDmaBus, SpiDmaTransfer},
     time::Rate,
 };
 use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
 
-use crate::{board, resources::DisplayResources, theme, waveform};
+use crate::{board, theme, waveform};
 
 const SCREEN_WIDTH: usize = 320;
 const DISPLAY_SPI_MHZ: u32 = 40;
@@ -29,6 +30,19 @@ const DCS_MEMORY_WRITE: u8 = 0x2C;
 type DisplaySpiDma = SpiDma<'static, Blocking>;
 type DisplaySpiDmaBus = SpiDmaBus<'static, Blocking>;
 type PixelTransfer = SpiDmaTransfer<'static, Blocking, DmaTxBuf>;
+
+/// CPU0-owned physical resources required by the display service.
+///
+/// Keeping this type in `screen` makes the service boundary explicit: the
+/// resource bundle stays intact until `screen::init()` consumes it.
+pub struct Resources {
+    pub spi2: SPI2<'static>,
+    pub dma: DMA_CH1<'static>,
+    pub sck: GPIO36<'static>,
+    pub mosi: GPIO37<'static>,
+    pub dc: GPIO35<'static>,
+    pub cs: GPIO3<'static>,
+}
 
 /// Small owned SpiDevice adapter used only during mipidsi initialization.
 ///
@@ -306,10 +320,10 @@ pub struct Screen {
 
 pub fn init(
     i2c: &mut impl embedded_hal::i2c::I2c,
-    resources: DisplayResources,
+    resources: Resources,
     delay: &mut Delay,
 ) -> Screen {
-    let DisplayResources {
+    let Resources {
         spi2,
         dma,
         sck,
@@ -391,8 +405,7 @@ impl LineBufferProvider for DisplayWrapper<'_> {
     }
 }
 
-const WAVEFORM_BACKGROUND: Rgb565Pixel =
-    Rgb565Pixel(theme::WHITE_RGB565);
+const WAVEFORM_BACKGROUND: Rgb565Pixel = Rgb565Pixel(theme::WHITE_RGB565);
 const WAVEFORM_GRID: Rgb565Pixel = Rgb565Pixel(theme::LIGHT_GRAY_RGB565);
 const WAVEFORM_TRACE: Rgb565Pixel = Rgb565Pixel(theme::DARK_BLUE_RGB565);
 
