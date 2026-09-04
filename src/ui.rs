@@ -1,7 +1,9 @@
 //! CPU0 presentation adapter.
 //!
 //! This module owns Slint/window/touch translation only. Application state and
-//! data refresh policy live in `models.rs`.
+//! data refresh policy live in `models.rs`. High-rate live content is rendered
+//! directly by `screen` so steady-state updates do not mutate Slint strings or
+//! geometry bindings.
 
 use alloc::rc::Rc;
 
@@ -9,7 +11,11 @@ use embassy_time::Instant;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 
-use crate::{models::{AppModel, ViewId}, screen::Screen, touch, waveform::WaveformFrame};
+use crate::{
+    models::{AppModel, ViewId},
+    screen::Screen,
+    touch,
+};
 
 const SCREEN_WIDTH: u32 = 320;
 const SCREEN_HEIGHT: u32 = 240;
@@ -126,9 +132,6 @@ impl Ui {
 
         let app = AppWindow::new().expect("Failed to construct Slint AppWindow");
         app.set_active_view(model.active_view().as_i32());
-        if let Some(log_text) = model.take_log_text() {
-            app.set_log_text(log_text);
-        }
 
         let navigation_model = model.clone();
         app.on_navigate(move |view| navigation_model.request_view(view));
@@ -169,23 +172,6 @@ impl Ui {
         dispatch_touch_input(&self.window, &mut self.touch);
         self.model.update(now);
 
-        if let Some(log_text) = self.model.take_log_text() {
-            self.app.set_log_text(log_text);
-        }
-
-        if let Some(imu) = self.model.take_imu_display() {
-            self.app.set_imu_roll_deg(imu.roll_deg);
-            self.app.set_imu_pitch_deg(imu.pitch_deg);
-            self.app.set_imu_yaw_deg(imu.yaw_deg);
-            self.app.set_imu_status(imu.status);
-            self.app.set_imu_read_errors(imu.read_errors);
-            self.app.set_imu_mag_errors(imu.mag_errors);
-            self.app.set_imu_mag_status(imu.mag_status);
-            self.app.set_imu_mag_field_ut(imu.mag_field_ut);
-            self.app.set_imu_mag_calibration(imu.mag_calibration);
-            self.app.set_imu_gyro_bias_ready(imu.gyro_bias_ready);
-        }
-
         let requested = self.model.active_view();
         let navigation = (requested != self.presented_view).then_some(NavigationChange {
             from: self.presented_view,
@@ -205,8 +191,25 @@ impl Ui {
         self.model.note_slint_redraw(redrawn);
     }
 
-    pub fn take_waveform_frame(&self) -> Option<WaveformFrame> {
-        self.model.take_waveform_frame()
+    /// Restore/update the active direct-rendered view after any Slint redraw.
+    /// Each path uses fixed buffers and stack formatting only.
+    pub fn render_direct_view(&self, screen: &mut Screen) {
+        match self.presented_view {
+            ViewId::Microphone => {
+                if let Some(frame) = self.model.take_waveform_frame() {
+                    screen.render_waveform(&frame);
+                }
+            }
+            ViewId::Imu => {
+                if let Some(imu) = self.model.take_imu_display() {
+                    screen.render_imu(&imu);
+                }
+            }
+            ViewId::Log => {
+                let _ = self.model.with_log_text(|text| screen.render_log(text));
+            }
+            _ => {}
+        }
     }
 
     pub fn window(&self) -> &MinimalSoftwareWindow {
