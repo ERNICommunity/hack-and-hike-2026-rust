@@ -34,10 +34,6 @@ impl DeviceId {
     pub const fn bytes(self) -> [u8; 6] {
         self.0
     }
-
-    pub const fn is_zero(self) -> bool {
-        self.0 == [0; 6]
-    }
 }
 
 impl fmt::Display for DeviceId {
