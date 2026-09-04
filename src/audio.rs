@@ -2,9 +2,11 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use esp_hal::{
     delay::Delay,
     i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s},
+    peripherals::{DMA_CH0, GPIO0, GPIO14, GPIO33, GPIO34, I2S0},
     time::Rate,
 };
-use crate::{board, data_plane, diagnostics, resources::AudioResources};
+
+use crate::{board, data_plane, diagnostics};
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const BLOCK_FRAMES: usize = 512;
@@ -17,6 +19,19 @@ pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 const DMA_BUFFER_BYTES: usize = 32 * 1024;
 
 const ES7210_ADDR: u8 = 0x40;
+
+/// CPU1-owned physical resources required by the audio acquisition service.
+///
+/// ES7210 register configuration remains in this module, while this bundle
+/// describes the I2S/DMA/GPIO resources consumed by `capture_task`.
+pub struct Resources {
+    pub i2s0: I2S0<'static>,
+    pub dma: DMA_CH0<'static>,
+    pub mclk: GPIO0<'static>,
+    pub bclk: GPIO34<'static>,
+    pub word_select: GPIO33<'static>,
+    pub data_in: GPIO14<'static>,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct AudioBlockInfo {
@@ -120,8 +135,8 @@ pub fn copy_latest_interleaved(out: &mut [i16; BLOCK_SAMPLES]) -> Option<AudioBl
 }
 
 #[embassy_executor::task]
-pub async fn capture_task(resources: AudioResources) {
-    let AudioResources {
+pub async fn capture_task(resources: Resources) {
+    let Resources {
         i2s0,
         dma,
         mclk,
