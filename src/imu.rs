@@ -598,7 +598,6 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
             MagStatus::Missing
         };
         let mut mag_field_ut = 0.0f32;
-        let mut magnetic_for_fusion: Option<[f32; 3]> = None;
         let mut last_mag_frame: Option<[u8; 8]> = None;
         let mut last_mag_update = Instant::now();
         let mut last_mag_retry = Instant::now();
@@ -637,7 +636,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                     let corrected_gyro = gyro_bias.correct(sample.accel_g, sample.gyro_dps);
                     // Yaw correction is intentionally single-shot per fresh 30 Hz
                     // BMM150 frame; the 100 Hz fusion ticks between frames are gyro-only.
-                    magnetic_for_fusion = None;
+                    let mut magnetic_for_fusion: Option<[f32; 3]> = None;
 
                     if let Some(trim) = mag_trim {
                         let is_new_frame = last_mag_frame != Some(sample.mag_data);
