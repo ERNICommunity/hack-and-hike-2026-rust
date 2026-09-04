@@ -2,10 +2,9 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use esp_hal::{
     delay::Delay,
     i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s},
-    peripherals::{DMA_CH0, GPIO0, GPIO14, GPIO33, GPIO34, I2S0},
     time::Rate,
 };
-use crate::{board, data_plane, diagnostics};
+use crate::{board, data_plane, diagnostics, resources::AudioResources};
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const BLOCK_FRAMES: usize = 512;
@@ -121,19 +120,21 @@ pub fn copy_latest_interleaved(out: &mut [i16; BLOCK_SAMPLES]) -> Option<AudioBl
 }
 
 #[embassy_executor::task]
-pub async fn capture_task(
-    i2s0: I2S0<'static>,
-    dma_channel: DMA_CH0<'static>,
-    mclk: GPIO0<'static>,
-    bclk: GPIO34<'static>,
-    ws: GPIO33<'static>,
-    din: GPIO14<'static>,
-) {
+pub async fn capture_task(resources: AudioResources) {
+    let AudioResources {
+        i2s0,
+        dma,
+        mclk,
+        bclk,
+        word_select,
+        data_in,
+    } = resources;
+
     let (rx_buffer, rx_descriptors, _, _) = esp_hal::dma_buffers!(DMA_BUFFER_BYTES, 0);
 
     let i2s = I2s::new(
         i2s0,
-        dma_channel,
+        dma,
         I2sConfig::new_tdm_philips()
             .with_sample_rate(Rate::from_hz(SAMPLE_RATE_HZ))
             .with_data_format(DataFormat::Data16Channel16)
@@ -146,8 +147,8 @@ pub async fn capture_task(
     let i2s_rx = i2s
         .i2s_rx
         .with_bclk(bclk)
-        .with_ws(ws)
-        .with_din(din)
+        .with_ws(word_select)
+        .with_din(data_in)
         .build(rx_descriptors);
 
     let mut transfer = i2s_rx
