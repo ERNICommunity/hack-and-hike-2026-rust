@@ -174,6 +174,11 @@ impl Ui {
             self.app.set_imu_yaw_deg(imu.yaw_deg);
             self.app.set_imu_status(imu.status);
             self.app.set_imu_read_errors(imu.read_errors);
+            self.app.set_imu_mag_errors(imu.mag_errors);
+            self.app.set_imu_mag_status(imu.mag_status);
+            self.app.set_imu_mag_field_ut(imu.mag_field_ut);
+            self.app.set_imu_mag_calibration(imu.mag_calibration);
+            self.app.set_imu_gyro_bias_ready(imu.gyro_bias_ready);
         }
 
         let requested = self.model.active_view();
