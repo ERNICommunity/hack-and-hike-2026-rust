@@ -168,6 +168,14 @@ impl Ui {
         dispatch_touch_input(&self.window, &mut self.touch);
         self.model.update(now);
 
+        if let Some(imu) = self.model.take_imu_display() {
+            self.app.set_imu_roll_deg(imu.roll_deg);
+            self.app.set_imu_pitch_deg(imu.pitch_deg);
+            self.app.set_imu_yaw_deg(imu.yaw_deg);
+            self.app.set_imu_status(imu.status);
+            self.app.set_imu_read_errors(imu.read_errors);
+        }
+
         let requested = self.model.active_view();
         let navigation = (requested != self.presented_view).then_some(NavigationChange {
             from: self.presented_view,

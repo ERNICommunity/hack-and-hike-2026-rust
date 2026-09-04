@@ -11,14 +11,14 @@ use embassy_time::{Duration, Instant};
 use slint::{Model, ModelNotify, ModelTracker};
 
 use crate::{
-    audio, data_plane, logger,
+    audio, data_plane, imu, logger,
     waveform::{AMPLITUDE_PIXELS, POINTS, WaveformFrame},
 };
 
 const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
+const IMU_UI_UPDATE: Duration = Duration::from_millis(40);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -52,6 +52,86 @@ impl ViewId {
             4 => Self::Log,
             _ => return None,
         })
+    }
+}
+
+/// CPU0 presentation-sized IMU state. Values are quantized to whole degrees so
+/// Slint can render them without per-frame string formatting/allocation in Rust.
+#[derive(Clone, Copy)]
+pub struct ImuDisplay {
+    pub roll_deg: i32,
+    pub pitch_deg: i32,
+    pub yaw_deg: i32,
+    pub status: i32,
+    pub read_errors: i32,
+}
+
+struct ImuModel {
+    display: ImuDisplay,
+    last_revision: u32,
+    last_update: Instant,
+    dirty: bool,
+}
+
+impl ImuModel {
+    fn new() -> Self {
+        Self {
+            display: ImuDisplay {
+                roll_deg: 0,
+                pitch_deg: 0,
+                yaw_deg: 0,
+                status: imu::Status::Starting as i32,
+                read_errors: 0,
+            },
+            last_revision: 0,
+            last_update: Instant::now(),
+            dirty: true,
+        }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    fn update_if_due(&mut self, now: Instant) {
+        if now - self.last_update < IMU_UI_UPDATE {
+            return;
+        }
+        self.last_update = now;
+
+        let Some(snapshot) = imu::take_latest() else {
+            return;
+        };
+        if snapshot.revision == self.last_revision {
+            return;
+        }
+        self.last_revision = snapshot.revision;
+
+        self.display = ImuDisplay {
+            roll_deg: round_degrees(snapshot.orientation.roll_deg),
+            pitch_deg: round_degrees(snapshot.orientation.pitch_deg),
+            yaw_deg: round_degrees(snapshot.orientation.yaw_deg),
+            status: snapshot.status as i32,
+            read_errors: snapshot.read_errors.min(i32::MAX as u32) as i32,
+        };
+        self.dirty = true;
+    }
+
+    fn take_display(&mut self) -> Option<ImuDisplay> {
+        if !self.dirty {
+            return None;
+        }
+
+        self.dirty = false;
+        Some(self.display)
+    }
+}
+
+fn round_degrees(value: f32) -> i32 {
+    if value >= 0.0 {
+        (value + 0.5) as i32
+    } else {
+        (value - 0.5) as i32
     }
 }
 
@@ -291,6 +371,7 @@ impl Model for LogModel {
 /// commands into it. No Slint component/window object is stored here.
 pub struct AppModel {
     active_view: Cell<ViewId>,
+    imu: RefCell<ImuModel>,
     waveform: RefCell<WaveformModel>,
     log: Rc<LogModel>,
 }
@@ -302,6 +383,7 @@ impl AppModel {
 
         Rc::new(Self {
             active_view: Cell::new(ViewId::Log),
+            imu: RefCell::new(ImuModel::new()),
             waveform: RefCell::new(WaveformModel::new()),
             log,
         })
@@ -315,8 +397,10 @@ impl AppModel {
         if let Some(view) = ViewId::from_i32(raw_view) {
             if view != self.active_view.get() {
                 self.active_view.set(view);
-                if view == ViewId::Microphone {
-                    self.waveform.borrow_mut().mark_dirty();
+                match view {
+                    ViewId::Imu => self.imu.borrow_mut().mark_dirty(),
+                    ViewId::Microphone => self.waveform.borrow_mut().mark_dirty(),
+                    _ => {}
                 }
             }
         }
@@ -324,6 +408,7 @@ impl AppModel {
 
     pub fn update(&self, now: Instant) {
         match self.active_view.get() {
+            ViewId::Imu => self.imu.borrow_mut().update_if_due(now),
             ViewId::Microphone => self.waveform.borrow_mut().update_if_due(now),
             ViewId::Log => self.log.update_if_due(now),
             _ => {}
@@ -332,6 +417,14 @@ impl AppModel {
 
     pub fn log_model(&self) -> Rc<LogModel> {
         self.log.clone()
+    }
+
+    pub fn take_imu_display(&self) -> Option<ImuDisplay> {
+        if self.active_view.get() != ViewId::Imu {
+            return None;
+        }
+
+        self.imu.borrow_mut().take_display()
     }
 
     pub fn note_slint_redraw(&self, redrawn: bool) {
