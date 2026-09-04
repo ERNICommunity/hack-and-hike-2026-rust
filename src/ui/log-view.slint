@@ -1,19 +1,7 @@
 import { Theme } from "generated-theme.slint";
 
+// Dynamic log text is rendered directly by CPU0 from the fixed PSRAM snapshot.
+// Slint owns only the static backing surface and navigation.
 export component LogView inherits Rectangle {
-    in property <string> log-text: "";
-
     background: Theme.white;
-    clip: true;
-
-    Text {
-        x: 4px;
-        y: 4px;
-        width: parent.width - 8px;
-        height: parent.height - 8px;
-        text: root.log-text;
-        color: Theme.black;
-        font-size: 9px;
-        vertical-alignment: top;
-    }
 }
