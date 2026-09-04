@@ -55,8 +55,8 @@ impl ViewId {
     }
 }
 
-/// CPU0 presentation-sized IMU state. Values are quantized to whole degrees so
-/// Slint can render them without per-frame string formatting/allocation in Rust.
+/// CPU0 presentation-sized IMU state. Values are quantized to whole units so
+/// Slint property updates remain small and allocation-free.
 #[derive(Clone, Copy)]
 pub struct ImuDisplay {
     pub roll_deg: i32,
@@ -64,6 +64,11 @@ pub struct ImuDisplay {
     pub yaw_deg: i32,
     pub status: i32,
     pub read_errors: i32,
+    pub mag_errors: i32,
+    pub mag_status: i32,
+    pub mag_field_ut: i32,
+    pub mag_calibration: i32,
+    pub gyro_bias_ready: bool,
 }
 
 struct ImuModel {
@@ -82,6 +87,11 @@ impl ImuModel {
                 yaw_deg: 0,
                 status: imu::Status::Starting as i32,
                 read_errors: 0,
+                mag_errors: 0,
+                mag_status: imu::MagStatus::Missing as i32,
+                mag_field_ut: 0,
+                mag_calibration: 0,
+                gyro_bias_ready: false,
             },
             last_revision: 0,
             last_update: Instant::now(),
@@ -108,11 +118,16 @@ impl ImuModel {
         self.last_revision = snapshot.revision;
 
         self.display = ImuDisplay {
-            roll_deg: round_degrees(snapshot.orientation.roll_deg),
-            pitch_deg: round_degrees(snapshot.orientation.pitch_deg),
-            yaw_deg: round_degrees(snapshot.orientation.yaw_deg),
+            roll_deg: round_units(snapshot.orientation.roll_deg),
+            pitch_deg: round_units(snapshot.orientation.pitch_deg),
+            yaw_deg: round_units(snapshot.orientation.yaw_deg),
             status: snapshot.status as i32,
             read_errors: snapshot.read_errors.min(i32::MAX as u32) as i32,
+            mag_errors: snapshot.mag_errors.min(i32::MAX as u32) as i32,
+            mag_status: snapshot.mag_status as i32,
+            mag_field_ut: round_units(snapshot.mag_field_ut),
+            mag_calibration: i32::from(snapshot.mag_calibration_percent),
+            gyro_bias_ready: snapshot.gyro_bias_ready,
         };
         self.dirty = true;
     }
@@ -127,7 +142,7 @@ impl ImuModel {
     }
 }
 
-fn round_degrees(value: f32) -> i32 {
+fn round_units(value: f32) -> i32 {
     if value >= 0.0 {
         (value + 0.5) as i32
     } else {
