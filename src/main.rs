@@ -17,6 +17,8 @@ mod live_views;
 mod logger;
 mod memory;
 mod models;
+mod network;
+mod protocol;
 mod resources;
 mod screen;
 mod system_i2c;
@@ -100,6 +102,9 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                 word_select: peripherals.GPIO33,
                 data_in: peripherals.GPIO14,
             },
+            network: network::Resources {
+                wifi: peripherals.WIFI,
+            },
             services: cpu1_service_endpoint,
         },
     };
@@ -112,6 +117,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let resources::Cpu1Resources {
         system_i2c: system_i2c_resources,
         audio: audio_resources,
+        network: network_resources,
         services: cpu1_service_endpoint,
     } = cpu1;
 
@@ -143,13 +149,16 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
             executor.run(move |spawner| {
                 // Reserved for future low-rate application/service commands.
-                // Touch/audio/IMU keep their specialized cross-core data paths.
+                // Touch/audio/IMU/ESP-NOW keep their specialized cross-core
+                // data paths.
                 let _cpu1_service_endpoint = cpu1_service_endpoint;
 
                 spawner.spawn(
                     memory::cpu1_stack_monitor_task()
                         .expect("Failed to allocate CPU1 stack monitor task"),
                 );
+
+                network::start(&spawner, network_resources, network::DEFAULT_CONFIG);
 
                 let system_bus = system_i2c::into_async(system_i2c);
 
