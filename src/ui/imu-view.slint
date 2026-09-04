@@ -1,31 +1,90 @@
 import { Theme } from "generated-theme.slint";
 
-component OrientationValue inherits Rectangle {
+component AxisGauge inherits Rectangle {
     in property <string> label: "";
     in property <int> value-deg: 0;
+    in property <int> min-deg: -90;
+    in property <int> max-deg: 90;
+    in property <string> min-label: "";
+    in property <string> center-label: "0";
+    in property <string> max-label: "";
+    property <float> fraction: root.value-deg <= root.min-deg ? 0.0
+        : root.value-deg >= root.max-deg ? 1.0
+        : 1.0 * (root.value-deg - root.min-deg) / (root.max-deg - root.min-deg);
 
+    height: 42px;
     background: Theme.white;
-    border-color: Theme.light-gray;
-    border-width: 1px;
 
-    VerticalLayout {
-        padding: 8px;
-        spacing: 4px;
-        alignment: center;
+    Text {
+        x: 0px;
+        y: 0px;
+        width: 36px;
+        text: root.label;
+        color: Theme.dark-gray;
+        font-size: 9px;
+    }
 
-        Text {
-            text: root.label;
-            color: Theme.dark-gray;
-            font-size: 9px;
-            horizontal-alignment: center;
+    Text {
+        x: parent.width - 44px;
+        y: 0px;
+        width: 44px;
+        text: "\{root.value-deg}°";
+        color: Theme.black;
+        font-size: 9px;
+        horizontal-alignment: right;
+    }
+
+    track := Rectangle {
+        x: 0px;
+        y: 14px;
+        width: parent.width;
+        height: 15px;
+        background: Theme.light-gray;
+
+        Rectangle {
+            x: parent.width / 2 - 1px;
+            width: 2px;
+            height: parent.height;
+            background: Theme.dark-gray;
         }
 
-        Text {
-            text: "\{root.value-deg}°";
-            color: Theme.black;
-            font-size: 22px;
-            horizontal-alignment: center;
+        marker := Rectangle {
+            x: (parent.width - marker.width) * root.fraction;
+            y: 0px;
+            width: 5px;
+            height: parent.height;
+            background: Theme.dark-blue;
         }
+    }
+
+    Text {
+        x: 0px;
+        y: 30px;
+        width: parent.width / 3;
+        text: root.min-label;
+        color: Theme.dark-gray;
+        font-size: 7px;
+        horizontal-alignment: left;
+    }
+
+    Text {
+        x: parent.width / 3;
+        y: 30px;
+        width: parent.width / 3;
+        text: root.center-label;
+        color: Theme.dark-gray;
+        font-size: 7px;
+        horizontal-alignment: center;
+    }
+
+    Text {
+        x: parent.width * 2 / 3;
+        y: 30px;
+        width: parent.width / 3;
+        text: root.max-label;
+        color: Theme.dark-gray;
+        font-size: 7px;
+        horizontal-alignment: right;
     }
 }
 
@@ -35,70 +94,100 @@ export component ImuView inherits Rectangle {
     in property <int> yaw-deg: 0;
     in property <int> status: 0;
     in property <int> read-errors: 0;
+    in property <int> mag-errors: 0;
+    in property <int> mag-status: 0;
+    in property <int> mag-field-ut: 0;
+    in property <int> mag-calibration: 0;
+    in property <bool> gyro-bias-ready: false;
 
     background: Theme.white;
     clip: true;
 
     VerticalLayout {
         padding: 8px;
-        spacing: 8px;
+        spacing: 3px;
 
         Rectangle {
-            height: 52px;
+            height: 34px;
             background: Theme.dark-blue;
 
             VerticalLayout {
-                padding: 7px;
-                spacing: 2px;
+                padding-left: 7px;
+                padding-right: 7px;
+                padding-top: 4px;
+                padding-bottom: 3px;
+                spacing: 1px;
 
                 Text {
-                    text: "BMI270 IMU";
+                    text: "9-AXIS IMU";
                     color: Theme.white;
-                    font-size: 14px;
+                    font-size: 12px;
                 }
 
                 Text {
-                    text: root.status == 1 ? "RUNNING • 100 Hz fusion"
-                        : root.status == 2 ? "DEGRADED • I²C read errors"
-                        : root.status == 3 ? "FAULT • retrying sensor"
-                        : "STARTING • configuring sensor";
+                    text: root.status == 3 ? "FAULT • retrying BMI270"
+                        : root.mag-status == 0 ? "6-AXIS FALLBACK • BMM150 unavailable"
+                        : root.mag-status == 3 ? "9-AXIS DEGRADED • magnetic disturbance"
+                        : root.mag-status == 1 ? "9-AXIS • magnetometer calibrating"
+                        : "9-AXIS • magnetic heading locked";
                     color: Theme.light-gray;
-                    font-size: 9px;
+                    font-size: 8px;
                 }
             }
         }
 
-        HorizontalLayout {
-            spacing: 6px;
+        AxisGauge {
+            label: "ROLL";
+            value-deg: root.roll-deg;
+            min-deg: -90;
+            max-deg: 90;
+            min-label: "−90";
+            center-label: "LEVEL";
+            max-label: "+90";
+        }
 
-            OrientationValue {
-                label: "ROLL";
-                value-deg: root.roll-deg;
-            }
+        AxisGauge {
+            label: "PITCH";
+            value-deg: root.pitch-deg;
+            min-deg: -90;
+            max-deg: 90;
+            min-label: "−90";
+            center-label: "LEVEL";
+            max-label: "+90";
+        }
 
-            OrientationValue {
-                label: "PITCH";
-                value-deg: root.pitch-deg;
-            }
-
-            OrientationValue {
-                label: "YAW*";
-                value-deg: root.yaw-deg;
-            }
+        AxisGauge {
+            label: "YAW";
+            value-deg: root.yaw-deg;
+            min-deg: -180;
+            max-deg: 180;
+            min-label: "−180";
+            center-label: "N / 0";
+            max-label: "+180";
         }
 
         Text {
-            text: "6-axis accel + gyro fusion • *yaw is gyro-integrated and will drift";
+            text: root.mag-status == 0 ? "MAG missing • heading is gyro-only"
+                : root.mag-status == 1 ? "MAG CAL \{root.mag-calibration}% • slowly rotate through all axes"
+                : root.mag-status == 3 ? "MAG disturbed • \{root.mag-field-ut} µT • yaw correction paused"
+                : "MAG ready • \{root.mag-field-ut} µT • gyro bias " + (root.gyro-bias-ready ? "ready" : "learning");
             color: Theme.dark-gray;
             font-size: 8px;
             horizontal-alignment: center;
         }
 
         Text {
-            visible: root.read-errors > 0;
-            text: "I²C read errors: \{root.read-errors}";
-            color: Theme.dark-gray;
+            text: "R \{root.roll-deg}°   P \{root.pitch-deg}°   Y \{root.yaw-deg}°";
+            color: Theme.black;
             font-size: 8px;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            visible: root.read-errors > 0 || root.mag-errors > 0;
+            text: "I²C errors \{root.read-errors}   MAG errors \{root.mag-errors}";
+            color: Theme.dark-gray;
+            font-size: 7px;
             horizontal-alignment: center;
         }
     }
