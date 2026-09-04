@@ -67,12 +67,14 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    // Partition raw HAL handles into the two intended architectural sides.
-    // These resource types make ownership visible but do not try to prove which
-    // physical core is executing.
+    let (cpu0_app_endpoint, cpu1_service_endpoint) = cross_core::split();
+
+    // Partition hardware and communication endpoints into the two intended
+    // architectural sides. These resource types make ownership visible but do
+    // not try to prove which physical core is executing.
     let runtime_resources = resources::RuntimeResources {
         cpu0: resources::Cpu0Resources {
-            display: resources::DisplayResources {
+            display: screen::Resources {
                 spi2: peripherals.SPI2,
                 dma: peripherals.DMA_CH1,
                 sck: peripherals.GPIO36,
@@ -80,14 +82,15 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                 dc: peripherals.GPIO35,
                 cs: peripherals.GPIO3,
             },
+            app: cpu0_app_endpoint,
         },
         cpu1: resources::Cpu1Resources {
-            system_i2c: resources::SystemI2cResources {
+            system_i2c: system_i2c::Resources {
                 i2c0: peripherals.I2C0,
                 sda: peripherals.GPIO12,
                 scl: peripherals.GPIO11,
             },
-            audio: resources::AudioResources {
+            audio: audio::Resources {
                 i2s0: peripherals.I2S0,
                 dma: peripherals.DMA_CH0,
                 mclk: peripherals.GPIO0,
@@ -95,20 +98,23 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                 word_select: peripherals.GPIO33,
                 data_in: peripherals.GPIO14,
             },
+            services: cpu1_service_endpoint,
         },
     };
 
     let resources::RuntimeResources { cpu0, cpu1 } = runtime_resources;
-    let resources::Cpu0Resources { display } = cpu0;
+    let resources::Cpu0Resources {
+        display,
+        app: _cpu0_app_endpoint,
+    } = cpu0;
     let resources::Cpu1Resources {
         system_i2c: system_i2c_resources,
         audio: audio_resources,
+        services: cpu1_service_endpoint,
     } = cpu1;
 
-    let resources::SystemI2cResources { i2c0, sda, scl } = system_i2c_resources;
-
     let mut delay = esp_hal::delay::Delay::new();
-    let mut system_i2c = system_i2c::init(i2c0, sda, scl);
+    let mut system_i2c = system_i2c::init(system_i2c_resources);
 
     let mut screen = screen::init(&mut system_i2c, display, &mut delay);
 
@@ -122,8 +128,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     memory::report("before CPU1 startup");
 
     info!("Starting CPU1 acquisition executor");
-
-    let (_cpu0_app_endpoint, cpu1_service_endpoint) = cross_core::split();
 
     let cpu1_stack = CPU1_STACK.init(Stack::new());
     memory::register_cpu1_stack(&mut *cpu1_stack);
