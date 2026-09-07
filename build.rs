@@ -121,9 +121,6 @@ fn generate_rust_theme(out_dir: &Path, colors: &BTreeMap<String, u32>) {
     for (name, &rgb) in colors {
         let ident = rust_name(name);
         generated.push_str(&format!(
-            "pub const {ident}_RGB888: u32 = 0x{rgb:06X};\n"
-        ));
-        generated.push_str(&format!(
             "pub const {ident}_RGB565: u16 = 0x{:04X};\n",
             rgb565(rgb)
         ));
