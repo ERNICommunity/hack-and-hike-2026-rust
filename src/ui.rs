@@ -1,8 +1,8 @@
 //! CPU0 presentation owner.
 //!
-//! `Ui` is the only type that combines application models, the sole touch-input
-//! capability, navigation gesture state, and the fixed PSRAM content framebuffer.
-//! It can request generic pixel submission from `Display`, but it cannot access
+//! `Ui` combines application models, the CPU0 touch reader used for presentation,
+//! navigation gesture state, and the fixed PSRAM content framebuffer. It can
+//! request generic pixel submission from `Display`, but it cannot access
 //! SPI/DMA/controller transport. The contained `AppModel` cannot access
 //! presentation geometry or touch events.
 
@@ -23,17 +23,15 @@ use crate::{
 use framebuffer::ContentFramebuffer;
 use navigation::NavigationInput;
 
-/// A requested/presented view transition.
-///
-/// The value exists so bootstrap can instrument a transition without coupling
-/// the memory diagnostics module to presentation types.
+/// A semantic view transition prepared by input/model state and not yet fully
+/// presented to the LCD.
 #[derive(Clone, Copy, Debug)]
-pub struct NavigationChange {
+pub struct ViewTransition {
     pub from: ViewId,
     pub to: ViewId,
 }
 
-/// Exclusive CPU0 presentation state and touch consumer.
+/// Exclusive CPU0 presentation state.
 pub struct Ui {
     model: AppModel,
     navigation: NavigationInput,
@@ -60,30 +58,30 @@ impl Ui {
 
     /// Drain input, refresh the active model at its configured cadence, and
     /// report a view transition that still needs to be presented.
-    pub fn prepare_frame(&mut self, now: Instant) -> Option<NavigationChange> {
+    pub fn prepare_frame(&mut self, now: Instant) -> Option<ViewTransition> {
         if let Some(view) = self.navigation.poll() {
             self.model.request_view(view);
         }
         self.model.update(now);
 
         let requested = self.model.active_view();
-        (requested != self.presented_view).then_some(NavigationChange {
+        (requested != self.presented_view).then_some(ViewTransition {
             from: self.presented_view,
             to: requested,
         })
     }
 
-    /// Commit a prepared navigation transition and draw the destination shell.
-    pub fn apply_navigation(&mut self, change: NavigationChange, display: &mut Display) {
-        debug_assert_eq!(change.from, self.presented_view);
-        self.presented_view = change.to;
+    /// Commit a prepared transition and draw the destination's static shell.
+    pub fn apply_navigation(&mut self, transition: ViewTransition, display: &mut Display) {
+        debug_assert_eq!(transition.from, self.presented_view);
+        self.presented_view = transition.to;
 
-        navigation::render(display, change.to);
-        views::render_shell(&mut self.content, change.to);
+        navigation::render(display, transition.to);
+        views::render_shell(&mut self.content, transition.to);
         self.blit_content(display);
     }
 
-    /// Render only dirty data for the currently presented view.
+    /// Render dirty dynamic data for the currently presented view.
     pub fn render(&mut self, display: &mut Display) {
         match self.presented_view {
             ViewId::Network => {

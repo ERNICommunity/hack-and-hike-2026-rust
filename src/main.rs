@@ -164,8 +164,8 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         imu: imu_input,
         audio: audio_input,
         network: network_input,
-    } = service_inputs::Cpu0Inputs::new();
-    let model = models::AppModel::new(models::Inputs {
+    } = service_inputs::Cpu0Inputs::from_static_services();
+    let model = models::AppModel::new(models::AppModelInputs {
         network: network_input,
         imu: imu_input,
         audio: audio_input,
@@ -181,15 +181,21 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     loop {
         let now = Instant::now();
+        let transition = ui.prepare_frame(now);
 
-        if let Some(change) = ui.prepare_frame(now) {
-            heap_monitor.begin_activity(change.to.name());
-            ui.apply_navigation(change, &mut display);
-            heap_monitor.end_activity();
-            info!("View {:?} -> {:?}", change.from, change.to);
+        if let Some(transition) = transition {
+            heap_monitor.begin_activity(transition.to.name());
+            ui.apply_navigation(transition, &mut display);
+            info!("View {:?} -> {:?}", transition.from, transition.to);
         }
 
         ui.render(&mut display);
+
+        if transition.is_some() {
+            // Include the destination's first dynamic render in the correlation
+            // window; that is the path historically most useful to instrument.
+            heap_monitor.end_activity();
+        }
         heap_monitor.poll(now);
 
         Timer::after(UI_IDLE_DELAY).await;

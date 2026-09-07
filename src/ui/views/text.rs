@@ -83,7 +83,13 @@ fn render_text_page(frame: &mut ContentFramebuffer, text: &str) {
     let style = MonoTextStyle::new(&FONT_6X10, color(spec.foreground));
     let mut y = spec.top;
     for line in text.lines().take(spec.visible_lines) {
-        let _ = Text::with_baseline(line, Point::new(spec.x, y), style, Baseline::Top).draw(frame);
+        let _ = Text::with_baseline(
+            line,
+            Point::new(spec.x as i32, y as i32),
+            style,
+            Baseline::Top,
+        )
+        .draw(frame);
         y += spec.line_height;
     }
 }

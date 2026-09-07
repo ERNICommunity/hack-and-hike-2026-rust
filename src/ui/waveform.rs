@@ -1,7 +1,8 @@
 //! Allocation-free partial renderer for the realtime microphone view.
 //!
-//! Static microphone chrome is buffered. Only each panel's declaratively defined
-//! canvas is submitted at audio presentation rate.
+//! Static microphone chrome is buffered. Only each named channel canvas is
+//! submitted at audio presentation rate. Canvas divisibility by waveform point
+//! count is a compile-time invariant in `ui::design`.
 
 use crate::{
     display::Display,
@@ -11,9 +12,9 @@ use crate::{
 use super::design::{self, ContentRect};
 
 pub(crate) fn render(display: &mut Display, frame: &WaveformFrame) {
-    let panels = design::UI.microphone.panels;
-    render_channel(display, panels[0].canvas, &frame.left);
-    render_channel(display, panels[1].canvas, &frame.right);
+    let microphone = design::UI.microphone;
+    render_channel(display, microphone.left.canvas, &frame.left);
+    render_channel(display, microphone.right.canvas, &frame.right);
 }
 
 fn render_channel(
@@ -22,10 +23,8 @@ fn render_channel(
     samples: &[i8; waveform::POINTS],
 ) {
     let style = design::UI.microphone;
-    let center_y = (canvas.height as i32) / 2;
-    let pixels_per_point = canvas.width / waveform::POINTS;
-
-    debug_assert_eq!(canvas.width % waveform::POINTS, 0);
+    let center_y = (canvas.height() as i32) / 2;
+    let pixels_per_point = canvas.width() / waveform::POINTS;
 
     display.render_scanlines(canvas.screen_region(), |local_y, pixels| {
         pixels.fill(style.canvas_background.raw());

@@ -1,8 +1,8 @@
 //! CPU0 application models.
 //!
-//! `AppModel` owns bounded presentation-sized state and the CPU0 reader
-//! capabilities required to refresh it. It does not know display geometry,
-//! fonts, touch gestures, SPI/DMA, or LCD controller details.
+//! `AppModel` owns bounded presentation-sized state and the CPU0 reader handles
+//! required to refresh it. It does not know display geometry, fonts, touch
+//! gestures, SPI/DMA, or LCD controller details.
 
 use embassy_time::{Duration, Instant};
 
@@ -20,9 +20,8 @@ const LOG_REFRESH: Duration = Duration::from_millis(100);
 
 /// Semantic page identity shared by application refresh policy and presentation.
 ///
-/// There is deliberately no numeric representation: ordering and labels are
-/// explicit through `ALL` and `name()`, so presentation identity never leaks as
-/// an integer protocol between modules.
+/// There is deliberately no numeric representation or presentation ordering on
+/// this type. Navigation order belongs to the declarative UI design.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewId {
     Network,
@@ -33,14 +32,6 @@ pub enum ViewId {
 }
 
 impl ViewId {
-    pub const ALL: [Self; 5] = [
-        Self::Network,
-        Self::Imu,
-        Self::Microphone,
-        Self::Sound,
-        Self::Log,
-    ];
-
     pub const fn name(self) -> &'static str {
         match self {
             Self::Network => "Network",
@@ -52,11 +43,11 @@ impl ViewId {
     }
 }
 
-/// CPU1 reader capabilities consumed by `AppModel`.
+/// CPU1 readers consumed directly by `AppModel`.
 ///
 /// Touch is intentionally absent: gesture interpretation belongs to `Ui`, not
 /// the application data model.
-pub struct Inputs {
+pub struct AppModelInputs {
     pub network: NetworkInput,
     pub imu: ImuInput,
     pub audio: AudioInput,
@@ -385,7 +376,7 @@ impl LogModel {
 ///
 /// The type owns every service reader needed by its child models. Ordinary
 /// `&mut self` access serializes refresh and consumption on CPU0; no interior
-/// mutability or hidden global consumer access is required at this layer.
+/// mutability is required at this layer.
 pub struct AppModel {
     active_view: ViewId,
     network: NetworkModel,
@@ -395,8 +386,8 @@ pub struct AppModel {
 }
 
 impl AppModel {
-    pub fn new(inputs: Inputs) -> Self {
-        let Inputs {
+    pub fn new(inputs: AppModelInputs) -> Self {
+        let AppModelInputs {
             network,
             imu,
             audio,

@@ -1,9 +1,9 @@
 //! Declarative, compile-time presentation specification.
 //!
 //! This module is the editable design surface for the firmware UI. Geometry and
-//! semantic color assignments are plain `const` Rust data: renderers consume the
-//! specs but do not own sizing or styling policy. This keeps manual changes easy
-//! to review while preserving zero-allocation, monomorphized drawing code.
+//! semantic color assignments are plain `const` Rust data consumed by the
+//! renderers. Layout edits therefore remain allocation-free and are validated at
+//! compile time rather than becoming runtime clipping or indexing assumptions.
 //!
 //! `ContentRect` is deliberately distinct from `display::Region`: content-space
 //! coordinates are relative to the framebuffer, while `display::Region` uses
@@ -11,7 +11,9 @@
 
 use crate::{
     display::{self, Region},
+    models::ViewId,
     theme,
+    waveform,
 };
 
 const NAV_WIDTH: usize = 44;
@@ -23,10 +25,11 @@ pub(crate) const NAV_REGION: Region = Region::new(0, 0, NAV_WIDTH, display::HEIG
 pub(crate) const CONTENT_REGION: Region =
     Region::new(NAV_WIDTH, 0, CONTENT_WIDTH, CONTENT_HEIGHT);
 
+pub(crate) const NAV_ICON_SIZE: usize = 16;
+pub(crate) const NAV_ITEM_COUNT: usize = 5;
+pub(crate) type NavIcon = [u16; NAV_ICON_SIZE];
+
 /// Semantic UI color stored in the display's native RGB565 representation.
-///
-/// Keeping this distinct from bare integers prevents dimensions, counters, and
-/// pixel values from being accidentally interchanged in presentation code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UiColor(u16);
 
@@ -40,17 +43,23 @@ impl UiColor {
     }
 }
 
-/// Rectangle in content-framebuffer coordinates, not physical screen space.
+/// Valid non-empty rectangle in content-framebuffer coordinates.
+///
+/// Fields are private and construction checks the fixed content bounds. Every
+/// `ContentRect` in `UI` is therefore safe to draw or translate to the panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ContentRect {
-    pub x: usize,
-    pub y: usize,
-    pub width: usize,
-    pub height: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
 }
 
 impl ContentRect {
     pub(crate) const fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
+        assert!(width > 0 && height > 0);
+        assert!(x <= CONTENT_WIDTH && width <= CONTENT_WIDTH - x);
+        assert!(y <= CONTENT_HEIGHT && height <= CONTENT_HEIGHT - y);
         Self {
             x,
             y,
@@ -59,16 +68,50 @@ impl ContentRect {
         }
     }
 
+    pub(crate) const fn x(self) -> usize {
+        self.x
+    }
+
+    pub(crate) const fn y(self) -> usize {
+        self.y
+    }
+
+    pub(crate) const fn width(self) -> usize {
+        self.width
+    }
+
+    pub(crate) const fn height(self) -> usize {
+        self.height
+    }
+
+    pub(crate) const fn contains(self, other: Self) -> bool {
+        other.x >= self.x
+            && other.y >= self.y
+            && other.x + other.width <= self.x + self.width
+            && other.y + other.height <= self.y + self.height
+    }
+
     pub(crate) const fn screen_region(self) -> Region {
         Region::new(NAV_WIDTH + self.x, self.y, self.width, self.height)
     }
 }
 
-/// Fixed navigation-rail geometry and semantic colors.
+/// One navigation destination and its fixed bitmap icon.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NavigationItemSpec {
+    pub view: ViewId,
+    pub icon: NavIcon,
+}
+
+/// Fixed navigation-rail geometry, ordering, icons, and semantic colors.
+///
+/// Hit testing and rendering consume the same `items` array, so page order and
+/// icon order cannot drift apart.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NavigationSpec {
     pub width: usize,
     pub button_height: usize,
+    pub items: [NavigationItemSpec; NAV_ITEM_COUNT],
     pub selected_background: UiColor,
     pub normal_background: UiColor,
     pub selected_icon: UiColor,
@@ -79,9 +122,9 @@ pub(crate) struct NavigationSpec {
 /// Shared monospaced page layout used by Network and Log.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TextPageSpec {
-    pub x: i32,
-    pub top: i32,
-    pub line_height: i32,
+    pub x: usize,
+    pub top: usize,
+    pub line_height: usize,
     pub visible_lines: usize,
     pub foreground: UiColor,
     pub background: UiColor,
@@ -90,33 +133,45 @@ pub(crate) struct TextPageSpec {
 /// Centered placeholder page styling.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PlaceholderSpec {
-    pub title_y: i32,
-    pub subtitle_y: i32,
+    pub title_y: usize,
+    pub subtitle_y: usize,
     pub title: UiColor,
     pub subtitle: UiColor,
     pub background: UiColor,
 }
 
-/// One microphone panel in content coordinates.
+/// One microphone channel panel in content coordinates.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WaveformPanelSpec {
     pub label: &'static str,
     pub panel: ContentRect,
-    pub label_x_offset: i32,
-    pub label_y_offset: i32,
+    pub label_x_offset: usize,
+    pub label_y_offset: usize,
     pub canvas: ContentRect,
 }
 
 /// Static microphone chrome and high-rate waveform styling.
+///
+/// Left and right are named fields because channel identity is semantic, not an
+/// array position contract.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MicrophoneSpec {
-    pub panels: [WaveformPanelSpec; 2],
+    pub left: WaveformPanelSpec,
+    pub right: WaveformPanelSpec,
     pub panel_fill: UiColor,
     pub panel_border: UiColor,
     pub label: UiColor,
     pub canvas_background: UiColor,
     pub grid: UiColor,
     pub trace: UiColor,
+}
+
+/// Header column positions for the three attitude values.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ImuHeaderColumns {
+    pub roll_x: usize,
+    pub pitch_x: usize,
+    pub yaw_x: usize,
 }
 
 /// Major IMU view regions and semantic colors.
@@ -128,7 +183,7 @@ pub(crate) struct ImuSpec {
     pub header: ContentRect,
     pub attitude: ContentRect,
     pub compass: ContentRect,
-    pub header_value_x: [i32; 3],
+    pub header_columns: ImuHeaderColumns,
     pub background: UiColor,
     pub primary: UiColor,
     pub horizon_sky: UiColor,
@@ -160,6 +215,43 @@ pub(crate) const UI: UiDesign = UiDesign {
     navigation: NavigationSpec {
         width: NAV_WIDTH,
         button_height: NAV_BUTTON_HEIGHT,
+        items: [
+            NavigationItemSpec {
+                view: ViewId::Network,
+                icon: [
+                    0x0000, 0x0000, 0x0180, 0x03C0, 0x0660, 0x0C30, 0x1818, 0x0180,
+                    0x0180, 0x1818, 0x0C30, 0x0660, 0x03C0, 0x0180, 0x0000, 0x0000,
+                ],
+            },
+            NavigationItemSpec {
+                view: ViewId::Imu,
+                icon: [
+                    0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x7FFE, 0x0180, 0x0180,
+                    0x0180, 0x0180, 0x07E0, 0x0DB0, 0x198C, 0x0180, 0x0180, 0x0000,
+                ],
+            },
+            NavigationItemSpec {
+                view: ViewId::Microphone,
+                icon: [
+                    0x03C0, 0x0660, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30,
+                    0x0660, 0x03C0, 0x0180, 0x1FF8, 0x0180, 0x0180, 0x07E0, 0x0000,
+                ],
+            },
+            NavigationItemSpec {
+                view: ViewId::Sound,
+                icon: [
+                    0x0000, 0x0300, 0x0700, 0x0F18, 0x7F0C, 0x7F06, 0x7F06, 0x7F06,
+                    0x7F06, 0x7F06, 0x7F0C, 0x0F18, 0x0700, 0x0300, 0x0000, 0x0000,
+                ],
+            },
+            NavigationItemSpec {
+                view: ViewId::Log,
+                icon: [
+                    0x0000, 0x0000, 0x3FFC, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004,
+                    0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x3FFC, 0x0000, 0x0000, 0x0000,
+                ],
+            },
+        ],
         selected_background: LIGHT_BLUE,
         normal_background: DARK_BLUE,
         selected_icon: WHITE,
@@ -182,22 +274,20 @@ pub(crate) const UI: UiDesign = UiDesign {
         background: WHITE,
     },
     microphone: MicrophoneSpec {
-        panels: [
-            WaveformPanelSpec {
-                label: "MIC L",
-                panel: ContentRect::new(4, 4, CONTENT_WIDTH - 8, 114),
-                label_x_offset: 6,
-                label_y_offset: 4,
-                canvas: ContentRect::new(10, 22, 256, 90),
-            },
-            WaveformPanelSpec {
-                label: "MIC R",
-                panel: ContentRect::new(4, 122, CONTENT_WIDTH - 8, 114),
-                label_x_offset: 6,
-                label_y_offset: 4,
-                canvas: ContentRect::new(10, 140, 256, 90),
-            },
-        ],
+        left: WaveformPanelSpec {
+            label: "MIC L",
+            panel: ContentRect::new(4, 4, CONTENT_WIDTH - 8, 114),
+            label_x_offset: 6,
+            label_y_offset: 4,
+            canvas: ContentRect::new(10, 22, 256, 90),
+        },
+        right: WaveformPanelSpec {
+            label: "MIC R",
+            panel: ContentRect::new(4, 122, CONTENT_WIDTH - 8, 114),
+            label_x_offset: 6,
+            label_y_offset: 4,
+            canvas: ContentRect::new(10, 140, 256, 90),
+        },
         panel_fill: BLACK,
         panel_border: DARK_GRAY,
         label: LIGHT_GRAY,
@@ -209,7 +299,11 @@ pub(crate) const UI: UiDesign = UiDesign {
         header: ContentRect::new(6, 6, CONTENT_WIDTH - 12, 44),
         attitude: ContentRect::new(6, 56, CONTENT_WIDTH - 12, 140),
         compass: ContentRect::new(6, 202, CONTENT_WIDTH - 12, 32),
-        header_value_x: [83, 143, 207],
+        header_columns: ImuHeaderColumns {
+            roll_x: 83,
+            pitch_x: 143,
+            yaw_x: 207,
+        },
         background: WHITE,
         primary: DARK_BLUE,
         horizon_sky: LIGHT_BLUE,
@@ -220,8 +314,22 @@ pub(crate) const UI: UiDesign = UiDesign {
 };
 
 const _: () = assert!(NAV_WIDTH < display::WIDTH);
-const _: () = assert!(NAV_BUTTON_HEIGHT * 5 == display::HEIGHT);
-const _: () = assert!(UI.microphone.panels[0].canvas.x + UI.microphone.panels[0].canvas.width <= CONTENT_WIDTH);
-const _: () = assert!(UI.microphone.panels[1].canvas.x + UI.microphone.panels[1].canvas.width <= CONTENT_WIDTH);
-const _: () = assert!(UI.microphone.panels[0].canvas.y + UI.microphone.panels[0].canvas.height <= CONTENT_HEIGHT);
-const _: () = assert!(UI.microphone.panels[1].canvas.y + UI.microphone.panels[1].canvas.height <= CONTENT_HEIGHT);
+const _: () = assert!(NAV_BUTTON_HEIGHT * NAV_ITEM_COUNT == display::HEIGHT);
+const _: () = assert!(UI.navigation.width == NAV_WIDTH);
+const _: () = assert!(UI.text.line_height > 0);
+const _: () = assert!(
+    UI.text.top + UI.text.visible_lines * UI.text.line_height <= CONTENT_HEIGHT
+);
+const _: () = assert!(UI.placeholder.title_y < CONTENT_HEIGHT);
+const _: () = assert!(UI.placeholder.subtitle_y < CONTENT_HEIGHT);
+const _: () = assert!(UI.microphone.left.panel.contains(UI.microphone.left.canvas));
+const _: () = assert!(UI.microphone.right.panel.contains(UI.microphone.right.canvas));
+const _: () = assert!(UI.microphone.left.label_x_offset < UI.microphone.left.panel.width());
+const _: () = assert!(UI.microphone.left.label_y_offset < UI.microphone.left.panel.height());
+const _: () = assert!(UI.microphone.right.label_x_offset < UI.microphone.right.panel.width());
+const _: () = assert!(UI.microphone.right.label_y_offset < UI.microphone.right.panel.height());
+const _: () = assert!(UI.microphone.left.canvas.width() % waveform::POINTS == 0);
+const _: () = assert!(UI.microphone.right.canvas.width() % waveform::POINTS == 0);
+const _: () = assert!(UI.imu.header_columns.roll_x < CONTENT_WIDTH);
+const _: () = assert!(UI.imu.header_columns.pitch_x < CONTENT_WIDTH);
+const _: () = assert!(UI.imu.header_columns.yaw_x < CONTENT_WIDTH);

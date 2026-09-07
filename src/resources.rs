@@ -1,9 +1,9 @@
 //! Runtime hardware ownership expressed through concrete resource bundles.
 //!
-//! `RuntimeResources` describes only raw-peripheral ownership. CPU1→CPU0 data
-//! ownership is a separate `service_inputs::Cpu0Inputs` value because hardware
-//! ownership and message-consumption semantics are different architectural
-//! concerns.
+//! `RuntimeResources` describes only raw-peripheral ownership. CPU1→CPU0 reader
+//! handles live separately in `service_inputs::Cpu0Inputs` because peripheral
+//! ownership and access to static cross-core data contracts are different
+//! architectural concerns.
 //!
 //! Bootstrap moves each raw peripheral exactly once to the service that owns it:
 //! CPU0 owns display I/O; CPU1 owns runtime I2C, audio acquisition, and radio.

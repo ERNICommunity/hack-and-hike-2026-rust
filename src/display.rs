@@ -23,7 +23,7 @@ pub const HEIGHT: usize = board::DISPLAY_HEIGHT;
 ///
 /// Fields are private and construction checks panel bounds, so every `Region`
 /// value is safe to submit to `Display`. Constant UI regions therefore fail at
-/// compile time if an edited design extends outside the 320×240 panel.
+/// compile time if an edited design extends outside the physical panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Region {
     x: usize,
@@ -42,14 +42,6 @@ impl Region {
             width,
             height,
         }
-    }
-
-    pub const fn width(self) -> usize {
-        self.width
-    }
-
-    pub const fn height(self) -> usize {
-        self.height
     }
 
     const fn end_x(self) -> usize {
@@ -90,10 +82,10 @@ pub fn init(resources: Resources, delay: &mut Delay) -> Display {
 impl Display {
     /// Render a valid physical region one scanline at a time.
     ///
-    /// The closure receives a reusable RGB565 slice exactly `region.width()`
-    /// pixels wide. Each completed line is queued immediately, allowing CPU
-    /// rendering of the next line to overlap the previous SPI-DMA transfer.
-    /// No allocation occurs in this path.
+    /// The closure receives a reusable RGB565 slice exactly as wide as the
+    /// region. Each completed line is queued immediately, allowing CPU rendering
+    /// of the next line to overlap the previous SPI-DMA transfer. No allocation
+    /// occurs in this path.
     pub fn render_scanlines(
         &mut self,
         region: Region,

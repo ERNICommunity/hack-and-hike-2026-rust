@@ -1,18 +1,21 @@
-//! CPU0-owned reader capabilities for CPU1-produced data.
+//! CPU0 reader handles for CPU1-produced data.
 //!
-//! The producer modules intentionally keep their service-specific primitives:
-//! touch has an ordered edge channel plus a replace-latest point, IMU and
-//! Network use replace-latest snapshots, and Audio exposes a latest complete PCM
-//! block. `Cpu0Inputs` does not turn those into a generic event bus; it gives the
-//! CPU0 owner a concrete, non-`Copy` capability for each contract.
+//! The producer modules keep service-specific static synchronization primitives:
+//! touch has an ordered edge channel plus a replace-latest point, IMU and network
+//! use replace-latest snapshots, and audio exposes a latest complete PCM block.
+//! These non-`Copy`, non-`Clone` handles make the intended CPU0 ownership graph
+//! visible in ordinary Rust moves without pretending that the underlying static
+//! primitives are linear capabilities. Constructing another `Cpu0Inputs` value
+//! inside this crate would still address the same static producer state.
 
 use crate::{audio, imu, network, touch};
 
-/// Complete set of CPU1→CPU0 data capabilities.
+/// Logical CPU0 readers for all CPU1-produced presentation data.
 ///
-/// Bootstrap constructs this value once and moves each field to its sole CPU0
-/// consumer. The types are deliberately not `Copy` or `Clone`, so normal Rust
-/// moves make the intended ownership graph visible at construction time.
+/// Bootstrap constructs one bundle and moves each field to its normal consumer.
+/// The move-only wrappers prevent accidental duplication of a handle after that
+/// point; uniqueness of construction remains an architectural convention because
+/// the services themselves are backed by static Embassy primitives.
 pub struct Cpu0Inputs {
     pub touch: TouchInput,
     pub imu: ImuInput,
@@ -21,7 +24,7 @@ pub struct Cpu0Inputs {
 }
 
 impl Cpu0Inputs {
-    pub const fn new() -> Self {
+    pub(crate) const fn from_static_services() -> Self {
         Self {
             touch: TouchInput { _private: () },
             imu: ImuInput { _private: () },
@@ -31,7 +34,7 @@ impl Cpu0Inputs {
     }
 }
 
-/// Sole CPU0 consumer capability for touch presentation input.
+/// CPU0 reader handle for touch presentation input.
 ///
 /// Edge ordering is bounded by the producer's channel capacity; movement is
 /// replace-latest and may be overwritten while CPU0 is busy rendering.
@@ -49,7 +52,7 @@ impl TouchInput {
     }
 }
 
-/// Sole CPU0 consumer capability for fused IMU state.
+/// CPU0 reader handle for fused IMU state.
 ///
 /// Multiple CPU1 publications collapse to the newest `imu::Snapshot`.
 pub struct ImuInput {
@@ -62,7 +65,7 @@ impl ImuInput {
     }
 }
 
-/// Sole CPU0 consumer capability for complete stereo audio blocks.
+/// CPU0 reader handle for complete stereo audio blocks.
 ///
 /// The read is non-blocking. If CPU1 is publishing at the same instant, CPU0
 /// skips that presentation tick instead of waiting on the producer.
@@ -79,7 +82,7 @@ impl AudioInput {
     }
 }
 
-/// Sole CPU0 consumer capability for the ESP-NOW presentation snapshot.
+/// CPU0 reader handle for the ESP-NOW presentation snapshot.
 ///
 /// Multiple radio updates collapse to the newest bounded peer-table snapshot.
 pub struct NetworkInput {

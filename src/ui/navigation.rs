@@ -1,8 +1,10 @@
 //! Fixed navigation rail input and rendering.
 //!
-//! `NavigationInput` owns the only CPU0 touch reader. Gesture state is separate
-//! from `AppModel`: physical touch input becomes a semantic `ViewId` only after
-//! a press and release complete inside the same navigation button.
+//! `NavigationInput` owns the CPU0 touch reader used for presentation gestures.
+//! Gesture state is separate from `AppModel`: physical touch input becomes a
+//! semantic `ViewId` only after a press and release complete inside the same
+//! navigation button. Hit testing and rendering consume the same declarative
+//! navigation-item array from `ui::design`.
 
 use crate::{
     display::Display,
@@ -13,34 +15,9 @@ use crate::{
 
 use super::design;
 
-const ICON_SIZE: usize = 16;
-const ICON_X: usize = (design::UI.navigation.width - ICON_SIZE) / 2;
-const ICON_Y_IN_BUTTON: usize = (design::UI.navigation.button_height - ICON_SIZE) / 2;
-
-const _: () = assert!(ViewId::ALL.len() * design::UI.navigation.button_height == crate::display::HEIGHT);
-
-const NAV_ICONS: [[u16; ICON_SIZE]; 5] = [
-    [
-        0x0000, 0x0000, 0x0180, 0x03C0, 0x0660, 0x0C30, 0x1818, 0x0180,
-        0x0180, 0x1818, 0x0C30, 0x0660, 0x03C0, 0x0180, 0x0000, 0x0000,
-    ],
-    [
-        0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x7FFE, 0x0180, 0x0180,
-        0x0180, 0x0180, 0x07E0, 0x0DB0, 0x198C, 0x0180, 0x0180, 0x0000,
-    ],
-    [
-        0x03C0, 0x0660, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30,
-        0x0660, 0x03C0, 0x0180, 0x1FF8, 0x0180, 0x0180, 0x07E0, 0x0000,
-    ],
-    [
-        0x0000, 0x0300, 0x0700, 0x0F18, 0x7F0C, 0x7F06, 0x7F06, 0x7F06,
-        0x7F06, 0x7F06, 0x7F0C, 0x0F18, 0x0700, 0x0300, 0x0000, 0x0000,
-    ],
-    [
-        0x0000, 0x0000, 0x3FFC, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004,
-        0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x3FFC, 0x0000, 0x0000, 0x0000,
-    ],
-];
+const ICON_X: usize = (design::UI.navigation.width - design::NAV_ICON_SIZE) / 2;
+const ICON_Y_IN_BUTTON: usize =
+    (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;
 
 pub(crate) struct NavigationInput {
     touch: TouchInput,
@@ -57,6 +34,7 @@ impl NavigationInput {
         }
     }
 
+    /// Drain pending touch state and return a committed destination, if any.
     pub(crate) fn poll(&mut self) -> Option<ViewId> {
         let mut selected = None;
 
@@ -97,14 +75,15 @@ fn view_at(point: TouchPoint) -> Option<ViewId> {
     }
 
     let index = usize::from(point.y) / nav.button_height;
-    ViewId::ALL.get(index).copied()
+    nav.items.get(index).map(|item| item.view)
 }
 
 pub(crate) fn render(display: &mut Display, active: ViewId) {
     let nav = design::UI.navigation;
     display.render_scanlines(design::NAV_REGION, |screen_y, pixels| {
         let button_index = screen_y / nav.button_height;
-        let selected = ViewId::ALL[button_index] == active;
+        let item = &nav.items[button_index];
+        let selected = item.view == active;
         let background = if selected {
             nav.selected_background
         } else {
@@ -120,10 +99,10 @@ pub(crate) fn render(display: &mut Display, active: ViewId) {
         pixels[nav.width - 1] = nav.divider.raw();
 
         let local_y = screen_y % nav.button_height;
-        if (ICON_Y_IN_BUTTON..ICON_Y_IN_BUTTON + ICON_SIZE).contains(&local_y) {
-            let row_bits = NAV_ICONS[button_index][local_y - ICON_Y_IN_BUTTON];
-            for icon_x in 0..ICON_SIZE {
-                if row_bits & (1 << (ICON_SIZE - 1 - icon_x)) != 0 {
+        if (ICON_Y_IN_BUTTON..ICON_Y_IN_BUTTON + design::NAV_ICON_SIZE).contains(&local_y) {
+            let row_bits = item.icon[local_y - ICON_Y_IN_BUTTON];
+            for icon_x in 0..design::NAV_ICON_SIZE {
+                if row_bits & (1 << (design::NAV_ICON_SIZE - 1 - icon_x)) != 0 {
                     pixels[ICON_X + icon_x] = foreground.raw();
                 }
             }

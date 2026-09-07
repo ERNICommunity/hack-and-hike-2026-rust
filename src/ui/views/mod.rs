@@ -52,14 +52,14 @@ fn render_placeholder(frame: &mut ContentFramebuffer, title: &str, subtitle: &st
 
     let _ = Text::with_baseline(
         title,
-        Point::new(title_x, spec.title_y),
+        Point::new(title_x, spec.title_y as i32),
         title_style,
         Baseline::Top,
     )
     .draw(frame);
     let _ = Text::with_baseline(
         subtitle,
-        Point::new(subtitle_x, spec.subtitle_y),
+        Point::new(subtitle_x, spec.subtitle_y as i32),
         subtitle_style,
         Baseline::Top,
     )
@@ -67,10 +67,10 @@ fn render_placeholder(frame: &mut ContentFramebuffer, title: &str, subtitle: &st
 }
 
 fn render_microphone_shell(frame: &mut ContentFramebuffer) {
+    let microphone = design::UI.microphone;
     frame.clear(design::UI.content_background);
-    for panel in design::UI.microphone.panels {
-        draw_waveform_panel(frame, panel);
-    }
+    draw_waveform_panel(frame, microphone.left);
+    draw_waveform_panel(frame, microphone.right);
 }
 
 fn draw_waveform_panel(frame: &mut ContentFramebuffer, panel: WaveformPanelSpec) {
@@ -81,8 +81,8 @@ fn draw_waveform_panel(frame: &mut ContentFramebuffer, panel: WaveformPanelSpec)
         .stroke_width(1)
         .build();
     let bounds = Rectangle::new(
-        Point::new(panel.panel.x as i32, panel.panel.y as i32),
-        Size::new(panel.panel.width as u32, panel.panel.height as u32),
+        Point::new(panel.panel.x() as i32, panel.panel.y() as i32),
+        Size::new(panel.panel.width() as u32, panel.panel.height() as u32),
     );
     let _ = bounds.into_styled(panel_style).draw(frame);
 
@@ -90,8 +90,8 @@ fn draw_waveform_panel(frame: &mut ContentFramebuffer, panel: WaveformPanelSpec)
     let _ = Text::with_baseline(
         panel.label,
         Point::new(
-            panel.panel.x as i32 + panel.label_x_offset,
-            panel.panel.y as i32 + panel.label_y_offset,
+            (panel.panel.x() + panel.label_x_offset) as i32,
+            (panel.panel.y() + panel.label_y_offset) as i32,
         ),
         label_style,
         Baseline::Top,
@@ -99,10 +99,10 @@ fn draw_waveform_panel(frame: &mut ContentFramebuffer, panel: WaveformPanelSpec)
     .draw(frame);
 
     frame.fill_rect(
-        panel.canvas.x,
-        panel.canvas.y,
-        panel.canvas.width,
-        panel.canvas.height,
+        panel.canvas.x(),
+        panel.canvas.y(),
+        panel.canvas.width(),
+        panel.canvas.height(),
         style.canvas_background,
     );
 }

@@ -29,8 +29,8 @@ fn draw_header(frame: &mut ContentFramebuffer, imu: &ImuDisplay) {
     let spec = design::UI.imu;
     let bounds = spec.header;
     let header = Rectangle::new(
-        Point::new(bounds.x as i32, bounds.y as i32),
-        Size::new(bounds.width as u32, bounds.height as u32),
+        Point::new(bounds.x() as i32, bounds.y() as i32),
+        Size::new(bounds.width() as u32, bounds.height() as u32),
     );
     let _ = header
         .into_styled(PrimitiveStyle::with_fill(color(spec.primary)))
@@ -42,14 +42,14 @@ fn draw_header(frame: &mut ContentFramebuffer, imu: &ImuDisplay) {
 
     let _ = Text::with_baseline(
         "IMU 9-AXIS",
-        Point::new(bounds.x as i32 + 6, bounds.y as i32 + 4),
+        Point::new(bounds.x() as i32 + 6, bounds.y() as i32 + 4),
         on_primary_small,
         Baseline::Top,
     )
     .draw(frame);
     let _ = Text::with_baseline(
         status_text(imu.status),
-        Point::new(bounds.x as i32 + 6, bounds.y as i32 + 16),
+        Point::new(bounds.x() as i32 + 6, bounds.y() as i32 + 16),
         small,
         Baseline::Top,
     )
@@ -68,26 +68,28 @@ fn draw_header(frame: &mut ContentFramebuffer, imu: &ImuDisplay) {
     }
     let _ = Text::with_baseline(
         mag.as_str(),
-        Point::new(bounds.x as i32 + 6, bounds.y as i32 + 27),
+        Point::new(bounds.x() as i32 + 6, bounds.y() as i32 + 27),
         small,
         Baseline::Top,
     )
     .draw(frame);
 
-    draw_header_value(frame, "ROLL", imu.roll_deg, spec.header_value_x[0], value, small);
-    draw_header_value(frame, "PITCH", imu.pitch_deg, spec.header_value_x[1], value, small);
-    draw_header_value(frame, "YAW", imu.yaw_deg, spec.header_value_x[2], value, small);
+    let columns = spec.header_columns;
+    draw_header_value(frame, "ROLL", imu.roll_deg, columns.roll_x, value, small);
+    draw_header_value(frame, "PITCH", imu.pitch_deg, columns.pitch_x, value, small);
+    draw_header_value(frame, "YAW", imu.yaw_deg, columns.yaw_x, value, small);
 }
 
 fn draw_header_value(
     frame: &mut ContentFramebuffer,
     label: &str,
     degrees: i32,
-    x: i32,
+    x: usize,
     value_style: MonoTextStyle<'static, Rgb565>,
     label_style: MonoTextStyle<'static, Rgb565>,
 ) {
-    let header_y = design::UI.imu.header.y as i32;
+    let header_y = design::UI.imu.header.y() as i32;
+    let x = x as i32;
     let _ = Text::with_baseline(
         label,
         Point::new(x, header_y + 3),
@@ -110,10 +112,10 @@ fn draw_header_value(
 fn draw_attitude(frame: &mut ContentFramebuffer, imu: &ImuDisplay) {
     let spec = design::UI.imu;
     let area = spec.attitude;
-    let x0 = area.x;
-    let y0 = area.y;
-    let width = area.width;
-    let height = area.height;
+    let x0 = area.x();
+    let y0 = area.y();
+    let width = area.width();
+    let height = area.height();
 
     frame.fill_rect(x0, y0, width, height, spec.horizon_sky);
 
@@ -192,10 +194,10 @@ fn draw_attitude(frame: &mut ContentFramebuffer, imu: &ImuDisplay) {
 fn draw_compass(frame: &mut ContentFramebuffer, imu: &ImuDisplay) {
     let spec = design::UI.imu;
     let area = spec.compass;
-    let x0 = area.x;
-    let y0 = area.y;
-    let width = area.width;
-    let height = area.height;
+    let x0 = area.x();
+    let y0 = area.y();
+    let width = area.width();
+    let height = area.height();
 
     frame.fill_rect(x0, y0, width, height, spec.background);
     frame.hline(x0, y0, width, spec.border);
