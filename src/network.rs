@@ -60,7 +60,7 @@ pub struct Config {
 pub const DEFAULT_CONFIG: Config = Config {
     channel: DEFAULT_CHANNEL,
     beacon_period: DEFAULT_BEACON_PERIOD,
-    peer_timeout: Duration::from_secs(5),
+    peer_timeout: Duration::from_secs(1),
 };
 
 /// CPU1-owned physical resource required by ESP-NOW.
