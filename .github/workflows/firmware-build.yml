@@ -6,11 +6,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Temporary write permission for this branch only: the build below materializes
-# Cargo's exact ESP-NOW dependency lockfile, commits it, and pushes it back to
-# network/esp-now. This is reverted immediately after the one-time lock commit.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -26,12 +23,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout feature branch
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: network/esp-now
-          fetch-depth: 0
 
+      # A successful full release build is deterministic for these inputs. Keep
+      # a tiny proof marker so an exact rerun can avoid downloading ~850 MB of
+      # toolchain/build caches and repeating a build that already passed.
+      # Bump proof-v1 whenever the build command or CI build semantics change.
       - name: Restore successful-build proof
         id: build-proof
         uses: actions/cache/restore@v4
@@ -98,20 +96,9 @@ jobs:
             ${{ runner.os }}-esp32s3-release-1.93.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-
             ${{ runner.os }}-esp32s3-target-1.93.0.0-${{ hashFiles('Cargo.lock') }}-
 
-      - name: Build firmware and lock dependencies
+      - name: Build firmware
         if: steps.build-proof.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          cargo build --release
-          if git diff --quiet -- Cargo.lock; then
-            echo "Cargo.lock already current."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock
-          git commit -m "build: lock ESP-NOW dependencies"
-          git push origin HEAD:network/esp-now
+        run: cargo build --locked --release
 
       - name: Record successful build
         if: steps.build-proof.outputs.cache-hit != 'true' && success()
