@@ -1,23 +1,22 @@
 //! CPU0 application models.
 //!
-//! This module owns state and data refresh policy. Presentation consumes only
-//! bounded snapshots and fixed-size frame data; no renderer objects live here.
-
-use core::cell::{Cell, RefCell};
+//! This module owns application state, bounded snapshots, and refresh policy.
+//! It does not know screen geometry or renderer types. `Ui` uniquely owns the
+//! model, so ordinary mutable Rust state is sufficient; no interior mutability
+//! is required.
 
 use embassy_time::{Duration, Instant};
 
 use crate::{
     audio, data_plane, imu, logger, network,
-    waveform::{AMPLITUDE_PIXELS, POINTS, WaveformFrame},
+    waveform::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame},
 };
 
 const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
-const IMU_UI_UPDATE: Duration = Duration::from_millis(40);
-const NETWORK_UI_UPDATE: Duration = Duration::from_millis(200);
+const IMU_UPDATE: Duration = Duration::from_millis(40);
+const NETWORK_UPDATE: Duration = Duration::from_millis(200);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
-const LOG_VISIBLE_LINES: usize = 23;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -67,7 +66,7 @@ impl NetworkModel {
     }
 
     fn update_if_due(&mut self, now: Instant) {
-        if now - self.last_update < NETWORK_UI_UPDATE {
+        if now - self.last_update < NETWORK_UPDATE {
             return;
         }
         self.last_update = now;
@@ -92,17 +91,17 @@ impl NetworkModel {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ImuDisplay {
     pub roll_deg: i32,
     pub pitch_deg: i32,
     pub yaw_deg: i32,
-    pub status: i32,
-    pub read_errors: i32,
-    pub mag_errors: i32,
-    pub mag_status: i32,
+    pub status: imu::Status,
+    pub read_errors: u32,
+    pub mag_errors: u32,
+    pub mag_status: imu::MagStatus,
     pub mag_field_ut: i32,
-    pub mag_calibration: i32,
+    pub mag_calibration: u8,
     pub gyro_bias_ready: bool,
 }
 
@@ -120,10 +119,10 @@ impl ImuModel {
                 roll_deg: 0,
                 pitch_deg: 0,
                 yaw_deg: 0,
-                status: imu::Status::Starting as i32,
+                status: imu::Status::Starting,
                 read_errors: 0,
                 mag_errors: 0,
-                mag_status: imu::MagStatus::Missing as i32,
+                mag_status: imu::MagStatus::Missing,
                 mag_field_ut: 0,
                 mag_calibration: 0,
                 gyro_bias_ready: false,
@@ -139,7 +138,7 @@ impl ImuModel {
     }
 
     fn update_if_due(&mut self, now: Instant) {
-        if now - self.last_update < IMU_UI_UPDATE {
+        if now - self.last_update < IMU_UPDATE {
             return;
         }
         self.last_update = now;
@@ -156,12 +155,12 @@ impl ImuModel {
             roll_deg: round_units(snapshot.orientation.roll_deg),
             pitch_deg: round_units(snapshot.orientation.pitch_deg),
             yaw_deg: round_units(snapshot.orientation.yaw_deg),
-            status: snapshot.status as i32,
-            read_errors: snapshot.read_errors.min(i32::MAX as u32) as i32,
-            mag_errors: snapshot.mag_errors.min(i32::MAX as u32) as i32,
-            mag_status: snapshot.mag_status as i32,
+            status: snapshot.status,
+            read_errors: snapshot.read_errors,
+            mag_errors: snapshot.mag_errors,
+            mag_status: snapshot.mag_status,
             mag_field_ut: round_units(snapshot.mag_field_ut),
-            mag_calibration: i32::from(snapshot.mag_calibration_percent),
+            mag_calibration: snapshot.mag_calibration_percent,
             gyro_bias_ready: snapshot.gyro_bias_ready,
         };
         self.dirty = true;
@@ -290,35 +289,17 @@ impl WaveformModel {
 }
 
 fn quantize_waveform(sample: i16, scale: i32) -> i8 {
-    ((i32::from(sample) * AMPLITUDE_PIXELS) / scale)
-        .clamp(-AMPLITUDE_PIXELS, AMPLITUDE_PIXELS) as i8
+    ((i32::from(sample) * MAX_AMPLITUDE_PIXELS) / scale)
+        .clamp(-MAX_AMPLITUDE_PIXELS, MAX_AMPLITUDE_PIXELS) as i8
 }
 
-fn trailing_lines(text: &str, line_count: usize) -> &str {
-    if line_count == 0 || text.is_empty() {
-        return "";
-    }
-
-    let bytes = text.as_bytes();
-    let mut seen = 0usize;
-    for index in (0..bytes.len()).rev() {
-        if bytes[index] != b'\n' {
-            continue;
-        }
-
-        seen += 1;
-        if seen > line_count {
-            return &text[index + 1..];
-        }
-    }
-
-    text
-}
-
+/// Fixed-size MCU log snapshot.
+///
+/// The complete bounded byte snapshot remains in PSRAM. Deciding which lines
+/// fit on screen is a presentation concern and therefore happens in `ui::views`.
 struct LogModel {
     bytes: data_plane::FixedPsramBuffer<u8>,
-    visible_start: usize,
-    visible_len: usize,
+    len: usize,
     revision: u32,
     last_check: Instant,
     dirty: bool,
@@ -328,8 +309,7 @@ impl LogModel {
     fn new() -> Self {
         Self {
             bytes: data_plane::FixedPsramBuffer::filled(logger::HISTORY_BYTES, 0),
-            visible_start: 0,
-            visible_len: 0,
+            len: 0,
             revision: u32::MAX,
             last_check: Instant::now(),
             dirty: true,
@@ -357,9 +337,7 @@ impl LogModel {
             return;
         };
 
-        let visible = trailing_lines(logs, LOG_VISIBLE_LINES);
-        self.visible_start = visible.as_ptr() as usize - logs.as_ptr() as usize;
-        self.visible_len = visible.len();
+        self.len = logs.len();
         self.revision = revision;
         self.dirty = true;
     }
@@ -370,19 +348,18 @@ impl LogModel {
         }
         self.dirty = false;
 
-        let end = self.visible_start.saturating_add(self.visible_len);
-        let bytes = self.bytes.as_slice().get(self.visible_start..end)?;
+        let bytes = self.bytes.as_slice().get(..self.len)?;
         let text = core::str::from_utf8(bytes).ok()?;
         Some(render(text))
     }
 }
 
 pub struct AppModel {
-    active_view: Cell<ViewId>,
-    network: RefCell<NetworkModel>,
-    imu: RefCell<ImuModel>,
-    waveform: RefCell<WaveformModel>,
-    log: RefCell<LogModel>,
+    active_view: ViewId,
+    network: NetworkModel,
+    imu: ImuModel,
+    waveform: WaveformModel,
+    log: LogModel,
 }
 
 impl AppModel {
@@ -391,71 +368,68 @@ impl AppModel {
         log.refresh();
 
         Self {
-            active_view: Cell::new(ViewId::Log),
-            network: RefCell::new(NetworkModel::new()),
-            imu: RefCell::new(ImuModel::new()),
-            waveform: RefCell::new(WaveformModel::new()),
-            log: RefCell::new(log),
+            active_view: ViewId::Log,
+            network: NetworkModel::new(),
+            imu: ImuModel::new(),
+            waveform: WaveformModel::new(),
+            log,
         }
     }
 
     pub fn active_view(&self) -> ViewId {
-        self.active_view.get()
+        self.active_view
     }
 
-    pub fn request_view(&self, view: ViewId) {
-        if view == self.active_view.get() {
+    pub fn request_view(&mut self, view: ViewId) {
+        if view == self.active_view {
             return;
         }
 
-        self.active_view.set(view);
+        self.active_view = view;
         match view {
-            ViewId::Network => self.network.borrow_mut().mark_dirty(),
-            ViewId::Imu => self.imu.borrow_mut().mark_dirty(),
-            ViewId::Microphone => self.waveform.borrow_mut().mark_dirty(),
-            ViewId::Log => self.log.borrow_mut().mark_dirty(),
+            ViewId::Network => self.network.mark_dirty(),
+            ViewId::Imu => self.imu.mark_dirty(),
+            ViewId::Microphone => self.waveform.mark_dirty(),
+            ViewId::Log => self.log.mark_dirty(),
             ViewId::Sound => {}
         }
     }
 
-    pub fn update(&self, now: Instant) {
-        match self.active_view.get() {
-            ViewId::Network => self.network.borrow_mut().update_if_due(now),
-            ViewId::Imu => self.imu.borrow_mut().update_if_due(now),
-            ViewId::Microphone => self.waveform.borrow_mut().update_if_due(now),
-            ViewId::Log => self.log.borrow_mut().update_if_due(now),
+    pub fn update(&mut self, now: Instant) {
+        match self.active_view {
+            ViewId::Network => self.network.update_if_due(now),
+            ViewId::Imu => self.imu.update_if_due(now),
+            ViewId::Microphone => self.waveform.update_if_due(now),
+            ViewId::Log => self.log.update_if_due(now),
             ViewId::Sound => {}
         }
     }
 
-    pub fn take_network_display(&self) -> Option<network::Snapshot> {
-        if self.active_view.get() != ViewId::Network {
+    pub fn take_network_display(&mut self) -> Option<network::Snapshot> {
+        if self.active_view != ViewId::Network {
             return None;
         }
-        self.network.borrow_mut().take_display()
+        self.network.take_display()
     }
 
-    pub fn with_log_text<R>(&self, render: impl FnOnce(&str) -> R) -> Option<R> {
-        if self.active_view.get() != ViewId::Log {
+    pub fn with_log_text<R>(&mut self, render: impl FnOnce(&str) -> R) -> Option<R> {
+        if self.active_view != ViewId::Log {
             return None;
         }
-
-        self.log.borrow_mut().with_text(render)
+        self.log.with_text(render)
     }
 
-    pub fn take_imu_display(&self) -> Option<ImuDisplay> {
-        if self.active_view.get() != ViewId::Imu {
+    pub fn take_imu_display(&mut self) -> Option<ImuDisplay> {
+        if self.active_view != ViewId::Imu {
             return None;
         }
-
-        self.imu.borrow_mut().take_display()
+        self.imu.take_display()
     }
 
-    pub fn take_waveform_frame(&self) -> Option<WaveformFrame> {
-        if self.active_view.get() != ViewId::Microphone {
+    pub fn take_waveform_frame(&mut self) -> Option<WaveformFrame> {
+        if self.active_view != ViewId::Microphone {
             return None;
         }
-
-        self.waveform.borrow_mut().take_frame()
+        self.waveform.take_frame()
     }
 }

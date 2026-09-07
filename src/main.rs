@@ -12,15 +12,14 @@ mod board;
 pub mod cross_core;
 mod data_plane;
 mod diagnostics;
+mod display;
 mod imu;
-mod live_views;
 mod logger;
 mod memory;
 mod models;
 mod network;
 mod protocol;
 mod resources;
-mod screen;
 mod system_i2c;
 mod theme;
 mod touch;
@@ -71,7 +70,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     let runtime_resources = resources::RuntimeResources {
         cpu0: resources::Cpu0Resources {
-            display: screen::Resources {
+            display: display::Resources {
                 spi2: peripherals.SPI2,
                 dma: peripherals.DMA_CH1,
                 sck: peripherals.GPIO36,
@@ -104,7 +103,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     let resources::RuntimeResources { cpu0, cpu1 } = runtime_resources;
     let resources::Cpu0Resources {
-        display,
+        display: display_resources,
         app: _cpu0_app_endpoint,
     } = cpu0;
     let resources::Cpu1Resources {
@@ -116,8 +115,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     let mut delay = esp_hal::delay::Delay::new();
     let mut system_i2c = system_i2c::init(system_i2c_resources);
-
-    let mut screen = screen::init(&mut system_i2c, display, &mut delay);
+    let mut display = display::init(&mut system_i2c, display_resources, &mut delay);
 
     audio::init_es7210(&mut system_i2c, &mut delay)
         .expect("Failed to initialize ES7210 microphone codec");
@@ -127,7 +125,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     info!("==========================================");
 
     memory::report("before CPU1 startup");
-
     info!("Starting CPU1 acquisition executor");
 
     let cpu1_stack = CPU1_STACK.init(Stack::new());
@@ -147,20 +144,16 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                     memory::cpu1_stack_monitor_task()
                         .expect("Failed to allocate CPU1 stack monitor task"),
                 );
-
                 network::start(&spawner, network_resources, network::DEFAULT_CONFIG);
 
                 let system_bus = system_i2c::into_async(system_i2c);
-
                 spawner.spawn(
                     imu::capture_task(system_bus, imu::DEFAULT_CONFIG)
                         .expect("Failed to allocate CPU1 IMU task"),
                 );
-
                 spawner.spawn(
                     touch::capture_task(system_bus).expect("Failed to allocate CPU1 touch task"),
                 );
-
                 spawner.spawn(
                     audio::capture_task(audio_resources)
                         .expect("Failed to allocate CPU1 audio task"),
@@ -176,7 +169,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let mut heap_monitor = memory::HeapMonitor::new(now);
     heap_monitor.checkpoint("after model + UI construction");
 
-    ui.render_initial(&mut screen);
+    ui.render_initial(&mut display);
     heap_monitor.checkpoint("after initial UI render");
 
     loop {
@@ -184,11 +177,11 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         if let Some(change) = ui.prepare_frame(now) {
             heap_monitor.begin_navigation(change.to.as_i32());
-            ui.apply_navigation(change, &mut screen);
+            ui.apply_navigation(change, &mut display);
             info!("View {:?} -> {:?}", change.from, change.to);
         }
 
-        ui.render(&mut screen);
+        ui.render(&mut display);
 
         heap_monitor.end_navigation();
         heap_monitor.poll(now);

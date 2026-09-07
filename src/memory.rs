@@ -1,8 +1,8 @@
 //! Physical memory policy and heap instrumentation.
 //!
 //! The global allocator is internal-RAM only. PSRAM is a dedicated allocator
-//! for explicit data-plane buffers. Heap usage is monitored continuously so
-//! internal SRAM becomes an explicit runtime budget.
+//! for explicit data-plane and framebuffer storage. Heap usage is monitored
+//! continuously so internal SRAM remains an explicit runtime budget.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -310,8 +310,8 @@ pub struct NavigationProbe {
 /// Long-lived internal-memory monitor.
 ///
 /// It tracks the lowest observed free SRAM, periodically emits current/peak
-/// usage, warns on thresholds, and verifies whether a navigation redraw caused
-/// allocator activity after UI prewarming.
+/// usage, warns on thresholds, and verifies that navigation rendering remains
+/// allocation-flat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeapPressure {
     Normal,
@@ -455,10 +455,10 @@ impl HeapMonitor {
     }
 }
 
-fn pressure_for(internal_free: usize) -> HeapPressure {
-    if internal_free <= INTERNAL_CRITICAL_FREE_BYTES {
+fn pressure_for(free_bytes: usize) -> HeapPressure {
+    if free_bytes <= INTERNAL_CRITICAL_FREE_BYTES {
         HeapPressure::Critical
-    } else if internal_free <= INTERNAL_WARN_FREE_BYTES {
+    } else if free_bytes <= INTERNAL_WARN_FREE_BYTES {
         HeapPressure::Low
     } else {
         HeapPressure::Normal

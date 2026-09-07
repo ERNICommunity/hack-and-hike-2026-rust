@@ -1,18 +1,10 @@
-//! Allocation-free CPU0 contract for realtime microphone presentation.
+//! Fixed-size presentation contract for realtime microphone samples.
 //!
-//! The presentation layer owns both the fixed page chrome and waveform pixels.
+//! `WaveformFrame` contains already-quantized vertical pixel offsets. It carries
+//! no absolute LCD geometry; placement belongs to `ui::layout`.
 
 pub const POINTS: usize = 128;
-
-pub const CANVAS_X: usize = 54;
-pub const CANVAS_WIDTH: usize = 256;
-pub const CANVAS_HEIGHT: usize = 90;
-
-pub const LEFT_CANVAS_Y: usize = 22;
-pub const RIGHT_CANVAS_Y: usize = 140;
-
-pub const CENTER_Y: i32 = (CANVAS_HEIGHT as i32) / 2;
-pub const AMPLITUDE_PIXELS: i32 = CENTER_Y - 3;
+pub const MAX_AMPLITUDE_PIXELS: i32 = 42;
 
 #[derive(Clone, Copy)]
 pub struct WaveformFrame {
