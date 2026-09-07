@@ -9,7 +9,6 @@ mod text;
 use embedded_graphics::{
     mono_font::{ascii::{FONT_6X10, FONT_8X13_BOLD}, MonoTextStyle},
     prelude::*,
-    primitives::{PrimitiveStyleBuilder, Rectangle},
     text::{Baseline, Text},
 };
 
@@ -75,17 +74,6 @@ fn render_microphone_shell(frame: &mut ContentFramebuffer) {
 
 fn draw_waveform_panel(frame: &mut ContentFramebuffer, panel: WaveformPanelSpec) {
     let style = design::UI.microphone;
-    let panel_style = PrimitiveStyleBuilder::new()
-        .fill_color(color(style.panel_fill))
-        .stroke_color(color(style.panel_border))
-        .stroke_width(1)
-        .build();
-    let bounds = Rectangle::new(
-        Point::new(panel.panel.x() as i32, panel.panel.y() as i32),
-        Size::new(panel.panel.width() as u32, panel.panel.height() as u32),
-    );
-    let _ = bounds.into_styled(panel_style).draw(frame);
-
     let label_style = MonoTextStyle::new(&FONT_6X10, color(style.label));
     let _ = Text::with_baseline(
         panel.label,
