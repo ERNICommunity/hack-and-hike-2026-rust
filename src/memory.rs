@@ -1,8 +1,8 @@
 //! Physical memory policy and heap instrumentation.
 //!
 //! The global allocator is internal-RAM only. PSRAM is a dedicated allocator
-//! for explicit data-plane buffers. Heap usage is monitored continuously so
-//! internal SRAM becomes an explicit runtime budget.
+//! for explicit data-plane and framebuffer storage. Heap usage is monitored
+//! continuously so internal SRAM remains an explicit runtime budget.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -310,8 +310,8 @@ pub struct NavigationProbe {
 /// Long-lived internal-memory monitor.
 ///
 /// It tracks the lowest observed free SRAM, periodically emits current/peak
-/// usage, warns on thresholds, and verifies whether a navigation redraw caused
-/// allocator activity after UI prewarming.
+/// usage, warns on thresholds, and verifies that navigation rendering remains
+/// allocation-flat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeapPressure {
     Normal,
@@ -429,7 +429,7 @@ impl HeapMonitor {
 
             let counters = diagnostics::snapshot();
             ::log::info!(
-                "MEM runtime: internal free={} KiB min={} KiB peak={} KiB alloc={} KiB freed={} KiB dalloc={} B dfree={} B | PSRAM free={} KiB | CPU0 stack current={} KiB min={} KiB | CPU1 stack={} KiB min={} KiB | diag touch-read={} touch-drops={} audio-errors={} audio-full-drains={}",
+                "MEM runtime: internal free={} KiB min={} KiB peak={} KiB alloc={} KiB freed={} KiB dalloc={} B dfree={} B | PSRAM free={} KiB | CPU0 stack current={} KiB min={} KiB | CPU1 stack={} KiB min={} KiB | diag touch-read={} touch-drops={} audio-errors={} audio-full-drains={} net-init={} net-tx={} net-rx={} net-txerr={} net-invalid={} net-evict={}",
                 snapshot.internal_free / 1024,
                 self.min_internal_free / 1024,
                 snapshot.internal_peak_used / 1024,
@@ -446,6 +446,12 @@ impl HeapMonitor {
                 counters.touch_edge_drops,
                 counters.audio_capture_errors,
                 counters.audio_full_drains,
+                counters.network_init_errors,
+                counters.network_tx_packets,
+                counters.network_rx_packets,
+                counters.network_tx_errors,
+                counters.network_rx_invalid,
+                counters.network_peer_evictions,
             );
         }
     }
@@ -455,10 +461,10 @@ impl HeapMonitor {
     }
 }
 
-fn pressure_for(internal_free: usize) -> HeapPressure {
-    if internal_free <= INTERNAL_CRITICAL_FREE_BYTES {
+fn pressure_for(free_bytes: usize) -> HeapPressure {
+    if free_bytes <= INTERNAL_CRITICAL_FREE_BYTES {
         HeapPressure::Critical
-    } else if internal_free <= INTERNAL_WARN_FREE_BYTES {
+    } else if free_bytes <= INTERNAL_WARN_FREE_BYTES {
         HeapPressure::Low
     } else {
         HeapPressure::Normal

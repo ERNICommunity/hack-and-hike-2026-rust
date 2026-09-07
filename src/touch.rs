@@ -5,16 +5,14 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Timer};
 
-use crate::{diagnostics, system_i2c::SystemI2cBus};
+use crate::{board, diagnostics, system_i2c::SystemI2cBus};
 
 const FT6336_ADDR: u8 = 0x38;
 const FT6336_TOUCH_DATA: u8 = 0x02;
-const SCREEN_WIDTH: u16 = 320;
-const SCREEN_HEIGHT: u16 = 240;
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 // These outputs cross from CPU1 acquisition to CPU0 presentation, therefore
-// they still use CriticalSectionRawMutex. Only the physical I2C bus mutex is
+// they use CriticalSectionRawMutex. Only the physical I2C bus mutex is
 // executor-local.
 static TOUCH_EDGES: Channel<CriticalSectionRawMutex, TouchEdge, 8> = Channel::new();
 static LATEST_POINT: Signal<CriticalSectionRawMutex, TouchPoint> = Signal::new();
@@ -67,7 +65,7 @@ async fn read_sample(bus: SystemI2cBus) -> TouchSample {
     let y = (u16::from(data[3] & 0x0F) << 8) | u16::from(data[4]);
     let point = TouchPoint { x, y };
 
-    if x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT {
+    if usize::from(x) >= board::DISPLAY_WIDTH || usize::from(y) >= board::DISPLAY_HEIGHT {
         TouchSample::ReadError
     } else {
         TouchSample::Down(point)

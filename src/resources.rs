@@ -1,55 +1,46 @@
-//! Runtime ownership expressed through concrete resource bundles.
+//! Runtime hardware ownership expressed through concrete resource bundles.
 //!
-//! These types describe the architecture without trying to prove physical CPU
-//! affinity. Bootstrap code is responsible for moving each bundle to the
-//! intended core.
+//! Bootstrap code moves each raw peripheral exactly once to the service that
+//! owns it. Cross-core data exchange is deliberately not represented here:
+//! touch, IMU, audio, and network each expose their own bounded service-specific
+//! Signal/Channel contract.
 //!
-//! - CPU0 owns application/model coordination, Slint presentation, display I/O,
-//!   direct display overlays, and the application side of semantic cross-core
-//!   communication.
+//! - CPU0 owns application/model coordination, presentation state, and display
+//!   I/O.
 //! - CPU1 owns non-display peripheral services, timing-sensitive acquisition or
-//!   communication, runtime system I2C, and the service side of semantic
-//!   cross-core communication.
+//!   communication, and runtime system I2C.
 //!
 //! Service-specific raw hardware requirements live with the owning service as
-//! `screen::Resources`, `audio::Resources`, `network::Resources`, and
+//! `display::Resources`, `audio::Resources`, `network::Resources`, and
 //! `system_i2c::Resources`. The IMU has no separate raw peripheral bundle: it is
 //! a CPU1 service using the shared CPU1-local `system_i2c::SystemI2cBus`.
 
-use crate::{audio, cross_core, network, screen, system_i2c};
+use crate::{audio, display, network, system_i2c};
 
-/// Complete runtime split between the two architectural sides.
+/// Complete raw-hardware split between the two architectural sides.
 ///
 /// ```text
 /// RuntimeResources
 /// ├── Cpu0Resources
-/// │   ├── screen::Resources
-/// │   └── Cpu0AppEndpoint
+/// │   └── display::Resources
 /// └── Cpu1Resources
 ///     ├── system_i2c::Resources  (touch + IMU runtime bus)
 ///     ├── audio::Resources
-///     ├── network::Resources     (ESP-NOW radio)
-///     └── Cpu1ServiceEndpoint
+///     └── network::Resources     (ESP-NOW radio)
 /// ```
 pub struct RuntimeResources {
     pub cpu0: Cpu0Resources,
     pub cpu1: Cpu1Resources,
 }
 
-/// Resources belonging to CPU0's application/presentation side.
+/// Raw peripherals belonging to CPU0's display side.
 pub struct Cpu0Resources {
-    pub display: screen::Resources,
-    pub app: cross_core::Cpu0AppEndpoint,
+    pub display: display::Resources,
 }
 
-/// Resources belonging to CPU1's non-display service side.
-///
-/// The IMU deliberately does not appear as a raw resource field because its
-/// hardware transport is the shared runtime system-I2C bus. ESP-NOW does own a
-/// dedicated radio peripheral, so its resource bundle is explicit here.
+/// Raw peripherals belonging to CPU1's non-display service side.
 pub struct Cpu1Resources {
     pub system_i2c: system_i2c::Resources,
     pub audio: audio::Resources,
     pub network: network::Resources,
-    pub services: cross_core::Cpu1ServiceEndpoint,
 }

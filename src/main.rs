@@ -9,18 +9,16 @@
 
 mod audio;
 mod board;
-pub mod cross_core;
 mod data_plane;
 mod diagnostics;
+mod display;
 mod imu;
-mod live_views;
 mod logger;
 mod memory;
 mod models;
 mod network;
 mod protocol;
 mod resources;
-mod screen;
 mod system_i2c;
 mod theme;
 mod touch;
@@ -67,11 +65,9 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    let (cpu0_app_endpoint, cpu1_service_endpoint) = cross_core::split();
-
     let runtime_resources = resources::RuntimeResources {
         cpu0: resources::Cpu0Resources {
-            display: screen::Resources {
+            display: display::Resources {
                 spi2: peripherals.SPI2,
                 dma: peripherals.DMA_CH1,
                 sck: peripherals.GPIO36,
@@ -79,7 +75,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                 dc: peripherals.GPIO35,
                 cs: peripherals.GPIO3,
             },
-            app: cpu0_app_endpoint,
         },
         cpu1: resources::Cpu1Resources {
             system_i2c: system_i2c::Resources {
@@ -98,26 +93,27 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             network: network::Resources {
                 wifi: peripherals.WIFI,
             },
-            services: cpu1_service_endpoint,
         },
     };
 
     let resources::RuntimeResources { cpu0, cpu1 } = runtime_resources;
     let resources::Cpu0Resources {
-        display,
-        app: _cpu0_app_endpoint,
+        display: display_resources,
     } = cpu0;
     let resources::Cpu1Resources {
         system_i2c: system_i2c_resources,
         audio: audio_resources,
         network: network_resources,
-        services: cpu1_service_endpoint,
     } = cpu1;
 
     let mut delay = esp_hal::delay::Delay::new();
     let mut system_i2c = system_i2c::init(system_i2c_resources);
 
-    let mut screen = screen::init(&mut system_i2c, display, &mut delay);
+    // Shared PCB power/reset policy is performed once during bootstrap before
+    // the CPU1 touch task starts. `display::init` itself owns only LCD transport.
+    board::power::enable_lcd_backlight(&mut system_i2c);
+    board::io_expander::reset_display_and_touch(&mut system_i2c, &mut delay);
+    let mut display = display::init(display_resources, &mut delay);
 
     audio::init_es7210(&mut system_i2c, &mut delay)
         .expect("Failed to initialize ES7210 microphone codec");
@@ -127,7 +123,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     info!("==========================================");
 
     memory::report("before CPU1 startup");
-
     info!("Starting CPU1 acquisition executor");
 
     let cpu1_stack = CPU1_STACK.init(Stack::new());
@@ -141,26 +136,20 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
             executor.run(move |spawner| {
-                let _cpu1_service_endpoint = cpu1_service_endpoint;
-
                 spawner.spawn(
                     memory::cpu1_stack_monitor_task()
                         .expect("Failed to allocate CPU1 stack monitor task"),
                 );
-
                 network::start(&spawner, network_resources, network::DEFAULT_CONFIG);
 
                 let system_bus = system_i2c::into_async(system_i2c);
-
                 spawner.spawn(
                     imu::capture_task(system_bus, imu::DEFAULT_CONFIG)
                         .expect("Failed to allocate CPU1 IMU task"),
                 );
-
                 spawner.spawn(
                     touch::capture_task(system_bus).expect("Failed to allocate CPU1 touch task"),
                 );
-
                 spawner.spawn(
                     audio::capture_task(audio_resources)
                         .expect("Failed to allocate CPU1 audio task"),
@@ -176,7 +165,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let mut heap_monitor = memory::HeapMonitor::new(now);
     heap_monitor.checkpoint("after model + UI construction");
 
-    ui.render_initial(&mut screen);
+    ui.render_initial(&mut display);
     heap_monitor.checkpoint("after initial UI render");
 
     loop {
@@ -184,11 +173,11 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         if let Some(change) = ui.prepare_frame(now) {
             heap_monitor.begin_navigation(change.to.as_i32());
-            ui.apply_navigation(change, &mut screen);
+            ui.apply_navigation(change, &mut display);
             info!("View {:?} -> {:?}", change.from, change.to);
         }
 
-        ui.render(&mut screen);
+        ui.render(&mut display);
 
         heap_monitor.end_navigation();
         heap_monitor.poll(now);
