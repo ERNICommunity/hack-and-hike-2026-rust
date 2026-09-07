@@ -1,13 +1,14 @@
 //! Fixed navigation rail input and rendering.
 //!
-//! Gesture state is kept separate from `AppModel`: touch coordinates are
-//! presentation input, and only a completed same-button press/release becomes a
-//! semantic `ViewId` request.
+//! `NavigationInput` owns the only CPU0 touch reader. Gesture state is separate
+//! from `AppModel`: physical touch input becomes a semantic `ViewId` only after
+//! a press and release complete inside the same navigation button.
 
 use crate::{
     display::Display,
     models::ViewId,
-    touch::{self, TouchPoint},
+    service_inputs::TouchInput,
+    touch::{TouchEdge, TouchPoint},
 };
 
 use super::design;
@@ -41,15 +42,16 @@ const NAV_ICONS: [[u16; ICON_SIZE]; 5] = [
     ],
 ];
 
-#[derive(Clone, Copy)]
 pub(crate) struct NavigationInput {
+    touch: TouchInput,
     pressed: bool,
     candidate: Option<ViewId>,
 }
 
 impl NavigationInput {
-    pub(crate) const fn new() -> Self {
+    pub(crate) const fn new(touch: TouchInput) -> Self {
         Self {
+            touch,
             pressed: false,
             candidate: None,
         }
@@ -58,13 +60,13 @@ impl NavigationInput {
     pub(crate) fn poll(&mut self) -> Option<ViewId> {
         let mut selected = None;
 
-        while let Some(edge) = touch::try_take_edge() {
+        while let Some(edge) = self.touch.next_edge() {
             match edge {
-                touch::TouchEdge::Pressed(point) => {
+                TouchEdge::Pressed(point) => {
                     self.pressed = true;
                     self.candidate = view_at(point);
                 }
-                touch::TouchEdge::Released(point) => {
+                TouchEdge::Released(point) => {
                     if self.pressed && self.candidate == view_at(point) {
                         selected = self.candidate;
                     }
@@ -75,13 +77,13 @@ impl NavigationInput {
         }
 
         if self.pressed {
-            if let Some(point) = touch::take_latest_point() {
+            if let Some(point) = self.touch.take_latest_point() {
                 if view_at(point) != self.candidate {
                     self.candidate = None;
                 }
             }
         } else {
-            let _ = touch::take_latest_point();
+            let _ = self.touch.take_latest_point();
         }
 
         selected

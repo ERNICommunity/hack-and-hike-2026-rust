@@ -1,14 +1,14 @@
 //! CPU0 application models.
 //!
-//! This module owns application state, bounded snapshots, and refresh policy.
-//! It does not know screen geometry or renderer types. `Ui` uniquely owns the
-//! model, so ordinary mutable Rust state is sufficient; no interior mutability
-//! is required.
+//! `AppModel` owns bounded presentation-sized state and the CPU0 reader
+//! capabilities required to refresh it. It does not know display geometry,
+//! fonts, touch gestures, SPI/DMA, or LCD controller details.
 
 use embassy_time::{Duration, Instant};
 
 use crate::{
     audio, data_plane, imu, logger, network,
+    service_inputs::{AudioInput, ImuInput, NetworkInput},
     waveform::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame},
 };
 
@@ -18,6 +18,7 @@ const IMU_UPDATE: Duration = Duration::from_millis(40);
 const NETWORK_UPDATE: Duration = Duration::from_millis(200);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
 
+/// Semantic page identity shared by application refresh policy and presentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ViewId {
@@ -42,7 +43,18 @@ impl ViewId {
     }
 }
 
+/// CPU1 reader capabilities consumed by `AppModel`.
+///
+/// Touch is intentionally absent: gesture interpretation belongs to `Ui`, not
+/// the application data model.
+pub struct Inputs {
+    pub network: NetworkInput,
+    pub imu: ImuInput,
+    pub audio: AudioInput,
+}
+
 struct NetworkModel {
+    input: NetworkInput,
     display: Option<network::Snapshot>,
     last_revision: u32,
     last_update: Instant,
@@ -50,8 +62,9 @@ struct NetworkModel {
 }
 
 impl NetworkModel {
-    fn new() -> Self {
+    fn new(input: NetworkInput) -> Self {
         Self {
+            input,
             display: None,
             last_revision: u32::MAX,
             last_update: Instant::now(),
@@ -71,7 +84,7 @@ impl NetworkModel {
         }
         self.last_update = now;
 
-        let Some(snapshot) = network::take_latest() else {
+        let Some(snapshot) = self.input.take_latest() else {
             return;
         };
         if snapshot.revision == self.last_revision {
@@ -91,6 +104,7 @@ impl NetworkModel {
     }
 }
 
+/// Rounded, presentation-sized IMU value owned by the CPU0 model.
 #[derive(Clone, Copy, Debug)]
 pub struct ImuDisplay {
     pub roll_deg: i32,
@@ -106,6 +120,7 @@ pub struct ImuDisplay {
 }
 
 struct ImuModel {
+    input: ImuInput,
     display: ImuDisplay,
     last_revision: u32,
     last_update: Instant,
@@ -113,8 +128,9 @@ struct ImuModel {
 }
 
 impl ImuModel {
-    fn new() -> Self {
+    fn new(input: ImuInput) -> Self {
         Self {
+            input,
             display: ImuDisplay {
                 roll_deg: 0,
                 pitch_deg: 0,
@@ -143,7 +159,7 @@ impl ImuModel {
         }
         self.last_update = now;
 
-        let Some(snapshot) = imu::take_latest() else {
+        let Some(snapshot) = self.input.take_latest() else {
             return;
         };
         if snapshot.revision == self.last_revision {
@@ -185,6 +201,7 @@ fn round_units(value: f32) -> i32 {
 }
 
 struct WaveformModel {
+    input: AudioInput,
     frame: WaveformFrame,
     samples: [i16; audio::BLOCK_SAMPLES],
     last_sequence: u32,
@@ -193,8 +210,9 @@ struct WaveformModel {
 }
 
 impl WaveformModel {
-    fn new() -> Self {
+    fn new(input: AudioInput) -> Self {
         Self {
+            input,
             frame: WaveformFrame::silent(),
             samples: [0; audio::BLOCK_SAMPLES],
             last_sequence: 0,
@@ -213,7 +231,7 @@ impl WaveformModel {
         }
         self.last_update = now;
 
-        let Some(info) = audio::copy_latest_interleaved(&mut self.samples) else {
+        let Some(info) = self.input.copy_latest_interleaved(&mut self.samples) else {
             return;
         };
 
@@ -354,6 +372,11 @@ impl LogModel {
     }
 }
 
+/// Complete CPU0 application model.
+///
+/// The type owns every service reader needed by its child models. Ordinary
+/// `&mut self` access serializes refresh and consumption on CPU0; no interior
+/// mutability or hidden global consumer access is required at this layer.
 pub struct AppModel {
     active_view: ViewId,
     network: NetworkModel,
@@ -363,15 +386,20 @@ pub struct AppModel {
 }
 
 impl AppModel {
-    pub fn new() -> Self {
+    pub fn new(inputs: Inputs) -> Self {
+        let Inputs {
+            network,
+            imu,
+            audio,
+        } = inputs;
         let mut log = LogModel::new();
         log.refresh();
 
         Self {
             active_view: ViewId::Log,
-            network: NetworkModel::new(),
-            imu: ImuModel::new(),
-            waveform: WaveformModel::new(),
+            network: NetworkModel::new(network),
+            imu: ImuModel::new(imu),
+            waveform: WaveformModel::new(audio),
             log,
         }
     }

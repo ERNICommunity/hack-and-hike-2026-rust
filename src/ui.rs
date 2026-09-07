@@ -1,9 +1,10 @@
 //! CPU0 presentation owner.
 //!
-//! `Ui` is the only type that combines application models, navigation gesture
-//! state, and the fixed PSRAM content framebuffer. It can request generic pixel
-//! submission from `Display`, but it cannot access SPI/DMA/controller transport.
-//! The contained `AppModel` cannot access presentation geometry.
+//! `Ui` is the only type that combines application models, the sole touch-input
+//! capability, navigation gesture state, and the fixed PSRAM content framebuffer.
+//! It can request generic pixel submission from `Display`, but it cannot access
+//! SPI/DMA/controller transport. The contained `AppModel` cannot access
+//! presentation geometry or touch events.
 
 mod design;
 mod framebuffer;
@@ -16,6 +17,7 @@ use embassy_time::Instant;
 use crate::{
     display::Display,
     models::{AppModel, ViewId},
+    service_inputs::TouchInput,
 };
 
 use framebuffer::ContentFramebuffer;
@@ -31,7 +33,7 @@ pub struct NavigationChange {
     pub to: ViewId,
 }
 
-/// Exclusive CPU0 presentation state.
+/// Exclusive CPU0 presentation state and touch consumer.
 pub struct Ui {
     model: AppModel,
     navigation: NavigationInput,
@@ -40,11 +42,11 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(model: AppModel) -> Self {
+    pub fn new(model: AppModel, touch: TouchInput) -> Self {
         let presented_view = model.active_view();
         Self {
             model,
-            navigation: NavigationInput::new(),
+            navigation: NavigationInput::new(touch),
             content: ContentFramebuffer::new(),
             presented_view,
         }

@@ -19,6 +19,7 @@ mod models;
 mod network;
 mod protocol;
 mod resources;
+mod service_inputs;
 mod system_i2c;
 mod theme;
 mod touch;
@@ -158,8 +159,18 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         },
     );
 
-    let model = models::AppModel::new();
-    let mut ui = ui::Ui::new(model);
+    let service_inputs::Cpu0Inputs {
+        touch,
+        imu: imu_input,
+        audio: audio_input,
+        network: network_input,
+    } = service_inputs::Cpu0Inputs::new();
+    let model = models::AppModel::new(models::Inputs {
+        network: network_input,
+        imu: imu_input,
+        audio: audio_input,
+    });
+    let mut ui = ui::Ui::new(model, touch);
 
     let now = Instant::now();
     let mut heap_monitor = memory::HeapMonitor::new(now);
