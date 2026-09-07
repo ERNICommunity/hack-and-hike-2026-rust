@@ -6,8 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Temporary write permission for this branch only: the build below materializes
+# Cargo's exact ESP-NOW dependency lockfile, commits it, and pushes it back to
+# network/esp-now. This is reverted immediately after the one-time lock commit.
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -23,8 +26,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout feature branch
         uses: actions/checkout@v4
+        with:
+          ref: network/esp-now
+          fetch-depth: 0
 
       - name: Restore successful-build proof
         id: build-proof
@@ -92,18 +98,20 @@ jobs:
             ${{ runner.os }}-esp32s3-release-1.93.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-
             ${{ runner.os }}-esp32s3-target-1.93.0.0-${{ hashFiles('Cargo.lock') }}-
 
-      - name: Build firmware
+      - name: Build firmware and lock dependencies
         if: steps.build-proof.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          set +e
           cargo build --release
-          status=$?
-          echo '--- CARGO LOCK BEGIN ---'
-          base64 -w0 Cargo.lock
-          echo
-          echo '--- CARGO LOCK END ---'
-          exit $status
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "build: lock ESP-NOW dependencies"
+          git push origin HEAD:network/esp-now
 
       - name: Record successful build
         if: steps.build-proof.outputs.cache-hit != 'true' && success()
