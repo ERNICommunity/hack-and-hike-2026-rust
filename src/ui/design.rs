@@ -140,7 +140,7 @@ pub(crate) struct PlaceholderSpec {
     pub background: UiColor,
 }
 
-/// One microphone channel panel in content coordinates.
+/// One microphone channel's label and waveform canvas in content coordinates.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WaveformPanelSpec {
     pub label: &'static str,
@@ -150,16 +150,15 @@ pub(crate) struct WaveformPanelSpec {
     pub canvas: ContentRect,
 }
 
-/// Static microphone chrome and high-rate waveform styling.
+/// Static microphone labels and high-rate waveform styling.
 ///
 /// Left and right are named fields because channel identity is semantic, not an
-/// array position contract.
+/// array position contract. The page itself uses the normal white content
+/// background; only labels, grid, and traces add ink.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MicrophoneSpec {
     pub left: WaveformPanelSpec,
     pub right: WaveformPanelSpec,
-    pub panel_fill: UiColor,
-    pub panel_border: UiColor,
     pub label: UiColor,
     pub canvas_background: UiColor,
     pub grid: UiColor,
@@ -276,21 +275,19 @@ pub(crate) const UI: UiDesign = UiDesign {
     microphone: MicrophoneSpec {
         left: WaveformPanelSpec {
             label: "MIC L",
-            panel: ContentRect::new(4, 4, CONTENT_WIDTH - 8, 114),
-            label_x_offset: 6,
-            label_y_offset: 4,
-            canvas: ContentRect::new(10, 22, 256, 90),
+            panel: ContentRect::new(0, 0, CONTENT_WIDTH, 120),
+            label_x_offset: 10,
+            label_y_offset: 2,
+            canvas: ContentRect::new(10, 14, 256, 104),
         },
         right: WaveformPanelSpec {
             label: "MIC R",
-            panel: ContentRect::new(4, 122, CONTENT_WIDTH - 8, 114),
-            label_x_offset: 6,
-            label_y_offset: 4,
-            canvas: ContentRect::new(10, 140, 256, 90),
+            panel: ContentRect::new(0, 120, CONTENT_WIDTH, 120),
+            label_x_offset: 10,
+            label_y_offset: 2,
+            canvas: ContentRect::new(10, 134, 256, 104),
         },
-        panel_fill: BLACK,
-        panel_border: DARK_GRAY,
-        label: LIGHT_GRAY,
+        label: BLACK,
         canvas_background: WHITE,
         grid: LIGHT_GRAY,
         trace: DARK_BLUE,
@@ -330,6 +327,12 @@ const _: () = assert!(UI.microphone.right.label_x_offset < UI.microphone.right.p
 const _: () = assert!(UI.microphone.right.label_y_offset < UI.microphone.right.panel.height());
 const _: () = assert!(UI.microphone.left.canvas.width() % waveform::POINTS == 0);
 const _: () = assert!(UI.microphone.right.canvas.width() % waveform::POINTS == 0);
+const _: () = assert!(
+    waveform::MAX_AMPLITUDE_PIXELS < UI.microphone.left.canvas.height() as i32 / 2
+);
+const _: () = assert!(
+    waveform::MAX_AMPLITUDE_PIXELS < UI.microphone.right.canvas.height() as i32 / 2
+);
 const _: () = assert!(UI.imu.header_columns.roll_x < CONTENT_WIDTH);
 const _: () = assert!(UI.imu.header_columns.pitch_x < CONTENT_WIDTH);
 const _: () = assert!(UI.imu.header_columns.yaw_x < CONTENT_WIDTH);

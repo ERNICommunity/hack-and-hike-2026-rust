@@ -186,15 +186,15 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         if let Some(transition) = transition {
             heap_monitor.begin_activity(transition.to.name());
             ui.apply_navigation(transition, &mut display);
-            info!("View {:?} -> {:?}", transition.from, transition.to);
         }
 
         ui.render(&mut display);
 
-        if transition.is_some() {
+        if let Some(transition) = transition {
             // Include the destination's first dynamic render in the correlation
-            // window; that is the path historically most useful to instrument.
+            // window, but keep unrelated transition logging outside it.
             heap_monitor.end_activity();
+            info!("View {:?} -> {:?}", transition.from, transition.to);
         }
         heap_monitor.poll(now);
 
