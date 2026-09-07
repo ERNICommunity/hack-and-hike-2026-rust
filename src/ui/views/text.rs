@@ -9,11 +9,11 @@ use embedded_graphics::{
     text::{Baseline, Text},
 };
 
-use crate::{network, theme};
+use crate::network;
 
 use super::super::{
+    design,
     framebuffer::{color, ContentFramebuffer},
-    layout,
 };
 
 pub(super) fn render_network(frame: &mut ContentFramebuffer, snapshot: &network::Snapshot) {
@@ -76,17 +76,18 @@ pub(super) fn render_network(frame: &mut ContentFramebuffer, snapshot: &network:
 }
 
 pub(super) fn render_log(frame: &mut ContentFramebuffer, text: &str) {
-    render_text_page(frame, trailing_lines(text, layout::TEXT_VISIBLE_LINES));
+    render_text_page(frame, trailing_lines(text, design::UI.text.visible_lines));
 }
 
 fn render_text_page(frame: &mut ContentFramebuffer, text: &str) {
-    frame.clear(theme::WHITE_RGB565);
+    let spec = design::UI.text;
+    frame.clear(spec.background);
 
-    let style = MonoTextStyle::new(&FONT_6X10, color(theme::BLACK_RGB565));
-    let mut y = layout::TEXT_TOP;
-    for line in text.lines().take(layout::TEXT_VISIBLE_LINES) {
-        let _ = Text::with_baseline(line, Point::new(4, y), style, Baseline::Top).draw(frame);
-        y += layout::TEXT_LINE_HEIGHT;
+    let style = MonoTextStyle::new(&FONT_6X10, color(spec.foreground));
+    let mut y = spec.top;
+    for line in text.lines().take(spec.visible_lines) {
+        let _ = Text::with_baseline(line, Point::new(spec.x, y), style, Baseline::Top).draw(frame);
+        y += spec.line_height;
     }
 }
 

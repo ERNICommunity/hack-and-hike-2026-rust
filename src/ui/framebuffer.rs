@@ -1,7 +1,8 @@
 //! Fixed PSRAM-backed content framebuffer.
 //!
-//! This type is a generic RGB565 drawing surface. View-specific rendering lives
-//! in `views`; the physical LCD transport lives in `display`.
+//! `ContentFramebuffer` is the sole large retained presentation buffer. Its
+//! dimensions are fixed by the compile-time `UiDesign`; view renderers receive
+//! `&mut ContentFramebuffer` and therefore cannot resize or replace its storage.
 
 use core::convert::Infallible;
 
@@ -12,14 +13,14 @@ use embedded_graphics::{
     primitives::Rectangle,
 };
 
-use crate::{data_plane, theme};
+use crate::data_plane;
 
-use super::layout;
+use super::design::{self, UiColor};
 
-const PIXELS: usize = layout::CONTENT_WIDTH * layout::CONTENT_HEIGHT;
+const PIXELS: usize = design::CONTENT_WIDTH * design::CONTENT_HEIGHT;
 
-pub(crate) fn color(raw: u16) -> Rgb565 {
-    Rgb565::from(RawU16::new(raw))
+pub(crate) fn color(value: UiColor) -> Rgb565 {
+    Rgb565::from(RawU16::new(value.raw()))
 }
 
 pub(crate) struct ContentFramebuffer {
@@ -29,7 +30,10 @@ pub(crate) struct ContentFramebuffer {
 impl ContentFramebuffer {
     pub(crate) fn new() -> Self {
         Self {
-            pixels: data_plane::FixedPsramBuffer::filled(PIXELS, theme::WHITE_RGB565),
+            pixels: data_plane::FixedPsramBuffer::filled(
+                PIXELS,
+                design::UI.content_background.raw(),
+            ),
         }
     }
 
@@ -37,27 +41,27 @@ impl ContentFramebuffer {
         self.pixels.as_slice()
     }
 
-    pub(crate) fn clear(&mut self, raw: u16) {
-        self.pixels.as_mut_slice().fill(raw);
+    pub(crate) fn clear(&mut self, value: UiColor) {
+        self.pixels.as_mut_slice().fill(value.raw());
     }
 
-    pub(crate) fn hline(&mut self, x: usize, y: usize, width: usize, raw: u16) {
-        if y >= layout::CONTENT_HEIGHT || x >= layout::CONTENT_WIDTH {
+    pub(crate) fn hline(&mut self, x: usize, y: usize, width: usize, value: UiColor) {
+        if y >= design::CONTENT_HEIGHT || x >= design::CONTENT_WIDTH {
             return;
         }
-        let end = (x + width).min(layout::CONTENT_WIDTH);
+        let end = (x + width).min(design::CONTENT_WIDTH);
         self.pixels.as_mut_slice()
-            [y * layout::CONTENT_WIDTH + x..y * layout::CONTENT_WIDTH + end]
-            .fill(raw);
+            [y * design::CONTENT_WIDTH + x..y * design::CONTENT_WIDTH + end]
+            .fill(value.raw());
     }
 
-    pub(crate) fn vline(&mut self, x: usize, y: usize, height: usize, raw: u16) {
-        if x >= layout::CONTENT_WIDTH || y >= layout::CONTENT_HEIGHT {
+    pub(crate) fn vline(&mut self, x: usize, y: usize, height: usize, value: UiColor) {
+        if x >= design::CONTENT_WIDTH || y >= design::CONTENT_HEIGHT {
             return;
         }
-        let end = (y + height).min(layout::CONTENT_HEIGHT);
+        let end = (y + height).min(design::CONTENT_HEIGHT);
         for yy in y..end {
-            self.pixels.as_mut_slice()[yy * layout::CONTENT_WIDTH + x] = raw;
+            self.pixels.as_mut_slice()[yy * design::CONTENT_WIDTH + x] = value.raw();
         }
     }
 
@@ -67,18 +71,18 @@ impl ContentFramebuffer {
         y: usize,
         width: usize,
         height: usize,
-        raw: u16,
+        value: UiColor,
     ) {
-        if x >= layout::CONTENT_WIDTH || y >= layout::CONTENT_HEIGHT {
+        if x >= design::CONTENT_WIDTH || y >= design::CONTENT_HEIGHT {
             return;
         }
-        let x_end = (x + width).min(layout::CONTENT_WIDTH);
-        let y_end = (y + height).min(layout::CONTENT_HEIGHT);
+        let x_end = (x + width).min(design::CONTENT_WIDTH);
+        let y_end = (y + height).min(design::CONTENT_HEIGHT);
         for yy in y..y_end {
             self.pixels.as_mut_slice()[
-                yy * layout::CONTENT_WIDTH + x..yy * layout::CONTENT_WIDTH + x_end
+                yy * design::CONTENT_WIDTH + x..yy * design::CONTENT_WIDTH + x_end
             ]
-            .fill(raw);
+            .fill(value.raw());
         }
     }
 }
@@ -86,8 +90,8 @@ impl ContentFramebuffer {
 impl OriginDimensions for ContentFramebuffer {
     fn size(&self) -> Size {
         Size::new(
-            layout::CONTENT_WIDTH as u32,
-            layout::CONTENT_HEIGHT as u32,
+            design::CONTENT_WIDTH as u32,
+            design::CONTENT_HEIGHT as u32,
         )
     }
 }
@@ -106,8 +110,8 @@ impl DrawTarget for ContentFramebuffer {
             }
             let x = point.x as usize;
             let y = point.y as usize;
-            if x < layout::CONTENT_WIDTH && y < layout::CONTENT_HEIGHT {
-                self.pixels.as_mut_slice()[y * layout::CONTENT_WIDTH + x] = color.into_storage();
+            if x < design::CONTENT_WIDTH && y < design::CONTENT_HEIGHT {
+                self.pixels.as_mut_slice()[y * design::CONTENT_WIDTH + x] = color.into_storage();
             }
         }
         Ok(())
@@ -124,7 +128,7 @@ impl DrawTarget for ContentFramebuffer {
             bounds.top_left.y as usize,
             bounds.size.width as usize,
             bounds.size.height as usize,
-            color.into_storage(),
+            UiColor::from_rgb565(color.into_storage()),
         );
         Ok(())
     }

@@ -1,23 +1,22 @@
 //! Fixed navigation rail input and rendering.
 //!
-//! Navigation is deliberately simple: five fixed 44×48 hit regions and five
-//! compile-time bitmap icons. There is no widget tree, dynamic layout, or heap
-//! activity in either input dispatch or rendering.
+//! Gesture state is kept separate from `AppModel`: touch coordinates are
+//! presentation input, and only a completed same-button press/release becomes a
+//! semantic `ViewId` request.
 
 use crate::{
     display::Display,
     models::ViewId,
-    theme,
     touch::{self, TouchPoint},
 };
 
-use super::layout;
+use super::design;
 
 const ICON_SIZE: usize = 16;
-const ICON_X: usize = (layout::NAV_WIDTH - ICON_SIZE) / 2;
-const ICON_Y_IN_BUTTON: usize = (layout::NAV_BUTTON_HEIGHT - ICON_SIZE) / 2;
+const ICON_X: usize = (design::UI.navigation.width - ICON_SIZE) / 2;
+const ICON_Y_IN_BUTTON: usize = (design::UI.navigation.button_height - ICON_SIZE) / 2;
 
-const _: () = assert!(ViewId::ALL.len() * layout::NAV_BUTTON_HEIGHT == crate::display::HEIGHT);
+const _: () = assert!(ViewId::ALL.len() * design::UI.navigation.button_height == crate::display::HEIGHT);
 
 const NAV_ICONS: [[u16; ICON_SIZE]; 5] = [
     [
@@ -56,8 +55,6 @@ impl NavigationInput {
         }
     }
 
-    /// Drain all pending touch input and return a committed navigation target,
-    /// if the gesture both started and ended inside the same navigation button.
     pub(crate) fn poll(&mut self) -> Option<ViewId> {
         let mut selected = None;
 
@@ -92,38 +89,40 @@ impl NavigationInput {
 }
 
 fn view_at(point: TouchPoint) -> Option<ViewId> {
-    if usize::from(point.x) >= layout::NAV_WIDTH {
+    let nav = design::UI.navigation;
+    if usize::from(point.x) >= nav.width {
         return None;
     }
 
-    let index = usize::from(point.y) / layout::NAV_BUTTON_HEIGHT;
+    let index = usize::from(point.y) / nav.button_height;
     ViewId::ALL.get(index).copied()
 }
 
 pub(crate) fn render(display: &mut Display, active: ViewId) {
-    display.render_scanlines(layout::NAV_REGION, |screen_y, pixels| {
-        let button_index = screen_y / layout::NAV_BUTTON_HEIGHT;
+    let nav = design::UI.navigation;
+    display.render_scanlines(design::NAV_REGION, |screen_y, pixels| {
+        let button_index = screen_y / nav.button_height;
         let selected = ViewId::ALL[button_index] == active;
         let background = if selected {
-            theme::LIGHT_BLUE_RGB565
+            nav.selected_background
         } else {
-            theme::DARK_BLUE_RGB565
+            nav.normal_background
         };
         let foreground = if selected {
-            theme::WHITE_RGB565
+            nav.selected_icon
         } else {
-            theme::DARK_GRAY_RGB565
+            nav.normal_icon
         };
 
-        pixels.fill(background);
-        pixels[layout::NAV_WIDTH - 1] = theme::DARK_BLUE_RGB565;
+        pixels.fill(background.raw());
+        pixels[nav.width - 1] = nav.divider.raw();
 
-        let local_y = screen_y % layout::NAV_BUTTON_HEIGHT;
+        let local_y = screen_y % nav.button_height;
         if (ICON_Y_IN_BUTTON..ICON_Y_IN_BUTTON + ICON_SIZE).contains(&local_y) {
             let row_bits = NAV_ICONS[button_index][local_y - ICON_Y_IN_BUTTON];
             for icon_x in 0..ICON_SIZE {
                 if row_bits & (1 << (ICON_SIZE - 1 - icon_x)) != 0 {
-                    pixels[ICON_X + icon_x] = foreground;
+                    pixels[ICON_X + icon_x] = foreground.raw();
                 }
             }
         }

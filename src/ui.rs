@@ -1,12 +1,12 @@
-//! CPU0 presentation coordinator.
+//! CPU0 presentation owner.
 //!
-//! `Ui` owns presentation state and one fixed PSRAM content framebuffer. It
-//! consumes bounded model snapshots, delegates drawing to focused presentation
-//! modules, and submits RGB565 pixels through the hardware-only `display` API.
-//! There is no retained widget runtime or dynamic presentation object graph.
+//! `Ui` is the only type that combines application models, navigation gesture
+//! state, and the fixed PSRAM content framebuffer. It can request generic pixel
+//! submission from `Display`, but it cannot access SPI/DMA/controller transport.
+//! The contained `AppModel` cannot access presentation geometry.
 
+mod design;
 mod framebuffer;
-mod layout;
 mod navigation;
 mod views;
 mod waveform;
@@ -21,12 +21,17 @@ use crate::{
 use framebuffer::ContentFramebuffer;
 use navigation::NavigationInput;
 
+/// A requested/presented view transition.
+///
+/// The value exists so bootstrap can instrument a transition without coupling
+/// the memory diagnostics module to presentation types.
 #[derive(Clone, Copy, Debug)]
 pub struct NavigationChange {
     pub from: ViewId,
     pub to: ViewId,
 }
 
+/// Exclusive CPU0 presentation state.
 pub struct Ui {
     model: AppModel,
     navigation: NavigationInput,
@@ -113,6 +118,6 @@ impl Ui {
     }
 
     fn blit_content(&self, display: &mut Display) {
-        display.blit(layout::CONTENT_REGION, self.content.pixels());
+        display.blit(design::CONTENT_REGION, self.content.pixels());
     }
 }

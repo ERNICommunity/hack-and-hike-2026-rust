@@ -1,7 +1,5 @@
-# Single source of truth for firmware/UI colors.
-# build.rs generates:
-#   - OUT_DIR/generated-theme.slint
-#   - OUT_DIR/theme_generated.rs
+# Editable base palette for the firmware presentation layer.
+# build.rs generates OUT_DIR/theme_generated.rs as RGB565 constants.
 
 [colors]
 dark-blue = "#033778"
