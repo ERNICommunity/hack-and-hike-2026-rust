@@ -35,7 +35,10 @@ jobs:
           fetch-depth: 0
 
       - name: Resolve dependency changes
-        run: cargo metadata --format-version 1 --no-deps > /dev/null
+        # Full metadata resolution is required here. `--no-deps` does not prune
+        # packages that became unreachable after a manifest dependency removal,
+        # so it can leave a lockfile that later fails `cargo build --locked`.
+        run: cargo metadata --format-version 1 > /dev/null
 
       - name: Verify resolver scope
         shell: bash
