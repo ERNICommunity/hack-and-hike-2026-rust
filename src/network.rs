@@ -22,7 +22,7 @@ use static_cell::StaticCell;
 
 use crate::{diagnostics, protocol};
 
-pub const MAX_PEERS: usize = 4;
+pub const MAX_PEERS: usize = 10;
 const _: () = assert!(MAX_PEERS > 0);
 
 /// Valid 2.4 GHz ESP-NOW channel number used by this firmware.
@@ -47,6 +47,7 @@ impl fmt::Display for Channel {
 }
 
 pub const DEFAULT_CHANNEL: Channel = Channel::new(6);
+pub const DEFAULT_BEACON_PERIOD: Duration = Duration::from_millis(250);
 
 /// Radio configuration owned by the CPU1 network service.
 #[derive(Clone, Copy)]
@@ -58,7 +59,7 @@ pub struct Config {
 
 pub const DEFAULT_CONFIG: Config = Config {
     channel: DEFAULT_CHANNEL,
-    beacon_period: Duration::from_secs(1),
+    beacon_period: DEFAULT_BEACON_PERIOD,
     peer_timeout: Duration::from_secs(5),
 };
 

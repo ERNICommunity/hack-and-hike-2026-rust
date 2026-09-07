@@ -51,21 +51,15 @@ pub(super) fn render_network(frame: &mut ContentFramebuffer, snapshot: &network:
         let _ = writeln!(&mut text, "Flash this build to device #2.");
     } else {
         for (index, peer) in snapshot.peers().enumerate() {
-            let _ = writeln!(&mut text, "PEER {}  {}", index + 1, peer.device_id);
             let _ = writeln!(
                 &mut text,
-                "RSSI {} dBm AGE {} ms RX {}",
+                "P{:02} {} {:>4}dBm {:>4}ms RX{}",
+                index + 1,
+                peer.device_id,
                 peer.rssi_dbm,
-                peer.age_ms,
+                peer.age_ms.min(9999),
                 peer.rx_packets,
             );
-            let _ = writeln!(
-                &mut text,
-                "UPTIME {} ms CAP 0x{:08X}",
-                peer.remote_uptime_ms,
-                peer.capabilities,
-            );
-            let _ = writeln!(&mut text, "MAC {}", peer.mac);
         }
     }
 
