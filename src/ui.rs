@@ -6,13 +6,16 @@
 //! geometry bindings.
 
 use alloc::rc::Rc;
+use core::fmt::Write as _;
 
+use arrayvec::ArrayString;
 use embassy_time::Instant;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 
 use crate::{
     models::{AppModel, ViewId},
+    network,
     screen::Screen,
     touch,
 };
@@ -112,6 +115,48 @@ fn dispatch_touch_input(window: &MinimalSoftwareWindow, state: &mut TouchState) 
     }
 }
 
+fn render_network_status(screen: &mut Screen, snapshot: &network::Snapshot) {
+    // Reuse the already-proven fixed framebuffer/text path for the first
+    // ESP-NOW test view. Formatting stays entirely on CPU0's stack.
+    let mut text = ArrayString::<768>::new();
+    let status = match snapshot.status {
+        network::Status::Starting => "STARTING",
+        network::Status::Ready => "READY - WAITING FOR PEER",
+        network::Status::PeerPresent => "PEER CONNECTED",
+        network::Status::Fault => "RADIO FAULT",
+    };
+
+    let _ = writeln!(&mut text, "ESP-NOW  {}", status);
+    let _ = writeln!(&mut text, "DEVICE  {}", snapshot.local_id);
+    let _ = writeln!(&mut text, "CHANNEL {}   PEERS {}/{}", snapshot.channel, snapshot.peer_count, network::MAX_PEERS);
+    let _ = writeln!(&mut text, "TX {}   RX {}   TXERR {}   INVALID {}", snapshot.tx_packets, snapshot.rx_packets, snapshot.tx_errors, snapshot.rx_invalid);
+    let _ = writeln!(&mut text);
+
+    if snapshot.peer_count == 0 {
+        let _ = writeln!(&mut text, "Waiting for another Hack and Hike device...");
+        let _ = writeln!(&mut text, "Flash this build to device #2.");
+    } else {
+        for (index, peer) in snapshot.peers.iter().filter(|peer| peer.present).enumerate() {
+            let _ = writeln!(&mut text, "PEER {}  {}", index + 1, peer.device_id);
+            let _ = writeln!(
+                &mut text,
+                "RSSI {} dBm  age {} ms  RX {}",
+                peer.rssi_dbm,
+                peer.age_ms,
+                peer.rx_packets
+            );
+            let _ = writeln!(
+                &mut text,
+                "MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                peer.mac[0], peer.mac[1], peer.mac[2], peer.mac[3], peer.mac[4], peer.mac[5]
+            );
+            let _ = writeln!(&mut text);
+        }
+    }
+
+    screen.render_log(text.as_str());
+}
+
 pub struct Ui {
     window: Rc<MinimalSoftwareWindow>,
     app: AppWindow,
@@ -195,6 +240,11 @@ impl Ui {
     /// Each path uses fixed buffers and stack formatting only.
     pub fn render_direct_view(&self, screen: &mut Screen) {
         match self.presented_view {
+            ViewId::Network => {
+                if let Some(snapshot) = self.model.take_network_display() {
+                    render_network_status(screen, &snapshot);
+                }
+            }
             ViewId::Microphone => {
                 if let Some(frame) = self.model.take_waveform_frame() {
                     screen.render_waveform(&frame);

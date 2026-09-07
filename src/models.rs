@@ -10,13 +10,14 @@ use core::cell::{Cell, RefCell};
 use embassy_time::{Duration, Instant};
 
 use crate::{
-    audio, data_plane, imu, logger,
+    audio, data_plane, imu, logger, network,
     waveform::{AMPLITUDE_PIXELS, POINTS, WaveformFrame},
 };
 
 const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
 const IMU_UI_UPDATE: Duration = Duration::from_millis(40);
+const NETWORK_UI_UPDATE: Duration = Duration::from_millis(200);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
 /// Number of complete trailing log lines rendered by the direct MCU log view.
 const LOG_VISIBLE_LINES: usize = 23;
@@ -53,6 +54,55 @@ impl ViewId {
             4 => Self::Log,
             _ => return None,
         })
+    }
+}
+
+struct NetworkModel {
+    display: Option<network::Snapshot>,
+    last_revision: u32,
+    last_update: Instant,
+    dirty: bool,
+}
+
+impl NetworkModel {
+    fn new() -> Self {
+        Self {
+            display: None,
+            last_revision: u32::MAX,
+            last_update: Instant::now(),
+            dirty: false,
+        }
+    }
+
+    fn mark_dirty(&mut self) {
+        if self.display.is_some() {
+            self.dirty = true;
+        }
+    }
+
+    fn update_if_due(&mut self, now: Instant) {
+        if now - self.last_update < NETWORK_UI_UPDATE {
+            return;
+        }
+        self.last_update = now;
+
+        let Some(snapshot) = network::take_latest() else {
+            return;
+        };
+        if snapshot.revision == self.last_revision {
+            return;
+        }
+        self.last_revision = snapshot.revision;
+        self.display = Some(snapshot);
+        self.dirty = true;
+    }
+
+    fn take_display(&mut self) -> Option<network::Snapshot> {
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        self.display
     }
 }
 
@@ -357,6 +407,7 @@ impl LogModel {
 /// commands into it. No Slint component/window object is stored here.
 pub struct AppModel {
     active_view: Cell<ViewId>,
+    network: RefCell<NetworkModel>,
     imu: RefCell<ImuModel>,
     waveform: RefCell<WaveformModel>,
     log: RefCell<LogModel>,
@@ -369,6 +420,7 @@ impl AppModel {
 
         Rc::new(Self {
             active_view: Cell::new(ViewId::Log),
+            network: RefCell::new(NetworkModel::new()),
             imu: RefCell::new(ImuModel::new()),
             waveform: RefCell::new(WaveformModel::new()),
             log: RefCell::new(log),
@@ -384,6 +436,7 @@ impl AppModel {
             if view != self.active_view.get() {
                 self.active_view.set(view);
                 match view {
+                    ViewId::Network => self.network.borrow_mut().mark_dirty(),
                     ViewId::Imu => self.imu.borrow_mut().mark_dirty(),
                     ViewId::Microphone => self.waveform.borrow_mut().mark_dirty(),
                     ViewId::Log => self.log.borrow_mut().mark_dirty(),
@@ -395,11 +448,19 @@ impl AppModel {
 
     pub fn update(&self, now: Instant) {
         match self.active_view.get() {
+            ViewId::Network => self.network.borrow_mut().update_if_due(now),
             ViewId::Imu => self.imu.borrow_mut().update_if_due(now),
             ViewId::Microphone => self.waveform.borrow_mut().update_if_due(now),
             ViewId::Log => self.log.borrow_mut().update_if_due(now),
             _ => {}
         }
+    }
+
+    pub fn take_network_display(&self) -> Option<network::Snapshot> {
+        if self.active_view.get() != ViewId::Network {
+            return None;
+        }
+        self.network.borrow_mut().take_display()
     }
 
     pub fn with_log_text<R>(&self, render: impl FnOnce(&str) -> R) -> Option<R> {
@@ -421,6 +482,7 @@ impl AppModel {
     pub fn note_slint_redraw(&self, redrawn: bool) {
         if redrawn {
             match self.active_view.get() {
+                ViewId::Network => self.network.borrow_mut().mark_dirty(),
                 ViewId::Microphone => self.waveform.borrow_mut().mark_dirty(),
                 ViewId::Imu => self.imu.borrow_mut().mark_dirty(),
                 ViewId::Log => self.log.borrow_mut().mark_dirty(),
