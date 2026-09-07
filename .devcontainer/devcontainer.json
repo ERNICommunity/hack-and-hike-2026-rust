@@ -54,7 +54,7 @@
                 "microhobby.taskrunnercodeplus",
                 "DavidAnson.vscode-markdownlint",
                 "MS-vsliveshare.vsliveshare",
-                "Slint.slint"
+                "GitHub.vscode-pull-request-github"
             ]
         }
     },
