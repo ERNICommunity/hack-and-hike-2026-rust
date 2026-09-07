@@ -1,73 +1,50 @@
 //! Fixed navigation rail input and rendering.
 //!
-//! Navigation is deliberately simple: five fixed 44×48 hit regions and five
-//! compile-time bitmap icons. There is no widget tree, dynamic layout, or heap
-//! activity in either input dispatch or rendering.
+//! `NavigationInput` owns the CPU0 touch reader used for presentation gestures.
+//! Gesture state is separate from `AppModel`: physical touch input becomes a
+//! semantic `ViewId` only after a press and release complete inside the same
+//! navigation button. Hit testing and rendering consume the same declarative
+//! navigation-item array from `ui::design`.
 
 use crate::{
     display::Display,
     models::ViewId,
-    theme,
-    touch::{self, TouchPoint},
+    service_inputs::TouchInput,
+    touch::{TouchEdge, TouchPoint},
 };
 
-use super::layout;
+use super::design;
 
-const ICON_SIZE: usize = 16;
-const ICON_X: usize = (layout::NAV_WIDTH - ICON_SIZE) / 2;
-const ICON_Y_IN_BUTTON: usize = (layout::NAV_BUTTON_HEIGHT - ICON_SIZE) / 2;
+const ICON_X: usize = (design::UI.navigation.width - design::NAV_ICON_SIZE) / 2;
+const ICON_Y_IN_BUTTON: usize =
+    (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;
 
-const _: () = assert!(ViewId::ALL.len() * layout::NAV_BUTTON_HEIGHT == crate::display::HEIGHT);
-
-const NAV_ICONS: [[u16; ICON_SIZE]; 5] = [
-    [
-        0x0000, 0x0000, 0x0180, 0x03C0, 0x0660, 0x0C30, 0x1818, 0x0180,
-        0x0180, 0x1818, 0x0C30, 0x0660, 0x03C0, 0x0180, 0x0000, 0x0000,
-    ],
-    [
-        0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x7FFE, 0x0180, 0x0180,
-        0x0180, 0x0180, 0x07E0, 0x0DB0, 0x198C, 0x0180, 0x0180, 0x0000,
-    ],
-    [
-        0x03C0, 0x0660, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30,
-        0x0660, 0x03C0, 0x0180, 0x1FF8, 0x0180, 0x0180, 0x07E0, 0x0000,
-    ],
-    [
-        0x0000, 0x0300, 0x0700, 0x0F18, 0x7F0C, 0x7F06, 0x7F06, 0x7F06,
-        0x7F06, 0x7F06, 0x7F0C, 0x0F18, 0x0700, 0x0300, 0x0000, 0x0000,
-    ],
-    [
-        0x0000, 0x0000, 0x3FFC, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004,
-        0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x3FFC, 0x0000, 0x0000, 0x0000,
-    ],
-];
-
-#[derive(Clone, Copy)]
 pub(crate) struct NavigationInput {
+    touch: TouchInput,
     pressed: bool,
     candidate: Option<ViewId>,
 }
 
 impl NavigationInput {
-    pub(crate) const fn new() -> Self {
+    pub(crate) const fn new(touch: TouchInput) -> Self {
         Self {
+            touch,
             pressed: false,
             candidate: None,
         }
     }
 
-    /// Drain all pending touch input and return a committed navigation target,
-    /// if the gesture both started and ended inside the same navigation button.
+    /// Drain pending touch state and return a committed destination, if any.
     pub(crate) fn poll(&mut self) -> Option<ViewId> {
         let mut selected = None;
 
-        while let Some(edge) = touch::try_take_edge() {
+        while let Some(edge) = self.touch.next_edge() {
             match edge {
-                touch::TouchEdge::Pressed(point) => {
+                TouchEdge::Pressed(point) => {
                     self.pressed = true;
                     self.candidate = view_at(point);
                 }
-                touch::TouchEdge::Released(point) => {
+                TouchEdge::Released(point) => {
                     if self.pressed && self.candidate == view_at(point) {
                         selected = self.candidate;
                     }
@@ -78,13 +55,13 @@ impl NavigationInput {
         }
 
         if self.pressed {
-            if let Some(point) = touch::take_latest_point() {
+            if let Some(point) = self.touch.take_latest_point() {
                 if view_at(point) != self.candidate {
                     self.candidate = None;
                 }
             }
         } else {
-            let _ = touch::take_latest_point();
+            let _ = self.touch.take_latest_point();
         }
 
         selected
@@ -92,38 +69,41 @@ impl NavigationInput {
 }
 
 fn view_at(point: TouchPoint) -> Option<ViewId> {
-    if usize::from(point.x) >= layout::NAV_WIDTH {
+    let nav = design::UI.navigation;
+    if usize::from(point.x) >= nav.width {
         return None;
     }
 
-    let index = usize::from(point.y) / layout::NAV_BUTTON_HEIGHT;
-    ViewId::ALL.get(index).copied()
+    let index = usize::from(point.y) / nav.button_height;
+    nav.items.get(index).map(|item| item.view)
 }
 
 pub(crate) fn render(display: &mut Display, active: ViewId) {
-    display.render_scanlines(layout::NAV_REGION, |screen_y, pixels| {
-        let button_index = screen_y / layout::NAV_BUTTON_HEIGHT;
-        let selected = ViewId::ALL[button_index] == active;
+    let nav = design::UI.navigation;
+    display.render_scanlines(design::NAV_REGION, |screen_y, pixels| {
+        let button_index = screen_y / nav.button_height;
+        let item = &nav.items[button_index];
+        let selected = item.view == active;
         let background = if selected {
-            theme::LIGHT_BLUE_RGB565
+            nav.selected_background
         } else {
-            theme::DARK_BLUE_RGB565
+            nav.normal_background
         };
         let foreground = if selected {
-            theme::WHITE_RGB565
+            nav.selected_icon
         } else {
-            theme::DARK_GRAY_RGB565
+            nav.normal_icon
         };
 
-        pixels.fill(background);
-        pixels[layout::NAV_WIDTH - 1] = theme::DARK_BLUE_RGB565;
+        pixels.fill(background.raw());
+        pixels[nav.width - 1] = nav.divider.raw();
 
-        let local_y = screen_y % layout::NAV_BUTTON_HEIGHT;
-        if (ICON_Y_IN_BUTTON..ICON_Y_IN_BUTTON + ICON_SIZE).contains(&local_y) {
-            let row_bits = NAV_ICONS[button_index][local_y - ICON_Y_IN_BUTTON];
-            for icon_x in 0..ICON_SIZE {
-                if row_bits & (1 << (ICON_SIZE - 1 - icon_x)) != 0 {
-                    pixels[ICON_X + icon_x] = foreground;
+        let local_y = screen_y % nav.button_height;
+        if (ICON_Y_IN_BUTTON..ICON_Y_IN_BUTTON + design::NAV_ICON_SIZE).contains(&local_y) {
+            let row_bits = item.icon[local_y - ICON_Y_IN_BUTTON];
+            for icon_x in 0..design::NAV_ICON_SIZE {
+                if row_bits & (1 << (design::NAV_ICON_SIZE - 1 - icon_x)) != 0 {
+                    pixels[ICON_X + icon_x] = foreground.raw();
                 }
             }
         }

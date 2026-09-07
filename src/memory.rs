@@ -301,31 +301,38 @@ pub fn report(label: &str) {
     );
 }
 
+/// Snapshot window used to detect allocator activity overlapping a named CPU0
+/// operation.
+///
+/// The global allocator is shared with runtime/radio work, so a delta proves
+/// overlap, not causality. This type intentionally has no presentation-specific
+/// fields.
 #[derive(Clone, Copy, Debug)]
-pub struct NavigationProbe {
-    target_view: i32,
+struct HeapActivityProbe {
+    label: &'static str,
     before: HeapSnapshot,
 }
 
 /// Long-lived internal-memory monitor.
 ///
 /// It tracks the lowest observed free SRAM, periodically emits current/peak
-/// usage, warns on thresholds, and verifies that navigation rendering remains
-/// allocation-flat.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HeapPressure {
-    Normal,
-    Low,
-    Critical,
-}
-
+/// usage, warns on pressure, and can report allocator activity that overlaps a
+/// short named CPU0 operation. Activity probes are diagnostic correlation only:
+/// another core may allocate during the same window.
 pub struct HeapMonitor {
     min_internal_free: usize,
     last_periodic_report: Instant,
     last_periodic_allocated: u64,
     last_periodic_freed: u64,
-    pending_navigation: Option<NavigationProbe>,
+    pending_activity: Option<HeapActivityProbe>,
     pressure: HeapPressure,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeapPressure {
+    Normal,
+    Low,
+    Critical,
 }
 
 impl HeapMonitor {
@@ -337,7 +344,7 @@ impl HeapMonitor {
             last_periodic_report: now,
             last_periodic_allocated: snapshot.internal_total_allocated,
             last_periodic_freed: snapshot.internal_total_freed,
-            pending_navigation: None,
+            pending_activity: None,
             pressure: pressure_for(snapshot.internal_free),
         }
     }
@@ -351,15 +358,17 @@ impl HeapMonitor {
         report(label);
     }
 
-    pub fn begin_navigation(&mut self, target_view: i32) {
-        self.pending_navigation = Some(NavigationProbe {
-            target_view,
+    /// Begin a short correlation window for a statically named CPU0 operation.
+    pub fn begin_activity(&mut self, label: &'static str) {
+        self.pending_activity = Some(HeapActivityProbe {
+            label,
             before: HeapSnapshot::capture(),
         });
     }
 
-    pub fn end_navigation(&mut self) {
-        let Some(probe) = self.pending_navigation.take() else {
+    /// End the current correlation window and report any global heap activity.
+    pub fn end_activity(&mut self) {
+        let Some(probe) = self.pending_activity.take() else {
             return;
         };
 
@@ -377,8 +386,8 @@ impl HeapMonitor {
 
         if allocated != 0 || freed != 0 || live_delta != 0 {
             ::log::warn!(
-                "Navigation view={} touched internal heap: alloc={} B free={} B live_delta={} B",
-                probe.target_view,
+                "Internal heap activity overlapped {}: alloc={} B free={} B live_delta={} B",
+                probe.label,
                 allocated,
                 freed,
                 live_delta,

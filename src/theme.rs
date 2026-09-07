@@ -1,6 +1,6 @@
-//! Build-generated theme constants.
+//! Build-generated RGB565 palette.
 //!
-//! The authoritative values live in `theme.toml`. `build.rs` emits the Rust
-//! constants included here and the matching Slint `Theme` global.
+//! The editable source is `theme.toml`. `build.rs` converts those RGB colors
+//! into allocation-free RGB565 constants used by the presentation design specs.
 
 include!(concat!(env!("OUT_DIR"), "/theme_generated.rs"));

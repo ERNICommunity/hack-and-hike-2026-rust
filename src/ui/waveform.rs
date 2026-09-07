@@ -1,54 +1,51 @@
 //! Allocation-free partial renderer for the realtime microphone view.
 //!
-//! The static microphone page chrome lives in the content framebuffer. Only the
-//! two waveform canvases are redrawn at audio presentation rate, avoiding a
-//! full 276×240 LCD transfer on every ~32 ms update.
+//! Static microphone chrome is buffered. Only each named channel canvas is
+//! submitted at audio presentation rate. Canvas divisibility by waveform point
+//! count is a compile-time invariant in `ui::design`.
 
 use crate::{
-    display::{Display, Region},
-    theme,
+    display::Display,
     waveform::{self, WaveformFrame},
 };
 
-use super::layout;
-
-const BACKGROUND: u16 = theme::WHITE_RGB565;
-const GRID: u16 = theme::LIGHT_GRAY_RGB565;
-const TRACE: u16 = theme::DARK_BLUE_RGB565;
-const PIXELS_PER_POINT: usize = layout::WAVEFORM_CANVAS_WIDTH / waveform::POINTS;
-
-const _: () = assert!(layout::WAVEFORM_CANVAS_WIDTH % waveform::POINTS == 0);
+use super::design::{self, ContentRect};
 
 pub(crate) fn render(display: &mut Display, frame: &WaveformFrame) {
-    render_channel(display, layout::LEFT_WAVEFORM_REGION, &frame.left);
-    render_channel(display, layout::RIGHT_WAVEFORM_REGION, &frame.right);
+    let microphone = design::UI.microphone;
+    render_channel(display, microphone.left.canvas, &frame.left);
+    render_channel(display, microphone.right.canvas, &frame.right);
 }
 
 fn render_channel(
     display: &mut Display,
-    region: Region,
+    canvas: ContentRect,
     samples: &[i8; waveform::POINTS],
 ) {
-    display.render_scanlines(region, |local_y, pixels| {
-        pixels.fill(BACKGROUND);
+    let style = design::UI.microphone;
+    let center_y = (canvas.height() as i32) / 2;
+    let pixels_per_point = canvas.width() / waveform::POINTS;
 
-        if local_y as i32 == layout::WAVEFORM_CENTER_Y {
-            pixels.fill(GRID);
+    display.render_scanlines(canvas.screen_region(), |local_y, pixels| {
+        pixels.fill(style.canvas_background.raw());
+
+        if local_y as i32 == center_y {
+            pixels.fill(style.grid.raw());
         }
 
         for point in 0..waveform::POINTS {
-            let current_y = layout::WAVEFORM_CENTER_Y - i32::from(samples[point]);
+            let current_y = center_y - i32::from(samples[point]);
             let previous_y = if point == 0 {
                 current_y
             } else {
-                layout::WAVEFORM_CENTER_Y - i32::from(samples[point - 1])
+                center_y - i32::from(samples[point - 1])
             };
 
             if (local_y as i32) >= current_y.min(previous_y)
                 && (local_y as i32) <= current_y.max(previous_y)
             {
-                let x = point * PIXELS_PER_POINT;
-                pixels[x..x + PIXELS_PER_POINT].fill(TRACE);
+                let x = point * pixels_per_point;
+                pixels[x..x + pixels_per_point].fill(style.trace.raw());
             }
         }
     });

@@ -19,6 +19,7 @@ mod models;
 mod network;
 mod protocol;
 mod resources;
+mod service_inputs;
 mod system_i2c;
 mod theme;
 mod touch;
@@ -158,8 +159,18 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         },
     );
 
-    let model = models::AppModel::new();
-    let mut ui = ui::Ui::new(model);
+    let service_inputs::Cpu0Inputs {
+        touch,
+        imu: imu_input,
+        audio: audio_input,
+        network: network_input,
+    } = service_inputs::Cpu0Inputs::from_static_services();
+    let model = models::AppModel::new(models::AppModelInputs {
+        network: network_input,
+        imu: imu_input,
+        audio: audio_input,
+    });
+    let mut ui = ui::Ui::new(model, touch);
 
     let now = Instant::now();
     let mut heap_monitor = memory::HeapMonitor::new(now);
@@ -170,16 +181,21 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     loop {
         let now = Instant::now();
+        let transition = ui.prepare_frame(now);
 
-        if let Some(change) = ui.prepare_frame(now) {
-            heap_monitor.begin_navigation(change.to.as_i32());
-            ui.apply_navigation(change, &mut display);
-            info!("View {:?} -> {:?}", change.from, change.to);
+        if let Some(transition) = transition {
+            heap_monitor.begin_activity(transition.to.name());
+            ui.apply_navigation(transition, &mut display);
+            info!("View {:?} -> {:?}", transition.from, transition.to);
         }
 
         ui.render(&mut display);
 
-        heap_monitor.end_navigation();
+        if transition.is_some() {
+            // Include the destination's first dynamic render in the correlation
+            // window; that is the path historically most useful to instrument.
+            heap_monitor.end_activity();
+        }
         heap_monitor.poll(now);
 
         Timer::after(UI_IDLE_DELAY).await;
