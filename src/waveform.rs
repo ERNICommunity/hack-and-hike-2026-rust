@@ -1,6 +1,6 @@
-//! Allocation-free CPU0 contract for the realtime microphone overlay.
+//! Allocation-free CPU0 contract for realtime microphone presentation.
 //!
-//! Slint owns the page chrome/labels. `Screen` owns the actual waveform pixels.
+//! The presentation layer owns both the fixed page chrome and waveform pixels.
 
 pub const POINTS: usize = 128;
 

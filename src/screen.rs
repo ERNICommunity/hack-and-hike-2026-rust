@@ -14,11 +14,17 @@ use esp_hal::{
     spi::master::{Config as SpiConfig, Spi, SpiDma, SpiDmaBus, SpiDmaTransfer},
     time::Rate,
 };
-use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
 
-use crate::{board, live_views, models::ImuDisplay, theme, waveform};
+use crate::{
+    board, live_views,
+    models::{ImuDisplay, ViewId},
+    theme, waveform,
+};
 
 const SCREEN_WIDTH: usize = 320;
+const SCREEN_HEIGHT: usize = 240;
+const NAV_WIDTH: usize = live_views::CONTENT_X;
+const NAV_BUTTON_HEIGHT: usize = SCREEN_HEIGHT / ViewId::ALL.len();
 const DISPLAY_SPI_MHZ: u32 = 40;
 const PIXEL_DMA_BYTES: usize = SCREEN_WIDTH * 2;
 const CONTROL_DMA_BYTES: usize = 256;
@@ -30,11 +36,16 @@ const DCS_MEMORY_WRITE: u8 = 0x2C;
 type DisplaySpiDma = SpiDma<'static, Blocking>;
 type DisplaySpiDmaBus = SpiDmaBus<'static, Blocking>;
 type PixelTransfer = SpiDmaTransfer<'static, Blocking, DmaTxBuf>;
+type Pixel = u16;
 
-/// CPU0-owned physical resources required by the display service.
-///
-/// Keeping this type in `screen` makes the service boundary explicit: the
-/// resource bundle stays intact until `screen::init()` consumes it.
+const NAV_ICONS: [[u16; 16]; 5] = [
+    [0x0000,0x0000,0x0180,0x03C0,0x0660,0x0C30,0x1818,0x0180,0x0180,0x1818,0x0C30,0x0660,0x03C0,0x0180,0x0000,0x0000],
+    [0x0180,0x0180,0x0180,0x0180,0x0180,0x7FFE,0x0180,0x0180,0x0180,0x0180,0x07E0,0x0DB0,0x198C,0x0180,0x0180,0x0000],
+    [0x03C0,0x0660,0x0C30,0x0C30,0x0C30,0x0C30,0x0C30,0x0C30,0x0660,0x03C0,0x0180,0x1FF8,0x0180,0x0180,0x07E0,0x0000],
+    [0x0000,0x0300,0x0700,0x0F18,0x7F0C,0x7F06,0x7F06,0x7F06,0x7F06,0x7F06,0x7F0C,0x0F18,0x0700,0x0300,0x0000,0x0000],
+    [0x0000,0x0000,0x3FFC,0x2004,0x2FF4,0x2004,0x2FF4,0x2004,0x2FF4,0x2004,0x2FF4,0x2004,0x3FFC,0x0000,0x0000,0x0000],
+];
+
 pub struct Resources {
     pub spi2: SPI2<'static>,
     pub dma: DMA_CH1<'static>,
@@ -44,11 +55,6 @@ pub struct Resources {
     pub cs: GPIO3<'static>,
 }
 
-/// Small owned SpiDevice adapter used only during mipidsi initialization.
-///
-/// Unlike embedded-hal-bus' ExclusiveDevice this adapter can be deconstructed,
-/// which lets us recover the DMA bus and CS pin after mipidsi has configured
-/// the ILI9342C. Steady-state rendering then uses the raw SPI-DMA engine.
 struct OwnedSpiDevice<BUS, CS> {
     bus: BUS,
     cs: CS,
@@ -131,11 +137,6 @@ enum PipelineState {
     },
 }
 
-/// CPU0-owned LCD transport.
-///
-/// One pixel buffer is transmitted by DMA while Slint renders/converts the
-/// next scanline into the other buffer. The small command DMA buffers are
-/// separate so DCS address-window commands can be sent between pixel transfers.
 struct DisplayPipeline {
     state: Option<PipelineState>,
     control_rx: Option<DmaRxBuf>,
@@ -185,14 +186,8 @@ impl DisplayPipeline {
         line: usize,
         range: Range<usize>,
     ) -> DisplaySpiDma {
-        let control_rx = self
-            .control_rx
-            .take()
-            .expect("missing LCD control RX DMA buffer");
-        let control_tx = self
-            .control_tx
-            .take()
-            .expect("missing LCD control TX DMA buffer");
+        let control_rx = self.control_rx.take().expect("missing LCD control RX DMA buffer");
+        let control_tx = self.control_tx.take().expect("missing LCD control TX DMA buffer");
         let mut bus = DisplaySpiDmaBus::new(spi, control_rx, control_tx);
 
         let x0 = range.start as u16;
@@ -212,15 +207,11 @@ impl DisplayPipeline {
         spi
     }
 
-    fn encode_pixels(buffer: &mut DmaTxBuf, pixels: &[Rgb565Pixel]) -> usize {
+    fn encode_pixels(buffer: &mut DmaTxBuf, pixels: &[Pixel]) -> usize {
         let byte_len = pixels.len() * 2;
         let bytes = &mut buffer.as_mut_slice()[..byte_len];
 
-        // Slint's Rgb565Pixel stores the same RGB565 bit layout expected by
-        // the ILI9342C. The display wire format is MSB first, so byte-swap the
-        // u16 directly instead of reconstructing embedded_graphics::Rgb565.
-        for (dst, pixel) in bytes.chunks_exact_mut(2).zip(pixels.iter()) {
-            let value = pixel.0;
+        for (dst, value) in bytes.chunks_exact_mut(2).zip(pixels.iter().copied()) {
             dst[0] = (value >> 8) as u8;
             dst[1] = value as u8;
         }
@@ -240,46 +231,31 @@ impl DisplayPipeline {
         self.cs.set_low();
 
         match spi.write(byte_len, buffer) {
-            Ok(transfer) => {
-                self.state = Some(PipelineState::InFlight { transfer, free });
-            }
+            Ok(transfer) => self.state = Some(PipelineState::InFlight { transfer, free }),
             Err((err, spi, buffer)) => {
                 let _ = self.cs.set_high();
-                self.state = Some(PipelineState::Idle {
-                    spi,
-                    first: buffer,
-                    second: free,
-                });
+                self.state = Some(PipelineState::Idle { spi, first: buffer, second: free });
                 panic!("LCD pixel DMA start failed: {:?}", err);
             }
         }
     }
 
-    fn queue_line(&mut self, line: usize, range: Range<usize>, pixels: &[Rgb565Pixel]) {
+    fn queue_line(&mut self, line: usize, range: Range<usize>, pixels: &[Pixel]) {
         if range.is_empty() || pixels.is_empty() {
             return;
         }
 
         let state = self.state.take().expect("LCD DMA pipeline state missing");
-
         match state {
-            PipelineState::Idle {
-                spi,
-                mut first,
-                second,
-            } => {
+            PipelineState::Idle { spi, mut first, second } => {
                 let byte_len = Self::encode_pixels(&mut first, pixels);
                 let spi = self.set_window(spi, line, range);
                 self.start_pixel_transfer(spi, first, byte_len, second);
             }
             PipelineState::InFlight { transfer, mut free } => {
-                // This render/conversion work happens while the previous line
-                // is still physically leaving the SPI peripheral via DMA.
                 let byte_len = Self::encode_pixels(&mut free, pixels);
-
                 let (spi, completed) = transfer.wait();
                 self.cs.set_high();
-
                 let spi = self.set_window(spi, line, range);
                 self.start_pixel_transfer(spi, free, byte_len, completed);
             }
@@ -287,37 +263,21 @@ impl DisplayPipeline {
     }
 
     fn finish(&mut self) {
-        let Some(state) = self.state.take() else {
-            return;
-        };
-
+        let Some(state) = self.state.take() else { return; };
         match state {
-            PipelineState::Idle { .. } => {
-                self.state = Some(state);
-            }
+            PipelineState::Idle { .. } => self.state = Some(state),
             PipelineState::InFlight { transfer, free } => {
                 let (spi, completed) = transfer.wait();
                 self.cs.set_high();
-                self.state = Some(PipelineState::Idle {
-                    spi,
-                    first: free,
-                    second: completed,
-                });
+                self.state = Some(PipelineState::Idle { spi, first: free, second: completed });
             }
         }
     }
 }
 
-/// The one and only owner of SPI2, DMA_CH1, and the LCD.
-///
-/// Screen remains CPU0-only and mutex-free.
 pub struct Screen {
     pipeline: DisplayPipeline,
-    // Persistent CPU render scratch avoids re-zeroing/re-creating a 640-byte
-    // scanline array on every draw_if_needed() call.
-    line_buffer: [Rgb565Pixel; SCREEN_WIDTH],
-    // High-rate Log/IMU pages share one fixed PSRAM framebuffer. It is created
-    // once and never resized, keeping live rendering off the global heap.
+    line_buffer: [Pixel; SCREEN_WIDTH],
     live_frame: live_views::Framebuffer,
 }
 
@@ -326,14 +286,7 @@ pub fn init(
     resources: Resources,
     delay: &mut Delay,
 ) -> Screen {
-    let Resources {
-        spi2,
-        dma,
-        sck,
-        mosi,
-        dc,
-        cs,
-    } = resources;
+    let Resources { spi2, dma, sck, mosi, dc, cs } = resources;
 
     board::power::enable_lcd_backlight(i2c);
     board::io_expander::reset_display_and_touch(i2c, delay);
@@ -347,10 +300,7 @@ pub fn init(
     .with_mosi(mosi)
     .with_dma(dma);
 
-    // Small internal DMA buffers back the blocking SpiDmaBus used for DCS
-    // commands and for mipidsi's one-time controller initialization.
-    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
-        esp_hal::dma_buffers!(CONTROL_DMA_BYTES);
+    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = esp_hal::dma_buffers!(CONTROL_DMA_BYTES);
     let control_rx = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
     let control_tx = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
     let dma_bus = spi.with_buffers(control_rx, control_tx);
@@ -360,8 +310,6 @@ pub fn init(
     let spi_device = OwnedSpiDevice::new(dma_bus, cs).expect("Failed to initialize LCD SPI device");
     let di = display_interface_spi::SPIInterface::new(spi_device, dc);
 
-    // Keep mipidsi for the complete, known-good ILI9342C initialization.
-    // Afterwards release the resources and use our pipelined raw-DCS path.
     let display = mipidsi::Builder::new(mipidsi::models::ILI9342CRgb565, di)
         .color_order(mipidsi::options::ColorOrder::Bgr)
         .invert_colors(mipidsi::options::ColorInversion::Inverted)
@@ -374,48 +322,23 @@ pub fn init(
     let (dma_bus, cs) = spi_device.release();
     let (spi, control_rx, control_tx) = dma_bus.split();
 
-    // Two line-sized static DMA buffers implement the render/transmit ping-pong.
-    let first =
-        esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init scan line DMA buffer 1");
-    let second =
-        esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init scan line DMA buffer 2");
+    let first = esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init scan line DMA buffer 1");
+    let second = esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init scan line DMA buffer 2");
 
     Screen {
         pipeline: DisplayPipeline::new(spi, control_rx, control_tx, first, second, cs, dc),
-        line_buffer: [Rgb565Pixel(0); SCREEN_WIDTH],
+        line_buffer: [0; SCREEN_WIDTH],
         live_frame: live_views::Framebuffer::new(),
     }
 }
 
-struct DisplayWrapper<'a> {
-    pipeline: &'a mut DisplayPipeline,
-    line_buffer: &'a mut [Rgb565Pixel; SCREEN_WIDTH],
-}
-
-impl LineBufferProvider for DisplayWrapper<'_> {
-    type TargetPixel = Rgb565Pixel;
-
-    fn process_line(
-        &mut self,
-        line: usize,
-        range: Range<usize>,
-        render_fn: impl FnOnce(&mut [Self::TargetPixel]),
-    ) {
-        let start = range.start;
-        let end = range.end;
-        render_fn(&mut self.line_buffer[start..end]);
-        self.pipeline
-            .queue_line(line, range, &self.line_buffer[start..end]);
-    }
-}
-
-const WAVEFORM_BACKGROUND: Rgb565Pixel = Rgb565Pixel(theme::WHITE_RGB565);
-const WAVEFORM_GRID: Rgb565Pixel = Rgb565Pixel(theme::LIGHT_GRAY_RGB565);
-const WAVEFORM_TRACE: Rgb565Pixel = Rgb565Pixel(theme::DARK_BLUE_RGB565);
+const WAVEFORM_BACKGROUND: Pixel = theme::WHITE_RGB565;
+const WAVEFORM_GRID: Pixel = theme::LIGHT_GRAY_RGB565;
+const WAVEFORM_TRACE: Pixel = theme::DARK_BLUE_RGB565;
 
 fn render_waveform_channel(
     pipeline: &mut DisplayPipeline,
-    line_buffer: &mut [Rgb565Pixel; SCREEN_WIDTH],
+    line_buffer: &mut [Pixel; SCREEN_WIDTH],
     top: usize,
     samples: &[i8; waveform::POINTS],
 ) {
@@ -425,24 +348,15 @@ fn render_waveform_channel(
     for local_y in 0..waveform::CANVAS_HEIGHT {
         let pixels = &mut line_buffer[x_start..x_end];
         pixels.fill(WAVEFORM_BACKGROUND);
-
         if local_y as i32 == waveform::CENTER_Y {
             pixels.fill(WAVEFORM_GRID);
         }
 
-        // Render a continuous 2-pixel-wide trace. The source remains only
-        // 128 i8 values; interpolation happens directly into the line scratch.
         for point in 0..waveform::POINTS {
             let current_y = waveform::CENTER_Y - i32::from(samples[point]);
-            let previous_y = if point == 0 {
-                current_y
-            } else {
-                waveform::CENTER_Y - i32::from(samples[point - 1])
-            };
-
+            let previous_y = if point == 0 { current_y } else { waveform::CENTER_Y - i32::from(samples[point - 1]) };
             let low = current_y.min(previous_y);
             let high = current_y.max(previous_y);
-
             if (local_y as i32) >= low && (local_y as i32) <= high {
                 let x = point * 2;
                 pixels[x] = WAVEFORM_TRACE;
@@ -455,62 +369,59 @@ fn render_waveform_channel(
 }
 
 impl Screen {
-    /// CPU0-only Slint rendering with double-buffered SPI DMA.
-    ///
-    /// Returns true when Slint actually repainted anything. Direct overlays use
-    /// this to know when they must be restored after the normal UI renderer.
-    pub fn render_slint_window(&mut self, window: &MinimalSoftwareWindow) -> bool {
-        let pipeline = &mut self.pipeline;
-        let line_buffer = &mut self.line_buffer;
-
-        let redrawn = window.draw_if_needed(|renderer| {
-            renderer.render_by_line(DisplayWrapper {
-                pipeline,
-                line_buffer,
-            });
-        });
-
-        self.pipeline.finish();
-        redrawn
+    pub fn render_view_shell(&mut self, view: ViewId) {
+        self.render_navigation(view);
+        match view {
+            ViewId::Network => self.live_frame.render_placeholder("NETWORK", "Peer communication"),
+            ViewId::Imu | ViewId::Log => self.live_frame.render_blank(),
+            ViewId::Microphone => self.live_frame.render_microphone_shell(),
+            ViewId::Sound => self.live_frame.render_placeholder("SOUND", "Speaker output"),
+        }
+        self.blit_live_frame();
     }
 
-    /// Draw both microphone waveforms directly into the LCD retained buffer.
-    ///
-    /// This bypasses Slint's item tree entirely: no model rows, no repeated
-    /// Rectangle objects, and no per-frame heap activity. The existing scanline
-    /// DMA pipeline is reused, so CPU conversion overlaps SPI transmission.
     pub fn render_waveform(&mut self, frame: &waveform::WaveformFrame) {
         let pipeline = &mut self.pipeline;
         let line_buffer = &mut self.line_buffer;
-
-        render_waveform_channel(
-            pipeline,
-            line_buffer,
-            waveform::LEFT_CANVAS_Y,
-            &frame.left,
-        );
-        render_waveform_channel(
-            pipeline,
-            line_buffer,
-            waveform::RIGHT_CANVAS_Y,
-            &frame.right,
-        );
-
+        render_waveform_channel(pipeline, line_buffer, waveform::LEFT_CANVAS_Y, &frame.left);
+        render_waveform_channel(pipeline, line_buffer, waveform::RIGHT_CANVAS_Y, &frame.right);
         self.pipeline.finish();
     }
 
-    /// Render and publish the CPU0 IMU presentation without touching Slint's
-    /// dynamic property/binding graph.
     pub fn render_imu(&mut self, imu: &ImuDisplay) {
         self.live_frame.render_imu(imu);
         self.blit_live_frame();
     }
 
-    /// Render the newest bounded log snapshot without constructing a Slint
-    /// string/model. The logger/model storage remains fixed in PSRAM.
     pub fn render_log(&mut self, text: &str) {
         self.live_frame.render_log(text);
         self.blit_live_frame();
+    }
+
+    fn render_navigation(&mut self, active: ViewId) {
+        for y in 0..SCREEN_HEIGHT {
+            let button_index = y / NAV_BUTTON_HEIGHT;
+            let selected = ViewId::ALL[button_index] == active;
+            let background = if selected { theme::LIGHT_BLUE_RGB565 } else { theme::DARK_BLUE_RGB565 };
+            let foreground = if selected { theme::WHITE_RGB565 } else { theme::DARK_GRAY_RGB565 };
+
+            let pixels = &mut self.line_buffer[..NAV_WIDTH];
+            pixels.fill(background);
+            pixels[NAV_WIDTH - 1] = theme::DARK_BLUE_RGB565;
+
+            let local_y = y % NAV_BUTTON_HEIGHT;
+            if (16..32).contains(&local_y) {
+                let row_bits = NAV_ICONS[button_index][local_y - 16];
+                for icon_x in 0..16 {
+                    if row_bits & (1 << (15 - icon_x)) != 0 {
+                        pixels[14 + icon_x] = foreground;
+                    }
+                }
+            }
+
+            self.pipeline.queue_line(y, 0..NAV_WIDTH, pixels);
+        }
+        self.pipeline.finish();
     }
 
     fn blit_live_frame(&mut self) {
@@ -523,12 +434,9 @@ impl Screen {
         for y in 0..live_views::HEIGHT {
             let source = &frame.pixels()[y * live_views::WIDTH..(y + 1) * live_views::WIDTH];
             let destination = &mut line_buffer[x_start..x_end];
-            for (dst, src) in destination.iter_mut().zip(source.iter().copied()) {
-                *dst = Rgb565Pixel(src);
-            }
+            destination.copy_from_slice(source);
             pipeline.queue_line(y, x_start..x_end, destination);
         }
-
         self.pipeline.finish();
     }
 }

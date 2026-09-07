@@ -1,17 +1,13 @@
-//! CPU0 presentation adapter.
+//! CPU0 presentation coordinator.
 //!
-//! This module owns Slint/window/touch translation only. Application state and
-//! data refresh policy live in `models.rs`. High-rate live content is rendered
-//! directly by `screen` so steady-state updates do not mutate Slint strings or
-//! geometry bindings.
+//! UI state is deliberately small: one active view, one navigation touch
+//! gesture, and fixed-buffer render calls. No widget tree or retained runtime
+//! allocator is involved.
 
-use alloc::rc::Rc;
 use core::fmt::Write as _;
 
 use arrayvec::ArrayString;
 use embassy_time::Instant;
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 
 use crate::{
     models::{AppModel, ViewId},
@@ -20,36 +16,20 @@ use crate::{
     touch,
 };
 
-const SCREEN_WIDTH: u32 = 320;
-const SCREEN_HEIGHT: u32 = 240;
-
-slint::include_modules!();
-
-struct McuPlatform {
-    window: Rc<MinimalSoftwareWindow>,
-}
-
-impl Platform for McuPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-        Ok(self.window.clone())
-    }
-
-    fn duration_since_start(&self) -> core::time::Duration {
-        core::time::Duration::from_millis(Instant::now().as_millis())
-    }
-}
+const NAV_WIDTH: u16 = 44;
+const NAV_BUTTON_HEIGHT: u16 = 48;
 
 #[derive(Clone, Copy)]
 struct TouchState {
     pressed: bool,
-    last_point: touch::TouchPoint,
+    candidate: Option<ViewId>,
 }
 
 impl TouchState {
     const fn new() -> Self {
         Self {
             pressed: false,
-            last_point: touch::TouchPoint { x: 0, y: 0 },
+            candidate: None,
         }
     }
 }
@@ -60,64 +40,49 @@ pub struct NavigationChange {
     pub to: ViewId,
 }
 
-fn logical_position(point: touch::TouchPoint) -> slint::LogicalPosition {
-    slint::LogicalPosition {
-        x: point.x as f32,
-        y: point.y as f32,
-    }
-}
-
-fn dispatch_move_if_changed(
-    window: &MinimalSoftwareWindow,
-    state: &mut TouchState,
-    point: touch::TouchPoint,
-) {
-    if point == state.last_point {
-        return;
+fn navigation_view_at(point: touch::TouchPoint) -> Option<ViewId> {
+    if point.x >= NAV_WIDTH {
+        return None;
     }
 
-    state.last_point = point;
-    window.dispatch_event(WindowEvent::PointerMoved {
-        position: logical_position(point),
-    });
+    let index = usize::from(point.y / NAV_BUTTON_HEIGHT);
+    ViewId::ALL.get(index).copied()
 }
 
-fn dispatch_touch_input(window: &MinimalSoftwareWindow, state: &mut TouchState) {
+fn dispatch_touch_input(model: &AppModel, state: &mut TouchState) {
     while let Some(edge) = touch::try_take_edge() {
         match edge {
             touch::TouchEdge::Pressed(point) => {
                 state.pressed = true;
-                state.last_point = point;
-                window.dispatch_event(WindowEvent::PointerPressed {
-                    position: logical_position(point),
-                    button: PointerEventButton::Left,
-                });
+                state.candidate = navigation_view_at(point);
             }
             touch::TouchEdge::Released(point) => {
                 if state.pressed {
-                    dispatch_move_if_changed(window, state, point);
+                    if let Some(view) = state.candidate {
+                        if navigation_view_at(point) == Some(view) {
+                            model.request_view(view);
+                        }
+                    }
                 }
 
-                window.dispatch_event(WindowEvent::PointerReleased {
-                    position: logical_position(point),
-                    button: PointerEventButton::Left,
-                });
                 state.pressed = false;
-                state.last_point = point;
+                state.candidate = None;
             }
         }
     }
 
     if state.pressed {
         if let Some(point) = touch::take_latest_point() {
-            dispatch_move_if_changed(window, state, point);
+            if navigation_view_at(point) != state.candidate {
+                state.candidate = None;
+            }
         }
+    } else {
+        let _ = touch::take_latest_point();
     }
 }
 
 fn render_network_status(screen: &mut Screen, snapshot: &network::Snapshot) {
-    // Reuse the already-proven fixed framebuffer/text path for the first
-    // ESP-NOW test view. Formatting stays entirely on CPU0's stack.
     let mut text = ArrayString::<768>::new();
     let status = match snapshot.status {
         network::Status::Starting => "STARTING",
@@ -128,8 +93,21 @@ fn render_network_status(screen: &mut Screen, snapshot: &network::Snapshot) {
 
     let _ = writeln!(&mut text, "ESP-NOW  {}", status);
     let _ = writeln!(&mut text, "DEVICE  {}", snapshot.local_id);
-    let _ = writeln!(&mut text, "CHANNEL {}   PEERS {}/{}", snapshot.channel, snapshot.peer_count, network::MAX_PEERS);
-    let _ = writeln!(&mut text, "TX {}   RX {}   TXERR {}   INVALID {}", snapshot.tx_packets, snapshot.rx_packets, snapshot.tx_errors, snapshot.rx_invalid);
+    let _ = writeln!(
+        &mut text,
+        "CHANNEL {}   PEERS {}/{}",
+        snapshot.channel,
+        snapshot.peer_count,
+        network::MAX_PEERS
+    );
+    let _ = writeln!(
+        &mut text,
+        "TX {}   RX {}   TXERR {}   INVALID {}",
+        snapshot.tx_packets,
+        snapshot.rx_packets,
+        snapshot.tx_errors,
+        snapshot.rx_invalid
+    );
     let _ = writeln!(&mut text);
 
     if snapshot.peer_count == 0 {
@@ -148,7 +126,12 @@ fn render_network_status(screen: &mut Screen, snapshot: &network::Snapshot) {
             let _ = writeln!(
                 &mut text,
                 "MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-                peer.mac[0], peer.mac[1], peer.mac[2], peer.mac[3], peer.mac[4], peer.mac[5]
+                peer.mac[0],
+                peer.mac[1],
+                peer.mac[2],
+                peer.mac[3],
+                peer.mac[4],
+                peer.mac[5]
             );
             let _ = writeln!(&mut text);
         }
@@ -158,87 +141,42 @@ fn render_network_status(screen: &mut Screen, snapshot: &network::Snapshot) {
 }
 
 pub struct Ui {
-    window: Rc<MinimalSoftwareWindow>,
-    app: AppWindow,
-    model: Rc<AppModel>,
+    model: AppModel,
     touch: TouchState,
     presented_view: ViewId,
 }
 
 impl Ui {
-    pub fn new(model: Rc<AppModel>) -> Self {
-        let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-        window.set_size(slint::PhysicalSize::new(SCREEN_WIDTH, SCREEN_HEIGHT));
-
-        slint::platform::set_platform(alloc::boxed::Box::new(McuPlatform {
-            window: window.clone(),
-        }))
-        .expect("Failed to initialize Slint platform");
-
-        let app = AppWindow::new().expect("Failed to construct Slint AppWindow");
-        app.set_active_view(model.active_view().as_i32());
-
-        let navigation_model = model.clone();
-        app.on_navigate(move |view| navigation_model.request_view(view));
-
-        app.show().expect("Failed to show Slint AppWindow");
-
+    pub fn new(model: AppModel) -> Self {
         let presented_view = model.active_view();
         Self {
-            window,
-            app,
             model,
             touch: TouchState::new(),
             presented_view,
         }
     }
 
-    /// Force each permanent page through layout once. After this returns,
-    /// interactive navigation should not construct new page trees.
-    pub fn prewarm_navigation(&mut self, screen: &mut Screen) {
-        let initial = self.presented_view;
-
-        for view in ViewId::ALL {
-            self.app.set_active_view(view.as_i32());
-            slint::platform::update_timers_and_animations();
-            screen.render_slint_window(self.window.as_ref());
-        }
-
-        self.app.set_active_view(initial.as_i32());
-        slint::platform::update_timers_and_animations();
-        screen.render_slint_window(self.window.as_ref());
-        self.presented_view = initial;
+    pub fn render_initial(&self, screen: &mut Screen) {
+        screen.render_view_shell(self.presented_view);
     }
 
-    /// Consume input and update application models, but do not mutate the
-    /// Slint page selection yet. This lets the heap monitor take its baseline
-    /// before the navigation property setter and renderer run.
     pub fn prepare_frame(&mut self, now: Instant) -> Option<NavigationChange> {
-        dispatch_touch_input(&self.window, &mut self.touch);
+        dispatch_touch_input(&self.model, &mut self.touch);
         self.model.update(now);
 
         let requested = self.model.active_view();
-        let navigation = (requested != self.presented_view).then_some(NavigationChange {
+        (requested != self.presented_view).then_some(NavigationChange {
             from: self.presented_view,
             to: requested,
-        });
-
-        slint::platform::update_timers_and_animations();
-        navigation
+        })
     }
 
-    pub fn apply_navigation(&mut self, change: NavigationChange) {
-        self.app.set_active_view(change.to.as_i32());
+    pub fn apply_navigation(&mut self, change: NavigationChange, screen: &mut Screen) {
         self.presented_view = change.to;
+        screen.render_view_shell(change.to);
     }
 
-    pub fn note_slint_redraw(&self, redrawn: bool) {
-        self.model.note_slint_redraw(redrawn);
-    }
-
-    /// Restore/update the active direct-rendered view after any Slint redraw.
-    /// Each path uses fixed buffers and stack formatting only.
-    pub fn render_direct_view(&self, screen: &mut Screen) {
+    pub fn render(&self, screen: &mut Screen) {
         match self.presented_view {
             ViewId::Network => {
                 if let Some(snapshot) = self.model.take_network_display() {
@@ -258,11 +196,7 @@ impl Ui {
             ViewId::Log => {
                 let _ = self.model.with_log_text(|text| screen.render_log(text));
             }
-            _ => {}
+            ViewId::Sound => {}
         }
-    }
-
-    pub fn window(&self) -> &MinimalSoftwareWindow {
-        self.window.as_ref()
     }
 }

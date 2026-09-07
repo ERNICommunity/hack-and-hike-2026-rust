@@ -48,12 +48,8 @@ esp_bootloader_esp_idf::esp_app_desc!();
 async fn main(_cpu0_spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
     // Internal DRAM is shared between statics/global heap and the CPU0 stack.
-    // Keep the global heap deliberately smaller now that bulk application data
-    // lives in PSRAM. The previous 128 KiB reservation left only ~20 KiB for
-    // the ProCpu stack and Slint's software renderer could cross its guard.
-    //
-    // 104 KiB returns 24 KiB to the linker-defined CPU0 stack while retaining
-    // substantial internal-heap headroom for Slint/radio/runtime objects.
+    // Bulk presentation data lives explicitly in PSRAM; the internal allocator
+    // remains available for the radio/runtime and other bounded startup objects.
     esp_alloc::heap_allocator!(size: 104 * 1024);
 
     logger::init(::log::LevelFilter::Info);
@@ -73,9 +69,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     let (cpu0_app_endpoint, cpu1_service_endpoint) = cross_core::split();
 
-    // Partition hardware and communication endpoints into the two intended
-    // architectural sides. These resource types make ownership visible but do
-    // not try to prove which physical core is executing.
     let runtime_resources = resources::RuntimeResources {
         cpu0: resources::Cpu0Resources {
             display: screen::Resources {
@@ -148,9 +141,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
             executor.run(move |spawner| {
-                // Reserved for future low-rate application/service commands.
-                // Touch/audio/IMU/ESP-NOW keep their specialized cross-core
-                // data paths.
                 let _cpu1_service_endpoint = cpu1_service_endpoint;
 
                 spawner.spawn(
@@ -186,26 +176,19 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let mut heap_monitor = memory::HeapMonitor::new(now);
     heap_monitor.checkpoint("after model + UI construction");
 
-    // This is intentionally stack-heavy because it drives Slint's software
-    // renderer through every persistent page. The memory report above now
-    // includes both CPU0 stack size and current headroom.
-    ui.prewarm_navigation(&mut screen);
-    heap_monitor.checkpoint("after navigation prewarm");
+    ui.render_initial(&mut screen);
+    heap_monitor.checkpoint("after initial UI render");
 
     loop {
         let now = Instant::now();
 
         if let Some(change) = ui.prepare_frame(now) {
-            // Capture allocator counters before even setting the Slint view
-            // property, then measure again after the resulting render.
             heap_monitor.begin_navigation(change.to.as_i32());
-            ui.apply_navigation(change);
+            ui.apply_navigation(change, &mut screen);
             info!("View {:?} -> {:?}", change.from, change.to);
         }
 
-        let slint_redrawn = screen.render_slint_window(ui.window());
-        ui.note_slint_redraw(slint_redrawn);
-        ui.render_direct_view(&mut screen);
+        ui.render(&mut screen);
 
         heap_monitor.end_navigation();
         heap_monitor.poll(now);
