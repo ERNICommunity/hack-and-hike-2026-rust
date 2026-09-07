@@ -3,7 +3,7 @@
 //! This type is a generic RGB565 drawing surface. View-specific rendering lives
 //! in `views`; the physical LCD transport lives in `display`.
 
-use core::{convert::Infallible};
+use core::convert::Infallible;
 
 use embedded_graphics::{
     draw_target::DrawTarget,

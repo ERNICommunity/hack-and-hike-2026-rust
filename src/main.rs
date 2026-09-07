@@ -9,7 +9,6 @@
 
 mod audio;
 mod board;
-pub mod cross_core;
 mod data_plane;
 mod diagnostics;
 mod display;
@@ -66,8 +65,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    let (cpu0_app_endpoint, cpu1_service_endpoint) = cross_core::split();
-
     let runtime_resources = resources::RuntimeResources {
         cpu0: resources::Cpu0Resources {
             display: display::Resources {
@@ -78,7 +75,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                 dc: peripherals.GPIO35,
                 cs: peripherals.GPIO3,
             },
-            app: cpu0_app_endpoint,
         },
         cpu1: resources::Cpu1Resources {
             system_i2c: system_i2c::Resources {
@@ -97,20 +93,17 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             network: network::Resources {
                 wifi: peripherals.WIFI,
             },
-            services: cpu1_service_endpoint,
         },
     };
 
     let resources::RuntimeResources { cpu0, cpu1 } = runtime_resources;
     let resources::Cpu0Resources {
         display: display_resources,
-        app: _cpu0_app_endpoint,
     } = cpu0;
     let resources::Cpu1Resources {
         system_i2c: system_i2c_resources,
         audio: audio_resources,
         network: network_resources,
-        services: cpu1_service_endpoint,
     } = cpu1;
 
     let mut delay = esp_hal::delay::Delay::new();
@@ -138,8 +131,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             let executor = CPU1_EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
             executor.run(move |spawner| {
-                let _cpu1_service_endpoint = cpu1_service_endpoint;
-
                 spawner.spawn(
                     memory::cpu1_stack_monitor_task()
                         .expect("Failed to allocate CPU1 stack monitor task"),

@@ -1,9 +1,10 @@
-//! Explicit PSRAM-backed application data structures.
+//! Explicit PSRAM-backed bulk storage.
 //!
 //! Every collection in this module allocates its backing storage once during
-//! construction and then operates within a compile-time/runtime bound. These
-//! types are appropriate for plain data only; UI/runtime/atomic/DMA objects
-//! stay in internal RAM.
+//! construction and then operates within a fixed bound. These types are for
+//! plain bulk data such as log bytes and RGB565 framebuffer pixels. Runtime
+//! handles, synchronization objects, atomics, and DMA state remain in internal
+//! RAM.
 
 use allocator_api2::vec::Vec;
 use esp_alloc::EspHeap;
@@ -71,11 +72,6 @@ impl PsramByteRing {
         self.len
     }
 
-    pub fn clear(&mut self) {
-        self.start = 0;
-        self.len = 0;
-    }
-
     fn drop_oldest_line(&mut self) {
         if self.len == 0 {
             return;
@@ -122,10 +118,6 @@ impl PsramByteRing {
 
         self.len += bytes.len();
         true
-    }
-
-    pub fn copy_to(&self, out: &mut [u8]) -> usize {
-        self.copy_range_to(0, out)
     }
 
     /// Copy a logical range from the oldest byte onward without exposing the

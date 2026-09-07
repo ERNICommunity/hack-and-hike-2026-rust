@@ -13,12 +13,24 @@ Ui / presentation                         IMU acquisition + fusion
 Display                                   Audio acquisition
   └─ SPI2 + DMA_CH1 + LCD                 ESP-NOW radio
 
-        bounded snapshots / signals / channels cross between cores
+             service-specific bounded contracts cross cores
 ```
 
-`resources.rs` is the bootstrap ownership map. Raw peripherals are moved once to
-the core/service that owns them. CPU0 owns the LCD. CPU1 owns timing-sensitive
-acquisition and radio services.
+`resources.rs` is the raw-hardware ownership map. Peripherals are moved exactly
+once to the core/service that owns them. CPU0 owns the LCD. CPU1 owns the shared
+runtime I2C bus, audio acquisition, and radio.
+
+There is deliberately no generic cross-core event bus. Each producer exposes the
+smallest contract appropriate to its data:
+
+- `touch` uses a bounded ordered channel for press/release edges and a latest
+  signal for movement;
+- `imu` publishes a replace-latest snapshot;
+- `audio` exposes its specialized latest audio block contract;
+- `network` publishes a replace-latest peer/service snapshot.
+
+This keeps ordering, backpressure, and overwrite semantics explicit at each
+service boundary instead of hiding them behind one abstraction.
 
 ## Presentation layers
 
@@ -42,11 +54,24 @@ Dependency rules:
 - `display` does not know `ViewId`, navigation icons, text, IMU, network, or log
   semantics.
 - `ui` does not own SPI/DMA peripherals and cannot issue LCD controller commands.
-- `models` does not know screen geometry, line counts, fonts, or renderer types.
+- `models` does not know absolute screen placement, fonts, or LCD transport.
 - `touch` publishes physical touch coordinates; navigation hit-testing belongs to
   `ui::navigation`.
 - Physical panel dimensions are board facts in `board`; presentation geometry is
   centralized in `ui::layout`.
+
+The presentation modules are intentionally small and role-specific:
+
+```text
+ui.rs                  coordinator / dirty dispatch
+ui/layout.rs           authoritative UI geometry
+ui/framebuffer.rs      fixed PSRAM RGB565 drawing surface
+ui/navigation.rs       touch navigation + navigation rail pixels
+ui/waveform.rs         partial high-rate microphone renderer
+ui/views/mod.rs        view shell dispatch
+ui/views/text.rs       Network + Log text views
+ui/views/imu.rs        IMU attitude + compass view
+```
 
 ## Display memory and rendering
 
@@ -86,8 +111,8 @@ A new view should follow this sequence:
 
 1. Add the semantic `ViewId` and any bounded model state in `models.rs`.
 2. Add fixed geometry only when needed in `ui/layout.rs`.
-3. Add drawing code in `ui/views.rs`, or a focused `ui/<view>.rs` module if the
-   renderer becomes substantial.
+3. Add drawing code in the appropriate `ui/views/*` module, or create a focused
+   module when the renderer becomes substantial.
 4. Keep the LCD driver generic: submit a framebuffer region or use
    `Display::render_scanlines()` for a justified partial/high-rate path.
 5. Validate hardware behavior plus `dalloc/dfree`, internal heap, and CPU0 stack
