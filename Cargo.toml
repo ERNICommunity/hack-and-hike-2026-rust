@@ -43,5 +43,3 @@ codegen-units = 1
 debug = false
 lto = 'fat'
 opt-level = 'z'
-
-# CI validation marker for the Cargo.lock updater; reverted before merge.
