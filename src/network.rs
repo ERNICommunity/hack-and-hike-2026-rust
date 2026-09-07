@@ -2,9 +2,9 @@
 //!
 //! The Wi-Fi radio and ESP-NOW handles never leave CPU1. The service broadcasts
 //! a small fixed-size discovery beacon, tracks a bounded peer table, and
-//! publishes only a replace-latest [`Snapshot`] for CPU0 presentation.
+//! publishes a replace-latest `Snapshot` for the sole CPU0 `NetworkInput`.
 
-use core::cell::RefCell;
+use core::{cell::RefCell, fmt};
 
 use critical_section::Mutex;
 use embassy_executor::Spawner;
@@ -23,11 +23,37 @@ use static_cell::StaticCell;
 use crate::{diagnostics, protocol};
 
 pub const MAX_PEERS: usize = 4;
-pub const DEFAULT_CHANNEL: u8 = 6;
 
+/// Valid 2.4 GHz ESP-NOW channel number used by this firmware.
+///
+/// Construction validates the firmware-supported 1..=14 range once; radio code
+/// must explicitly extract the raw number when calling the HAL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Channel(u8);
+
+impl Channel {
+    pub const fn new(number: u8) -> Self {
+        assert!(number >= 1 && number <= 14);
+        Self(number)
+    }
+
+    pub const fn number(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for Channel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+pub const DEFAULT_CHANNEL: Channel = Channel::new(6);
+
+/// Radio configuration owned by the CPU1 network service.
 #[derive(Clone, Copy)]
 pub struct Config {
-    pub channel: u8,
+    pub channel: Channel,
     pub beacon_period: Duration,
     pub peer_timeout: Duration,
 }
@@ -44,47 +70,83 @@ pub struct Resources {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(i32)]
 pub enum Status {
-    Starting = 0,
-    Ready = 1,
-    PeerPresent = 2,
-    Fault = 3,
+    Starting,
+    Ready,
+    PeerPresent,
+    Fault,
 }
 
+/// Signed received-signal strength in dBm.
+///
+/// ESP radio metadata exposes the hardware byte representation. Converting it at
+/// the service boundary prevents values such as raw `224` from leaking into the
+/// application when that byte actually represents `-32 dBm`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RssiDbm(i8);
+
+impl RssiDbm {
+    const ZERO: Self = Self(0);
+
+    fn from_radio_raw(raw: u8) -> Self {
+        Self(raw as i8)
+    }
+
+    pub const fn value(self) -> i8 {
+        self.0
+    }
+}
+
+impl fmt::Display for RssiDbm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// ESP-NOW MAC address kept distinct from the stable physical `DeviceId`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MacAddress([u8; 6]);
+
+impl MacAddress {
+    fn new(bytes: [u8; 6]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl fmt::Display for MacAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
+        )
+    }
+}
+
+/// Present peer data. Absence is represented by `Option<PeerSnapshot>` in the
+/// bounded snapshot table instead of by a separate boolean sentinel.
 #[derive(Clone, Copy, Debug)]
 pub struct PeerSnapshot {
-    pub present: bool,
     pub device_id: protocol::DeviceId,
-    pub mac: [u8; 6],
-    pub rssi_dbm: i16,
+    pub mac: MacAddress,
+    pub rssi_dbm: RssiDbm,
     pub age_ms: u32,
     pub rx_packets: u32,
     pub remote_uptime_ms: u32,
-    pub capabilities: u32,
+    pub capabilities: protocol::Capabilities,
 }
 
-impl PeerSnapshot {
-    pub const EMPTY: Self = Self {
-        present: false,
-        device_id: protocol::DeviceId::ZERO,
-        mac: [0; 6],
-        rssi_dbm: 0,
-        age_ms: 0,
-        rx_packets: 0,
-        remote_uptime_ms: 0,
-        capabilities: 0,
-    };
-}
-
+/// Replace-latest CPU1→CPU0 network presentation state.
+///
+/// `peers` is fixed-capacity and uses `Option` for occupancy. `peer_count()` is
+/// derived, so count and table contents cannot disagree.
 #[derive(Clone, Copy, Debug)]
 pub struct Snapshot {
     pub revision: u32,
     pub status: Status,
     pub local_id: protocol::DeviceId,
-    pub channel: u8,
-    pub peer_count: u8,
-    pub peers: [PeerSnapshot; MAX_PEERS],
+    pub channel: Channel,
+    pub peers: [Option<PeerSnapshot>; MAX_PEERS],
     pub tx_packets: u32,
     pub rx_packets: u32,
     pub tx_errors: u32,
@@ -92,39 +154,35 @@ pub struct Snapshot {
     pub peer_evictions: u32,
 }
 
+impl Snapshot {
+    pub fn peer_count(&self) -> usize {
+        self.peers.iter().flatten().count()
+    }
+
+    pub fn peers(&self) -> impl Iterator<Item = &PeerSnapshot> {
+        self.peers.iter().flatten()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PeerState {
-    present: bool,
     device_id: protocol::DeviceId,
-    mac: [u8; 6],
-    rssi_dbm: i16,
+    mac: MacAddress,
+    rssi_dbm: RssiDbm,
     last_seen_ms: u64,
     rx_packets: u32,
     remote_uptime_ms: u32,
-    capabilities: u32,
-}
-
-impl PeerState {
-    const EMPTY: Self = Self {
-        present: false,
-        device_id: protocol::DeviceId::ZERO,
-        mac: [0; 6],
-        rssi_dbm: 0,
-        last_seen_ms: 0,
-        rx_packets: 0,
-        remote_uptime_ms: 0,
-        capabilities: 0,
-    };
+    capabilities: protocol::Capabilities,
 }
 
 struct NetworkState {
     revision: u32,
     status: Status,
     local_id: protocol::DeviceId,
-    channel: u8,
+    channel: Channel,
     peer_timeout_ms: u64,
     next_sequence: u32,
-    peers: [PeerState; MAX_PEERS],
+    peers: [Option<PeerState>; MAX_PEERS],
     tx_packets: u32,
     rx_packets: u32,
     tx_errors: u32,
@@ -141,7 +199,7 @@ impl NetworkState {
             channel: config.channel,
             peer_timeout_ms: config.peer_timeout.as_millis(),
             next_sequence: 1,
-            peers: [PeerState::EMPTY; MAX_PEERS],
+            peers: [None; MAX_PEERS],
             tx_packets: 0,
             rx_packets: 0,
             tx_errors: 0,
@@ -188,19 +246,18 @@ impl NetworkState {
     fn record_receive(
         &mut self,
         packet: protocol::Packet,
-        mac: [u8; 6],
-        rssi_dbm: i16,
+        mac: MacAddress,
+        rssi_dbm: RssiDbm,
         now: Instant,
     ) -> bool {
         self.rx_packets = self.rx_packets.wrapping_add(1);
         let now_ms = now.as_millis();
 
-        if let Some(index) = self
-            .peers
-            .iter()
-            .position(|peer| peer.present && peer.device_id == packet.device_id)
-        {
-            let peer = &mut self.peers[index];
+        if let Some(index) = self.peers.iter().position(|peer| {
+            peer.as_ref()
+                .is_some_and(|peer| peer.device_id == packet.device_id)
+        }) {
+            let peer = self.peers[index].as_mut().expect("matched peer disappeared");
             peer.mac = mac;
             peer.rssi_dbm = rssi_dbm;
             peer.last_seen_ms = now_ms;
@@ -214,13 +271,20 @@ impl NetworkState {
         let index = self
             .peers
             .iter()
-            .position(|peer| !peer.present)
+            .position(|peer| peer.is_none())
             .unwrap_or_else(|| {
                 let mut oldest_index = 0usize;
-                let mut oldest_seen = self.peers[0].last_seen_ms;
+                let mut oldest_seen = self.peers[0]
+                    .as_ref()
+                    .expect("full peer table contains empty slot")
+                    .last_seen_ms;
                 for (index, peer) in self.peers.iter().enumerate().skip(1) {
-                    if peer.last_seen_ms < oldest_seen {
-                        oldest_seen = peer.last_seen_ms;
+                    let last_seen = peer
+                        .as_ref()
+                        .expect("full peer table contains empty slot")
+                        .last_seen_ms;
+                    if last_seen < oldest_seen {
+                        oldest_seen = last_seen;
                         oldest_index = index;
                     }
                 }
@@ -229,8 +293,7 @@ impl NetworkState {
                 oldest_index
             });
 
-        self.peers[index] = PeerState {
-            present: true,
+        self.peers[index] = Some(PeerState {
             device_id: packet.device_id,
             mac,
             rssi_dbm,
@@ -238,7 +301,7 @@ impl NetworkState {
             rx_packets: 1,
             remote_uptime_ms: packet.uptime_ms,
             capabilities: packet.capabilities,
-        };
+        });
         self.bump_revision();
         true
     }
@@ -247,8 +310,10 @@ impl NetworkState {
         let now_ms = now.as_millis();
         let mut changed = false;
         for peer in &mut self.peers {
-            if peer.present && now_ms.saturating_sub(peer.last_seen_ms) > self.peer_timeout_ms {
-                *peer = PeerState::EMPTY;
+            if peer.as_ref().is_some_and(|peer| {
+                now_ms.saturating_sub(peer.last_seen_ms) > self.peer_timeout_ms
+            }) {
+                *peer = None;
                 changed = true;
             }
         }
@@ -260,16 +325,11 @@ impl NetworkState {
     fn snapshot(&mut self, now: Instant) -> Snapshot {
         self.expire_peers(now);
         let now_ms = now.as_millis();
-        let mut peers = [PeerSnapshot::EMPTY; MAX_PEERS];
-        let mut peer_count = 0u8;
+        let mut peers = [None; MAX_PEERS];
+        let mut peer_count = 0usize;
 
-        for (source, target) in self.peers.iter().zip(peers.iter_mut()) {
-            if !source.present {
-                continue;
-            }
-            peer_count = peer_count.saturating_add(1);
-            *target = PeerSnapshot {
-                present: true,
+        for source in self.peers.iter().flatten() {
+            peers[peer_count] = Some(PeerSnapshot {
                 device_id: source.device_id,
                 mac: source.mac,
                 rssi_dbm: source.rssi_dbm,
@@ -277,7 +337,8 @@ impl NetworkState {
                 rx_packets: source.rx_packets,
                 remote_uptime_ms: source.remote_uptime_ms,
                 capabilities: source.capabilities,
-            };
+            });
+            peer_count += 1;
         }
 
         if self.status != Status::Fault && self.status != Status::Starting {
@@ -293,7 +354,6 @@ impl NetworkState {
             status: self.status,
             local_id: self.local_id,
             channel: self.channel,
-            peer_count,
             peers,
             tx_packets: self.tx_packets,
             rx_packets: self.rx_packets,
@@ -321,7 +381,7 @@ fn publish_snapshot(now: Instant) {
     }
 }
 
-/// Take the newest network state, if CPU1 published one since the previous take.
+/// Low-level replace-latest take used by the CPU0 `NetworkInput` capability.
 pub fn take_latest() -> Option<Snapshot> {
     LATEST.try_take()
 }
@@ -357,7 +417,7 @@ pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
     let _controller = WIFI_CONTROLLER.init(controller);
 
     let esp_now = interfaces.esp_now;
-    if let Err(error) = esp_now.set_channel(config.channel) {
+    if let Err(error) = esp_now.set_channel(config.channel.number()) {
         diagnostics::record_network_init_error();
         let _ = with_state(NetworkState::mark_fault);
         publish_snapshot(Instant::now());
@@ -436,15 +496,10 @@ async fn receive_task(
 
         diagnostics::record_network_rx_packet();
         let now = Instant::now();
-        let is_new = with_state(|state| {
-            state.record_receive(
-                packet,
-                received.info.src_address,
-                received.info.rx_control.rssi.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                now,
-            )
-        })
-        .unwrap_or(false);
+        let mac = MacAddress::new(received.info.src_address);
+        let rssi = RssiDbm::from_radio_raw(received.info.rx_control.rssi as u8);
+        let is_new = with_state(|state| state.record_receive(packet, mac, rssi, now))
+            .unwrap_or(false);
 
         if received.info.dst_address == BROADCAST_ADDRESS
             && !manager.peer_exists(&received.info.src_address)
@@ -453,22 +508,17 @@ async fn receive_task(
                 interface: EspNowWifiInterface::Station,
                 peer_address: received.info.src_address,
                 lmk: None,
-                channel: Some(config.channel),
+                channel: Some(config.channel.number()),
                 encrypt: false,
             });
         }
 
         if is_new {
             ::log::info!(
-                "ESP-NOW peer: id={} mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} rssi={} dBm",
+                "ESP-NOW peer: id={} mac={} rssi={} dBm",
                 packet.device_id,
-                received.info.src_address[0],
-                received.info.src_address[1],
-                received.info.src_address[2],
-                received.info.src_address[3],
-                received.info.src_address[4],
-                received.info.src_address[5],
-                received.info.rx_control.rssi,
+                mac,
+                rssi,
             );
         }
 

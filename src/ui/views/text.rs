@@ -24,6 +24,7 @@ pub(super) fn render_network(frame: &mut ContentFramebuffer, snapshot: &network:
         network::Status::PeerPresent => "PEER CONNECTED",
         network::Status::Fault => "RADIO FAULT",
     };
+    let peer_count = snapshot.peer_count();
 
     let _ = writeln!(&mut text, "ESP-NOW  {}", status);
     let _ = writeln!(&mut text, "DEVICE  {}", snapshot.local_id);
@@ -31,7 +32,7 @@ pub(super) fn render_network(frame: &mut ContentFramebuffer, snapshot: &network:
         &mut text,
         "CHANNEL {}   PEERS {}/{}",
         snapshot.channel,
-        snapshot.peer_count,
+        peer_count,
         network::MAX_PEERS
     );
     let _ = writeln!(
@@ -45,11 +46,11 @@ pub(super) fn render_network(frame: &mut ContentFramebuffer, snapshot: &network:
     );
     let _ = writeln!(&mut text);
 
-    if snapshot.peer_count == 0 {
+    if peer_count == 0 {
         let _ = writeln!(&mut text, "Waiting for another Hack and Hike device...");
         let _ = writeln!(&mut text, "Flash this build to device #2.");
     } else {
-        for (index, peer) in snapshot.peers.iter().filter(|peer| peer.present).enumerate() {
+        for (index, peer) in snapshot.peers().enumerate() {
             let _ = writeln!(&mut text, "PEER {}  {}", index + 1, peer.device_id);
             let _ = writeln!(
                 &mut text,
@@ -64,11 +65,7 @@ pub(super) fn render_network(frame: &mut ContentFramebuffer, snapshot: &network:
                 peer.remote_uptime_ms,
                 peer.capabilities,
             );
-            let _ = writeln!(
-                &mut text,
-                "MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-                peer.mac[0], peer.mac[1], peer.mac[2], peer.mac[3], peer.mac[4], peer.mac[5]
-            );
+            let _ = writeln!(&mut text, "MAC {}", peer.mac);
         }
     }
 
