@@ -49,10 +49,6 @@ pub fn try_take_edge() -> Option<TouchEdge> {
 async fn read_sample(bus: SystemI2cBus) -> TouchSample {
     let mut data = [0u8; 5];
 
-    // The bus guard remains held for the whole transaction so no future sensor
-    // task can interleave bytes on the physical bus. Unlike the previous
-    // blocking driver, the I2C transfer itself yields CPU1 while hardware is
-    // waiting for bus events.
     let result = {
         let mut i2c = bus.lock().await;
         i2c.write_read_async(FT6336_ADDR, &[FT6336_TOUCH_DATA], &mut data)
@@ -78,8 +74,8 @@ async fn read_sample(bus: SystemI2cBus) -> TouchSample {
     }
 }
 
-/// CPU1 touch acquisition. This task never touches Slint and never waits for
-/// CPU0 to consume movement samples.
+/// CPU1 touch acquisition. This task never owns presentation state and never
+/// waits for CPU0 to consume movement samples.
 #[embassy_executor::task]
 pub async fn capture_task(bus: SystemI2cBus) {
     let mut pressed = false;
@@ -90,7 +86,10 @@ pub async fn capture_task(bus: SystemI2cBus) {
             TouchSample::ReadError => diagnostics::record_touch_read_error(),
             TouchSample::Up if pressed => {
                 pressed = false;
-                if TOUCH_EDGES.try_send(TouchEdge::Released(last_point)).is_err() {
+                if TOUCH_EDGES
+                    .try_send(TouchEdge::Released(last_point))
+                    .is_err()
+                {
                     diagnostics::record_touch_edge_drop();
                 }
             }

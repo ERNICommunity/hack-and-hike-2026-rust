@@ -29,11 +29,7 @@ mipidsi = "0.8"
 display-interface-spi = "0.5"
 embedded-hal-bus = "0.3"
 embedded-hal = "1.0"
-slint = { version = "1.17.1", default-features = false, features = ["compat-1-2", "unsafe-single-threaded", "libm", "renderer-software"] }
 arrayvec = { version = "0.7.8", default-features = false }
-
-[build-dependencies]
-slint-build = "1.17.1"
 
 [profile.dev]
 opt-level = "s"

@@ -1,9 +1,8 @@
-//! Allocation-free CPU0 rendering for high-rate live views.
+//! Allocation-controlled CPU0 rendering for content views.
 //!
-//! Slint still owns navigation and static page composition. The continuously
-//! changing IMU and Log content is rasterized into one fixed PSRAM framebuffer
-//! and then copied to the LCD through the existing SPI-DMA scanline pipeline.
-//! No live-view refresh creates or replaces heap-owned UI objects.
+//! Continuously changing content is rasterized into one fixed PSRAM RGB565
+//! framebuffer. Static page chrome uses the same buffer and embedded-graphics
+//! primitives. No refresh creates or replaces heap-owned presentation objects.
 
 use core::{convert::Infallible, fmt::Write as _};
 
@@ -16,11 +15,11 @@ use embedded_graphics::{
     },
     pixelcolor::{raw::RawU16, Rgb565},
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
+    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
     text::{Baseline, Text},
 };
 
-use crate::{data_plane, models::ImuDisplay, theme};
+use crate::{data_plane, models::ImuDisplay, theme, waveform};
 
 pub const CONTENT_X: usize = 44;
 pub const WIDTH: usize = 320 - CONTENT_X;
@@ -57,6 +56,70 @@ impl Framebuffer {
         self.pixels.as_mut_slice().fill(raw);
     }
 
+    pub fn render_blank(&mut self) {
+        self.clear_fast(WHITE_RAW);
+    }
+
+    pub fn render_placeholder(&mut self, title: &str, subtitle: &str) {
+        self.clear_fast(WHITE_RAW);
+
+        let title_style = MonoTextStyle::new(&FONT_8X13_BOLD, color(DARK_BLUE_RAW));
+        let subtitle_style = MonoTextStyle::new(&FONT_6X10, color(DARK_GRAY_RAW));
+
+        let title_x = ((WIDTH as i32 - title.len() as i32 * 8) / 2).max(8);
+        let subtitle_x = ((WIDTH as i32 - subtitle.len() as i32 * 6) / 2).max(8);
+
+        let _ = Text::with_baseline(
+            title,
+            Point::new(title_x, 92),
+            title_style,
+            Baseline::Top,
+        )
+        .draw(self);
+        let _ = Text::with_baseline(
+            subtitle,
+            Point::new(subtitle_x, 114),
+            subtitle_style,
+            Baseline::Top,
+        )
+        .draw(self);
+    }
+
+    pub fn render_microphone_shell(&mut self) {
+        self.clear_fast(WHITE_RAW);
+
+        self.draw_waveform_panel(4, 4, "MIC L", waveform::LEFT_CANVAS_Y);
+        self.draw_waveform_panel(4, 122, "MIC R", waveform::RIGHT_CANVAS_Y);
+    }
+
+    fn draw_waveform_panel(&mut self, x: i32, y: i32, label: &str, canvas_y: usize) {
+        let panel_style = PrimitiveStyleBuilder::new()
+            .fill_color(color(BLACK_RAW))
+            .stroke_color(color(DARK_GRAY_RAW))
+            .stroke_width(1)
+            .build();
+        let panel = Rectangle::new(Point::new(x, y), Size::new((WIDTH - 8) as u32, 114));
+        let _ = panel.into_styled(panel_style).draw(self);
+
+        let label_style = MonoTextStyle::new(&FONT_6X10, color(LIGHT_GRAY_RAW));
+        let _ = Text::with_baseline(
+            label,
+            Point::new(x + 6, y + 4),
+            label_style,
+            Baseline::Top,
+        )
+        .draw(self);
+
+        let canvas_x = waveform::CANVAS_X - CONTENT_X;
+        self.fill_rect(
+            canvas_x,
+            canvas_y,
+            waveform::CANVAS_WIDTH,
+            waveform::CANVAS_HEIGHT,
+            WHITE_RAW,
+        );
+    }
+
     pub fn render_log(&mut self, text: &str) {
         self.clear_fast(WHITE_RAW);
 
@@ -86,10 +149,20 @@ impl Framebuffer {
         let white_small = MonoTextStyle::new(&FONT_6X10, color(WHITE_RAW));
         let value = MonoTextStyle::new(&FONT_8X13_BOLD, color(WHITE_RAW));
 
-        let _ = Text::with_baseline("IMU 9-AXIS", Point::new(12, 10), white_small, Baseline::Top)
-            .draw(self);
-        let _ = Text::with_baseline(status_text(imu.status), Point::new(12, 22), small, Baseline::Top)
-            .draw(self);
+        let _ = Text::with_baseline(
+            "IMU 9-AXIS",
+            Point::new(12, 10),
+            white_small,
+            Baseline::Top,
+        )
+        .draw(self);
+        let _ = Text::with_baseline(
+            status_text(imu.status),
+            Point::new(12, 22),
+            small,
+            Baseline::Top,
+        )
+        .draw(self);
 
         let mut mag = ArrayString::<32>::new();
         match imu.mag_status {
@@ -102,7 +175,13 @@ impl Framebuffer {
             3 => mag.push_str("MAG DISTURBED"),
             _ => mag.push_str("MAG MISSING"),
         }
-        let _ = Text::with_baseline(mag.as_str(), Point::new(12, 33), small, Baseline::Top).draw(self);
+        let _ = Text::with_baseline(
+            mag.as_str(),
+            Point::new(12, 33),
+            small,
+            Baseline::Top,
+        )
+        .draw(self);
 
         self.draw_header_value("ROLL", imu.roll_deg, 83, value, small);
         self.draw_header_value("PITCH", imu.pitch_deg, 143, value, small);
@@ -117,12 +196,23 @@ impl Framebuffer {
         value_style: MonoTextStyle<'static, Rgb565>,
         label_style: MonoTextStyle<'static, Rgb565>,
     ) {
-        let _ = Text::with_baseline(label, Point::new(x, 9), label_style, Baseline::Top).draw(self);
+        let _ = Text::with_baseline(
+            label,
+            Point::new(x, 9),
+            label_style,
+            Baseline::Top,
+        )
+        .draw(self);
 
         let mut text = ArrayString::<16>::new();
         let _ = write!(&mut text, "{} deg", degrees);
-        let _ = Text::with_baseline(text.as_str(), Point::new(x, 22), value_style, Baseline::Top)
-            .draw(self);
+        let _ = Text::with_baseline(
+            text.as_str(),
+            Point::new(x, 22),
+            value_style,
+            Baseline::Top,
+        )
+        .draw(self);
     }
 
     fn draw_attitude(&mut self, imu: &ImuDisplay) {
@@ -152,7 +242,6 @@ impl Framebuffer {
             }
         }
 
-        // Border and fixed aircraft reference.
         self.hline(X, Y, W, LIGHT_GRAY_RAW);
         self.hline(X, Y + H - 1, W, LIGHT_GRAY_RAW);
         self.vline(X, Y, H, LIGHT_GRAY_RAW);
@@ -171,8 +260,13 @@ impl Framebuffer {
         self.fill_rect(roll_x, Y + 5, 5, 10, WHITE_RAW);
 
         let white_small = MonoTextStyle::new(&FONT_6X10, color(WHITE_RAW));
-        let _ = Text::with_baseline("PITCH / ROLL", Point::new((X + 5) as i32, (Y + 4) as i32), white_small, Baseline::Top)
-            .draw(self);
+        let _ = Text::with_baseline(
+            "PITCH / ROLL",
+            Point::new((X + 5) as i32, (Y + 4) as i32),
+            white_small,
+            Baseline::Top,
+        )
+        .draw(self);
 
         let footer = match imu.mag_status {
             1 => "Rotate through all axes - calibrating magnetometer",
@@ -195,7 +289,7 @@ impl Framebuffer {
             let _ = Text::with_baseline(
                 errors.as_str(),
                 Point::new((X + W - 88) as i32, (Y + 4) as i32),
-                MonoTextStyle::new(&FONT_6X10, color(WHITE_RAW)),
+                white_small,
                 Baseline::Top,
             )
             .draw(self);
@@ -241,32 +335,32 @@ impl Framebuffer {
         self.fill_rect(X + W / 2 - 2, Y + 16, 4, 13, DARK_BLUE_RAW);
     }
 
-    fn hline(&mut self, x: usize, y: usize, width: usize, color: u16) {
+    fn hline(&mut self, x: usize, y: usize, width: usize, raw: u16) {
         if y >= HEIGHT || x >= WIDTH {
             return;
         }
         let end = (x + width).min(WIDTH);
-        self.pixels.as_mut_slice()[y * WIDTH + x..y * WIDTH + end].fill(color);
+        self.pixels.as_mut_slice()[y * WIDTH + x..y * WIDTH + end].fill(raw);
     }
 
-    fn vline(&mut self, x: usize, y: usize, height: usize, color: u16) {
+    fn vline(&mut self, x: usize, y: usize, height: usize, raw: u16) {
         if x >= WIDTH || y >= HEIGHT {
             return;
         }
         let end = (y + height).min(HEIGHT);
         for yy in y..end {
-            self.pixels.as_mut_slice()[yy * WIDTH + x] = color;
+            self.pixels.as_mut_slice()[yy * WIDTH + x] = raw;
         }
     }
 
-    fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: u16) {
+    fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, raw: u16) {
         if x >= WIDTH || y >= HEIGHT {
             return;
         }
         let x_end = (x + width).min(WIDTH);
         let y_end = (y + height).min(HEIGHT);
         for yy in y..y_end {
-            self.pixels.as_mut_slice()[yy * WIDTH + x..yy * WIDTH + x_end].fill(color);
+            self.pixels.as_mut_slice()[yy * WIDTH + x..yy * WIDTH + x_end].fill(raw);
         }
     }
 }

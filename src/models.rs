@@ -1,10 +1,8 @@
 //! CPU0 application models.
 //!
-//! This module owns state and data refresh policy. It does not own a Slint
-//! window/component tree. `ui.rs` is only a presentation adapter around these
-//! models.
+//! This module owns state and data refresh policy. Presentation consumes only
+//! bounded snapshots and fixed-size frame data; no renderer objects live here.
 
-use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 
 use embassy_time::{Duration, Instant};
@@ -19,7 +17,6 @@ const WAVEFORM_PEAK_FLOOR: u16 = 1024;
 const IMU_UI_UPDATE: Duration = Duration::from_millis(40);
 const NETWORK_UI_UPDATE: Duration = Duration::from_millis(200);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
-/// Number of complete trailing log lines rendered by the direct MCU log view.
 const LOG_VISIBLE_LINES: usize = 23;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,17 +40,6 @@ impl ViewId {
 
     pub const fn as_i32(self) -> i32 {
         self as i32
-    }
-
-    pub fn from_i32(value: i32) -> Option<Self> {
-        Some(match value {
-            0 => Self::Network,
-            1 => Self::Imu,
-            2 => Self::Microphone,
-            3 => Self::Sound,
-            4 => Self::Log,
-            _ => return None,
-        })
     }
 }
 
@@ -106,8 +92,6 @@ impl NetworkModel {
     }
 }
 
-/// CPU0 presentation-sized IMU state. Values are quantized to whole units and
-/// consumed by the allocation-free direct renderer rather than Slint bindings.
 #[derive(Clone, Copy)]
 pub struct ImuDisplay {
     pub roll_deg: i32,
@@ -310,9 +294,6 @@ fn quantize_waveform(sample: i16, scale: i32) -> i8 {
         .clamp(-AMPLITUDE_PIXELS, AMPLITUDE_PIXELS) as i8
 }
 
-/// Return a UTF-8 slice containing at most the newest `line_count` complete
-/// logger lines. Logger records always end in `\n`, so newline byte boundaries
-/// are also UTF-8 character boundaries.
 fn trailing_lines(text: &str, line_count: usize) -> &str {
     if line_count == 0 || text.is_empty() {
         return "";
@@ -334,11 +315,6 @@ fn trailing_lines(text: &str, line_count: usize) -> &str {
     text
 }
 
-/// Fixed-size MCU log presentation model.
-///
-/// The complete byte snapshot remains in PSRAM. The visible portion is stored
-/// only as byte offsets into that fixed buffer, so a logger revision never
-/// creates a `SharedString` or any other heap-owned UI value.
 struct LogModel {
     bytes: data_plane::FixedPsramBuffer<u8>,
     visible_start: usize,
@@ -401,10 +377,6 @@ impl LogModel {
     }
 }
 
-/// All mutable application state consumed by the CPU0 presentation layer.
-///
-/// The model is reference counted only so Slint navigation callbacks can issue
-/// commands into it. No Slint component/window object is stored here.
 pub struct AppModel {
     active_view: Cell<ViewId>,
     network: RefCell<NetworkModel>,
@@ -414,35 +386,35 @@ pub struct AppModel {
 }
 
 impl AppModel {
-    pub fn new() -> Rc<Self> {
+    pub fn new() -> Self {
         let mut log = LogModel::new();
         log.refresh();
 
-        Rc::new(Self {
+        Self {
             active_view: Cell::new(ViewId::Log),
             network: RefCell::new(NetworkModel::new()),
             imu: RefCell::new(ImuModel::new()),
             waveform: RefCell::new(WaveformModel::new()),
             log: RefCell::new(log),
-        })
+        }
     }
 
     pub fn active_view(&self) -> ViewId {
         self.active_view.get()
     }
 
-    pub fn request_view(&self, raw_view: i32) {
-        if let Some(view) = ViewId::from_i32(raw_view) {
-            if view != self.active_view.get() {
-                self.active_view.set(view);
-                match view {
-                    ViewId::Network => self.network.borrow_mut().mark_dirty(),
-                    ViewId::Imu => self.imu.borrow_mut().mark_dirty(),
-                    ViewId::Microphone => self.waveform.borrow_mut().mark_dirty(),
-                    ViewId::Log => self.log.borrow_mut().mark_dirty(),
-                    _ => {}
-                }
-            }
+    pub fn request_view(&self, view: ViewId) {
+        if view == self.active_view.get() {
+            return;
+        }
+
+        self.active_view.set(view);
+        match view {
+            ViewId::Network => self.network.borrow_mut().mark_dirty(),
+            ViewId::Imu => self.imu.borrow_mut().mark_dirty(),
+            ViewId::Microphone => self.waveform.borrow_mut().mark_dirty(),
+            ViewId::Log => self.log.borrow_mut().mark_dirty(),
+            ViewId::Sound => {}
         }
     }
 
@@ -452,7 +424,7 @@ impl AppModel {
             ViewId::Imu => self.imu.borrow_mut().update_if_due(now),
             ViewId::Microphone => self.waveform.borrow_mut().update_if_due(now),
             ViewId::Log => self.log.borrow_mut().update_if_due(now),
-            _ => {}
+            ViewId::Sound => {}
         }
     }
 
@@ -477,18 +449,6 @@ impl AppModel {
         }
 
         self.imu.borrow_mut().take_display()
-    }
-
-    pub fn note_slint_redraw(&self, redrawn: bool) {
-        if redrawn {
-            match self.active_view.get() {
-                ViewId::Network => self.network.borrow_mut().mark_dirty(),
-                ViewId::Microphone => self.waveform.borrow_mut().mark_dirty(),
-                ViewId::Imu => self.imu.borrow_mut().mark_dirty(),
-                ViewId::Log => self.log.borrow_mut().mark_dirty(),
-                _ => {}
-            }
-        }
     }
 
     pub fn take_waveform_frame(&self) -> Option<WaveformFrame> {

@@ -1,7 +1,0 @@
-import { Theme } from "generated-theme.slint";
-
-// Dynamic IMU content is rendered directly by CPU0 into the LCD. Keeping this
-// Slint page static avoids rebuilding text/geometry dependency state at 25 Hz.
-export component ImuView inherits Rectangle {
-    background: Theme.white;
-}
