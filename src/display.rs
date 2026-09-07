@@ -19,17 +19,23 @@ pub type Pixel = u16;
 pub const WIDTH: usize = board::DISPLAY_WIDTH;
 pub const HEIGHT: usize = board::DISPLAY_HEIGHT;
 
-/// Rectangular LCD region in physical screen coordinates.
+/// Valid rectangular region in the physical LCD coordinate space.
+///
+/// Fields are private and construction checks panel bounds, so every `Region`
+/// value is safe to submit to `Display`. Constant UI regions therefore fail at
+/// compile time if an edited design extends outside the 320×240 panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Region {
-    pub x: usize,
-    pub y: usize,
-    pub width: usize,
-    pub height: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
 }
 
 impl Region {
     pub const fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
+        assert!(x <= WIDTH && width <= WIDTH - x);
+        assert!(y <= HEIGHT && height <= HEIGHT - y);
         Self {
             x,
             y,
@@ -38,12 +44,16 @@ impl Region {
         }
     }
 
-    const fn end_x(self) -> usize {
-        self.x + self.width
+    pub const fn width(self) -> usize {
+        self.width
     }
 
-    const fn end_y(self) -> usize {
-        self.y + self.height
+    pub const fn height(self) -> usize {
+        self.height
+    }
+
+    const fn end_x(self) -> usize {
+        self.x + self.width
     }
 
     const fn is_empty(self) -> bool {
@@ -51,7 +61,10 @@ impl Region {
     }
 }
 
-/// Raw CPU0 hardware resources consumed by the display service.
+/// Raw CPU0 hardware resources consumed exactly once by `init`.
+///
+/// Moving this bundle into `Display` transfers exclusive ownership of SPI2,
+/// DMA_CH1, and the LCD GPIOs to the display service.
 pub struct Resources {
     pub spi2: SPI2<'static>,
     pub dma: DMA_CH1<'static>,
@@ -75,9 +88,9 @@ pub fn init(resources: Resources, delay: &mut Delay) -> Display {
 }
 
 impl Display {
-    /// Render a rectangular region one scanline at a time.
+    /// Render a valid physical region one scanline at a time.
     ///
-    /// The closure receives a reusable RGB565 slice exactly `region.width`
+    /// The closure receives a reusable RGB565 slice exactly `region.width()`
     /// pixels wide. Each completed line is queued immediately, allowing CPU
     /// rendering of the next line to overlap the previous SPI-DMA transfer.
     /// No allocation occurs in this path.
@@ -89,11 +102,6 @@ impl Display {
         if region.is_empty() {
             return;
         }
-
-        assert!(
-            region.end_x() <= WIDTH && region.end_y() <= HEIGHT,
-            "display region is outside the physical panel"
-        );
 
         let x_start = region.x;
         let x_end = region.end_x();
@@ -109,7 +117,7 @@ impl Display {
         transport.finish();
     }
 
-    /// Blit a tightly packed row-major RGB565 buffer into a physical region.
+    /// Blit tightly packed row-major RGB565 pixels into a valid physical region.
     pub fn blit(&mut self, region: Region, pixels: &[Pixel]) {
         assert_eq!(
             pixels.len(),

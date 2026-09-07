@@ -19,14 +19,17 @@ const NETWORK_UPDATE: Duration = Duration::from_millis(200);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
 
 /// Semantic page identity shared by application refresh policy and presentation.
+///
+/// There is deliberately no numeric representation: ordering and labels are
+/// explicit through `ALL` and `name()`, so presentation identity never leaks as
+/// an integer protocol between modules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(i32)]
 pub enum ViewId {
-    Network = 0,
-    Imu = 1,
-    Microphone = 2,
-    Sound = 3,
-    Log = 4,
+    Network,
+    Imu,
+    Microphone,
+    Sound,
+    Log,
 }
 
 impl ViewId {
@@ -38,8 +41,14 @@ impl ViewId {
         Self::Log,
     ];
 
-    pub const fn as_i32(self) -> i32 {
-        self as i32
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Network => "Network",
+            Self::Imu => "Imu",
+            Self::Microphone => "Microphone",
+            Self::Sound => "Sound",
+            Self::Log => "Log",
+        }
     }
 }
 

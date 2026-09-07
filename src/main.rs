@@ -183,14 +183,13 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         let now = Instant::now();
 
         if let Some(change) = ui.prepare_frame(now) {
-            heap_monitor.begin_navigation(change.to.as_i32());
+            heap_monitor.begin_activity(change.to.name());
             ui.apply_navigation(change, &mut display);
+            heap_monitor.end_activity();
             info!("View {:?} -> {:?}", change.from, change.to);
         }
 
         ui.render(&mut display);
-
-        heap_monitor.end_navigation();
         heap_monitor.poll(now);
 
         Timer::after(UI_IDLE_DELAY).await;

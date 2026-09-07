@@ -1,44 +1,32 @@
 //! Runtime hardware ownership expressed through concrete resource bundles.
 //!
-//! Bootstrap code moves each raw peripheral exactly once to the service that
-//! owns it. Cross-core data exchange is deliberately not represented here:
-//! touch, IMU, audio, and network each expose their own bounded service-specific
-//! Signal/Channel contract.
+//! `RuntimeResources` describes only raw-peripheral ownership. CPU1→CPU0 data
+//! ownership is a separate `service_inputs::Cpu0Inputs` value because hardware
+//! ownership and message-consumption semantics are different architectural
+//! concerns.
 //!
-//! - CPU0 owns application/model coordination, presentation state, and display
-//!   I/O.
-//! - CPU1 owns non-display peripheral services, timing-sensitive acquisition or
-//!   communication, and runtime system I2C.
-//!
-//! Service-specific raw hardware requirements live with the owning service as
-//! `display::Resources`, `audio::Resources`, `network::Resources`, and
-//! `system_i2c::Resources`. The IMU has no separate raw peripheral bundle: it is
-//! a CPU1 service using the shared CPU1-local `system_i2c::SystemI2cBus`.
+//! Bootstrap moves each raw peripheral exactly once to the service that owns it:
+//! CPU0 owns display I/O; CPU1 owns runtime I2C, audio acquisition, and radio.
+//! Touch and IMU intentionally do not have independent raw-I2C handles because
+//! both consume the shared CPU1-local `SystemI2cBus`.
 
 use crate::{audio, display, network, system_i2c};
 
-/// Complete raw-hardware split between the two architectural sides.
-///
-/// ```text
-/// RuntimeResources
-/// ├── Cpu0Resources
-/// │   └── display::Resources
-/// └── Cpu1Resources
-///     ├── system_i2c::Resources  (touch + IMU runtime bus)
-///     ├── audio::Resources
-///     └── network::Resources     (ESP-NOW radio)
-/// ```
+/// Complete raw-hardware ownership split created during bootstrap.
 pub struct RuntimeResources {
     pub cpu0: Cpu0Resources,
     pub cpu1: Cpu1Resources,
 }
 
-/// Raw peripherals belonging to CPU0's display side.
+/// Raw peripherals that stay on CPU0.
 pub struct Cpu0Resources {
     pub display: display::Resources,
 }
 
-/// Raw peripherals belonging to CPU1's non-display service side.
+/// Raw peripherals moved into the CPU1 service executor.
+///
+/// Destructuring this value in bootstrap makes the ownership transfer explicit:
+/// the display side cannot retain the Wi-Fi/I2S/runtime-I2C peripherals.
 pub struct Cpu1Resources {
     pub system_i2c: system_i2c::Resources,
     pub audio: audio::Resources,
