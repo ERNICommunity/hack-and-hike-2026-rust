@@ -1,9 +1,9 @@
 //! CPU0-owned physical display boundary.
 //!
-//! This module knows how to initialize the LCD and move RGB565 pixels to it.
-//! It deliberately knows nothing about views, navigation, text, sensors, or
-//! other presentation semantics. Higher layers compose pixels and submit either
-//! complete regions or allocation-free scanline render closures.
+//! This module knows how to initialize the LCD controller transport and move
+//! RGB565 pixels to it. Board-level power/reset sequencing happens in bootstrap
+//! before this module is initialized. The display boundary deliberately knows
+//! nothing about views, navigation, text, sensors, or presentation semantics.
 
 mod transport;
 
@@ -67,14 +67,7 @@ pub struct Display {
     line_buffer: [Pixel; WIDTH],
 }
 
-pub fn init(
-    i2c: &mut impl embedded_hal::i2c::I2c,
-    resources: Resources,
-    delay: &mut Delay,
-) -> Display {
-    board::power::enable_lcd_backlight(i2c);
-    board::io_expander::reset_display_and_touch(i2c, delay);
-
+pub fn init(resources: Resources, delay: &mut Delay) -> Display {
     Display {
         transport: transport::init(resources, delay),
         line_buffer: [0; WIDTH],

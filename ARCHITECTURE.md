@@ -20,6 +20,11 @@ Display                                   Audio acquisition
 once to the core/service that owns them. CPU0 owns the LCD. CPU1 owns the shared
 runtime I2C bus, audio acquisition, and radio.
 
+Board-level operations that span service boundaries are explicit bootstrap
+steps. In particular, the AW9523 reset line policy resets the LCD and touch
+controller together, so `main` performs that shared reset before CPU1 starts;
+`display::init` does not reach through I2C to reset a CPU1-owned device.
+
 There is deliberately no generic cross-core event bus. Each producer exposes the
 smallest contract appropriate to its data:
 

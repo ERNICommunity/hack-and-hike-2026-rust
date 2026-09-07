@@ -21,8 +21,8 @@ where
 
 /// Configure AW9523 directions and reset the LCD + touch controller.
 ///
-/// This owns only the board wiring/reset sequence. LCD controller setup remains
-/// in `screen`, and touch acquisition remains in `touch`.
+/// This owns only the shared board wiring/reset sequence. LCD controller setup
+/// remains in `display`, and touch acquisition remains in `touch`.
 pub fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
     // Preserve the existing best-effort display/touch startup behavior.
     let _ = i2c.write(AW9523_ADDR, &[0x13, 0xFF]);

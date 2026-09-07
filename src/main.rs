@@ -108,7 +108,12 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     let mut delay = esp_hal::delay::Delay::new();
     let mut system_i2c = system_i2c::init(system_i2c_resources);
-    let mut display = display::init(&mut system_i2c, display_resources, &mut delay);
+
+    // Shared PCB power/reset policy is performed once during bootstrap before
+    // the CPU1 touch task starts. `display::init` itself owns only LCD transport.
+    board::power::enable_lcd_backlight(&mut system_i2c);
+    board::io_expander::reset_display_and_touch(&mut system_i2c, &mut delay);
+    let mut display = display::init(display_resources, &mut delay);
 
     audio::init_es7210(&mut system_i2c, &mut delay)
         .expect("Failed to initialize ES7210 microphone codec");

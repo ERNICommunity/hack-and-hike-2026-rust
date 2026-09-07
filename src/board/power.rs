@@ -19,7 +19,7 @@ where
 
 /// Enable the LCD backlight rail (DLDO1) at 3.3 V.
 ///
-/// Display-controller configuration itself remains owned by `screen`.
+/// Display-controller configuration itself remains owned by `display`.
 pub fn enable_lcd_backlight(i2c: &mut impl embedded_hal::i2c::I2c) {
     // Preserve the existing best-effort startup behavior for the display rail.
     let _ = i2c.write(AXP2101_ADDR, &[0x99, 0x1C]);
