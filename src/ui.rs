@@ -10,7 +10,6 @@ mod design;
 mod framebuffer;
 mod navigation;
 mod views;
-mod waveform;
 
 use embassy_time::Instant;
 
@@ -98,10 +97,10 @@ impl Ui {
             }
             ViewId::Microphone => {
                 if let Some(frame) = self.model.take_waveform_frame() {
-                    waveform::render(display, &frame);
+                    views::render_microphone(display, &frame);
                 }
             }
-            ViewId::Sound => {}
+            ViewId::Speaker => {}
             ViewId::Log => {
                 let rendered = {
                     let model = &mut self.model;

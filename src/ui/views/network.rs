@@ -1,22 +1,18 @@
-//! Monospaced Network and Log views.
+//! ESP-NOW peer overview view.
 
 use core::fmt::Write as _;
 
 use arrayvec::ArrayString;
-use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyle},
-    prelude::*,
-    text::{Baseline, Text},
-};
 
 use crate::network;
 
-use super::super::{
-    design,
-    framebuffer::{color, ContentFramebuffer},
-};
+use super::{common, super::framebuffer::ContentFramebuffer};
 
-pub(super) fn render_network(frame: &mut ContentFramebuffer, snapshot: &network::Snapshot) {
+pub(super) fn render_shell(frame: &mut ContentFramebuffer) {
+    common::render_placeholder(frame, "NETWORK", "Peer communication");
+}
+
+pub(super) fn render(frame: &mut ContentFramebuffer, snapshot: &network::Snapshot) {
     let mut text = ArrayString::<768>::new();
     let status = match snapshot.status {
         network::Status::Starting => "STARTING",
@@ -63,48 +59,5 @@ pub(super) fn render_network(frame: &mut ContentFramebuffer, snapshot: &network:
         }
     }
 
-    render_text_page(frame, text.as_str());
-}
-
-pub(super) fn render_log(frame: &mut ContentFramebuffer, text: &str) {
-    render_text_page(frame, trailing_lines(text, design::UI.text.visible_lines));
-}
-
-fn render_text_page(frame: &mut ContentFramebuffer, text: &str) {
-    let spec = design::UI.text;
-    frame.clear(spec.background);
-
-    let style = MonoTextStyle::new(&FONT_6X10, color(spec.foreground));
-    let mut y = spec.top;
-    for line in text.lines().take(spec.visible_lines) {
-        let _ = Text::with_baseline(
-            line,
-            Point::new(spec.x as i32, y as i32),
-            style,
-            Baseline::Top,
-        )
-        .draw(frame);
-        y += spec.line_height;
-    }
-}
-
-fn trailing_lines(text: &str, line_count: usize) -> &str {
-    if line_count == 0 || text.is_empty() {
-        return "";
-    }
-
-    let bytes = text.as_bytes();
-    let mut seen = 0usize;
-    for index in (0..bytes.len()).rev() {
-        if bytes[index] != b'\n' {
-            continue;
-        }
-
-        seen += 1;
-        if seen > line_count {
-            return &text[index + 1..];
-        }
-    }
-
-    text
+    common::render_text_page(frame, text.as_str());
 }

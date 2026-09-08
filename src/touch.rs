@@ -63,13 +63,13 @@ async fn read_sample(bus: SystemI2cBus) -> TouchSample {
 
     let x = (u16::from(data[1] & 0x0F) << 8) | u16::from(data[2]);
     let y = (u16::from(data[3] & 0x0F) << 8) | u16::from(data[4]);
-    let point = TouchPoint { x, y };
 
     if usize::from(x) >= board::DISPLAY_WIDTH || usize::from(y) >= board::DISPLAY_HEIGHT {
-        TouchSample::ReadError
-    } else {
-        TouchSample::Down(point)
+        return TouchSample::ReadError;
     }
+
+    let (x, y) = board::logical_display_point(x, y);
+    TouchSample::Down(TouchPoint { x, y })
 }
 
 /// CPU1 touch acquisition. This task never owns presentation state and never

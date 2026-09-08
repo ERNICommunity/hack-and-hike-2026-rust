@@ -237,7 +237,7 @@ pub(crate) const UI: UiDesign = UiDesign {
                 ],
             },
             NavigationItemSpec {
-                view: ViewId::Sound,
+                view: ViewId::Speaker,
                 icon: [
                     0x0000, 0x0300, 0x0700, 0x0F18, 0x7F0C, 0x7F06, 0x7F06, 0x7F06,
                     0x7F06, 0x7F06, 0x7F0C, 0x0F18, 0x0700, 0x0300, 0x0000, 0x0000,

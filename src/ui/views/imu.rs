@@ -18,6 +18,10 @@ use super::super::{
     framebuffer::{color, ContentFramebuffer},
 };
 
+pub(super) fn render_shell(frame: &mut ContentFramebuffer) {
+    frame.clear(design::UI.imu.background);
+}
+
 pub(super) fn render(frame: &mut ContentFramebuffer, imu: &ImuDisplay) {
     frame.clear(design::UI.imu.background);
     draw_header(frame, imu);
