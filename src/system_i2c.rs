@@ -10,6 +10,9 @@ use esp_hal::{
 };
 use static_cell::StaticCell;
 
+const SYSTEM_I2C_FREQUENCY_KHZ: u32 = 400;
+const CAMERA_SCCB_FREQUENCY_KHZ: u32 = 100;
+
 /// Physical resources for the board's runtime system-I2C service.
 ///
 /// CPU0 may temporarily reborrow these resources during bootstrap. The final
@@ -23,7 +26,7 @@ pub struct Resources<'d> {
 
 impl Resources<'static> {
     /// Borrow all three singleton resources without giving up their final
-    /// `'static` ownership. Dropping the temporary driver releases the GPIO
+    /// `'static` ownership. Dropping a temporary driver releases the I2C/GPIO
     /// peripheral connections so another startup owner can use them safely.
     pub fn reborrow(&mut self) -> Resources<'_> {
         Resources {
@@ -31,13 +34,6 @@ impl Resources<'static> {
             sda: self.sda.reborrow(),
             scl: self.scl.reborrow(),
         }
-    }
-
-    /// Borrow just the physical SDA/SCL pins for the startup-only camera SCCB
-    /// phase. The persistent runtime I2C owner is constructed only after these
-    /// short-lived GPIO borrows are dropped.
-    pub fn reborrow_pins(&mut self) -> (GPIO12<'_>, GPIO11<'_>) {
-        (self.sda.reborrow(), self.scl.reborrow())
     }
 }
 
@@ -54,22 +50,35 @@ pub type SystemI2cBus = &'static SystemI2cMutex;
 
 static SYSTEM_I2C: StaticCell<SystemI2cMutex> = StaticCell::new();
 
-/// Configure the CoreS3-Lite internal system bus at 400 kHz in blocking mode.
-///
-/// This is generic over the resource lifetime so bootstrap can construct and
-/// drop a short-lived hardware-I2C driver before camera SCCB temporarily owns
-/// GPIO12/GPIO11. Calling it later with `Resources<'static>` creates the driver
-/// that is moved to CPU1.
-pub fn init<'d>(resources: Resources<'d>) -> I2c<'d, Blocking> {
+fn init_with_frequency<'d>(resources: Resources<'d>, frequency_khz: u32) -> I2c<'d, Blocking> {
     let Resources { i2c0, sda, scl } = resources;
 
     I2c::new(
         i2c0,
-        I2cConfig::default().with_frequency(Rate::from_khz(400)),
+        I2cConfig::default().with_frequency(Rate::from_khz(frequency_khz)),
     )
     .expect("Failed to configure system I2C")
     .with_sda(sda)
     .with_scl(scl)
+}
+
+/// Configure the CoreS3-Lite internal system bus at 400 kHz in blocking mode.
+///
+/// This is generic over the resource lifetime so bootstrap can construct and
+/// drop short-lived hardware-I2C owners before the final `'static` driver is
+/// moved to CPU1.
+pub fn init<'d>(resources: Resources<'d>) -> I2c<'d, Blocking> {
+    init_with_frequency(resources, SYSTEM_I2C_FREQUENCY_KHZ)
+}
+
+/// Create the startup-only GC0308 control bus at 100 kHz.
+///
+/// M5Stack's CoreS3 camera code releases its shared internal I2C owner and lets
+/// the camera create a fresh SCCB/I2C owner on GPIO12/GPIO11. Recreating the
+/// ESP32-S3 hardware driver here mirrors that ownership boundary while keeping
+/// the persistent runtime bus completely separate.
+pub fn init_camera_sccb<'d>(resources: Resources<'d>) -> I2c<'d, Blocking> {
+    init_with_frequency(resources, CAMERA_SCCB_FREQUENCY_KHZ)
 }
 
 /// Convert the already-configured system bus to async mode on CPU1 and publish
