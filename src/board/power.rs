@@ -7,12 +7,15 @@ const ALDO1_VOLTAGE_REGISTER: u8 = 0x92;
 const ALDO1_ENABLE: u8 = 1 << 0;
 const ALDO2_VOLTAGE_REGISTER: u8 = 0x93;
 const ALDO2_ENABLE: u8 = 1 << 1;
+const ALDO3_VOLTAGE_REGISTER: u8 = 0x94;
+const ALDO3_ENABLE: u8 = 1 << 2;
 const DLDO1_VOLTAGE_REGISTER: u8 = 0x99;
 const DLDO1_ENABLE: u8 = 1 << 7;
 
 // AXP2101 ALDO voltage encoding is Vout/100mV - 5 in this range.
 const SPEAKER_ALDO1_1V8_CODE: u8 = 18 - 5;
 const MICROPHONE_ALDO2_3V3_CODE: u8 = 33 - 5;
+const CAMERA_ALDO3_3V3_CODE: u8 = 33 - 5;
 
 // The CoreS3 backlight is powered from DLDO1. Keep runtime dimming inside the
 // documented 2.6-3.3 V operating range rather than exposing PMIC register codes
@@ -107,6 +110,27 @@ where
         OUTPUT_ENABLE_REGISTER,
         ALDO2_ENABLE,
         ALDO2_ENABLE,
+    )
+}
+
+/// Enable the onboard GC0308 camera supply rail (ALDO3) at 3.3 V.
+///
+/// CoreS3/CoreS3-Lite route the camera's 3.3 V supply through AXP2101 ALDO3.
+/// The AW9523 owns the separate camera reset line, while `camera` owns the
+/// sensor registers and LCD_CAM data path.
+pub fn enable_camera<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    i2c.write(
+        AXP2101_ADDR,
+        &[ALDO3_VOLTAGE_REGISTER, CAMERA_ALDO3_3V3_CODE],
+    )?;
+    update_register_bits(
+        i2c,
+        OUTPUT_ENABLE_REGISTER,
+        ALDO3_ENABLE,
+        ALDO3_ENABLE,
     )
 }
 
