@@ -122,7 +122,6 @@ pub struct PeerSnapshot {
     pub device_id: protocol::DeviceId,
     pub rssi_dbm: RssiDbm,
     pub age_ms: u32,
-    pub rx_packets: u32,
 }
 
 /// Replace-latest CPU1→CPU0 network presentation state.
@@ -285,9 +284,10 @@ impl NetworkState {
         let now_ms = now.as_millis();
         let mut changed = false;
         for peer in &mut self.peers {
-            if peer.as_ref().is_some_and(|peer| {
-                now_ms.saturating_sub(peer.last_seen_ms) > self.peer_timeout_ms
-            }) {
+            if peer
+                .as_ref()
+                .is_some_and(|peer| now_ms.saturating_sub(peer.last_seen_ms) > self.peer_timeout_ms)
+            {
                 *peer = None;
                 changed = true;
             }
@@ -307,8 +307,9 @@ impl NetworkState {
             *target = Some(PeerSnapshot {
                 device_id: source.device_id,
                 rssi_dbm: source.rssi_dbm,
-                age_ms: now_ms.saturating_sub(source.last_seen_ms).min(u32::MAX as u64) as u32,
-                rx_packets: source.rx_packets,
+                age_ms: now_ms
+                    .saturating_sub(source.last_seen_ms)
+                    .min(u32::MAX as u64) as u32,
             });
         }
 
@@ -405,9 +406,8 @@ pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
         receive_task(manager, receiver, config, local_id)
             .expect("Failed to allocate CPU1 ESP-NOW receive task"),
     );
-    spawner.spawn(
-        beacon_task(sender, config).expect("Failed to allocate CPU1 ESP-NOW beacon task"),
-    );
+    spawner
+        .spawn(beacon_task(sender, config).expect("Failed to allocate CPU1 ESP-NOW beacon task"));
 
     ::log::info!(
         "ESP-NOW started: id={} channel={} version={}",

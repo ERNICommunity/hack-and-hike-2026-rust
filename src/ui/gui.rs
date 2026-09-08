@@ -6,7 +6,11 @@
 //! boundary. This keeps layout declarative without forcing dense telemetry or
 //! instrument pixels through generic widget abstractions.
 
-use embedded_graphics::{pixelcolor::{IntoStorage, Rgb565}, prelude::DrawTarget as _};
+use embedded_graphics::{
+    pixelcolor::{IntoStorage, Rgb565},
+    prelude::DrawTarget as _,
+    prelude::RgbColor as _,
+};
 use embedded_gui::{
     DMACapableFrameBufferBackend, DisplayBackend, DmaTransfer, EndianCorrectedBuffer,
     EndianCorrection, FrameBuf, GuiContext, TransferError,
@@ -38,14 +42,6 @@ impl GuiSurface {
                 design::CONTENT_HEIGHT,
             )),
         }
-    }
-
-    pub(crate) fn present<const NODES: usize, const TEXT: usize, const EVENTS: usize>(
-        &mut self,
-        display: &mut Display,
-        gui: &mut GuiContext<'static, NODES, TEXT, EVENTS>,
-    ) {
-        self.present_with_overlay(display, gui, |_| {});
     }
 
     /// Render KDL/widget content, then let the semantic view draw any specialized

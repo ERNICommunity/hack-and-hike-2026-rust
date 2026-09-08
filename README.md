@@ -1,3 +1,3 @@
-![Rust at ERNI Consulting header](assets/header.png)
+# ![Rust at ERNI Consulting header](assets/header.png)
 
-# Hack and Hike 2026
+## Hack and Hike 2026

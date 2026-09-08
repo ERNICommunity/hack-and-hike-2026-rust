@@ -108,19 +108,4 @@ impl Display {
 
         transport.finish();
     }
-
-    /// Blit tightly packed row-major RGB565 pixels into a valid physical region.
-    pub fn blit(&mut self, region: Region, pixels: &[Pixel]) {
-        assert_eq!(
-            pixels.len(),
-            region.width * region.height,
-            "display blit source length does not match region"
-        );
-
-        let width = region.width;
-        self.render_scanlines(region, |local_y, destination| {
-            let start = local_y * width;
-            destination.copy_from_slice(&pixels[start..start + width]);
-        });
-    }
 }
