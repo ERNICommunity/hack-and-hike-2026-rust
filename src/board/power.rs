@@ -9,6 +9,9 @@ const ALDO2_VOLTAGE_REGISTER: u8 = 0x93;
 const ALDO2_ENABLE: u8 = 1 << 1;
 const ALDO3_VOLTAGE_REGISTER: u8 = 0x94;
 const ALDO3_ENABLE: u8 = 1 << 2;
+const BLDO1_ENABLE: u8 = 1 << 4;
+const BLDO2_ENABLE: u8 = 1 << 5;
+const CAMERA_POWER_ENABLE: u8 = ALDO3_ENABLE | BLDO1_ENABLE | BLDO2_ENABLE;
 const DLDO1_VOLTAGE_REGISTER: u8 = 0x99;
 const DLDO1_ENABLE: u8 = 1 << 7;
 
@@ -121,11 +124,12 @@ where
     )
 }
 
-/// Enable the onboard GC0308 camera supply rail (ALDO3) at 3.3 V.
+/// Enable the onboard GC0308 camera power domain.
 ///
-/// CoreS3/CoreS3-Lite route the camera's 3.3 V supply through AXP2101 ALDO3.
-/// The AW9523 owns the separate camera reset line, while `camera` owns the
-/// sensor registers and LCD_CAM data path.
+/// CoreS3/CoreS3-Lite camera bring-up requires AXP2101 ALDO3 plus BLDO1 and
+/// BLDO2 to be enabled together. Espressif's CoreS3 BSP uses the same 0x34 mask
+/// in register 0x90 for BSP_FEATURE_CAMERA, while ALDO3 register 0x94 is set to
+/// 3.3 V. The AW9523 owns the separate camera reset line.
 pub fn enable_camera<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
@@ -137,16 +141,17 @@ where
     update_register_bits(
         i2c,
         OUTPUT_ENABLE_REGISTER,
-        ALDO3_ENABLE,
-        ALDO3_ENABLE,
+        CAMERA_POWER_ENABLE,
+        CAMERA_POWER_ENABLE,
     )
 }
 
-/// Read the raw AXP2101 registers that prove the camera rail configuration.
+/// Read the raw AXP2101 registers that prove the camera power configuration.
 ///
-/// The expected values are ALDO3 enable bit 2 set in register 0x90 and voltage
-/// code 0x1c in register 0x94 (3.3 V). This does not measure the physical rail,
-/// but it distinguishes PMIC-programming failures from downstream camera faults.
+/// Expected register 0x90 bits are ALDO3 + BLDO1 + BLDO2 (mask 0x34), with
+/// voltage code 0x1c in register 0x94 (3.3 V). On the normal CoreS3 bootstrap
+/// state this typically changes 0x8f to 0xbf. This does not measure the physical
+/// rails, but it distinguishes PMIC-programming failures from downstream faults.
 pub fn camera_power_registers<I2C>(i2c: &mut I2C) -> Result<(u8, u8), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
