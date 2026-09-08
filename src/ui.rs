@@ -1,13 +1,12 @@
 //! CPU0 presentation owner.
 //!
-//! `Ui` combines application models, the CPU0 touch reader used for presentation,
-//! navigation gesture state, and the fixed PSRAM content framebuffer. It can
-//! request generic pixel submission from `Display`, but it cannot access
-//! SPI/DMA/controller transport. The contained `AppModel` cannot access
-//! presentation geometry or touch events.
+//! `Ui` coordinates semantic application state, touch routing, view ownership,
+//! the legacy PSRAM content framebuffer, and the fixed embedded-gui surface.
+//! Views cannot access service hardware; `Display` remains the only LCD boundary.
 
 mod design;
 mod framebuffer;
+mod gui;
 mod navigation;
 mod views;
 
@@ -20,7 +19,9 @@ use crate::{
 };
 
 use framebuffer::ContentFramebuffer;
+use gui::GuiSurface;
 use navigation::NavigationInput;
+use views::Views;
 
 /// A semantic view transition prepared by input/model state and not yet fully
 /// presented to the LCD.
@@ -34,7 +35,9 @@ pub struct ViewTransition {
 pub struct Ui {
     model: AppModel,
     navigation: NavigationInput,
+    views: Views,
     content: ContentFramebuffer,
+    gui_surface: GuiSurface,
     presented_view: ViewId,
 }
 
@@ -44,21 +47,43 @@ impl Ui {
         Self {
             model,
             navigation: NavigationInput::new(touch),
+            views: Views::new(),
             content: ContentFramebuffer::new(),
+            gui_surface: GuiSurface::new(),
             presented_view,
         }
     }
 
     pub fn render_initial(&mut self, display: &mut Display) {
         navigation::render(display, self.presented_view);
-        views::render_shell(&mut self.content, self.presented_view);
-        self.blit_content(display);
+        self.views.present_shell(
+            self.presented_view,
+            &mut self.content,
+            &mut self.gui_surface,
+            display,
+            None,
+        );
     }
 
-    /// Drain input, refresh the active model at its configured cadence, and
-    /// report a view transition that still needs to be presented.
+    /// Drain input, convert view interaction into semantic model actions, refresh
+    /// the active model, and report a navigation transition still to present.
     pub fn prepare_frame(&mut self, now: Instant) -> Option<ViewTransition> {
-        if let Some(view) = self.navigation.poll() {
+        let active_view = self.model.active_view();
+        let mut brightness_action = None;
+        let selected = {
+            let navigation = &mut self.navigation;
+            let views = &mut self.views;
+            navigation.poll(|pointer| {
+                if let Some(brightness) = views.handle_pointer(active_view, pointer) {
+                    brightness_action = Some(brightness);
+                }
+            })
+        };
+
+        if let Some(brightness) = brightness_action {
+            self.model.set_brightness(brightness);
+        }
+        if let Some(view) = selected {
             self.model.request_view(view);
         }
         self.model.update(now);
@@ -70,14 +95,24 @@ impl Ui {
         })
     }
 
-    /// Commit a prepared transition and draw the destination's static shell.
+    /// Commit a prepared transition and present the destination's static shell.
     pub fn apply_navigation(&mut self, transition: ViewTransition, display: &mut Display) {
         debug_assert_eq!(transition.from, self.presented_view);
         self.presented_view = transition.to;
 
         navigation::render(display, transition.to);
-        views::render_shell(&mut self.content, transition.to);
-        self.blit_content(display);
+        let settings = if transition.to == ViewId::Settings {
+            self.model.take_settings_display()
+        } else {
+            None
+        };
+        self.views.present_shell(
+            transition.to,
+            &mut self.content,
+            &mut self.gui_surface,
+            display,
+            settings,
+        );
     }
 
     /// Render dirty dynamic data for the currently presented view.
@@ -97,7 +132,13 @@ impl Ui {
             }
             ViewId::Microphone => {
                 if let Some(frame) = self.model.take_waveform_frame() {
-                    views::render_microphone(display, &frame);
+                    self.views.render_microphone(display, &frame);
+                }
+            }
+            ViewId::Settings => {
+                if let Some(settings) = self.model.take_settings_display() {
+                    self.views
+                        .present_settings(&mut self.gui_surface, display, settings);
                 }
             }
             ViewId::Speaker => {}
