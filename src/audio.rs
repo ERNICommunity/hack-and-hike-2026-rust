@@ -5,6 +5,8 @@
 //! CPU0 publishes semantic playback state through a replace-latest control; the
 //! real-time synthesis/DMA state never leaves CPU1.
 
+mod melody;
+
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_executor::Spawner;
@@ -23,6 +25,7 @@ use esp_hal::{
 };
 
 use crate::{board, data_plane, diagnostics};
+use melody::MelodySynth;
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const BLOCK_FRAMES: usize = 512;
@@ -33,8 +36,10 @@ const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
 const TX_DMA_BUFFER_BYTES: usize = 8 * 1024;
 const ES7210_ADDR: u8 = 0x40;
 const AW88298_ADDR: u8 = 0x36;
-const CHIME_WAV: &[u8] = include_bytes!("../assets/speaker_chime.wav");
-const CHIME_PCM_OFFSET: usize = 44;
+
+// The user-supplied MP3 is converted offline to native 16 kHz mono signed-16
+// PCM so the real-time path stays deterministic and allocation-free.
+const CHIME_PCM: &[u8] = include_bytes!("../assets/speaker_chime.pcm");
 
 /// Valid melody tempo in quarter-note beats per minute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +63,7 @@ impl TempoBpm {
     }
 }
 
-/// Chromatic pitch transposition applied to the synthesized melody.
+/// Chromatic pitch transposition applied to the synthesized MIDI loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PitchSemitones(i8);
 
@@ -331,6 +336,11 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
 
 #[embassy_executor::task]
 async fn playback_task(i2s_tx: I2sTx<'static, Async>, tx_buffer: &'static mut [u8]) {
+    // Circular TX starts reading immediately. Silence the complete ring first
+    // so startup can never replay uninitialized/stale bytes before the task's
+    // first refill.
+    tx_buffer.fill(0);
+
     let mut transfer = i2s_tx
         .write_dma_circular_async(tx_buffer)
         .expect("Failed to start circular I2S TX DMA");
@@ -366,6 +376,8 @@ async fn playback_task(i2s_tx: I2sTx<'static, Async>, tx_buffer: &'static mut [u
 struct PlaybackEngine {
     melody: MelodySynth,
     chime: FlashChime,
+    pending_frame: [u8; 4],
+    pending_offset: usize,
 }
 
 impl PlaybackEngine {
@@ -373,25 +385,39 @@ impl PlaybackEngine {
         Self {
             melody: MelodySynth::new(),
             chime: FlashChime::new(),
+            pending_frame: [0; 4],
+            pending_offset: 4,
         }
     }
 
+    /// Fill every byte handed out by the circular-DMA adapter.
+    ///
+    /// `push_with` may split writable space at arbitrary byte boundaries. Keep
+    /// a partially emitted stereo frame across callbacks instead of rounding a
+    /// callback down to a multiple of four and leaving stale bytes in the ring.
     fn fill(&mut self, bytes: &mut [u8], settings: PlaybackSettings) -> usize {
-        let usable = bytes.len() & !3;
-        for frame in bytes[..usable].chunks_exact_mut(4) {
-            let melody = if settings.melody_playing {
-                self.melody.next_sample(settings.tempo, settings.pitch)
-            } else {
-                0
-            };
-            let sample = saturating_mix(melody, self.chime.next_sample());
-            let encoded = sample.to_le_bytes();
-            frame[0] = encoded[0];
-            frame[1] = encoded[1];
-            frame[2] = encoded[0];
-            frame[3] = encoded[1];
+        for byte in bytes.iter_mut() {
+            if self.pending_offset == self.pending_frame.len() {
+                self.prepare_frame(settings);
+                self.pending_offset = 0;
+            }
+
+            *byte = self.pending_frame[self.pending_offset];
+            self.pending_offset += 1;
         }
-        usable
+
+        bytes.len()
+    }
+
+    fn prepare_frame(&mut self, settings: PlaybackSettings) {
+        let melody = if settings.melody_playing {
+            self.melody.next_sample(settings.tempo, settings.pitch)
+        } else {
+            0
+        };
+        let sample = saturating_mix(melody, self.chime.next_sample());
+        let encoded = sample.to_le_bytes();
+        self.pending_frame = [encoded[0], encoded[1], encoded[0], encoded[1]];
     }
 }
 
@@ -409,153 +435,27 @@ struct FlashChime {
 impl FlashChime {
     const fn new() -> Self {
         Self {
-            byte_index: CHIME_PCM_OFFSET,
+            byte_index: 0,
             playing: false,
         }
     }
 
     fn restart(&mut self) {
-        self.byte_index = CHIME_PCM_OFFSET;
+        self.byte_index = 0;
         self.playing = true;
     }
 
     fn next_sample(&mut self) -> i16 {
-        if !self.playing || self.byte_index + 1 >= CHIME_WAV.len() {
+        if !self.playing || self.byte_index + 1 >= CHIME_PCM.len() {
             self.playing = false;
             return 0;
         }
+
         let sample = i16::from_le_bytes([
-            CHIME_WAV[self.byte_index],
-            CHIME_WAV[self.byte_index + 1],
+            CHIME_PCM[self.byte_index],
+            CHIME_PCM[self.byte_index + 1],
         ]);
         self.byte_index += 2;
         sample
     }
 }
-
-#[derive(Clone, Copy)]
-struct MelodyNote {
-    midi: i8,
-    eighths: u8,
-}
-
-const REST: i8 = -1;
-const MELODY: [MelodyNote; 16] = [
-    MelodyNote { midi: 60, eighths: 1 },
-    MelodyNote { midi: 64, eighths: 1 },
-    MelodyNote { midi: 67, eighths: 1 },
-    MelodyNote { midi: 72, eighths: 2 },
-    MelodyNote { midi: REST, eighths: 1 },
-    MelodyNote { midi: 67, eighths: 1 },
-    MelodyNote { midi: 64, eighths: 1 },
-    MelodyNote { midi: 62, eighths: 2 },
-    MelodyNote { midi: 65, eighths: 1 },
-    MelodyNote { midi: 69, eighths: 1 },
-    MelodyNote { midi: 67, eighths: 1 },
-    MelodyNote { midi: 64, eighths: 2 },
-    MelodyNote { midi: 62, eighths: 1 },
-    MelodyNote { midi: 60, eighths: 1 },
-    MelodyNote { midi: REST, eighths: 1 },
-    MelodyNote { midi: 60, eighths: 2 },
-];
-
-struct MelodySynth {
-    phase: u32,
-    note_index: usize,
-    sample_in_note: u32,
-}
-
-impl MelodySynth {
-    const fn new() -> Self {
-        Self {
-            phase: 0,
-            note_index: 0,
-            sample_in_note: 0,
-        }
-    }
-
-    fn restart(&mut self) {
-        self.phase = 0;
-        self.note_index = 0;
-        self.sample_in_note = 0;
-    }
-
-    fn next_sample(&mut self, tempo: TempoBpm, pitch: PitchSemitones) -> i16 {
-        let note = MELODY[self.note_index];
-        let total = note_samples(note.eighths, tempo);
-        if self.sample_in_note >= total {
-            self.note_index = (self.note_index + 1) % MELODY.len();
-            self.sample_in_note = 0;
-            self.phase = 0;
-            return self.next_sample(tempo, pitch);
-        }
-
-        let position = self.sample_in_note;
-        self.sample_in_note += 1;
-        if note.midi == REST {
-            return 0;
-        }
-
-        let midi = i16::from(note.midi) + i16::from(pitch.get());
-        let step = phase_step(midi);
-        let wave = i32::from(SINE_256[(self.phase >> 24) as usize]);
-        self.phase = self.phase.wrapping_add(step);
-
-        let envelope = envelope_q15(position, total);
-        let sample = (((wave * 6000) / 32767) * envelope) / 32767;
-        sample as i16
-    }
-}
-
-fn note_samples(eighths: u8, tempo: TempoBpm) -> u32 {
-    let numerator = u64::from(SAMPLE_RATE_HZ) * 60 * u64::from(eighths);
-    (numerator / (u64::from(tempo.get()) * 2)).max(1) as u32
-}
-
-fn envelope_q15(position: u32, total: u32) -> i32 {
-    const ATTACK: u32 = SAMPLE_RATE_HZ / 200; // 5 ms
-    const RELEASE: u32 = SAMPLE_RATE_HZ / 50; // 20 ms
-    const GAP: u32 = SAMPLE_RATE_HZ / 200; // 5 ms silence between notes
-
-    let sounding = total.saturating_sub(GAP);
-    if position >= sounding {
-        return 0;
-    }
-    let attack = ((position.min(ATTACK) * 32767) / ATTACK.max(1)) as i32;
-    let remaining = sounding.saturating_sub(position);
-    let release = ((remaining.min(RELEASE) * 32767) / RELEASE.max(1)) as i32;
-    attack.min(release).clamp(0, 32767)
-}
-
-fn phase_step(midi: i16) -> u32 {
-    const MIDI_MIN: i16 = 48;
-    const MIDI_MAX: i16 = 84;
-    const STEPS: [u32; 37] = [
-        35114789, 37202823, 39415018, 41758757, 44241862, 46872620, 49659811,
-        52612737, 55741253, 59055800, 62567441, 66287895, 70229578, 74405646,
-        78830036, 83517514, 88483724, 93745240, 99319622, 105225474, 111482506,
-        118111601, 125134882, 132575789, 140459156, 148811292, 157660072,
-        167035027, 176967447, 187490479, 198639243, 210450947, 222965012,
-        236223201, 250269764, 265151578, 280918312,
-    ];
-    STEPS[(midi.clamp(MIDI_MIN, MIDI_MAX) - MIDI_MIN) as usize]
-}
-
-const SINE_256: [i16; 256] = [
-    0,804,1608,2410,3212,4011,4808,5602,6393,7179,7962,8739,9512,10278,11039,11793,
-    12539,13279,14010,14732,15446,16151,16846,17530,18204,18868,19519,20159,20787,21403,22005,22594,
-    23170,23731,24279,24811,25329,25832,26319,26790,27245,27683,28105,28510,28898,29268,29621,29956,
-    30273,30571,30852,31113,31356,31580,31785,31971,32137,32285,32412,32521,32609,32678,32728,32757,
-    32767,32757,32728,32678,32609,32521,32412,32285,32137,31971,31785,31580,31356,31113,30852,30571,
-    30273,29956,29621,29268,28898,28510,28105,27683,27245,26790,26319,25832,25329,24811,24279,23731,
-    23170,22594,22005,21403,20787,20159,19519,18868,18204,17530,16846,16151,15446,14732,14010,13279,
-    12539,11793,11039,10278,9512,8739,7962,7179,6393,5602,4808,4011,3212,2410,1608,804,
-    0,-804,-1608,-2410,-3212,-4011,-4808,-5602,-6393,-7179,-7962,-8739,-9512,-10278,-11039,-11793,
-    -12539,-13279,-14010,-14732,-15446,-16151,-16846,-17530,-18204,-18868,-19519,-20159,-20787,-21403,-22005,-22594,
-    -23170,-23731,-24279,-24811,-25329,-25832,-26319,-26790,-27245,-27683,-28105,-28510,-28898,-29268,-29621,-29956,
-    -30273,-30571,-30852,-31113,-31356,-31580,-31785,-31971,-32137,-32285,-32412,-32521,-32609,-32678,-32728,-32757,
-    -32767,-32757,-32728,-32678,-32609,-32521,-32412,-32285,-32137,-31971,-31785,-31580,-31356,-31113,-30852,-30571,
-    -30273,-29956,-29621,-29268,-28898,-28510,-28105,-27683,-27245,-26790,-26319,-25832,-25329,-24811,-24279,-23731,
-    -23170,-22594,-22005,-21403,-20787,-20159,-19519,-18868,-18204,-17530,-16846,-16151,-15446,-14732,-14010,-13279,
-    -12539,-11793,-11039,-10278,-9512,-8739,-7962,-7179,-6393,-5602,-4808,-4011,-3212,-2410,-1608,-804,
-];
