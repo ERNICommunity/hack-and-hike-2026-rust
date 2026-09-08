@@ -7,6 +7,7 @@
 //! pointer drags on this input path.
 
 use embedded_gui::{font::FontId, prelude::*};
+use static_cell::StaticCell;
 
 use crate::{display::Display, display_control::BrightnessPercent};
 
@@ -27,8 +28,14 @@ const SLIDER_HIT_MARGIN: i32 = 8;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
+// `GuiContext` contains fixed-capacity widget/event storage and is intentionally
+// long-lived presentation state, not an async-task stack local. `init_with`
+// constructs it in place so bootstrap does not create a second large temporary
+// on the CPU0 stack.
+static CONTEXT: StaticCell<Context> = StaticCell::new();
+
 pub(crate) struct View {
-    gui: Context,
+    gui: &'static mut Context,
     brightness: WidgetId,
     brightness_value: WidgetId,
     brightness_rect: Rect,
@@ -37,27 +44,27 @@ pub(crate) struct View {
 
 impl View {
     pub(crate) fn new(brightness: BrightnessPercent) -> Self {
-        let mut gui = Context::new(Rect::new(0, 0, 276, 240));
-        let app = generated::SettingsApp::build(&mut gui)
+        let gui = CONTEXT.init_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
 
         // The KDL slots are the single source of geometry. Visible labels are
         // instantiated with an explicit light-page style because embedded-gui's
         // base label style is white-on-transparent.
-        let title_rect = required_rect(&gui, app.widgets.title_slot, "settings title");
+        let title_rect = required_rect(gui, app.widgets.title_slot, "settings title");
         let value_rect = required_rect(
-            &gui,
+            gui,
             app.widgets.brightness_value_slot,
             "settings brightness value",
         );
         let brightness_rect = required_rect(
-            &gui,
+            gui,
             app.widgets.brightness_slot,
             "settings brightness slider",
         );
-        let minimum_rect = required_rect(&gui, app.widgets.minimum_slot, "settings minimum");
-        let maximum_rect = required_rect(&gui, app.widgets.maximum_slot, "settings maximum");
-        let hint_rect = required_rect(&gui, app.widgets.hint_slot, "settings hint");
+        let minimum_rect = required_rect(gui, app.widgets.minimum_slot, "settings minimum");
+        let maximum_rect = required_rect(gui, app.widgets.maximum_slot, "settings maximum");
+        let hint_rect = required_rect(gui, app.widgets.hint_slot, "settings hint");
 
         gui.add_label(
             title_rect,
@@ -100,7 +107,7 @@ impl View {
         )
         .expect("settings hint exceeds embedded-gui fixed capacities");
 
-        drain_events(&mut gui);
+        drain_events(gui);
         Self {
             gui,
             brightness: brightness_widget,
@@ -111,7 +118,7 @@ impl View {
     }
 
     pub(crate) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display) {
-        surface.present(display, &mut self.gui);
+        surface.present(display, self.gui);
     }
 
     pub(crate) fn sync_brightness(&mut self, brightness: BrightnessPercent) {
@@ -158,7 +165,7 @@ impl View {
         // The semantic value above is authoritative for this adapter. Discard
         // framework-local events so stale ValueChanged notifications cannot be
         // observed on a later gesture.
-        drain_events(&mut self.gui);
+        drain_events(self.gui);
         brightness
     }
 
@@ -196,7 +203,7 @@ impl View {
         self.gui
             .set_value_label(self.brightness_value, i32::from(brightness.get()))
             .expect("settings brightness value widget is not a value label");
-        drain_events(&mut self.gui);
+        drain_events(self.gui);
     }
 }
 
