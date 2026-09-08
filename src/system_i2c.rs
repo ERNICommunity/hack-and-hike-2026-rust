@@ -32,6 +32,13 @@ impl Resources<'static> {
             scl: self.scl.reborrow(),
         }
     }
+
+    /// Borrow just the physical SDA/SCL pins for the startup-only camera SCCB
+    /// phase. The persistent runtime I2C owner is constructed only after these
+    /// short-lived GPIO borrows are dropped.
+    pub fn reborrow_pins(&mut self) -> (GPIO12<'_>, GPIO11<'_>) {
+        (self.sda.reborrow(), self.scl.reborrow())
+    }
 }
 
 /// CPU0 startup form that is ultimately moved to CPU1.
