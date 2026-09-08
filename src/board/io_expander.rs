@@ -18,6 +18,7 @@ const PORT1_MODE_REGISTER: u8 = 0x13;
 
 const TOUCH_RESET: u8 = 1 << 0;
 const SPEAKER_RESET: u8 = 1 << 2;
+const CAMERA_RESET: u8 = 1 << 0;
 const LCD_RESET: u8 = 1 << 1;
 
 // M5Stack's CoreS3 AW9523 bootstrap values. P0_2 normally appears high in the
@@ -68,6 +69,25 @@ pub fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mu
     let _ = update_register_bits(i2c, PORT1_OUTPUT_REGISTER, LCD_RESET, LCD_RESET);
     let _ = update_register_bits(i2c, PORT0_OUTPUT_REGISTER, TOUCH_RESET, TOUCH_RESET);
     delay.delay_millis(300u32);
+}
+
+/// Pulse the onboard GC0308 reset line on AW9523 P1_0.
+pub fn reset_camera<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    // The boot policy already configures P1_0 as a GPIO output. Explicitly
+    // assert and release reset here immediately before sensor programming.
+    update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, 0)?;
+    delay.delay_millis(20u32);
+    update_register_bits(
+        i2c,
+        PORT1_OUTPUT_REGISTER,
+        CAMERA_RESET,
+        CAMERA_RESET,
+    )?;
+    delay.delay_millis(20u32);
+    Ok(())
 }
 
 /// Power and reset/release the onboard AW88298 amplifier.
