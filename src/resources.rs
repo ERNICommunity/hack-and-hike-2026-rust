@@ -6,11 +6,11 @@
 //! architectural concerns.
 //!
 //! Bootstrap moves each raw peripheral exactly once to the service that owns it:
-//! CPU0 owns display I/O; CPU1 owns runtime I2C, audio acquisition, and radio.
-//! Touch and IMU intentionally do not have independent raw-I2C handles because
-//! both consume the shared CPU1-local `SystemI2cBus`.
+//! CPU0 owns display/camera I/O; CPU1 owns runtime I2C, audio acquisition, and
+//! radio. Touch and IMU intentionally do not have independent raw-I2C handles
+//! because both consume the shared CPU1-local `SystemI2cBus`.
 
-use crate::{audio, display, network, system_i2c};
+use crate::{audio, camera, display, network, system_i2c};
 
 /// Complete raw-hardware ownership split created during bootstrap.
 pub struct RuntimeResources {
@@ -21,12 +21,13 @@ pub struct RuntimeResources {
 /// Raw peripherals that stay on CPU0.
 pub struct Cpu0Resources {
     pub display: display::Resources,
+    pub camera: camera::Resources,
 }
 
 /// Raw peripherals moved into the CPU1 service executor.
 ///
 /// Destructuring this value in bootstrap makes the ownership transfer explicit:
-/// the display side cannot retain the Wi-Fi/I2S/runtime-I2C peripherals.
+/// the display/camera side cannot retain the Wi-Fi/I2S/runtime-I2C peripherals.
 pub struct Cpu1Resources {
     pub system_i2c: system_i2c::Resources,
     pub audio: audio::Resources,
