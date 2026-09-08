@@ -31,6 +31,15 @@ const PORT1_DIRECTIONS: u8 = 0b0000_1100;
 const PORT0_PUSH_PULL: u8 = 0b0001_0000;
 const GPIO_MODE_ALL: u8 = 0xFF;
 
+fn read_register<I2C>(i2c: &mut I2C, register: u8) -> Result<u8, I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    let mut value = [0u8; 1];
+    i2c.write_read(AW9523_ADDR, &[register], &mut value)?;
+    Ok(value[0])
+}
+
 fn update_register_bits<I2C>(
     i2c: &mut I2C,
     register: u8,
@@ -40,9 +49,8 @@ fn update_register_bits<I2C>(
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    let mut current = [0u8; 1];
-    i2c.write_read(AW9523_ADDR, &[register], &mut current)?;
-    let next = (current[0] & !mask) | (value & mask);
+    let current = read_register(i2c, register)?;
+    let next = (current & !mask) | (value & mask);
     i2c.write(AW9523_ADDR, &[register, next])
 }
 
@@ -76,8 +84,9 @@ pub fn reset_camera<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Er
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    // The boot policy already configures P1_0 as a GPIO output. Explicitly
-    // assert and release reset here immediately before sensor programming.
+    // GC0308 RESETB is active-low. The boot policy configures P1_0 as a GPIO
+    // output; assert it low, then release high and allow the external 20 MHz
+    // camera clock to run before SCCB access.
     update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, 0)?;
     delay.delay_millis(20u32);
     update_register_bits(
@@ -88,6 +97,21 @@ where
     )?;
     delay.delay_millis(20u32);
     Ok(())
+}
+
+/// Read the AW9523 registers relevant to the camera reset pin.
+///
+/// For P1_0 to release GC0308 RESETB, output bit 0 should be high, direction
+/// bit 0 should be 0 (output), and mode bit 0 should be 1 (GPIO mode).
+pub fn camera_reset_registers<I2C>(i2c: &mut I2C) -> Result<(u8, u8, u8), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    Ok((
+        read_register(i2c, PORT1_OUTPUT_REGISTER)?,
+        read_register(i2c, PORT1_DIRECTION_REGISTER)?,
+        read_register(i2c, PORT1_MODE_REGISTER)?,
+    ))
 }
 
 /// Power and reset/release the onboard AW88298 amplifier.
