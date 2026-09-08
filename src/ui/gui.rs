@@ -6,7 +6,10 @@
 //! boundary. This keeps layout declarative without forcing dense telemetry or
 //! instrument pixels through generic widget abstractions.
 
-use embedded_graphics::{pixelcolor::{IntoStorage, Rgb565}, prelude::DrawTarget as _};
+use embedded_graphics::{
+    pixelcolor::{IntoStorage, Rgb565, RgbColor},
+    prelude::DrawTarget as _,
+};
 use embedded_gui::{
     DMACapableFrameBufferBackend, DisplayBackend, DmaTransfer, EndianCorrectedBuffer,
     EndianCorrection, FrameBuf, GuiContext, TransferError,
