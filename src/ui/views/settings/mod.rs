@@ -172,6 +172,9 @@ impl View {
     }
 
     fn brightness_at(&mut self, pointer_x: i32) -> BrightnessPercent {
+        // Map directly in integer percentage space. This makes tap-to-position
+        // and drag semantics deterministic and avoids no_std float math here;
+        // the embedded-gui slider remains the visual/stateful widget.
         let left = self.brightness_rect.x;
         let right = left + self.brightness_rect.w.saturating_sub(1) as i32;
         let span = (right - left).max(1);
