@@ -1,9 +1,18 @@
 //! AXP2101 power-rail policy for this board.
 
 const AXP2101_ADDR: u8 = 0x34;
-const DLDO1_VOLTAGE_REGISTER: u8 = 0x99;
 const OUTPUT_ENABLE_REGISTER: u8 = 0x90;
+
+const ALDO1_VOLTAGE_REGISTER: u8 = 0x92;
+const ALDO1_ENABLE: u8 = 1 << 0;
+const ALDO2_VOLTAGE_REGISTER: u8 = 0x93;
+const ALDO2_ENABLE: u8 = 1 << 1;
+const DLDO1_VOLTAGE_REGISTER: u8 = 0x99;
 const DLDO1_ENABLE: u8 = 1 << 7;
+
+// AXP2101 ALDO voltage encoding is Vout/100mV - 5 in this range.
+const SPEAKER_ALDO1_1V8_CODE: u8 = 18 - 5;
+const MICROPHONE_ALDO2_3V3_CODE: u8 = 33 - 5;
 
 // The CoreS3 backlight is powered from DLDO1. Keep runtime dimming inside the
 // documented 2.6-3.3 V operating range rather than exposing PMIC register codes
@@ -89,6 +98,34 @@ pub fn enable_microphone<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    i2c.write(AXP2101_ADDR, &[0x93, 0x1C])?;
-    update_register_bits(i2c, OUTPUT_ENABLE_REGISTER, 1 << 1, 1 << 1)
+    i2c.write(
+        AXP2101_ADDR,
+        &[ALDO2_VOLTAGE_REGISTER, MICROPHONE_ALDO2_3V3_CODE],
+    )?;
+    update_register_bits(
+        i2c,
+        OUTPUT_ENABLE_REGISTER,
+        ALDO2_ENABLE,
+        ALDO2_ENABLE,
+    )
+}
+
+/// Enable the onboard speaker amplifier rail (ALDO1) at 1.8 V.
+///
+/// AW88298 reset/enable routing remains owned by the AW9523 board-expander
+/// policy, while amplifier register configuration remains owned by `audio`.
+pub fn enable_speaker_amplifier<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    i2c.write(
+        AXP2101_ADDR,
+        &[ALDO1_VOLTAGE_REGISTER, SPEAKER_ALDO1_1V8_CODE],
+    )?;
+    update_register_bits(
+        i2c,
+        OUTPUT_ENABLE_REGISTER,
+        ALDO1_ENABLE,
+        ALDO1_ENABLE,
+    )
 }
