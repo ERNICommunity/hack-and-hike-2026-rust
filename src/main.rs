@@ -126,20 +126,36 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let mut delay = esp_hal::delay::Delay::new();
 
     // Board bootstrap initially borrows the runtime I2C resources only long
-    // enough to configure the PMIC and AW9523. The driver is then dropped so
-    // camera SCCB can exclusively own GPIO12/GPIO11 during sensor programming.
+    // enough to configure the PMIC and AW9523. The driver is then dropped so a
+    // fresh camera SCCB owner can take I2C0 + GPIO12/GPIO11.
     let mut bootstrap_i2c = system_i2c::init(system_i2c_resources.reborrow());
     board::power::enable_lcd_backlight(&mut bootstrap_i2c);
     board::io_expander::reset_display_and_touch(&mut bootstrap_i2c, &mut delay);
 
-    // CoreS3/CoreS3-Lite power the GC0308 from AXP2101 ALDO3. Camera bring-up
-    // remains optional: a camera fault must not prevent the rest of the device
-    // from booting or make other views unavailable.
+    // CoreS3/CoreS3-Lite power the GC0308 and its onboard 20 MHz oscillator
+    // from AXP2101 ALDO3. Camera bring-up remains optional: a camera fault must
+    // not prevent the rest of the device from booting.
     let camera_powered_and_reset = match board::power::enable_camera(&mut bootstrap_i2c) {
         Ok(()) => {
             delay.delay_millis(10u32);
             match board::io_expander::reset_camera(&mut bootstrap_i2c, &mut delay) {
-                Ok(()) => true,
+                Ok(()) => {
+                    match board::power::camera_power_registers(&mut bootstrap_i2c) {
+                        Ok((enable, voltage)) => info!(
+                            "Camera PMIC readback: AXP2101[0x90]=0x{:02x} AXP2101[0x94]=0x{:02x}",
+                            enable, voltage
+                        ),
+                        Err(error) => warn!("Camera PMIC readback failed: {:?}", error),
+                    }
+                    match board::io_expander::camera_reset_registers(&mut bootstrap_i2c) {
+                        Ok((output, direction, mode)) => info!(
+                            "Camera reset readback: AW9523 P1 out=0x{:02x} dir=0x{:02x} mode=0x{:02x}",
+                            output, direction, mode
+                        ),
+                        Err(error) => warn!("Camera reset readback failed: {:?}", error),
+                    }
+                    true
+                }
                 Err(error) => {
                     warn!("Camera disabled: GC0308 reset failed: {:?}", error);
                     false
@@ -152,42 +168,38 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         }
     };
 
-    // Important ownership boundary: M5Stack's camera code releases the shared
-    // internal I2C bus before initializing SCCB. Drop our hardware driver too,
-    // then temporarily bit-bang SCCB on the same pins. PID validation decides
-    // whether the sensor is actually usable; sampled SCCB NACKs are diagnostic.
+    // M5Stack's CoreS3 camera fix explicitly releases the shared internal-I2C
+    // owner before camera initialization. Do the same: destroy the bootstrap
+    // driver, create a fresh 100 kHz hardware SCCB owner, program/read GC0308,
+    // then destroy that owner before creating the persistent runtime bus.
     drop(bootstrap_i2c);
     let camera_ready = if camera_powered_and_reset {
-        let (camera_sda, camera_scl) = system_i2c_resources.reborrow_pins();
-        let sensor = camera::init_sensor(camera_sda, camera_scl, &mut delay);
-
-        if sensor.nack_count != 0 {
-            warn!(
-                "GC0308 SCCB observed {} NACK bit(s) during startup; validating by PID",
-                sensor.nack_count
-            );
-        }
-
-        if sensor.pid == camera::EXPECTED_SENSOR_PID {
-            info!(
-                "GC0308 camera ready (PID=0x{:02x}, SCCB NACKs={})",
-                sensor.pid, sensor.nack_count
-            );
-            true
-        } else {
-            warn!(
-                "Camera disabled: unexpected GC0308 PID 0x{:02x} (expected 0x{:02x}, SCCB NACKs={})",
-                sensor.pid,
-                camera::EXPECTED_SENSOR_PID,
-                sensor.nack_count
-            );
-            false
-        }
+        let mut camera_sccb = system_i2c::init_camera_sccb(system_i2c_resources.reborrow());
+        let ready = match camera::init_sensor(&mut camera_sccb, &mut delay) {
+            Ok(pid) if pid == camera::EXPECTED_SENSOR_PID => {
+                info!("GC0308 camera ready (PID=0x{:02x})", pid);
+                true
+            }
+            Ok(pid) => {
+                warn!(
+                    "Camera disabled: unexpected GC0308 PID 0x{:02x} (expected 0x{:02x})",
+                    pid,
+                    camera::EXPECTED_SENSOR_PID
+                );
+                false
+            }
+            Err(error) => {
+                warn!("Camera disabled: GC0308 hardware SCCB failed: {:?}", error);
+                false
+            }
+        };
+        drop(camera_sccb);
+        ready
     } else {
         false
     };
 
-    // Software SCCB is gone now. Construct the final 400 kHz system-I2C owner;
+    // Camera SCCB is gone now. Construct the final 400 kHz system-I2C owner;
     // this exact driver is later moved to CPU1 and converted to async mode.
     let mut system_i2c = system_i2c::init(system_i2c_resources);
 
