@@ -1,8 +1,9 @@
 //! Semantic view ownership and dispatch.
 //!
-//! Each screen owns its presentation code in a matching module. KDL-backed
-//! screens also own their fixed-capacity `embedded-gui` context here; reusable
-//! framebuffer/text primitives remain in `common`.
+//! Every screen owns a KDL-backed fixed-capacity context in its matching module.
+//! KDL is the single source of normal page geometry. View-specific overlays stay
+//! private to their semantic view; only genuinely reusable drawing primitives
+//! live in `common`.
 
 mod common;
 mod imu;
@@ -14,65 +15,54 @@ mod speaker;
 
 use crate::{
     display::Display,
-    display_control::{BrightnessPercent},
+    display_control::BrightnessPercent,
     models::{ImuDisplay, SettingsDisplay, ViewId},
     network as network_service,
     waveform::WaveformFrame,
 };
 
-use super::{
-    design,
-    framebuffer::ContentFramebuffer,
-    gui::GuiSurface,
-    navigation::ContentPointer,
-};
+use super::{gui::GuiSurface, navigation::ContentPointer};
 
 pub(crate) struct Views {
+    network: network::View,
+    imu: imu::View,
     microphone: microphone::View,
+    speaker: speaker::View,
     settings: settings::View,
+    log: log::View,
 }
 
 impl Views {
     pub(crate) fn new() -> Self {
         Self {
+            network: network::View::new(),
+            imu: imu::View::new(),
             microphone: microphone::View::new(),
+            speaker: speaker::View::new(),
             settings: settings::View::new(BrightnessPercent::FULL),
+            log: log::View::new(),
         }
     }
 
-    /// Present the complete static shell for a destination view.
     pub(crate) fn present_shell(
         &mut self,
         view: ViewId,
-        content: &mut ContentFramebuffer,
-        gui_surface: &mut GuiSurface,
+        surface: &mut GuiSurface,
         display: &mut Display,
         settings_display: Option<SettingsDisplay>,
     ) {
         match view {
-            ViewId::Network => {
-                network::render_shell(content);
-                blit_content(content, display);
-            }
-            ViewId::Imu => {
-                imu::render_shell(content);
-                blit_content(content, display);
-            }
-            ViewId::Microphone => self.microphone.present_shell(gui_surface, display),
-            ViewId::Speaker => {
-                speaker::render_shell(content);
-                blit_content(content, display);
-            }
+            ViewId::Network => self.network.present_shell(surface, display),
+            ViewId::Imu => self.imu.present_shell(surface, display),
+            ViewId::Microphone => self.microphone.present_shell(surface, display),
+            ViewId::Speaker => self.speaker.present(surface, display),
             ViewId::Settings => {
                 if let Some(state) = settings_display {
                     self.settings.sync_brightness(state.brightness);
                 }
-                self.settings.present(gui_surface, display);
+                self.settings.present(surface, display);
             }
-            ViewId::Log => {
-                log::render_shell(content);
-                blit_content(content, display);
-            }
+            ViewId::Log => self.log.present_shell(surface, display),
         }
     }
 
@@ -87,36 +77,44 @@ impl Views {
         }
     }
 
-    pub(crate) fn present_settings(
+    pub(crate) fn present_network(
         &mut self,
-        gui_surface: &mut GuiSurface,
+        surface: &mut GuiSurface,
         display: &mut Display,
-        state: SettingsDisplay,
+        snapshot: &network_service::Snapshot,
     ) {
-        self.settings.sync_brightness(state.brightness);
-        self.settings.present(gui_surface, display);
+        self.network.present(surface, display, snapshot);
+    }
+
+    pub(crate) fn present_imu(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+        state: &ImuDisplay,
+    ) {
+        self.imu.present(surface, display, state);
     }
 
     pub(crate) fn render_microphone(&self, display: &mut Display, frame: &WaveformFrame) {
         self.microphone.render_waveform(display, frame);
     }
-}
 
-pub(crate) fn render_network(
-    frame: &mut ContentFramebuffer,
-    snapshot: &network_service::Snapshot,
-) {
-    network::render(frame, snapshot);
-}
+    pub(crate) fn present_settings(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+        state: SettingsDisplay,
+    ) {
+        self.settings.sync_brightness(state.brightness);
+        self.settings.present(surface, display);
+    }
 
-pub(crate) fn render_imu(frame: &mut ContentFramebuffer, display: &ImuDisplay) {
-    imu::render(frame, display);
-}
-
-pub(crate) fn render_log(frame: &mut ContentFramebuffer, contents: &str) {
-    log::render(frame, contents);
-}
-
-fn blit_content(content: &ContentFramebuffer, display: &mut Display) {
-    display.blit(design::CONTENT_REGION, content.pixels());
+    pub(crate) fn present_log(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+        contents: &str,
+    ) {
+        self.log.present(surface, display, contents);
+    }
 }
