@@ -12,17 +12,29 @@ use static_cell::StaticCell;
 
 /// Physical resources for the board's runtime system-I2C service.
 ///
-/// CPU0 uses the resulting blocking driver temporarily during board/display/
-/// codec startup. The driver is then moved to CPU1 and converted to async for
-/// runtime touch/IMU use.
-pub struct Resources {
-    pub i2c0: I2C0<'static>,
-    pub sda: GPIO12<'static>,
-    pub scl: GPIO11<'static>,
+/// CPU0 may temporarily reborrow these resources during bootstrap. The final
+/// owning driver is then moved to CPU1 and converted to async for runtime
+/// touch/IMU/display-control use.
+pub struct Resources<'d> {
+    pub i2c0: I2C0<'d>,
+    pub sda: GPIO12<'d>,
+    pub scl: GPIO11<'d>,
 }
 
-/// CPU0 startup form. Blocking drivers are Send, so this can be moved to CPU1
-/// after one-time board initialization is complete.
+impl Resources<'static> {
+    /// Borrow all three singleton resources without giving up their final
+    /// `'static` ownership. Dropping the temporary driver releases the GPIO
+    /// peripheral connections so another startup owner can use them safely.
+    pub fn reborrow(&mut self) -> Resources<'_> {
+        Resources {
+            i2c0: self.i2c0.reborrow(),
+            sda: self.sda.reborrow(),
+            scl: self.scl.reborrow(),
+        }
+    }
+}
+
+/// CPU0 startup form that is ultimately moved to CPU1.
 pub type SystemI2cBlocking = I2c<'static, Blocking>;
 
 /// CPU1 runtime form. ESP-HAL async drivers are core-affine because their
@@ -30,10 +42,6 @@ pub type SystemI2cBlocking = I2c<'static, Blocking>;
 pub type SystemI2c = I2c<'static, Async>;
 
 /// Runtime I2C is intentionally local to the CPU1 Embassy executor.
-///
-/// `NoopRawMutex` is the correct Embassy raw mutex when all users are tasks on
-/// one executor. The async mutex is still required because a transaction holds
-/// exclusive ownership of the physical bus across `.await`.
 pub type SystemI2cMutex = Mutex<NoopRawMutex, SystemI2c>;
 pub type SystemI2cBus = &'static SystemI2cMutex;
 
@@ -41,9 +49,11 @@ static SYSTEM_I2C: StaticCell<SystemI2cMutex> = StaticCell::new();
 
 /// Configure the CoreS3-Lite internal system bus at 400 kHz in blocking mode.
 ///
-/// CPU0 uses this directly for one-time PMIC/AW9523/display/ES7210 setup. The
-/// returned driver must then be moved to CPU1 and passed to [`into_async`].
-pub fn init(resources: Resources) -> SystemI2cBlocking {
+/// This is generic over the resource lifetime so bootstrap can construct and
+/// drop a short-lived hardware-I2C driver before camera SCCB temporarily owns
+/// GPIO12/GPIO11. Calling it later with `Resources<'static>` creates the driver
+/// that is moved to CPU1.
+pub fn init<'d>(resources: Resources<'d>) -> I2c<'d, Blocking> {
     let Resources { i2c0, sda, scl } = resources;
 
     I2c::new(
