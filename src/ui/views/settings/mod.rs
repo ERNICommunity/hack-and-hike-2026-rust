@@ -1,120 +1,105 @@
 //! Interactive Settings view.
 //!
-//! KDL owns page geometry. This module owns the semantic bridge from touch to a
-//! bounded brightness percentage while `AppModel` remains authoritative state.
-//! View-specific compatibility code is intentionally kept here: embedded-gui
-//! 0.2.5 renders the slider correctly but does not update its scalar value from
-//! pointer drags on this input path.
+//! KDL owns page geometry. This module owns the semantic brightness interaction
+//! and its view-specific visual control while `AppModel` remains authoritative
+//! state. The generic embedded-gui slider is retained for widget semantics; a
+//! larger high-contrast track/thumb is drawn over its KDL slot for this small
+//! touch display.
 
-use embedded_gui::{font::FontId, prelude::*};
+use core::fmt::Write as _;
+
+use arrayvec::ArrayString;
+use embedded_graphics::{
+    prelude::*,
+    primitives::{Circle, PrimitiveStyle},
+};
+use embedded_gui::prelude::*;
 
 use crate::{data_plane, display::Display, display_control::BrightnessPercent};
 
 use super::super::{
-    gui::{GuiSurface, light_label_style},
+    gui::{GuiFramebuffer, GuiSurface},
     navigation::{ContentPointer, PointerPhase},
 };
+use super::common;
 
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/ui/views/settings/settings.kdl");
 }
 
-const NODE_CAPACITY: usize = 20;
-const TEXT_CAPACITY: usize = 16;
+const NODE_CAPACITY: usize = 16;
+const TEXT_CAPACITY: usize = 8;
 const EVENT_CAPACITY: usize = 8;
 const SLIDER_HIT_MARGIN: i32 = 8;
+const THUMB_DIAMETER: i32 = 22;
+const THUMB_RADIUS: i32 = THUMB_DIAMETER / 2;
+const TRACK_HEIGHT: u32 = 8;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
+#[derive(Clone, Copy)]
+struct Geometry {
+    title: Rect,
+    value: Rect,
+    slider: Rect,
+    minimum: Rect,
+    maximum: Rect,
+    hint: Rect,
+}
+
 pub(crate) struct View {
     gui: &'static mut Context,
-    brightness: WidgetId,
-    brightness_value: WidgetId,
-    brightness_rect: Rect,
+    brightness_widget: WidgetId,
+    geometry: Geometry,
+    current: BrightnessPercent,
     dragging_brightness: bool,
 }
 
 impl View {
     pub(crate) fn new(brightness: BrightnessPercent) -> Self {
-        // GuiContext is device-lifetime presentation state and has no DMA/ISR
-        // requirement. Keep its fixed-capacity storage in explicit PSRAM rather
-        // than either the CPU0 async stack or scarce internal SRAM.
         let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
 
-        // The KDL slots are the single source of geometry. Visible labels are
-        // instantiated with an explicit light-page style because embedded-gui's
-        // base label style is white-on-transparent.
-        let title_rect = required_rect(gui, app.widgets.title_slot, "settings title");
-        let value_rect = required_rect(
-            gui,
-            app.widgets.brightness_value_slot,
-            "settings brightness value",
-        );
-        let brightness_rect = required_rect(
-            gui,
-            app.widgets.brightness_slot,
-            "settings brightness slider",
-        );
-        let minimum_rect = required_rect(gui, app.widgets.minimum_slot, "settings minimum");
-        let maximum_rect = required_rect(gui, app.widgets.maximum_slot, "settings maximum");
-        let hint_rect = required_rect(gui, app.widgets.hint_slot, "settings hint");
+        let geometry = Geometry {
+            title: required_rect(gui, app.widgets.title_slot, "settings title"),
+            value: required_rect(
+                gui,
+                app.widgets.brightness_value_slot,
+                "settings brightness value",
+            ),
+            slider: required_rect(gui, app.widgets.brightness_slot, "settings brightness slider"),
+            minimum: required_rect(gui, app.widgets.minimum_slot, "settings minimum"),
+            maximum: required_rect(gui, app.widgets.maximum_slot, "settings maximum"),
+            hint: required_rect(gui, app.widgets.hint_slot, "settings hint"),
+        };
 
-        gui.add_label(
-            title_rect,
-            "SETTINGS",
-            light_label_style(FontId::Scaled6x10),
-        )
-        .expect("settings title exceeds embedded-gui fixed capacities");
-        let brightness_value = gui
-            .add_value_label(
-                value_rect,
-                "DISPLAY BRIGHTNESS %",
-                i32::from(brightness.get()),
-                light_label_style(FontId::Medium4x7),
-            )
-            .expect("settings value label exceeds embedded-gui fixed capacities");
         let brightness_widget = gui
             .add_themed_slider(
-                brightness_rect,
+                geometry.slider,
                 f32::from(brightness.get()),
-                0.0,
-                100.0,
+                f32::from(BrightnessPercent::MIN.get()),
+                f32::from(BrightnessPercent::FULL.get()),
             )
             .expect("settings brightness slider exceeds embedded-gui fixed capacities");
-        gui.add_label(
-            minimum_rect,
-            "0%",
-            light_label_style(FontId::Medium4x7),
-        )
-        .expect("settings minimum label exceeds embedded-gui fixed capacities");
-        gui.add_label(
-            maximum_rect,
-            "100%",
-            light_label_style(FontId::Medium4x7),
-        )
-        .expect("settings maximum label exceeds embedded-gui fixed capacities");
-        gui.add_label(
-            hint_rect,
-            "Tap or drag to adjust backlight",
-            light_label_style(FontId::Medium4x7),
-        )
-        .expect("settings hint exceeds embedded-gui fixed capacities");
 
         drain_events(gui);
         Self {
             gui,
-            brightness: brightness_widget,
-            brightness_value,
-            brightness_rect,
+            brightness_widget,
+            geometry,
+            current: brightness,
             dragging_brightness: false,
         }
     }
 
     pub(crate) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display) {
-        surface.present(display, self.gui);
+        let geometry = self.geometry;
+        let brightness = self.current;
+        surface.present_with_overlay(display, self.gui, move |frame| {
+            draw_settings(frame, geometry, brightness);
+        });
     }
 
     pub(crate) fn sync_brightness(&mut self, brightness: BrightnessPercent) {
@@ -130,8 +115,6 @@ impl View {
             PointerPhase::Released => PointerState::Released,
         };
 
-        // Keep embedded-gui's normal focus/pressed semantics active even though
-        // 0.2.5 needs the view-specific scalar mapping below for touch sliders.
         self.gui
             .handle_input(InputEvent::Pointer {
                 x: pointer.x,
@@ -163,7 +146,7 @@ impl View {
     }
 
     fn pointer_hits_brightness(&self, pointer: ContentPointer) -> bool {
-        let rect = self.brightness_rect;
+        let rect = self.geometry.slider;
         let left = rect.x - SLIDER_HIT_MARGIN;
         let top = rect.y - SLIDER_HIT_MARGIN;
         let right = rect.x + rect.w as i32 + SLIDER_HIT_MARGIN;
@@ -172,29 +155,121 @@ impl View {
     }
 
     fn brightness_at(&mut self, pointer_x: i32) -> BrightnessPercent {
-        let left = self.brightness_rect.x;
-        let right = left + self.brightness_rect.w.saturating_sub(1) as i32;
+        let (left, right) = slider_track_bounds(self.geometry.slider);
         let span = (right - left).max(1);
         let x = pointer_x.clamp(left, right);
-        let percent = (((x - left) * 100 + span / 2) / span) as u8;
+        let range = i32::from(BrightnessPercent::FULL.get() - BrightnessPercent::MIN.get());
+        let offset = ((x - left) * range + span / 2) / span;
+        let percent = BrightnessPercent::MIN.get() + offset as u8;
         let brightness = BrightnessPercent::new(percent)
-            .expect("slider mapping must produce a valid brightness percentage");
+            .expect("slider mapping must produce a visible brightness percentage");
         self.set_local_brightness(brightness);
         brightness
     }
 
     fn set_local_brightness(&mut self, brightness: BrightnessPercent) {
+        self.current = brightness;
         let slider_value = f32::from(brightness.get());
-        if self.gui.slider_value(self.brightness) != Some(slider_value) {
+        if self.gui.slider_value(self.brightness_widget) != Some(slider_value) {
             self.gui
-                .set_slider_value(self.brightness, slider_value)
+                .set_slider_value(self.brightness_widget, slider_value)
                 .expect("settings brightness widget is not a slider");
         }
-        self.gui
-            .set_value_label(self.brightness_value, i32::from(brightness.get()))
-            .expect("settings brightness value widget is not a value label");
         drain_events(self.gui);
     }
+}
+
+fn draw_settings(frame: &mut GuiFramebuffer, geometry: Geometry, brightness: BrightnessPercent) {
+    common::draw_title(
+        frame,
+        "SETTINGS",
+        geometry.title.x,
+        geometry.title.y,
+        common::dark_blue(),
+    );
+
+    let mut value = ArrayString::<32>::new();
+    let _ = write!(&mut value, "DISPLAY BRIGHTNESS  {}%", brightness.get());
+    common::draw_body(
+        frame,
+        value.as_str(),
+        geometry.value.x,
+        geometry.value.y,
+        common::black(),
+    );
+
+    draw_brightness_slider(frame, geometry.slider, brightness);
+    common::draw_centered_body(frame, geometry.minimum, "DIM", common::dark_gray());
+    common::draw_centered_body(frame, geometry.maximum, "MAX", common::dark_gray());
+    common::draw_body(
+        frame,
+        "Tap or drag to adjust",
+        geometry.hint.x,
+        geometry.hint.y,
+        common::dark_gray(),
+    );
+}
+
+fn draw_brightness_slider(
+    frame: &mut GuiFramebuffer,
+    rect: Rect,
+    brightness: BrightnessPercent,
+) {
+    // Hide the framework's deliberately compact default control, then draw a
+    // touch-scale visualization while retaining the framework widget state.
+    common::fill_rect(frame, rect, common::white());
+
+    let (left, right) = slider_track_bounds(rect);
+    let center_y = rect.y + rect.h as i32 / 2;
+    let track_y = center_y - TRACK_HEIGHT as i32 / 2;
+    let track_width = (right - left + 1).max(1) as u32;
+    common::fill_box(
+        frame,
+        left,
+        track_y,
+        track_width,
+        TRACK_HEIGHT,
+        common::light_gray(),
+    );
+
+    let range = i32::from(BrightnessPercent::FULL.get() - BrightnessPercent::MIN.get());
+    let offset = i32::from(brightness.get() - BrightnessPercent::MIN.get());
+    let span = (right - left).max(1);
+    let thumb_x = left + (offset * span + range / 2) / range.max(1);
+    let active_width = (thumb_x - left + 1).max(1) as u32;
+    common::fill_box(
+        frame,
+        left,
+        track_y,
+        active_width,
+        TRACK_HEIGHT,
+        common::dark_blue(),
+    );
+
+    let outer = Circle::new(
+        Point::new(thumb_x - THUMB_RADIUS, center_y - THUMB_RADIUS),
+        THUMB_DIAMETER as u32,
+    );
+    let _ = outer
+        .into_styled(PrimitiveStyle::with_fill(common::dark_blue()))
+        .draw(frame);
+    let inner_diameter = 12i32;
+    let inner = Circle::new(
+        Point::new(
+            thumb_x - inner_diameter / 2,
+            center_y - inner_diameter / 2,
+        ),
+        inner_diameter as u32,
+    );
+    let _ = inner
+        .into_styled(PrimitiveStyle::with_fill(common::white()))
+        .draw(frame);
+}
+
+fn slider_track_bounds(rect: Rect) -> (i32, i32) {
+    let left = rect.x + THUMB_RADIUS;
+    let right = rect.x + rect.w as i32 - THUMB_RADIUS - 1;
+    (left, right.max(left + 1))
 }
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
