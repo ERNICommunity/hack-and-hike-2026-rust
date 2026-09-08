@@ -47,9 +47,6 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_rtos::main]
 async fn main(_cpu0_spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
-    // Internal DRAM is shared between statics/global heap and the CPU0 stack.
-    // Bulk presentation data lives explicitly in PSRAM; the internal allocator
-    // remains available for the radio/runtime and other bounded startup objects.
     esp_alloc::heap_allocator!(size: 104 * 1024);
 
     logger::init(::log::LevelFilter::Info);
@@ -91,6 +88,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                 bclk: peripherals.GPIO34,
                 word_select: peripherals.GPIO33,
                 data_in: peripherals.GPIO14,
+                data_out: peripherals.GPIO13,
             },
             network: network::Resources {
                 wifi: peripherals.WIFI,
@@ -111,14 +109,13 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let mut delay = esp_hal::delay::Delay::new();
     let mut system_i2c = system_i2c::init(system_i2c_resources);
 
-    // Shared PCB power/reset policy is performed once during bootstrap before
-    // the CPU1 touch task starts. `display::init` itself owns only LCD transport.
     board::power::enable_lcd_backlight(&mut system_i2c);
     board::io_expander::reset_display_and_touch(&mut system_i2c, &mut delay);
     let mut display = display::init(display_resources, &mut delay);
 
-    audio::init_es7210(&mut system_i2c, &mut delay)
-        .expect("Failed to initialize ES7210 microphone codec");
+    audio::init_es7210(&mut system_i2c).expect("Failed to initialize ES7210 microphone codec");
+    audio::init_aw88298(&mut system_i2c, &mut delay)
+        .expect("Failed to initialize AW88298 speaker amplifier");
 
     info!("==========================================");
     info!(">>> M5Stack CoreS3 Lite Booting Up! <<<");
@@ -157,7 +154,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                     touch::capture_task(system_bus).expect("Failed to allocate CPU1 touch task"),
                 );
                 spawner.spawn(
-                    audio::capture_task(audio_resources)
+                    audio::capture_task(audio_resources, spawner)
                         .expect("Failed to allocate CPU1 audio task"),
                 );
             });
@@ -171,6 +168,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         network: network_input,
     } = service_inputs::Cpu0Inputs::from_static_services();
     let brightness = display_control::BrightnessControl::from_static_service();
+    let playback = audio::PlaybackControl::from_static_service();
     let model = models::AppModel::new(
         models::AppModelInputs {
             network: network_input,
@@ -178,6 +176,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             audio: audio_input,
         },
         brightness,
+        playback,
     );
     let mut ui = ui::Ui::new(model, touch);
 
@@ -200,8 +199,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         ui.render(&mut display);
 
         if let Some(transition) = transition {
-            // Include the destination's first dynamic render in the correlation
-            // window, but keep unrelated transition logging outside it.
             heap_monitor.end_activity();
             info!("View {:?} -> {:?}", transition.from, transition.to);
         }

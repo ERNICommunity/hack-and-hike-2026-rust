@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 static TOUCH_READ_ERRORS: AtomicU32 = AtomicU32::new(0);
 static TOUCH_EDGE_DROPS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_CAPTURE_ERRORS: AtomicU32 = AtomicU32::new(0);
+static AUDIO_PLAYBACK_ERRORS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_FULL_DRAINS: AtomicU32 = AtomicU32::new(0);
 static NETWORK_INIT_ERRORS: AtomicU32 = AtomicU32::new(0);
 static NETWORK_TX_PACKETS: AtomicU32 = AtomicU32::new(0);
@@ -21,6 +22,7 @@ pub struct RuntimeCounters {
     pub touch_read_errors: u32,
     pub touch_edge_drops: u32,
     pub audio_capture_errors: u32,
+    pub audio_playback_errors: u32,
     /// Number of times one DMA pop drained the complete circular buffer.
     ///
     /// This is a saturation warning, not proof that hardware overran.
@@ -43,6 +45,10 @@ pub fn record_touch_edge_drop() {
 
 pub fn record_audio_capture_error() {
     AUDIO_CAPTURE_ERRORS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_audio_playback_error() {
+    AUDIO_PLAYBACK_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_audio_full_drain() {
@@ -78,6 +84,7 @@ pub fn snapshot() -> RuntimeCounters {
         touch_read_errors: TOUCH_READ_ERRORS.load(Ordering::Relaxed),
         touch_edge_drops: TOUCH_EDGE_DROPS.load(Ordering::Relaxed),
         audio_capture_errors: AUDIO_CAPTURE_ERRORS.load(Ordering::Relaxed),
+        audio_playback_errors: AUDIO_PLAYBACK_ERRORS.load(Ordering::Relaxed),
         audio_full_drains: AUDIO_FULL_DRAINS.load(Ordering::Relaxed),
         network_init_errors: NETWORK_INIT_ERRORS.load(Ordering::Relaxed),
         network_tx_packets: NETWORK_TX_PACKETS.load(Ordering::Relaxed),

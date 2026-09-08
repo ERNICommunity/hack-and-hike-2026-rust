@@ -1,29 +1,129 @@
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
+//! CPU1-owned full-duplex audio service.
+//!
+//! I2S0 owns the shared microphone/speaker clock domain. RX continuously captures
+//! the ES7210 microphones while TX continuously feeds the AW88298 amplifier.
+//! CPU0 publishes semantic playback state through a replace-latest control; the
+//! real-time synthesis/DMA state never leaves CPU1.
+
+mod chime;
+mod melody;
+
+use core::sync::atomic::{AtomicU32, Ordering};
+
+use embassy_executor::Spawner;
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex,
+    mutex::Mutex,
+    signal::Signal,
+};
 use esp_hal::{
+    Async,
     delay::Delay,
-    i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s},
-    peripherals::{DMA_CH0, GPIO0, GPIO14, GPIO33, GPIO34, I2S0},
+    gpio::NoPin,
+    i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s, I2sTx},
+    peripherals::{DMA_CH0, GPIO0, GPIO13, GPIO14, GPIO33, GPIO34, I2S0},
     time::Rate,
 };
 
 use crate::{board, data_plane, diagnostics};
+use chime::FlashChime;
+use melody::MelodySynth;
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const BLOCK_FRAMES: usize = 512;
 pub const CHANNELS: usize = 2;
 pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 
-// Keep the generous ring that already proved stable with radio + dual-core
-// scheduling. The actual DMA ring/descriptors remain in internal DMA-capable
-// RAM; only the CPU-side drain scratch is allocated from PSRAM.
-const DMA_BUFFER_BYTES: usize = 32 * 1024;
-
+const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
+const TX_DMA_BUFFER_BYTES: usize = 8 * 1024;
 const ES7210_ADDR: u8 = 0x40;
+const AW88298_ADDR: u8 = 0x36;
 
-/// CPU1-owned physical resources required by the audio acquisition service.
-///
-/// ES7210 register configuration remains in this module, while this bundle
-/// describes the I2S/DMA/GPIO resources consumed by `capture_task`.
+// The one-shot is derived offline from the user-supplied MP3 and stored as
+// flash-resident IMA ADPCM; decoding is incremental and allocation-free.
+
+/// Valid melody tempo in quarter-note beats per minute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TempoBpm(u16);
+
+impl TempoBpm {
+    pub const MIN: Self = Self(60);
+    pub const DEFAULT: Self = Self(120);
+    pub const MAX: Self = Self(180);
+
+    pub const fn new(value: u16) -> Option<Self> {
+        if value >= Self::MIN.0 && value <= Self::MAX.0 {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+/// Chromatic pitch transposition applied to the synthesized MIDI loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PitchSemitones(i8);
+
+impl PitchSemitones {
+    pub const MIN: Self = Self(-12);
+    pub const CENTER: Self = Self(0);
+    pub const MAX: Self = Self(12);
+
+    pub const fn new(value: i8) -> Option<Self> {
+        if value >= Self::MIN.0 && value <= Self::MAX.0 {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    pub const fn get(self) -> i8 {
+        self.0
+    }
+}
+
+/// Complete continuous playback intent published by CPU0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaybackSettings {
+    pub melody_playing: bool,
+    pub tempo: TempoBpm,
+    pub pitch: PitchSemitones,
+}
+
+impl PlaybackSettings {
+    pub const DEFAULT: Self = Self {
+        melody_playing: false,
+        tempo: TempoBpm::DEFAULT,
+        pitch: PitchSemitones::CENTER,
+    };
+}
+
+static PLAYBACK_SETTINGS: Signal<CriticalSectionRawMutex, PlaybackSettings> = Signal::new();
+static ONE_SHOT_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+/// CPU0 command handle for the CPU1 audio-output service.
+#[derive(Clone, Copy)]
+pub struct PlaybackControl;
+
+impl PlaybackControl {
+    pub const fn from_static_service() -> Self {
+        Self
+    }
+
+    pub fn set(self, settings: PlaybackSettings) {
+        PLAYBACK_SETTINGS.signal(settings);
+    }
+
+    pub fn play_one_shot(self) {
+        ONE_SHOT_SEQUENCE.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// CPU1-owned physical resources required by the shared audio service.
 pub struct Resources {
     pub i2s0: I2S0<'static>,
     pub dma: DMA_CH0<'static>,
@@ -31,6 +131,7 @@ pub struct Resources {
     pub bclk: GPIO34<'static>,
     pub word_select: GPIO33<'static>,
     pub data_in: GPIO14<'static>,
+    pub data_out: GPIO13<'static>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,58 +159,57 @@ impl LatestAudio {
     }
 }
 
-// Unlike critical_section::Mutex, Embassy's async mutex only uses the raw
-// critical-section mutex briefly to update lock state. The 2 KiB PCM copies do
-// not run with interrupts / the other core excluded.
 static LATEST_AUDIO: Mutex<CriticalSectionRawMutex, LatestAudio> = Mutex::new(LatestAudio::new());
 
-/// Power the microphone path and configure ES7210 MIC1/MIC2 for stereo I2S.
-pub fn init_es7210<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Error>
+/// Configure ES7210 MIC1/MIC2 for stereo 16 kHz I2S input.
+pub fn init_es7210<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
     board::power::enable_microphone(i2c)?;
-    board::io_expander::release_audio_amplifier(i2c, delay)?;
-
     i2c.write(ES7210_ADDR, &[0x00, 0xFF])?;
 
     const ES7210_INIT: &[(u8, u8)] = &[
-        (0x00, 0x41), // RESET_CTL
-        (0x01, 0x1F), // CLK_ON_OFF
-        (0x06, 0x00), // DIGITAL_PDN
-        (0x07, 0x20), // ADC_OSR
-        (0x08, 0x10), // MODE_CFG
-        (0x09, 0x30), // TCT0_CHPINI
-        (0x0A, 0x30), // TCT1_CHPINI
-        (0x20, 0x0A), // ADC34_HPF2
-        (0x21, 0x2A), // ADC34_HPF1
-        (0x22, 0x0A), // ADC12_HPF2
-        (0x23, 0x2A), // ADC12_HPF1
-        (0x02, 0xC1),
-        (0x04, 0x01),
-        (0x05, 0x00),
-        (0x11, 0x60),
-        (0x40, 0x42), // ANALOG_SYS
-        (0x41, 0x70), // MICBIAS12
-        (0x42, 0x70), // MICBIAS34
-        (0x43, 0x1B), // MIC1_GAIN
-        (0x44, 0x1B), // MIC2_GAIN
-        (0x45, 0x00), // MIC3_GAIN
-        (0x46, 0x00), // MIC4_GAIN
-        (0x47, 0x00), // MIC1_LP
-        (0x48, 0x00), // MIC2_LP
-        (0x49, 0x00), // MIC3_LP
-        (0x4A, 0x00), // MIC4_LP
-        (0x4B, 0x00), // MIC12_PDN
-        (0x4C, 0xFF), // MIC34_PDN
-        (0x01, 0x14), // CLK_ON_OFF
+        (0x00, 0x41), (0x01, 0x1F), (0x06, 0x00), (0x07, 0x20),
+        (0x08, 0x10), (0x09, 0x30), (0x0A, 0x30), (0x20, 0x0A),
+        (0x21, 0x2A), (0x22, 0x0A), (0x23, 0x2A), (0x02, 0xC1),
+        (0x04, 0x01), (0x05, 0x00), (0x11, 0x60), (0x40, 0x42),
+        (0x41, 0x70), (0x42, 0x70), (0x43, 0x1B), (0x44, 0x1B),
+        (0x45, 0x00), (0x46, 0x00), (0x47, 0x00), (0x48, 0x00),
+        (0x49, 0x00), (0x4A, 0x00), (0x4B, 0x00), (0x4C, 0xFF),
+        (0x01, 0x14),
     ];
 
     for &(register, value) in ES7210_INIT {
         i2c.write(ES7210_ADDR, &[register, value])?;
     }
-
     Ok(())
+}
+
+/// Release and configure the onboard AW88298 speaker amplifier for the same
+/// 16 kHz, stereo, 16-bit I2S clock domain used by microphone capture.
+pub fn init_aw88298<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    board::io_expander::release_audio_amplifier(i2c, delay)?;
+
+    // CoreS3 reference configuration from M5Unified. At 16 kHz the rate-table
+    // index is 3, therefore register 0x06 is 0x14C3 for 16-bit stereo BCK mode.
+    aw88298_write(i2c, 0x61, 0x0673)?; // boost disabled
+    aw88298_write(i2c, 0x04, 0x4040)?; // I2S enabled, amplifier powered
+    aw88298_write(i2c, 0x05, 0x0008)?; // unmuted
+    aw88298_write(i2c, 0x06, 0x14C3)?; // 16 kHz, 16-bit x 2
+    aw88298_write(i2c, 0x0C, 0x0064)?; // reference full-volume setting
+    Ok(())
+}
+
+fn aw88298_write<I2C>(i2c: &mut I2C, register: u8, value: u16) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    let [high, low] = value.to_be_bytes();
+    i2c.write(AW88298_ADDR, &[register, high, low])
 }
 
 async fn publish(samples: &[i16; BLOCK_SAMPLES], peak_left: u16, peak_right: u16) -> u32 {
@@ -121,21 +221,20 @@ async fn publish(samples: &[i16; BLOCK_SAMPLES], peak_left: u16, peak_right: u16
     latest.info.sequence
 }
 
-/// Copy the newest complete stereo block without waiting. If CPU1 is in the
-/// middle of publishing, CPU0 simply skips this presentation tick and will pick
-/// up a newer block next time.
 pub fn copy_latest_interleaved(out: &mut [i16; BLOCK_SAMPLES]) -> Option<AudioBlockInfo> {
     let latest = LATEST_AUDIO.try_lock().ok()?;
     if latest.info.sequence == 0 {
         return None;
     }
-
     out.copy_from_slice(&latest.samples);
     Some(latest.info)
 }
 
+/// Own I2S0 on CPU1, start the continuous speaker writer, then drain microphone
+/// RX forever. TX is the physical BCLK/WS master; RX follows the same signals
+/// through the peripheral's internal signal-loopback path.
 #[embassy_executor::task]
-pub async fn capture_task(resources: Resources) {
+pub async fn capture_task(resources: Resources, spawner: Spawner) {
     let Resources {
         i2s0,
         dma,
@@ -143,45 +242,51 @@ pub async fn capture_task(resources: Resources) {
         bclk,
         word_select,
         data_in,
+        data_out,
     } = resources;
 
-    let (rx_buffer, rx_descriptors, _, _) = esp_hal::dma_buffers!(DMA_BUFFER_BYTES, 0);
+    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
+        esp_hal::dma_buffers!(RX_DMA_BUFFER_BYTES, TX_DMA_BUFFER_BYTES);
 
     let i2s = I2s::new(
         i2s0,
         dma,
         I2sConfig::new_tdm_philips()
+            .with_signal_loopback(true)
             .with_sample_rate(Rate::from_hz(SAMPLE_RATE_HZ))
             .with_data_format(DataFormat::Data16Channel16)
             .with_channels(Channels::STEREO),
     )
-    .expect("Failed to configure I2S0")
+    .expect("Failed to configure full-duplex I2S0")
     .with_mclk(mclk)
     .into_async();
 
-    let i2s_rx = i2s
-        .i2s_rx
+    let i2s_tx = i2s
+        .i2s_tx
         .with_bclk(bclk)
         .with_ws(word_select)
+        .with_dout(data_out)
+        .build(tx_descriptors);
+    let i2s_rx = i2s
+        .i2s_rx
+        .with_bclk(NoPin)
+        .with_ws(NoPin)
         .with_din(data_in)
         .build(rx_descriptors);
+
+    spawner
+        .spawn(playback_task(i2s_tx, tx_buffer).expect("Failed to allocate speaker playback task"));
 
     let mut transfer = i2s_rx
         .read_dma_circular_async(rx_buffer)
         .expect("Failed to start circular I2S RX DMA");
 
     ::log::info!(
-        "Audio DMA started: {} Hz, stereo, 16-bit, {} frames/block",
-        SAMPLE_RATE_HZ,
-        BLOCK_FRAMES
+        "Audio DMA started: {} Hz, stereo, 16-bit, mic + speaker full duplex",
+        SAMPLE_RATE_HZ
     );
 
-    // pop() requires enough destination space for every byte currently
-    // available in the circular ring, hence a drain buffer the size of the ring.
-    // This destination is CPU-accessed only, so keep its 32 KiB backing storage
-    // in PSRAM while the actual DMA ring/descriptors above remain internal.
-    let mut dma_drain = data_plane::FixedPsramBuffer::filled(DMA_BUFFER_BYTES, 0u8);
-
+    let mut dma_drain = data_plane::FixedPsramBuffer::filled(RX_DMA_BUFFER_BYTES, 0u8);
     let mut samples = [0i16; BLOCK_SAMPLES];
     let mut frame_index = 0usize;
     let mut peak_left = 0u16;
@@ -197,7 +302,7 @@ pub async fn capture_task(resources: Resources) {
             }
         };
 
-        if count == DMA_BUFFER_BYTES {
+        if count == RX_DMA_BUFFER_BYTES {
             diagnostics::record_audio_full_drain();
         }
 
@@ -205,7 +310,6 @@ pub async fn capture_task(resources: Resources) {
             let left = i16::from_le_bytes([frame_bytes[0], frame_bytes[1]]);
             let right = i16::from_le_bytes([frame_bytes[2], frame_bytes[3]]);
             let sample_index = frame_index * CHANNELS;
-
             samples[sample_index] = left;
             samples[sample_index + 1] = right;
             peak_left = peak_left.max(left.unsigned_abs());
@@ -214,7 +318,6 @@ pub async fn capture_task(resources: Resources) {
 
             if frame_index == BLOCK_FRAMES {
                 let sequence = publish(&samples, peak_left, peak_right).await;
-
                 if first_block {
                     first_block = false;
                     ::log::info!(
@@ -224,11 +327,103 @@ pub async fn capture_task(resources: Resources) {
                         peak_right
                     );
                 }
-
                 frame_index = 0;
                 peak_left = 0;
                 peak_right = 0;
             }
         }
     }
+}
+
+#[embassy_executor::task]
+async fn playback_task(i2s_tx: I2sTx<'static, Async>, tx_buffer: &'static mut [u8]) {
+    // Circular TX starts reading immediately. Silence the complete ring first
+    // so startup can never replay uninitialized/stale bytes before the task's
+    // first refill.
+    tx_buffer.fill(0);
+
+    let mut transfer = i2s_tx
+        .write_dma_circular_async(tx_buffer)
+        .expect("Failed to start circular I2S TX DMA");
+    let mut engine = PlaybackEngine::new();
+    let mut settings = PlaybackSettings::DEFAULT;
+    let mut one_shot_seen = ONE_SHOT_SEQUENCE.load(Ordering::Acquire);
+
+    loop {
+        if let Some(next) = PLAYBACK_SETTINGS.try_take() {
+            if next.melody_playing && !settings.melody_playing {
+                engine.melody.restart();
+            }
+            settings = next;
+        }
+
+        let one_shot_sequence = ONE_SHOT_SEQUENCE.load(Ordering::Acquire);
+        if one_shot_sequence != one_shot_seen {
+            one_shot_seen = one_shot_sequence;
+            engine.chime.restart();
+        }
+
+        if transfer
+            .push_with(|bytes| engine.fill(bytes, settings))
+            .await
+            .is_err()
+        {
+            diagnostics::record_audio_playback_error();
+            panic!("I2S circular DMA write failed");
+        }
+    }
+}
+
+struct PlaybackEngine {
+    melody: MelodySynth,
+    chime: FlashChime,
+    pending_frame: [u8; 4],
+    pending_offset: usize,
+}
+
+impl PlaybackEngine {
+    const fn new() -> Self {
+        Self {
+            melody: MelodySynth::new(),
+            chime: FlashChime::new(),
+            pending_frame: [0; 4],
+            pending_offset: 4,
+        }
+    }
+
+    /// Fill every byte handed out by the circular-DMA adapter.
+    ///
+    /// `push_with` may split writable space at arbitrary byte boundaries. Keep
+    /// a partially emitted stereo frame across callbacks instead of rounding a
+    /// callback down to a multiple of four and leaving stale bytes in the ring.
+    fn fill(&mut self, bytes: &mut [u8], settings: PlaybackSettings) -> usize {
+        for byte in bytes.iter_mut() {
+            if self.pending_offset == self.pending_frame.len() {
+                self.prepare_frame(settings);
+                self.pending_offset = 0;
+            }
+
+            *byte = self.pending_frame[self.pending_offset];
+            self.pending_offset += 1;
+        }
+
+        bytes.len()
+    }
+
+    fn prepare_frame(&mut self, settings: PlaybackSettings) {
+        let melody = if settings.melody_playing {
+            self.melody.next_sample(settings.tempo, settings.pitch)
+        } else {
+            0
+        };
+        let sample = saturating_mix(melody, self.chime.next_sample());
+        let encoded = sample.to_le_bytes();
+        self.pending_frame = [encoded[0], encoded[1], encoded[0], encoded[1]];
+    }
+}
+
+fn saturating_mix(a: i16, b: i16) -> i16 {
+    i32::from(a)
+        .saturating_add(i32::from(b))
+        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }

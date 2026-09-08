@@ -14,14 +14,23 @@ mod settings;
 mod speaker;
 
 use crate::{
+    audio::{PitchSemitones, TempoBpm},
     display::Display,
     display_control::BrightnessPercent,
-    models::{ImuDisplay, SettingsDisplay, ViewId},
+    models::{ImuDisplay, SettingsDisplay, SpeakerDisplay, ViewId},
     network as network_service,
     waveform::WaveformFrame,
 };
 
 use super::{gui::GuiSurface, navigation::ContentPointer};
+
+pub(crate) enum Interaction {
+    SetBrightness(BrightnessPercent),
+    ToggleSpeakerPlayback,
+    PlaySpeakerOneShot,
+    SetSpeakerTempo(TempoBpm),
+    SetSpeakerPitch(PitchSemitones),
+}
 
 pub(crate) struct Views {
     network: network::View,
@@ -70,9 +79,18 @@ impl Views {
         &mut self,
         view: ViewId,
         pointer: ContentPointer,
-    ) -> Option<BrightnessPercent> {
+    ) -> Option<Interaction> {
         match view {
-            ViewId::Settings => self.settings.handle_pointer(pointer),
+            ViewId::Settings => self
+                .settings
+                .handle_pointer(pointer)
+                .map(Interaction::SetBrightness),
+            ViewId::Speaker => self.speaker.handle_pointer(pointer).map(|action| match action {
+                speaker::Action::TogglePlayback => Interaction::ToggleSpeakerPlayback,
+                speaker::Action::PlayOneShot => Interaction::PlaySpeakerOneShot,
+                speaker::Action::SetTempo(tempo) => Interaction::SetSpeakerTempo(tempo),
+                speaker::Action::SetPitch(pitch) => Interaction::SetSpeakerPitch(pitch),
+            }),
             _ => None,
         }
     }
@@ -97,6 +115,16 @@ impl Views {
 
     pub(crate) fn render_microphone(&self, display: &mut Display, frame: &WaveformFrame) {
         self.microphone.render_waveform(display, frame);
+    }
+
+    pub(crate) fn present_speaker(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+        state: SpeakerDisplay,
+    ) {
+        self.speaker.sync(state);
+        self.speaker.present(surface, display);
     }
 
     pub(crate) fn present_settings(

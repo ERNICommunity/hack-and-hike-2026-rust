@@ -19,17 +19,14 @@ use crate::{
 
 use gui::GuiSurface;
 use navigation::NavigationInput;
-use views::Views;
+use views::{Interaction, Views};
 
-/// A semantic view transition prepared by input/model state and not yet fully
-/// presented to the LCD.
 #[derive(Clone, Copy, Debug)]
 pub struct ViewTransition {
     pub from: ViewId,
     pub to: ViewId,
 }
 
-/// Exclusive CPU0 presentation state.
 pub struct Ui {
     model: AppModel,
     navigation: NavigationInput,
@@ -63,23 +60,27 @@ impl Ui {
         );
     }
 
-    /// Drain input, convert view interaction into semantic model actions, refresh
-    /// the active model, and report a navigation transition still to present.
     pub fn prepare_frame(&mut self, now: Instant) -> Option<ViewTransition> {
         let active_view = self.model.active_view();
-        let mut brightness_action = None;
+        let mut interaction = None;
         let selected = {
             let navigation = &mut self.navigation;
             let views = &mut self.views;
             navigation.poll(|pointer| {
-                if let Some(brightness) = views.handle_pointer(active_view, pointer) {
-                    brightness_action = Some(brightness);
+                if let Some(next) = views.handle_pointer(active_view, pointer) {
+                    interaction = Some(next);
                 }
             })
         };
 
-        if let Some(brightness) = brightness_action {
-            self.model.set_brightness(brightness);
+        if let Some(interaction) = interaction {
+            match interaction {
+                Interaction::SetBrightness(brightness) => self.model.set_brightness(brightness),
+                Interaction::ToggleSpeakerPlayback => self.model.toggle_speaker_playback(),
+                Interaction::PlaySpeakerOneShot => self.model.play_speaker_one_shot(),
+                Interaction::SetSpeakerTempo(tempo) => self.model.set_speaker_tempo(tempo),
+                Interaction::SetSpeakerPitch(pitch) => self.model.set_speaker_pitch(pitch),
+            }
         }
         if let Some(view) = selected {
             self.model.request_view(view);
@@ -93,19 +94,20 @@ impl Ui {
         })
     }
 
-    /// Commit a prepared transition and present the destination immediately.
     pub fn apply_navigation(&mut self, transition: ViewTransition, display: &mut Display) {
         debug_assert_eq!(transition.from, self.presented_view);
         self.presented_view = transition.to;
-
         navigation::render(display, transition.to);
 
-        // Log already owns a cached presentation snapshot and `request_view`
-        // marks it dirty before this transition is applied. Present that content
-        // directly so entering Log does not first transmit an empty shell and
-        // then transmit the same full content rectangle again.
         if transition.to == ViewId::Log && self.present_log_if_dirty(display) {
             return;
+        }
+        if transition.to == ViewId::Speaker {
+            if let Some(state) = self.model.take_speaker_display() {
+                self.views
+                    .present_speaker(&mut self.gui_surface, display, state);
+                return;
+            }
         }
 
         let settings = if transition.to == ViewId::Settings {
@@ -121,16 +123,12 @@ impl Ui {
         );
     }
 
-    /// Render dirty dynamic data for the currently presented semantic view.
     pub fn render(&mut self, display: &mut Display) {
         match self.presented_view {
             ViewId::Network => {
                 if let Some(snapshot) = self.model.take_network_display() {
-                    self.views.present_network(
-                        &mut self.gui_surface,
-                        display,
-                        &snapshot,
-                    );
+                    self.views
+                        .present_network(&mut self.gui_surface, display, &snapshot);
                 }
             }
             ViewId::Imu => {
@@ -144,7 +142,12 @@ impl Ui {
                     self.views.render_microphone(display, &frame);
                 }
             }
-            ViewId::Speaker => {}
+            ViewId::Speaker => {
+                if let Some(state) = self.model.take_speaker_display() {
+                    self.views
+                        .present_speaker(&mut self.gui_surface, display, state);
+                }
+            }
             ViewId::Settings => {
                 if let Some(settings) = self.model.take_settings_display() {
                     self.views

@@ -2,7 +2,8 @@
 //!
 //! `AppModel` owns bounded presentation-sized state and the CPU0 reader/command
 //! handles required to refresh or mutate it. It does not know display geometry,
-//! fonts, touch gestures, SPI/DMA, LCD controller details, or PMIC registers.
+//! fonts, touch gestures, SPI/DMA, LCD controller details, PMIC registers, or
+//! audio hardware registers.
 
 use embassy_time::{Duration, Instant};
 
@@ -20,10 +21,6 @@ const IMU_UPDATE: Duration = Duration::from_millis(40);
 const NETWORK_UPDATE: Duration = Duration::from_millis(200);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
 
-/// Semantic page identity shared by application refresh policy and presentation.
-///
-/// There is deliberately no numeric representation or presentation ordering on
-/// this type. Navigation order belongs to the UI design.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewId {
     Network,
@@ -47,7 +44,6 @@ impl ViewId {
     }
 }
 
-/// CPU1 data readers consumed directly by `AppModel`.
 pub struct AppModelInputs {
     pub network: NetworkInput,
     pub imu: ImuInput,
@@ -84,7 +80,6 @@ impl NetworkModel {
             return;
         }
         self.last_update = now;
-
         let Some(snapshot) = self.input.take_latest() else {
             return;
         };
@@ -105,7 +100,6 @@ impl NetworkModel {
     }
 }
 
-/// Rounded, presentation-sized IMU value owned by the CPU0 model.
 #[derive(Clone, Copy, Debug)]
 pub struct ImuDisplay {
     pub roll_deg: i32,
@@ -159,7 +153,6 @@ impl ImuModel {
             return;
         }
         self.last_update = now;
-
         let Some(snapshot) = self.input.take_latest() else {
             return;
         };
@@ -167,7 +160,6 @@ impl ImuModel {
             return;
         }
         self.last_revision = snapshot.revision;
-
         self.display = ImuDisplay {
             roll_deg: round_units(snapshot.orientation.roll_deg),
             pitch_deg: round_units(snapshot.orientation.pitch_deg),
@@ -230,7 +222,6 @@ impl WaveformModel {
             return;
         }
         self.last_update = now;
-
         let Some(info) = self.input.copy_latest_interleaved(&mut self.samples) else {
             return;
         };
@@ -238,7 +229,6 @@ impl WaveformModel {
             return;
         }
         self.last_sequence = info.sequence;
-
         if self.update_frame(info) {
             self.dirty = true;
         }
@@ -246,7 +236,6 @@ impl WaveformModel {
 
     fn update_frame(&mut self, info: audio::AudioBlockInfo) -> bool {
         const FRAMES_PER_POINT: usize = audio::BLOCK_FRAMES / POINTS;
-
         let left_scale = i32::from(info.peak_left.max(WAVEFORM_PEAK_FLOOR));
         let right_scale = i32::from(info.peak_right.max(WAVEFORM_PEAK_FLOOR));
         let mut changed = false;
@@ -263,13 +252,11 @@ impl WaveformModel {
                 let sample_index = frame * audio::CHANNELS;
                 let left = self.samples[sample_index];
                 let right = self.samples[sample_index + 1];
-
                 let left_abs = left.unsigned_abs();
                 if left_abs > left_magnitude {
                     left_magnitude = left_abs;
                     left_sample = left;
                 }
-
                 let right_abs = right.unsigned_abs();
                 if right_abs > right_magnitude {
                     right_magnitude = right_abs;
@@ -279,7 +266,6 @@ impl WaveformModel {
 
             let left_pixel = quantize_waveform(left_sample, left_scale);
             let right_pixel = quantize_waveform(right_sample, right_scale);
-
             if left_pixel != self.frame.left[point] {
                 self.frame.left[point] = left_pixel;
                 changed = true;
@@ -289,7 +275,6 @@ impl WaveformModel {
                 changed = true;
             }
         }
-
         changed
     }
 
@@ -307,7 +292,6 @@ fn quantize_waveform(sample: i16, scale: i32) -> i8 {
         .clamp(-MAX_AMPLITUDE_PIXELS, MAX_AMPLITUDE_PIXELS) as i8
 }
 
-/// Semantic state displayed by the Settings view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SettingsDisplay {
     pub brightness: BrightnessPercent,
@@ -352,7 +336,81 @@ impl SettingsModel {
     }
 }
 
-/// Fixed-size MCU log snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpeakerDisplay {
+    pub melody_playing: bool,
+    pub tempo: audio::TempoBpm,
+    pub pitch: audio::PitchSemitones,
+}
+
+impl SpeakerDisplay {
+    pub const DEFAULT: Self = Self {
+        melody_playing: false,
+        tempo: audio::TempoBpm::DEFAULT,
+        pitch: audio::PitchSemitones::CENTER,
+    };
+}
+
+struct SpeakerModel {
+    control: audio::PlaybackControl,
+    display: SpeakerDisplay,
+    dirty: bool,
+}
+
+impl SpeakerModel {
+    fn new(control: audio::PlaybackControl) -> Self {
+        Self {
+            control,
+            display: SpeakerDisplay::DEFAULT,
+            dirty: true,
+        }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    fn publish(&mut self) {
+        self.control.set(audio::PlaybackSettings {
+            melody_playing: self.display.melody_playing,
+            tempo: self.display.tempo,
+            pitch: self.display.pitch,
+        });
+        self.dirty = true;
+    }
+
+    fn toggle_playback(&mut self) {
+        self.display.melody_playing = !self.display.melody_playing;
+        self.publish();
+    }
+
+    fn set_tempo(&mut self, tempo: audio::TempoBpm) {
+        if self.display.tempo != tempo {
+            self.display.tempo = tempo;
+            self.publish();
+        }
+    }
+
+    fn set_pitch(&mut self, pitch: audio::PitchSemitones) {
+        if self.display.pitch != pitch {
+            self.display.pitch = pitch;
+            self.publish();
+        }
+    }
+
+    fn play_one_shot(&mut self) {
+        self.control.play_one_shot();
+    }
+
+    fn take_display(&mut self) -> Option<SpeakerDisplay> {
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        Some(self.display)
+    }
+}
+
 struct LogModel {
     bytes: data_plane::FixedPsramBuffer<u8>,
     len: usize,
@@ -407,18 +465,22 @@ impl LogModel {
     }
 }
 
-/// Complete CPU0 application model.
 pub struct AppModel {
     active_view: ViewId,
     network: NetworkModel,
     imu: ImuModel,
     waveform: WaveformModel,
+    speaker: SpeakerModel,
     settings: SettingsModel,
     log: LogModel,
 }
 
 impl AppModel {
-    pub fn new(inputs: AppModelInputs, brightness: BrightnessControl) -> Self {
+    pub fn new(
+        inputs: AppModelInputs,
+        brightness: BrightnessControl,
+        playback: audio::PlaybackControl,
+    ) -> Self {
         let AppModelInputs {
             network,
             imu,
@@ -432,6 +494,7 @@ impl AppModel {
             network: NetworkModel::new(network),
             imu: ImuModel::new(imu),
             waveform: WaveformModel::new(audio),
+            speaker: SpeakerModel::new(playback),
             settings: SettingsModel::new(brightness),
             log,
         }
@@ -450,9 +513,9 @@ impl AppModel {
             ViewId::Network => self.network.mark_dirty(),
             ViewId::Imu => self.imu.mark_dirty(),
             ViewId::Microphone => self.waveform.mark_dirty(),
+            ViewId::Speaker => self.speaker.mark_dirty(),
             ViewId::Settings => self.settings.mark_dirty(),
             ViewId::Log => self.log.mark_dirty(),
-            ViewId::Speaker => {}
         }
     }
 
@@ -470,6 +533,37 @@ impl AppModel {
         if self.active_view == ViewId::Settings {
             self.settings.set_brightness(brightness);
         }
+    }
+
+    pub fn toggle_speaker_playback(&mut self) {
+        if self.active_view == ViewId::Speaker {
+            self.speaker.toggle_playback();
+        }
+    }
+
+    pub fn play_speaker_one_shot(&mut self) {
+        if self.active_view == ViewId::Speaker {
+            self.speaker.play_one_shot();
+        }
+    }
+
+    pub fn set_speaker_tempo(&mut self, tempo: audio::TempoBpm) {
+        if self.active_view == ViewId::Speaker {
+            self.speaker.set_tempo(tempo);
+        }
+    }
+
+    pub fn set_speaker_pitch(&mut self, pitch: audio::PitchSemitones) {
+        if self.active_view == ViewId::Speaker {
+            self.speaker.set_pitch(pitch);
+        }
+    }
+
+    pub fn take_speaker_display(&mut self) -> Option<SpeakerDisplay> {
+        if self.active_view != ViewId::Speaker {
+            return None;
+        }
+        self.speaker.take_display()
     }
 
     pub fn take_settings_display(&mut self) -> Option<SettingsDisplay> {

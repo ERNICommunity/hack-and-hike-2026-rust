@@ -121,17 +121,6 @@ pub(super) fn draw_dense(
     let _ = Text::with_baseline(text, Point::new(x, y), style, Baseline::Top).draw(frame);
 }
 
-pub(super) fn draw_centered_title(
-    frame: &mut GuiFramebuffer,
-    rect: Rect,
-    text: &str,
-    color: Rgb565,
-) {
-    let width = text.len() as i32 * 8;
-    let x = rect.x + ((rect.w as i32 - width) / 2).max(0);
-    draw_title(frame, text, x, rect.y, color);
-}
-
 pub(super) fn draw_centered_body(
     frame: &mut GuiFramebuffer,
     rect: Rect,
