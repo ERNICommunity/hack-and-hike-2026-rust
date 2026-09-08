@@ -13,14 +13,22 @@ use crate::{board, system_i2c::SystemI2cBus};
 static BRIGHTNESS_REQUEST: Signal<CriticalSectionRawMutex, BrightnessPercent> = Signal::new();
 
 /// Valid user-facing LCD brightness percentage.
+///
+/// Runtime brightness intentionally has no OFF state. The lowest setting keeps
+/// the panel visibly powered; display power policy is separate from dimming.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BrightnessPercent(u8);
 
 impl BrightnessPercent {
+    pub const MIN: Self = Self(1);
     pub const FULL: Self = Self(100);
 
     pub const fn new(value: u8) -> Option<Self> {
-        if value <= 100 { Some(Self(value)) } else { None }
+        if value >= Self::MIN.0 && value <= Self::FULL.0 {
+            Some(Self(value))
+        } else {
+            None
+        }
     }
 
     pub const fn get(self) -> u8 {
