@@ -4,7 +4,7 @@
 //! content pointer input becomes a brightness percentage action, while the
 //! application model remains the authoritative brightness state.
 
-use embedded_gui::{math::F32Ext as _, prelude::*};
+use embedded_gui::prelude::*;
 
 use crate::{display::Display, display_control::BrightnessPercent};
 
@@ -81,13 +81,15 @@ impl View {
         while let Some(event) = self.gui.pop_event() {
             if let UiEvent::ValueChanged(id) = event {
                 if id == self.brightness {
+                    // Brightness is a bounded, non-negative percentage. Adding
+                    // half a step before the integer cast gives nearest-integer
+                    // rounding without requiring a no_std float extension trait.
                     let value = self
                         .gui
                         .slider_value(self.brightness)
                         .unwrap_or(100.0)
-                        .round()
-                        .clamp(0.0, 100.0) as u8;
-                    brightness = BrightnessPercent::new(value);
+                        .clamp(0.0, 100.0);
+                    brightness = BrightnessPercent::new((value + 0.5) as u8);
                 }
             }
         }
