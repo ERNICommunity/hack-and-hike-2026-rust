@@ -12,6 +12,7 @@ mod views;
 use embassy_time::Instant;
 
 use crate::{
+    camera,
     display::Display,
     models::{AppModel, ViewId},
     service_inputs::TouchInput,
@@ -45,6 +46,10 @@ impl Ui {
             gui_surface: GuiSurface::new(),
             presented_view,
         }
+    }
+
+    pub fn presented_view(&self) -> ViewId {
+        self.presented_view
     }
 
     pub fn render_initial(&mut self, display: &mut Display) {
@@ -158,6 +163,12 @@ impl Ui {
             ViewId::Log => {
                 let _ = self.present_log_if_dirty(display);
             }
+        }
+    }
+
+    pub fn render_camera(&self, display: &mut Display, frame: &camera::Frame<'_>) {
+        if self.presented_view == ViewId::Camera {
+            self.views.render_camera(display, frame);
         }
     }
 
