@@ -1,11 +1,10 @@
 //! CPU0 presentation owner.
 //!
-//! `Ui` coordinates semantic application state, touch routing, view ownership,
-//! the legacy PSRAM content framebuffer, and the fixed embedded-gui surface.
-//! Views cannot access service hardware; `Display` remains the only LCD boundary.
+//! `Ui` coordinates semantic application state, touch routing, semantic views,
+//! and one fixed PSRAM embedded-gui surface. KDL owns content-view geometry;
+//! `Display` remains the only LCD transport boundary.
 
 mod design;
-mod framebuffer;
 mod gui;
 mod navigation;
 mod views;
@@ -18,7 +17,6 @@ use crate::{
     service_inputs::TouchInput,
 };
 
-use framebuffer::ContentFramebuffer;
 use gui::GuiSurface;
 use navigation::NavigationInput;
 use views::Views;
@@ -36,7 +34,6 @@ pub struct Ui {
     model: AppModel,
     navigation: NavigationInput,
     views: Views,
-    content: ContentFramebuffer,
     gui_surface: GuiSurface,
     presented_view: ViewId,
 }
@@ -48,7 +45,6 @@ impl Ui {
             model,
             navigation: NavigationInput::new(touch),
             views: Views::new(),
-            content: ContentFramebuffer::new(),
             gui_surface: GuiSurface::new(),
             presented_view,
         }
@@ -58,7 +54,6 @@ impl Ui {
         navigation::render(display, self.presented_view);
         self.views.present_shell(
             self.presented_view,
-            &mut self.content,
             &mut self.gui_surface,
             display,
             None,
@@ -108,26 +103,28 @@ impl Ui {
         };
         self.views.present_shell(
             transition.to,
-            &mut self.content,
             &mut self.gui_surface,
             display,
             settings,
         );
     }
 
-    /// Render dirty dynamic data for the currently presented view.
+    /// Render dirty dynamic data for the currently presented semantic view.
     pub fn render(&mut self, display: &mut Display) {
         match self.presented_view {
             ViewId::Network => {
                 if let Some(snapshot) = self.model.take_network_display() {
-                    views::render_network(&mut self.content, &snapshot);
-                    self.blit_content(display);
+                    self.views.present_network(
+                        &mut self.gui_surface,
+                        display,
+                        &snapshot,
+                    );
                 }
             }
             ViewId::Imu => {
                 if let Some(imu) = self.model.take_imu_display() {
-                    views::render_imu(&mut self.content, &imu);
-                    self.blit_content(display);
+                    self.views
+                        .present_imu(&mut self.gui_surface, display, &imu);
                 }
             }
             ViewId::Microphone => {
@@ -135,29 +132,21 @@ impl Ui {
                     self.views.render_microphone(display, &frame);
                 }
             }
+            ViewId::Speaker => {}
             ViewId::Settings => {
                 if let Some(settings) = self.model.take_settings_display() {
                     self.views
                         .present_settings(&mut self.gui_surface, display, settings);
                 }
             }
-            ViewId::Speaker => {}
             ViewId::Log => {
-                let rendered = {
-                    let model = &mut self.model;
-                    let content = &mut self.content;
-                    model
-                        .with_log_text(|text| views::render_log(content, text))
-                        .is_some()
-                };
-                if rendered {
-                    self.blit_content(display);
-                }
+                let model = &mut self.model;
+                let views = &mut self.views;
+                let surface = &mut self.gui_surface;
+                let _ = model.with_log_text(|text| {
+                    views.present_log(surface, display, text);
+                });
             }
         }
-    }
-
-    fn blit_content(&self, display: &mut Display) {
-        display.blit(design::CONTENT_REGION, self.content.pixels());
     }
 }

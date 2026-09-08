@@ -1,0 +1,7 @@
+screen id="Network" width=276 height=240 theme="light" {
+    grid cols="1fr" rows="18px 56px 1fr" gap=6 padding=8 {
+        label id="title_slot" text="" col=0 row=0
+        label id="summary_slot" text="" col=0 row=1
+        label id="peers_slot" text="" col=0 row=2
+    }
+}

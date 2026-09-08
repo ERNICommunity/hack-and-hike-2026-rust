@@ -1,14 +1,16 @@
 //! Microphone view.
 //!
-//! KDL owns the static page structure and reserves the two waveform canvases.
-//! The realtime waveform remains a view-specific direct renderer so audio-rate
-//! updates never rebuild or repaint the GUI tree.
+//! KDL owns the static page structure and reserves the label/waveform regions.
+//! The labels are drawn with a native-resolution firmware font after the KDL
+//! layout pass. The realtime waveform remains a view-specific direct renderer so
+//! audio-rate updates never rebuild or repaint the GUI tree.
 
-use embedded_gui::{font::FontId, prelude::*};
+use embedded_gui::prelude::*;
 
 use crate::{data_plane, display::Display, waveform::WaveformFrame};
 
-use super::super::gui::{GuiSurface, light_label_style};
+use super::super::gui::GuiSurface;
+use super::common;
 
 mod waveform;
 
@@ -17,8 +19,8 @@ mod generated {
     embedded_gui::include_gui!("src/ui/views/microphone/microphone.kdl");
 }
 
-const NODE_CAPACITY: usize = 16;
-const TEXT_CAPACITY: usize = 8;
+const NODE_CAPACITY: usize = 12;
+const TEXT_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 4;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
@@ -33,67 +35,70 @@ pub(super) struct Canvas {
 
 pub(crate) struct View {
     gui: &'static mut Context,
+    left_label: Rect,
+    right_label: Rect,
     left: Canvas,
     right: Canvas,
 }
 
 impl View {
     pub(crate) fn new() -> Self {
-        // This context is only used for the static shell; the high-rate waveform
-        // renderer bypasses embedded-gui entirely. PSRAM is therefore the right
-        // home for the fixed-capacity widget tree/state.
         let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::MicrophoneApp::build(gui)
             .expect("microphone KDL exceeds embedded-gui fixed capacities");
 
-        // KDL remains the single source of layout geometry. The published
-        // embedded-gui 0.2.x base label style is white-on-transparent, so light
-        // firmware pages instantiate their visible labels with the shared light
-        // style rather than duplicating coordinates in Rust.
-        let left_label = gui
-            .absolute_rect(app.widgets.left_label_slot)
-            .expect("microphone left label layout missing");
-        let right_label = gui
-            .absolute_rect(app.widgets.right_label_slot)
-            .expect("microphone right label layout missing");
-        gui.add_label(
-            left_label,
-            "MIC L",
-            light_label_style(FontId::Scaled6x10),
-        )
-        .expect("microphone left label exceeds embedded-gui fixed capacities");
-        gui.add_label(
-            right_label,
-            "MIC R",
-            light_label_style(FontId::Scaled6x10),
-        )
-        .expect("microphone right label exceeds embedded-gui fixed capacities");
-
-        let left = canvas_from_rect(
-            gui.absolute_rect(app.widgets.left_waveform)
-                .expect("microphone left waveform layout missing"),
-        );
-        let right = canvas_from_rect(
-            gui.absolute_rect(app.widgets.right_waveform)
-                .expect("microphone right waveform layout missing"),
-        );
+        let left_label = required_rect(gui, app.widgets.left_label_slot, "microphone left label");
+        let right_label = required_rect(gui, app.widgets.right_label_slot, "microphone right label");
+        let left = canvas_from_rect(required_rect(
+            gui,
+            app.widgets.left_waveform,
+            "microphone left waveform",
+        ));
+        let right = canvas_from_rect(required_rect(
+            gui,
+            app.widgets.right_waveform,
+            "microphone right waveform",
+        ));
 
         assert_canvas(left);
         assert_canvas(right);
         Self {
             gui,
+            left_label,
+            right_label,
             left,
             right,
         }
     }
 
     pub(crate) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
-        surface.present(display, self.gui);
+        let left_label = self.left_label;
+        let right_label = self.right_label;
+        surface.present_with_overlay(display, self.gui, move |frame| {
+            common::draw_title(
+                frame,
+                "MIC L",
+                left_label.x,
+                left_label.y,
+                common::black(),
+            );
+            common::draw_title(
+                frame,
+                "MIC R",
+                right_label.x,
+                right_label.y,
+                common::black(),
+            );
+        });
     }
 
     pub(crate) fn render_waveform(&self, display: &mut Display, frame: &WaveformFrame) {
         waveform::render(display, self.left, self.right, frame);
     }
+}
+
+fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
+    gui.absolute_rect(id).unwrap_or_else(|| panic!("{name} layout missing"))
 }
 
 fn canvas_from_rect(rect: Rect) -> Canvas {

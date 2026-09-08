@@ -1,39 +1,25 @@
 //! Shared `embedded-gui` presentation surface.
 //!
-//! KDL-generated views render into one fixed PSRAM RGB565 framebuffer. The
-//! framebuffer then crosses the framework's ownership-based `DisplayBackend` /
-//! `DmaTransfer` boundary before reaching the existing CoreS3 SPI-DMA display
-//! service. The current board transport pipelines one internal-RAM scanline at a
-//! time, so a present completes synchronously; the ownership contract is already
-//! the same contract required by a future non-blocking backend.
+//! KDL-generated views render into one fixed PSRAM RGB565 framebuffer. A semantic
+//! view may then draw a view-specific overlay into that same framebuffer before
+//! it crosses the framework's ownership-based `DisplayBackend` / `DmaTransfer`
+//! boundary. This keeps layout declarative without forcing dense telemetry or
+//! instrument pixels through generic widget abstractions.
 
-use embedded_graphics::{pixelcolor::{IntoStorage, Rgb565, RgbColor}, prelude::DrawTarget as _};
+use embedded_graphics::{pixelcolor::{IntoStorage, Rgb565}, prelude::DrawTarget as _};
 use embedded_gui::{
-    DMACapableFrameBufferBackend, DisplayBackend, DisplayError, DmaTransfer,
-    EndianCorrectedBuffer, EndianCorrection, FrameBuf, GuiContext, TransferError,
-    font::FontId,
-    style::Style,
+    DMACapableFrameBufferBackend, DisplayBackend, DmaTransfer, EndianCorrectedBuffer,
+    EndianCorrection, FrameBuf, GuiContext, TransferError,
 };
 
-use crate::{data_plane, display::{Display, Region}};
+use crate::{data_plane, display::Display};
 
 use super::design;
 
 pub(crate) type GuiFramebufferBackend = EndianCorrectedBuffer<'static, Rgb565>;
-type GuiFramebuffer = FrameBuf<Rgb565, GuiFramebufferBackend>;
+pub(crate) type GuiFramebuffer = FrameBuf<Rgb565, GuiFramebufferBackend>;
 
-/// Explicit label style for pages presented on the firmware's white content
-/// surface. `embedded-gui`'s base label style is white-on-transparent, which is
-/// suitable for its dark themes but invisible on our light page background.
-pub(crate) fn light_label_style(font: FontId) -> Style {
-    let mut style = Style::label();
-    style.font = font;
-    style.foreground = Rgb565::BLACK;
-    style.text = Rgb565::BLACK;
-    style
-}
-
-/// One reusable fixed-size content surface for KDL-generated views.
+/// One reusable fixed-size content surface for every KDL-backed view.
 pub(crate) struct GuiSurface {
     framebuffer: Option<GuiFramebuffer>,
 }
@@ -54,12 +40,25 @@ impl GuiSurface {
         }
     }
 
-    /// Render a complete declarative screen and present it through the framework
-    /// DMA ownership boundary.
     pub(crate) fn present<const NODES: usize, const TEXT: usize, const EVENTS: usize>(
         &mut self,
         display: &mut Display,
         gui: &mut GuiContext<'static, NODES, TEXT, EVENTS>,
+    ) {
+        self.present_with_overlay(display, gui, |_| {});
+    }
+
+    /// Render KDL/widget content, then let the semantic view draw any specialized
+    /// pixels inside KDL-owned regions before the framebuffer is presented.
+    pub(crate) fn present_with_overlay<
+        const NODES: usize,
+        const TEXT: usize,
+        const EVENTS: usize,
+    >(
+        &mut self,
+        display: &mut Display,
+        gui: &mut GuiContext<'static, NODES, TEXT, EVENTS>,
+        overlay: impl FnOnce(&mut GuiFramebuffer),
     ) {
         let mut framebuffer = self
             .framebuffer
@@ -68,6 +67,7 @@ impl GuiSurface {
         let _ = framebuffer.clear(Rgb565::WHITE);
         gui.render(&mut framebuffer)
             .expect("embedded-gui render failed");
+        overlay(&mut framebuffer);
 
         let mut backend = CoreS3DisplayBackend { display };
         let transfer = backend
@@ -119,9 +119,8 @@ fn present_framebuffer(display: &mut Display, framebuffer: &GuiFramebuffer) {
     let pixel_count = design::CONTENT_WIDTH * design::CONTENT_HEIGHT;
     let data = &framebuffer.data;
 
-    // `data_ptr()` is the DMA-backend contract for accessing the contiguous
-    // framebuffer. The framebuffer is owned by this transfer for the complete
-    // operation and its dimensions prove the slice length.
+    // The framebuffer is owned by this transfer for the complete operation and
+    // its fixed dimensions prove the contiguous slice length.
     let pixels = unsafe { core::slice::from_raw_parts(data.data_ptr(), pixel_count) };
     display.render_scanlines(design::CONTENT_REGION, |local_y, destination| {
         let start = local_y * design::CONTENT_WIDTH;
@@ -131,7 +130,3 @@ fn present_framebuffer(display: &mut Display, framebuffer: &GuiFramebuffer) {
         }
     });
 }
-
-// Keep these framework types deliberately contained at the presentation boundary.
-const _: fn(DisplayError) = |_: DisplayError| {};
-const _: fn(Region) = |_: Region| {};
