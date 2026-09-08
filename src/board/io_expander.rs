@@ -46,10 +46,11 @@ pub fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mu
     delay.delay_millis(300u32);
 }
 
-/// Configure P0_2 as an output and release the onboard amplifier.
+/// Power and release the onboard AW88298 amplifier.
 ///
-/// Amplifier device configuration remains the responsibility of the audio
-/// service when/if it is added.
+/// CoreS3 speaker bring-up is a two-stage board operation: AXP2101 ALDO1 must
+/// first supply the amplifier at 1.8 V, then AW9523 P0_2 releases/enables the
+/// speaker path. AW88298 register configuration remains owned by `audio`.
 pub fn release_audio_amplifier<I2C>(
     i2c: &mut I2C,
     delay: &mut Delay,
@@ -57,6 +58,9 @@ pub fn release_audio_amplifier<I2C>(
 where
     I2C: embedded_hal::i2c::I2c,
 {
+    super::power::enable_speaker_amplifier(i2c)?;
+    delay.delay_millis(10u32);
+
     update_register_bits(i2c, 0x04, 1 << 2, 0)?;
     update_register_bits(i2c, 0x02, 1 << 2, 1 << 2)?;
     delay.delay_millis(10u32);
