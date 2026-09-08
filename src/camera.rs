@@ -5,15 +5,14 @@
 //! aligned PSRAM buffer. The UI scales the complete frame to fit without cropping.
 
 mod gc0308;
-mod sccb;
 
 use esp_hal::{
     delay::Delay,
     dma::{DmaRxBuf, ExternalBurstConfig},
     lcd_cam::{LcdCam, cam::{Camera as CameraDriver, Config as CameraConfig}},
     peripherals::{
-        DMA_CH2, GPIO11, GPIO12, GPIO15, GPIO16, GPIO38, GPIO39, GPIO40, GPIO41, GPIO42,
-        GPIO45, GPIO46, GPIO47, GPIO48, LCD_CAM,
+        DMA_CH2, GPIO15, GPIO16, GPIO38, GPIO39, GPIO40, GPIO41, GPIO42, GPIO45, GPIO46,
+        GPIO47, GPIO48, LCD_CAM,
     },
     time::Rate,
 };
@@ -56,11 +55,6 @@ pub struct Frame<'a> {
     bytes: &'a [u8],
 }
 
-pub struct SensorInit {
-    pub pid: u8,
-    pub nack_count: u16,
-}
-
 impl Frame<'_> {
     pub fn scanline(&self, y: usize) -> &[u8] {
         debug_assert!(y < HEIGHT);
@@ -69,22 +63,17 @@ impl Frame<'_> {
     }
 }
 
-/// Program the GC0308 over a startup-only software SCCB owner.
+/// Program the GC0308 over a startup-only hardware SCCB/I2C owner.
 ///
 /// GPIO12/GPIO11 are shared with the board's normal system I2C bus. Bootstrap
-/// deliberately drops its temporary hardware-I2C driver before calling this
-/// function, matching M5Stack's camera ownership model. After this function
-/// returns, the software SCCB pins are dropped and the persistent 400 kHz
-/// system-I2C driver can be created for CPU1.
-pub fn init_sensor(sda: GPIO12<'_>, scl: GPIO11<'_>, delay: &mut Delay) -> SensorInit {
-    let mut sccb = sccb::Sccb::new(sda, scl);
-    sccb.recover_bus();
-
-    let pid = gc0308::init(&mut sccb, delay).unwrap_or_else(|never| match never {});
-    SensorInit {
-        pid,
-        nack_count: sccb.nack_count(),
-    }
+/// deliberately drops its temporary board-I2C driver, creates a fresh 100 kHz
+/// hardware owner for this call, then drops it again before constructing the
+/// persistent 400 kHz runtime bus. This mirrors M5Stack's CoreS3 camera bring-up.
+pub fn init_sensor<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<u8, I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    gc0308::init(i2c, delay)
 }
 
 pub const EXPECTED_SENSOR_PID: u8 = gc0308::EXPECTED_PID;
@@ -111,7 +100,7 @@ pub fn init(resources: Resources) -> Camera {
     let driver = CameraDriver::new(lcd_cam.cam, dma, config)
         .expect("Failed to configure LCD_CAM camera input")
         // CoreS3 Lite has no MCU-driven camera XCLK pin, so this deliberately
-        // stays in LCD_CAM slave mode.
+        // stays in LCD_CAM slave mode. The board provides its own 20 MHz clock.
         .with_pixel_clock(pclk)
         .with_vsync(vsync)
         .with_h_enable(href)
