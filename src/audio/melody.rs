@@ -4,7 +4,7 @@
 //! eight monophonic note-ons on quarter-note boundaries. The original note-offs
 //! occur after 96 ticks; playback intentionally holds every note until the next
 //! note-on (or the loop boundary) so each note is as long as possible without
-//! overlapping the following note.
+//! overlapping the following note. Playback is transposed up two octaves.
 
 use super::{PitchSemitones, TempoBpm, SAMPLE_RATE_HZ};
 
@@ -12,6 +12,7 @@ const TICKS_PER_BEAT: u32 = 384;
 const LOOP_TICKS: u32 = 3_072;
 const MIDI_MIN: i16 = 24;
 const MIDI_MAX: i16 = 60;
+const MIDI_OCTAVE_SHIFT: u32 = 2;
 const SYNTH_PEAK: i32 = 20_000;
 
 #[derive(Clone, Copy)]
@@ -98,7 +99,9 @@ impl MelodySynth {
         pitch: PitchSemitones,
     ) -> i16 {
         let midi = i16::from(note.midi) + i16::from(pitch.get());
-        let step = phase_step(midi);
+        // Doubling oscillator frequency per octave keeps the pitch slider
+        // relative to the source notes while moving the whole melody +24 st.
+        let step = phase_step(midi) << MIDI_OCTAVE_SHIFT;
         let wave = i32::from(triangle_wave(self.phase));
         self.phase = self.phase.wrapping_add(step);
 
