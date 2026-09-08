@@ -56,19 +56,16 @@ pub fn enable_lcd_backlight(i2c: &mut impl embedded_hal::i2c::I2c) {
     );
 }
 
-/// Apply a semantic 0-100% LCD brightness request to the CoreS3 backlight rail.
+/// Apply a semantic 1-100% LCD brightness request to the CoreS3 backlight rail.
 ///
-/// The hardware has eight effective non-zero voltage steps in its supported
-/// backlight range. Zero disables DLDO1; 1-100% is quantized across 2.6-3.3 V.
+/// The hardware has eight effective voltage steps in its supported backlight
+/// range. Runtime dimming never disables DLDO1: 1% maps to 2.6 V and 100% to
+/// 3.3 V. Turning display power off is deliberately not a slider operation.
 pub async fn set_lcd_backlight<I2C>(i2c: &mut I2C, percent: u8) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal_async::i2c::I2c,
 {
-    debug_assert!(percent <= 100);
-
-    if percent == 0 {
-        return update_register_bits_async(i2c, OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, 0).await;
-    }
+    debug_assert!((1..=100).contains(&percent));
 
     let span = u16::from(LCD_BACKLIGHT_MAX_CODE - LCD_BACKLIGHT_MIN_CODE);
     let scaled = (u16::from(percent - 1) * span + 49) / 99;
