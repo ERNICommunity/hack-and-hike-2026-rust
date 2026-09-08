@@ -8,7 +8,7 @@ mod gc0308;
 
 use esp_hal::{
     delay::Delay,
-    dma::{DmaRxBuf, ExternalBurstConfig, aligned::DmaAlignedMut},
+    dma::{DmaRxBuf, ExternalBurstConfig},
     lcd_cam::{LcdCam, cam::{Camera as CameraDriver, Config as CameraConfig}},
     peripherals::{
         DMA_CH2, GPIO15, GPIO16, GPIO38, GPIO39, GPIO40, GPIO41, GPIO42, GPIO45, GPIO46,
@@ -117,7 +117,6 @@ pub fn init(resources: Resources) -> Camera {
     let frame_bytes = unsafe {
         core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), FRAME_BYTES)
     };
-    let frame_bytes = DmaAlignedMut::new(frame_bytes).expect("Camera PSRAM DMA buffer alignment");
     let (rx_descriptors, _tx_descriptors) =
         esp_hal::dma_descriptors_chunk_size!(FRAME_BYTES, DMA_CHUNK_BYTES);
     let buffer = DmaRxBuf::new_with_config(
