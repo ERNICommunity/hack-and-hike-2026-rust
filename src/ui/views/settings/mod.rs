@@ -7,9 +7,8 @@
 //! pointer drags on this input path.
 
 use embedded_gui::{font::FontId, prelude::*};
-use static_cell::StaticCell;
 
-use crate::{display::Display, display_control::BrightnessPercent};
+use crate::{data_plane, display::Display, display_control::BrightnessPercent};
 
 use super::super::{
     gui::{GuiSurface, light_label_style},
@@ -28,12 +27,6 @@ const SLIDER_HIT_MARGIN: i32 = 8;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
-// `GuiContext` contains fixed-capacity widget/event storage and is intentionally
-// long-lived presentation state, not an async-task stack local. `init_with`
-// constructs it in place so bootstrap does not create a second large temporary
-// on the CPU0 stack.
-static CONTEXT: StaticCell<Context> = StaticCell::new();
-
 pub(crate) struct View {
     gui: &'static mut Context,
     brightness: WidgetId,
@@ -44,7 +37,10 @@ pub(crate) struct View {
 
 impl View {
     pub(crate) fn new(brightness: BrightnessPercent) -> Self {
-        let gui = CONTEXT.init_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        // GuiContext is device-lifetime presentation state and has no DMA/ISR
+        // requirement. Keep its fixed-capacity storage in explicit PSRAM rather
+        // than either the CPU0 async stack or scarce internal SRAM.
+        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
 
@@ -162,9 +158,6 @@ impl View {
             _ => None,
         };
 
-        // The semantic value above is authoritative for this adapter. Discard
-        // framework-local events so stale ValueChanged notifications cannot be
-        // observed on a later gesture.
         drain_events(self.gui);
         brightness
     }
@@ -179,9 +172,6 @@ impl View {
     }
 
     fn brightness_at(&mut self, pointer_x: i32) -> BrightnessPercent {
-        // Map directly in integer percentage space. This makes tap-to-position
-        // and drag semantics deterministic and avoids no_std float math here;
-        // the embedded-gui slider remains the visual/stateful widget.
         let left = self.brightness_rect.x;
         let right = left + self.brightness_rect.w.saturating_sub(1) as i32;
         let span = (right - left).max(1);
