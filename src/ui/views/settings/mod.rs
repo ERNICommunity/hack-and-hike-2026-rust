@@ -4,7 +4,7 @@
 //! content pointer input becomes a brightness percentage action, while the
 //! application model remains the authoritative brightness state.
 
-use embedded_gui::prelude::*;
+use embedded_gui::{math::F32Ext as _, prelude::*};
 
 use crate::{display::Display, display_control::BrightnessPercent};
 
@@ -23,7 +23,7 @@ type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>
 
 pub(crate) struct View {
     gui: Context,
-    app: generated::SettingsApp,
+    brightness: WidgetId,
 }
 
 impl View {
@@ -31,10 +31,19 @@ impl View {
         let mut gui = Context::new(Rect::new(0, 0, 276, 240));
         let app = generated::SettingsApp::build(&mut gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
-        gui.set_slider_value(app.widgets.brightness, f32::from(brightness.get()))
-            .expect("settings brightness widget is not a slider");
+        let brightness_rect = gui
+            .absolute_rect(app.widgets.brightness_slot)
+            .expect("settings brightness slot layout missing");
+        let brightness = gui
+            .add_themed_slider(
+                brightness_rect,
+                f32::from(brightness.get()),
+                0.0,
+                100.0,
+            )
+            .expect("settings brightness slider exceeds embedded-gui fixed capacities");
         while gui.pop_event().is_some() {}
-        Self { gui, app }
+        Self { gui, brightness }
     }
 
     pub(crate) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display) {
@@ -43,9 +52,9 @@ impl View {
 
     pub(crate) fn sync_brightness(&mut self, brightness: BrightnessPercent) {
         let expected = f32::from(brightness.get());
-        if self.gui.slider_value(self.app.widgets.brightness) != Some(expected) {
+        if self.gui.slider_value(self.brightness) != Some(expected) {
             self.gui
-                .set_slider_value(self.app.widgets.brightness, expected)
+                .set_slider_value(self.brightness, expected)
                 .expect("settings brightness widget is not a slider");
             while self.gui.pop_event().is_some() {}
         }
@@ -71,10 +80,10 @@ impl View {
         let mut brightness = None;
         while let Some(event) = self.gui.pop_event() {
             if let UiEvent::ValueChanged(id) = event {
-                if id == self.app.widgets.brightness {
+                if id == self.brightness {
                     let value = self
                         .gui
-                        .slider_value(self.app.widgets.brightness)
+                        .slider_value(self.brightness)
                         .unwrap_or(100.0)
                         .round()
                         .clamp(0.0, 100.0) as u8;
