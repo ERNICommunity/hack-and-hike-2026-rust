@@ -35,7 +35,11 @@ pub const CHANNELS: usize = 2;
 pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 
 const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
-const TX_DMA_BUFFER_BYTES: usize = 8 * 1024;
+// esp-hal 1.1.x uses 4092-byte DMA chunks and balances circular buffers that
+// fit within two chunks across three descriptors. 8192 misses that path by only
+// 8 bytes, producing a pathological 4092 + 4092 + 8-byte TX ring.
+const TX_DMA_BUFFER_BYTES: usize = 8_184;
+const _: () = assert!(TX_DMA_BUFFER_BYTES % 4 == 0);
 const ES7210_ADDR: u8 = 0x40;
 const AW88298_ADDR: u8 = 0x36;
 
@@ -246,7 +250,7 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
     } = resources;
 
     let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
-        esp_hal::dma_buffers!(RX_DMA_BUFFER_BYTES, TX_DMA_BUFFER_BYTES);
+        esp_hal::dma_circular_buffers!(RX_DMA_BUFFER_BYTES, TX_DMA_BUFFER_BYTES);
 
     let i2s = I2s::new(
         i2s0,
