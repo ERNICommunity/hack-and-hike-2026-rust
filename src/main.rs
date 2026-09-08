@@ -9,6 +9,7 @@
 
 mod audio;
 mod board;
+mod camera;
 mod data_plane;
 mod diagnostics;
 mod display;
@@ -74,6 +75,21 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
                 dc: peripherals.GPIO35,
                 cs: peripherals.GPIO3,
             },
+            camera: camera::Resources {
+                lcd_cam: peripherals.LCD_CAM,
+                dma: peripherals.DMA_CH2,
+                pclk: peripherals.GPIO45,
+                vsync: peripherals.GPIO46,
+                href: peripherals.GPIO38,
+                d0: peripherals.GPIO39,
+                d1: peripherals.GPIO40,
+                d2: peripherals.GPIO41,
+                d3: peripherals.GPIO42,
+                d4: peripherals.GPIO15,
+                d5: peripherals.GPIO16,
+                d6: peripherals.GPIO48,
+                d7: peripherals.GPIO47,
+            },
         },
         cpu1: resources::Cpu1Resources {
             system_i2c: system_i2c::Resources {
@@ -99,6 +115,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     let resources::RuntimeResources { cpu0, cpu1 } = runtime_resources;
     let resources::Cpu0Resources {
         display: display_resources,
+        camera: camera_resources,
     } = cpu0;
     let resources::Cpu1Resources {
         system_i2c: system_i2c_resources,
@@ -111,7 +128,19 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     board::power::enable_lcd_backlight(&mut system_i2c);
     board::io_expander::reset_display_and_touch(&mut system_i2c, &mut delay);
+    board::io_expander::reset_camera(&mut system_i2c, &mut delay)
+        .expect("Failed to reset GC0308 camera");
+    let camera_pid = camera::init_sensor(&mut system_i2c, &mut delay)
+        .expect("Failed to initialize GC0308 camera");
+    assert_eq!(
+        camera_pid,
+        camera::EXPECTED_SENSOR_PID,
+        "Unexpected camera sensor PID"
+    );
+    info!("GC0308 camera ready (PID=0x{:02x})", camera_pid);
+
     let mut display = display::init(display_resources, &mut delay);
+    let mut camera = camera::init(camera_resources);
 
     audio::init_es7210(&mut system_i2c).expect("Failed to initialize ES7210 microphone codec");
     audio::init_aw88298(&mut system_i2c, &mut delay)
@@ -197,6 +226,12 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         }
 
         ui.render(&mut display);
+
+        if ui.presented_view() == models::ViewId::Camera {
+            if let Some(frame) = camera.capture() {
+                ui.render_camera(&mut display, &frame);
+            }
+        }
 
         if let Some(transition) = transition {
             heap_monitor.end_activity();
