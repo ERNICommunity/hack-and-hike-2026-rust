@@ -17,7 +17,6 @@ static BRIGHTNESS_REQUEST: Signal<CriticalSectionRawMutex, BrightnessPercent> = 
 pub struct BrightnessPercent(u8);
 
 impl BrightnessPercent {
-    pub const OFF: Self = Self(0);
     pub const FULL: Self = Self(100);
 
     pub const fn new(value: u8) -> Option<Self> {
