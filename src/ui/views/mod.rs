@@ -25,6 +25,40 @@ use crate::{
 
 use super::{design, gui::GuiSurface, navigation::ContentPointer};
 
+const CAMERA_IMAGE_WIDTH: usize = design::CONTENT_WIDTH;
+const CAMERA_IMAGE_HEIGHT: usize = CAMERA_IMAGE_WIDTH * camera::HEIGHT / camera::WIDTH;
+const CAMERA_IMAGE_Y: usize = (design::CONTENT_HEIGHT - CAMERA_IMAGE_HEIGHT) / 2;
+const CAMERA_X_BYTE_OFFSETS: [u16; CAMERA_IMAGE_WIDTH] = build_camera_x_byte_offsets();
+const CAMERA_Y_MAP: [u8; CAMERA_IMAGE_HEIGHT] = build_camera_y_map();
+
+const _: () = assert!(CAMERA_IMAGE_WIDTH <= design::CONTENT_WIDTH);
+const _: () = assert!(CAMERA_IMAGE_HEIGHT <= design::CONTENT_HEIGHT);
+const _: () = assert!(CAMERA_IMAGE_WIDTH > 1 && CAMERA_IMAGE_HEIGHT > 1);
+const _: () = assert!(camera::WIDTH * 2 - 2 <= u16::MAX as usize);
+const _: () = assert!(camera::HEIGHT - 1 <= u8::MAX as usize);
+
+const fn build_camera_x_byte_offsets() -> [u16; CAMERA_IMAGE_WIDTH] {
+    let mut map = [0u16; CAMERA_IMAGE_WIDTH];
+    let mut image_x = 0;
+    while image_x < CAMERA_IMAGE_WIDTH {
+        let source_x = image_x * (camera::WIDTH - 1) / (CAMERA_IMAGE_WIDTH - 1);
+        map[image_x] = (source_x * 2) as u16;
+        image_x += 1;
+    }
+    map
+}
+
+const fn build_camera_y_map() -> [u8; CAMERA_IMAGE_HEIGHT] {
+    let mut map = [0u8; CAMERA_IMAGE_HEIGHT];
+    let mut image_y = 0;
+    while image_y < CAMERA_IMAGE_HEIGHT {
+        map[image_y] =
+            (image_y * (camera::HEIGHT - 1) / (CAMERA_IMAGE_HEIGHT - 1)) as u8;
+        image_y += 1;
+    }
+    map
+}
+
 pub(crate) enum Interaction {
     SetBrightness(BrightnessPercent),
     ToggleSpeakerPlayback,
@@ -123,30 +157,25 @@ impl Views {
         // Keep the whole 4:3 QVGA image visible. The 44 px navigation rail leaves
         // 276x240 for content, so width is the limiting dimension: 320x240 scales
         // to 276x207. The remaining 33 vertical pixels are letterboxed.
-        const IMAGE_WIDTH: usize = design::CONTENT_WIDTH;
-        const IMAGE_HEIGHT: usize = IMAGE_WIDTH * camera::HEIGHT / camera::WIDTH;
-        const IMAGE_Y: usize = (design::CONTENT_HEIGHT - IMAGE_HEIGHT) / 2;
-        const _: () = assert!(IMAGE_WIDTH <= design::CONTENT_WIDTH);
-        const _: () = assert!(IMAGE_HEIGHT <= design::CONTENT_HEIGHT);
-        const _: () = assert!(IMAGE_WIDTH > 1 && IMAGE_HEIGHT > 1);
-
+        //
+        // Both scaling axes are precomputed at compile time. The X table stores
+        // RGB565 byte offsets directly, so the active-row hot loop performs no
+        // coordinate division or multiply. Only the 33 letterbox rows are cleared.
         display.render_scanlines(design::CONTENT_REGION, |local_y, pixels| {
-            pixels.fill(theme::BLACK_RGB565);
-
-            if !(IMAGE_Y..IMAGE_Y + IMAGE_HEIGHT).contains(&local_y) {
+            if !(CAMERA_IMAGE_Y..CAMERA_IMAGE_Y + CAMERA_IMAGE_HEIGHT).contains(&local_y) {
+                pixels.fill(theme::BLACK_RGB565);
                 return;
             }
 
-            // Endpoint-preserving nearest-neighbour scaling maps the first and
-            // last destination pixels to the first and last camera pixels, so
-            // the full sensor field is represented with no crop.
-            let image_y = local_y - IMAGE_Y;
-            let source_y = image_y * (camera::HEIGHT - 1) / (IMAGE_HEIGHT - 1);
+            let image_y = local_y - CAMERA_IMAGE_Y;
+            let source_y = CAMERA_Y_MAP[image_y] as usize;
             let source = frame.scanline(source_y);
 
-            for (image_x, pixel) in pixels[..IMAGE_WIDTH].iter_mut().enumerate() {
-                let source_x = image_x * (camera::WIDTH - 1) / (IMAGE_WIDTH - 1);
-                let byte = source_x * 2;
+            for (pixel, &byte) in pixels[..CAMERA_IMAGE_WIDTH]
+                .iter_mut()
+                .zip(CAMERA_X_BYTE_OFFSETS.iter())
+            {
+                let byte = byte as usize;
                 *pixel = u16::from_be_bytes([source[byte], source[byte + 1]]);
             }
         });
