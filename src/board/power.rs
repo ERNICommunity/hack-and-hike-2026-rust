@@ -23,6 +23,15 @@ const CAMERA_ALDO3_3V3_CODE: u8 = 33 - 5;
 const LCD_BACKLIGHT_MIN_CODE: u8 = 0x15;
 const LCD_BACKLIGHT_MAX_CODE: u8 = 0x1C;
 
+fn read_register<I2C>(i2c: &mut I2C, register: u8) -> Result<u8, I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    let mut value = [0u8; 1];
+    i2c.write_read(AXP2101_ADDR, &[register], &mut value)?;
+    Ok(value[0])
+}
+
 fn update_register_bits<I2C>(
     i2c: &mut I2C,
     register: u8,
@@ -32,9 +41,8 @@ fn update_register_bits<I2C>(
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    let mut current = [0u8; 1];
-    i2c.write_read(AXP2101_ADDR, &[register], &mut current)?;
-    let next = (current[0] & !mask) | (value & mask);
+    let current = read_register(i2c, register)?;
+    let next = (current & !mask) | (value & mask);
     i2c.write(AXP2101_ADDR, &[register, next])
 }
 
@@ -132,6 +140,21 @@ where
         ALDO3_ENABLE,
         ALDO3_ENABLE,
     )
+}
+
+/// Read the raw AXP2101 registers that prove the camera rail configuration.
+///
+/// The expected values are ALDO3 enable bit 2 set in register 0x90 and voltage
+/// code 0x1c in register 0x94 (3.3 V). This does not measure the physical rail,
+/// but it distinguishes PMIC-programming failures from downstream camera faults.
+pub fn camera_power_registers<I2C>(i2c: &mut I2C) -> Result<(u8, u8), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    Ok((
+        read_register(i2c, OUTPUT_ENABLE_REGISTER)?,
+        read_register(i2c, ALDO3_VOLTAGE_REGISTER)?,
+    ))
 }
 
 /// Enable the onboard AW88298 supply rail (ALDO1) at 1.8 V.
