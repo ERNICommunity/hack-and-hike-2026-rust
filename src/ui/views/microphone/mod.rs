@@ -4,11 +4,11 @@
 //! The realtime waveform remains a view-specific direct renderer so audio-rate
 //! updates never rebuild or repaint the GUI tree.
 
-use embedded_gui::prelude::*;
+use embedded_gui::{font::FontId, prelude::*};
 
 use crate::{display::Display, waveform::WaveformFrame};
 
-use super::super::gui::GuiSurface;
+use super::super::gui::{GuiSurface, light_label_style};
 
 mod waveform;
 
@@ -17,7 +17,7 @@ mod generated {
     embedded_gui::include_gui!("src/ui/views/microphone/microphone.kdl");
 }
 
-const NODE_CAPACITY: usize = 12;
+const NODE_CAPACITY: usize = 16;
 const TEXT_CAPACITY: usize = 8;
 const EVENT_CAPACITY: usize = 4;
 
@@ -42,6 +42,30 @@ impl View {
         let mut gui = Context::new(Rect::new(0, 0, 276, 240));
         let app = generated::MicrophoneApp::build(&mut gui)
             .expect("microphone KDL exceeds embedded-gui fixed capacities");
+
+        // KDL remains the single source of layout geometry. The published
+        // embedded-gui 0.2.x base label style is white-on-transparent, so light
+        // firmware pages instantiate their visible labels with the shared light
+        // style rather than duplicating coordinates in Rust.
+        let left_label = gui
+            .absolute_rect(app.widgets.left_label_slot)
+            .expect("microphone left label layout missing");
+        let right_label = gui
+            .absolute_rect(app.widgets.right_label_slot)
+            .expect("microphone right label layout missing");
+        gui.add_label(
+            left_label,
+            "MIC L",
+            light_label_style(FontId::Scaled6x10),
+        )
+        .expect("microphone left label exceeds embedded-gui fixed capacities");
+        gui.add_label(
+            right_label,
+            "MIC R",
+            light_label_style(FontId::Scaled6x10),
+        )
+        .expect("microphone right label exceeds embedded-gui fixed capacities");
+
         let left = canvas_from_rect(
             gui.absolute_rect(app.widgets.left_waveform)
                 .expect("microphone left waveform layout missing"),
