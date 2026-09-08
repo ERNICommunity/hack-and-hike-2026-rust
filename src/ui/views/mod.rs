@@ -25,39 +25,16 @@ use crate::{
 
 use super::{design, gui::GuiSurface, navigation::ContentPointer};
 
-const CAMERA_IMAGE_WIDTH: usize = design::CONTENT_WIDTH;
-const CAMERA_IMAGE_HEIGHT: usize = CAMERA_IMAGE_WIDTH * camera::HEIGHT / camera::WIDTH;
-const CAMERA_IMAGE_Y: usize = (design::CONTENT_HEIGHT - CAMERA_IMAGE_HEIGHT) / 2;
-const CAMERA_X_BYTE_OFFSETS: [u16; CAMERA_IMAGE_WIDTH] = build_camera_x_byte_offsets();
-const CAMERA_Y_MAP: [u8; CAMERA_IMAGE_HEIGHT] = build_camera_y_map();
+const CAMERA_CROP_PIXELS: usize = camera::WIDTH - design::CONTENT_WIDTH;
+const CAMERA_CROP_LEFT: usize = CAMERA_CROP_PIXELS / 2;
+const CAMERA_CROP_RIGHT: usize = CAMERA_CROP_PIXELS - CAMERA_CROP_LEFT;
+const CAMERA_SOURCE_START_BYTE: usize = CAMERA_CROP_LEFT * 2;
+const CAMERA_SOURCE_END_BYTE: usize = (camera::WIDTH - CAMERA_CROP_RIGHT) * 2;
 
-const _: () = assert!(CAMERA_IMAGE_WIDTH <= design::CONTENT_WIDTH);
-const _: () = assert!(CAMERA_IMAGE_HEIGHT <= design::CONTENT_HEIGHT);
-const _: () = assert!(CAMERA_IMAGE_WIDTH > 1 && CAMERA_IMAGE_HEIGHT > 1);
-const _: () = assert!(camera::WIDTH * 2 - 2 <= u16::MAX as usize);
-const _: () = assert!(camera::HEIGHT - 1 <= u8::MAX as usize);
-
-const fn build_camera_x_byte_offsets() -> [u16; CAMERA_IMAGE_WIDTH] {
-    let mut map = [0u16; CAMERA_IMAGE_WIDTH];
-    let mut image_x = 0;
-    while image_x < CAMERA_IMAGE_WIDTH {
-        let source_x = image_x * (camera::WIDTH - 1) / (CAMERA_IMAGE_WIDTH - 1);
-        map[image_x] = (source_x * 2) as u16;
-        image_x += 1;
-    }
-    map
-}
-
-const fn build_camera_y_map() -> [u8; CAMERA_IMAGE_HEIGHT] {
-    let mut map = [0u8; CAMERA_IMAGE_HEIGHT];
-    let mut image_y = 0;
-    while image_y < CAMERA_IMAGE_HEIGHT {
-        map[image_y] =
-            (image_y * (camera::HEIGHT - 1) / (CAMERA_IMAGE_HEIGHT - 1)) as u8;
-        image_y += 1;
-    }
-    map
-}
+const _: () = assert!(camera::HEIGHT == design::CONTENT_HEIGHT);
+const _: () = assert!(camera::WIDTH >= design::CONTENT_WIDTH);
+const _: () = assert!(CAMERA_CROP_PIXELS % 2 == 0);
+const _: () = assert!(CAMERA_SOURCE_END_BYTE - CAMERA_SOURCE_START_BYTE == design::CONTENT_WIDTH * 2);
 
 pub(crate) enum Interaction {
     SetBrightness(BrightnessPercent),
@@ -154,29 +131,20 @@ impl Views {
     }
 
     pub(crate) fn render_camera(&self, display: &mut Display, frame: &camera::Frame<'_>) {
-        // Keep the whole 4:3 QVGA image visible. The 44 px navigation rail leaves
-        // 276x240 for content, so width is the limiting dimension: 320x240 scales
-        // to 276x207. The remaining 33 vertical pixels are letterboxed.
+        // Fill the complete 276x240 content region at native vertical resolution.
+        // QVGA is already 240 px tall, so no scaling is necessary: crop 22 px
+        // from each horizontal edge and copy the remaining 276x240 pixels 1:1.
         //
-        // Both scaling axes are precomputed at compile time. The X table stores
-        // RGB565 byte offsets directly, so the active-row hot loop performs no
-        // coordinate division or multiply. Only the 33 letterbox rows are cleared.
+        // The CoreS3 Lite camera is mounted 180 degrees relative to the display.
+        // Reverse both scanline order and pixel order here, which produces a true
+        // 180-degree rotation without an intermediate framebuffer or allocation.
         display.render_scanlines(design::CONTENT_REGION, |local_y, pixels| {
-            if !(CAMERA_IMAGE_Y..CAMERA_IMAGE_Y + CAMERA_IMAGE_HEIGHT).contains(&local_y) {
-                pixels.fill(theme::BLACK_RGB565);
-                return;
-            }
-
-            let image_y = local_y - CAMERA_IMAGE_Y;
-            let source_y = CAMERA_Y_MAP[image_y] as usize;
+            let source_y = camera::HEIGHT - 1 - local_y;
             let source = frame.scanline(source_y);
+            let cropped = &source[CAMERA_SOURCE_START_BYTE..CAMERA_SOURCE_END_BYTE];
 
-            for (pixel, &byte) in pixels[..CAMERA_IMAGE_WIDTH]
-                .iter_mut()
-                .zip(CAMERA_X_BYTE_OFFSETS.iter())
-            {
-                let byte = byte as usize;
-                *pixel = u16::from_be_bytes([source[byte], source[byte + 1]]);
+            for (pixel, bytes) in pixels.iter_mut().zip(cropped.chunks_exact(2).rev()) {
+                *pixel = u16::from_be_bytes([bytes[0], bytes[1]]);
             }
         });
     }
