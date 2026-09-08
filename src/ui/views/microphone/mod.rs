@@ -5,9 +5,8 @@
 //! updates never rebuild or repaint the GUI tree.
 
 use embedded_gui::{font::FontId, prelude::*};
-use static_cell::StaticCell;
 
-use crate::{display::Display, waveform::WaveformFrame};
+use crate::{data_plane, display::Display, waveform::WaveformFrame};
 
 use super::super::gui::{GuiSurface, light_label_style};
 
@@ -23,11 +22,6 @@ const TEXT_CAPACITY: usize = 8;
 const EVENT_CAPACITY: usize = 4;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
-
-// The fixed-capacity context is long-lived CPU0 presentation state. Keep it in
-// static internal RAM and construct it in place instead of embedding it in the
-// async main future's stack frame.
-static CONTEXT: StaticCell<Context> = StaticCell::new();
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Canvas {
@@ -45,7 +39,10 @@ pub(crate) struct View {
 
 impl View {
     pub(crate) fn new() -> Self {
-        let gui = CONTEXT.init_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        // This context is only used for the static shell; the high-rate waveform
+        // renderer bypasses embedded-gui entirely. PSRAM is therefore the right
+        // home for the fixed-capacity widget tree/state.
+        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::MicrophoneApp::build(gui)
             .expect("microphone KDL exceeds embedded-gui fixed capacities");
 
