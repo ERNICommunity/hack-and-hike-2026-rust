@@ -48,6 +48,7 @@ impl fmt::Display for Channel {
 
 pub const DEFAULT_CHANNEL: Channel = Channel::new(6);
 pub const DEFAULT_BEACON_PERIOD: Duration = Duration::from_millis(250);
+pub const DEFAULT_DEVICE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Radio configuration owned by the CPU1 network service.
 #[derive(Clone, Copy)]
@@ -60,7 +61,7 @@ pub struct Config {
 pub const DEFAULT_CONFIG: Config = Config {
     channel: DEFAULT_CHANNEL,
     beacon_period: DEFAULT_BEACON_PERIOD,
-    peer_timeout: Duration::from_secs(1),
+    peer_timeout: DEFAULT_DEVICE_TIMEOUT,
 };
 
 /// CPU1-owned physical resource required by ESP-NOW.
