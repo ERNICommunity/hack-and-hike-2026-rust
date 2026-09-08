@@ -1,13 +1,15 @@
 //! CPU0 application models.
 //!
-//! `AppModel` owns bounded presentation-sized state and the CPU0 reader handles
-//! required to refresh it. It does not know display geometry, fonts, touch
-//! gestures, SPI/DMA, or LCD controller details.
+//! `AppModel` owns bounded presentation-sized state and the CPU0 reader/command
+//! handles required to refresh or mutate it. It does not know display geometry,
+//! fonts, touch gestures, SPI/DMA, LCD controller details, or PMIC registers.
 
 use embassy_time::{Duration, Instant};
 
 use crate::{
-    audio, data_plane, imu, logger, network,
+    audio, data_plane,
+    display_control::{BrightnessControl, BrightnessPercent},
+    imu, logger, network,
     service_inputs::{AudioInput, ImuInput, NetworkInput},
     waveform::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame},
 };
@@ -21,13 +23,14 @@ const LOG_REFRESH: Duration = Duration::from_millis(100);
 /// Semantic page identity shared by application refresh policy and presentation.
 ///
 /// There is deliberately no numeric representation or presentation ordering on
-/// this type. Navigation order belongs to the declarative UI design.
+/// this type. Navigation order belongs to the UI design.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewId {
     Network,
     Imu,
     Microphone,
     Speaker,
+    Settings,
     Log,
 }
 
@@ -38,15 +41,13 @@ impl ViewId {
             Self::Imu => "Imu",
             Self::Microphone => "Microphone",
             Self::Speaker => "Speaker",
+            Self::Settings => "Settings",
             Self::Log => "Log",
         }
     }
 }
 
-/// CPU1 readers consumed directly by `AppModel`.
-///
-/// Touch is intentionally absent: gesture interpretation belongs to `Ui`, not
-/// the application data model.
+/// CPU1 data readers consumed directly by `AppModel`.
 pub struct AppModelInputs {
     pub network: NetworkInput,
     pub imu: ImuInput,
@@ -186,7 +187,6 @@ impl ImuModel {
         if !self.dirty {
             return None;
         }
-
         self.dirty = false;
         Some(self.display)
     }
@@ -234,7 +234,6 @@ impl WaveformModel {
         let Some(info) = self.input.copy_latest_interleaved(&mut self.samples) else {
             return;
         };
-
         if info.sequence == self.last_sequence {
             return;
         }
@@ -255,7 +254,6 @@ impl WaveformModel {
         for point in 0..POINTS {
             let first_frame = point * FRAMES_PER_POINT;
             let last_frame = first_frame + FRAMES_PER_POINT;
-
             let mut left_sample = 0i16;
             let mut right_sample = 0i16;
             let mut left_magnitude = 0u16;
@@ -286,7 +284,6 @@ impl WaveformModel {
                 self.frame.left[point] = left_pixel;
                 changed = true;
             }
-
             if right_pixel != self.frame.right[point] {
                 self.frame.right[point] = right_pixel;
                 changed = true;
@@ -300,7 +297,6 @@ impl WaveformModel {
         if !self.dirty {
             return None;
         }
-
         self.dirty = false;
         Some(self.frame)
     }
@@ -311,10 +307,52 @@ fn quantize_waveform(sample: i16, scale: i32) -> i8 {
         .clamp(-MAX_AMPLITUDE_PIXELS, MAX_AMPLITUDE_PIXELS) as i8
 }
 
+/// Semantic state displayed by the Settings view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingsDisplay {
+    pub brightness: BrightnessPercent,
+}
+
+struct SettingsModel {
+    control: BrightnessControl,
+    display: SettingsDisplay,
+    dirty: bool,
+}
+
+impl SettingsModel {
+    fn new(control: BrightnessControl) -> Self {
+        Self {
+            control,
+            display: SettingsDisplay {
+                brightness: BrightnessPercent::FULL,
+            },
+            dirty: true,
+        }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    fn set_brightness(&mut self, brightness: BrightnessPercent) {
+        if brightness == self.display.brightness {
+            return;
+        }
+        self.display.brightness = brightness;
+        self.control.set(brightness);
+        self.dirty = true;
+    }
+
+    fn take_display(&mut self) -> Option<SettingsDisplay> {
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        Some(self.display)
+    }
+}
+
 /// Fixed-size MCU log snapshot.
-///
-/// The complete bounded byte snapshot remains in PSRAM. Deciding which lines
-/// fit on screen is a presentation concern and therefore happens in `ui::views`.
 struct LogModel {
     bytes: data_plane::FixedPsramBuffer<u8>,
     len: usize,
@@ -350,11 +388,9 @@ impl LogModel {
         if logger::revision() == self.revision {
             return;
         }
-
         let Some((logs, revision)) = logger::snapshot(self.bytes.as_mut_slice()) else {
             return;
         };
-
         self.len = logs.len();
         self.revision = revision;
         self.dirty = true;
@@ -365,7 +401,6 @@ impl LogModel {
             return None;
         }
         self.dirty = false;
-
         let bytes = self.bytes.as_slice().get(..self.len)?;
         let text = core::str::from_utf8(bytes).ok()?;
         Some(render(text))
@@ -373,20 +408,17 @@ impl LogModel {
 }
 
 /// Complete CPU0 application model.
-///
-/// The type owns every service reader needed by its child models. Ordinary
-/// `&mut self` access serializes refresh and consumption on CPU0; no interior
-/// mutability is required at this layer.
 pub struct AppModel {
     active_view: ViewId,
     network: NetworkModel,
     imu: ImuModel,
     waveform: WaveformModel,
+    settings: SettingsModel,
     log: LogModel,
 }
 
 impl AppModel {
-    pub fn new(inputs: AppModelInputs) -> Self {
+    pub fn new(inputs: AppModelInputs, brightness: BrightnessControl) -> Self {
         let AppModelInputs {
             network,
             imu,
@@ -400,6 +432,7 @@ impl AppModel {
             network: NetworkModel::new(network),
             imu: ImuModel::new(imu),
             waveform: WaveformModel::new(audio),
+            settings: SettingsModel::new(brightness),
             log,
         }
     }
@@ -412,12 +445,12 @@ impl AppModel {
         if view == self.active_view {
             return;
         }
-
         self.active_view = view;
         match view {
             ViewId::Network => self.network.mark_dirty(),
             ViewId::Imu => self.imu.mark_dirty(),
             ViewId::Microphone => self.waveform.mark_dirty(),
+            ViewId::Settings => self.settings.mark_dirty(),
             ViewId::Log => self.log.mark_dirty(),
             ViewId::Speaker => {}
         }
@@ -429,8 +462,21 @@ impl AppModel {
             ViewId::Imu => self.imu.update_if_due(now),
             ViewId::Microphone => self.waveform.update_if_due(now),
             ViewId::Log => self.log.update_if_due(now),
-            ViewId::Speaker => {}
+            ViewId::Settings | ViewId::Speaker => {}
         }
+    }
+
+    pub fn set_brightness(&mut self, brightness: BrightnessPercent) {
+        if self.active_view == ViewId::Settings {
+            self.settings.set_brightness(brightness);
+        }
+    }
+
+    pub fn take_settings_display(&mut self) -> Option<SettingsDisplay> {
+        if self.active_view != ViewId::Settings {
+            return None;
+        }
+        self.settings.take_display()
     }
 
     pub fn take_network_display(&mut self) -> Option<network::Snapshot> {

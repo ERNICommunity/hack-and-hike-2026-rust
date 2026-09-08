@@ -12,6 +12,7 @@ mod board;
 mod data_plane;
 mod diagnostics;
 mod display;
+mod display_control;
 mod imu;
 mod logger;
 mod memory;
@@ -145,6 +146,10 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
                 let system_bus = system_i2c::into_async(system_i2c);
                 spawner.spawn(
+                    display_control::task(system_bus)
+                        .expect("Failed to allocate CPU1 display-control task"),
+                );
+                spawner.spawn(
                     imu::capture_task(system_bus, imu::DEFAULT_CONFIG)
                         .expect("Failed to allocate CPU1 IMU task"),
                 );
@@ -165,11 +170,15 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         audio: audio_input,
         network: network_input,
     } = service_inputs::Cpu0Inputs::from_static_services();
-    let model = models::AppModel::new(models::AppModelInputs {
-        network: network_input,
-        imu: imu_input,
-        audio: audio_input,
-    });
+    let brightness = display_control::BrightnessControl::from_static_service();
+    let model = models::AppModel::new(
+        models::AppModelInputs {
+            network: network_input,
+            imu: imu_input,
+            audio: audio_input,
+        },
+        brightness,
+    );
     let mut ui = ui::Ui::new(model, touch);
 
     let now = Instant::now();

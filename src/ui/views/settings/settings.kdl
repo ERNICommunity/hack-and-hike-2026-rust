@@ -1,0 +1,10 @@
+screen id="Settings" width=276 height=240 theme="light" {
+    grid cols="40px 1fr 40px" rows="24px 20px 40px 14px 18px 1fr" gap=6 padding=12 {
+        label id="title_slot" text="" col=0 row=0 col_span=3
+        label id="brightness_value_slot" text="" col=0 row=1 col_span=3
+        label id="brightness_slot" text="" col=0 row=2 col_span=3
+        label id="minimum_slot" text="" col=0 row=3
+        label id="maximum_slot" text="" col=2 row=3
+        label id="hint_slot" text="" col=0 row=4 col_span=3
+    }
+}

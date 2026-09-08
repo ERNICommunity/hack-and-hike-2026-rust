@@ -2,11 +2,11 @@
 //!
 //! Every collection in this module allocates its backing storage once during
 //! construction and then operates within a fixed bound. These types are for
-//! plain bulk data such as log bytes and RGB565 framebuffer pixels. Runtime
-//! handles, synchronization objects, atomics, and DMA state remain in internal
-//! RAM.
+//! presentation/data-plane state that does not require internal RAM. Runtime
+//! handles, synchronization objects, stacks, atomics, and DMA descriptors remain
+//! in internal RAM.
 
-use allocator_api2::vec::Vec;
+use allocator_api2::{boxed::Box, vec::Vec};
 use esp_alloc::EspHeap;
 
 use crate::memory;
@@ -21,6 +21,35 @@ pub fn zeroed_bytes(len: usize) -> PsramVec<u8> {
     let mut bytes = vec_with_capacity(len);
     bytes.resize(len, 0);
     bytes
+}
+
+/// Allocate fixed PSRAM storage whose lifetime intentionally matches the device.
+///
+/// This is for APIs such as framebuffer/DMA abstractions that require a static
+/// backing slice. The allocation happens once during bootstrap and is never
+/// replaced or resized afterwards.
+pub fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
+    let mut storage = vec_with_capacity(len);
+    storage.resize(len, value);
+    storage.leak()
+}
+
+/// Construct one long-lived object directly in explicitly allocated PSRAM.
+///
+/// Large fixed-capacity presentation structures should not become members of an
+/// async task's stack frame merely because they need a `'static` lifetime. The
+/// backing allocation is intentionally leaked because device-lifetime UI/data
+/// state has no meaningful teardown path.
+///
+/// `new_uninit_in` establishes the final aligned PSRAM destination first. The
+/// initializer is then written into that destination exactly once before the
+/// allocation is exposed as initialized `T`.
+pub fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
+    let mut storage = Box::<T, _>::new_uninit_in(memory::psram_heap());
+    unsafe {
+        storage.as_mut_ptr().write(init());
+        Box::leak(storage.assume_init())
+    }
 }
 
 /// Fixed-size PSRAM-backed storage. Capacity is established once and never
@@ -108,7 +137,6 @@ impl PsramByteRing {
         let capacity = self.capacity();
         let end = (self.start + self.len) % capacity;
         let first_len = bytes.len().min(capacity - end);
-
         self.storage[end..end + first_len].copy_from_slice(&bytes[..first_len]);
 
         let remaining = bytes.len() - first_len;
@@ -120,8 +148,6 @@ impl PsramByteRing {
         true
     }
 
-    /// Copy a logical range from the oldest byte onward without exposing the
-    /// ring's physical wrap point.
     pub fn copy_range_to(&self, logical_offset: usize, out: &mut [u8]) -> usize {
         if logical_offset >= self.len || out.is_empty() {
             return 0;
