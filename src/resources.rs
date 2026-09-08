@@ -29,7 +29,7 @@ pub struct Cpu0Resources {
 /// Destructuring this value in bootstrap makes the ownership transfer explicit:
 /// the display/camera side cannot retain the Wi-Fi/I2S/runtime-I2C peripherals.
 pub struct Cpu1Resources {
-    pub system_i2c: system_i2c::Resources,
+    pub system_i2c: system_i2c::Resources<'static>,
     pub audio: audio::Resources,
     pub network: network::Resources,
 }

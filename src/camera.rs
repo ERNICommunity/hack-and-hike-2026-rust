@@ -5,20 +5,20 @@
 //! aligned PSRAM buffer. The UI scales the complete frame to fit without cropping.
 
 mod gc0308;
+mod sccb;
 
 use esp_hal::{
     delay::Delay,
     dma::{DmaRxBuf, ExternalBurstConfig},
-    i2c::master::{Config as I2cConfig, Error as I2cError},
     lcd_cam::{LcdCam, cam::{Camera as CameraDriver, Config as CameraConfig}},
     peripherals::{
-        DMA_CH2, GPIO15, GPIO16, GPIO38, GPIO39, GPIO40, GPIO41, GPIO42, GPIO45, GPIO46,
-        GPIO47, GPIO48, LCD_CAM,
+        DMA_CH2, GPIO11, GPIO12, GPIO15, GPIO16, GPIO38, GPIO39, GPIO40, GPIO41, GPIO42,
+        GPIO45, GPIO46, GPIO47, GPIO48, LCD_CAM,
     },
     time::Rate,
 };
 
-use crate::{data_plane, system_i2c::SystemI2cBlocking};
+use crate::data_plane;
 
 pub const WIDTH: usize = 320;
 pub const HEIGHT: usize = 240;
@@ -26,8 +26,6 @@ const BYTES_PER_PIXEL: usize = 2;
 const FRAME_BYTES: usize = WIDTH * HEIGHT * BYTES_PER_PIXEL;
 const PSRAM_ALIGNMENT: usize = 32;
 const DMA_CHUNK_BYTES: usize = 4064;
-const SCCB_FREQUENCY_KHZ: u32 = 100;
-const SYSTEM_I2C_FREQUENCY_KHZ: u32 = 400;
 
 #[repr(C, align(32))]
 #[derive(Clone, Copy)]
@@ -58,6 +56,11 @@ pub struct Frame<'a> {
     bytes: &'a [u8],
 }
 
+pub struct SensorInit {
+    pub pid: u8,
+    pub nack_count: u16,
+}
+
 impl Frame<'_> {
     pub fn scanline(&self, y: usize) -> &[u8] {
         debug_assert!(y < HEIGHT);
@@ -66,25 +69,22 @@ impl Frame<'_> {
     }
 }
 
-/// Reset and program the GC0308 while startup still owns blocking system I2C.
+/// Program the GC0308 over a startup-only software SCCB owner.
 ///
-/// Espressif's camera/SCCB examples default to 100 kHz for compatibility.
-/// Temporarily slow the shared CoreS3-Lite system bus for sensor programming,
-/// then restore its normal 400 kHz rate before it moves to CPU1.
-pub fn init_sensor(i2c: &mut SystemI2cBlocking, delay: &mut Delay) -> Result<u8, I2cError> {
-    i2c.apply_config(
-        &I2cConfig::default().with_frequency(Rate::from_khz(SCCB_FREQUENCY_KHZ)),
-    )
-    .expect("100 kHz SCCB configuration must be valid");
+/// GPIO12/GPIO11 are shared with the board's normal system I2C bus. Bootstrap
+/// deliberately drops its temporary hardware-I2C driver before calling this
+/// function, matching M5Stack's camera ownership model. After this function
+/// returns, the software SCCB pins are dropped and the persistent 400 kHz
+/// system-I2C driver can be created for CPU1.
+pub fn init_sensor(sda: GPIO12<'_>, scl: GPIO11<'_>, delay: &mut Delay) -> SensorInit {
+    let mut sccb = sccb::Sccb::new(sda, scl);
+    sccb.recover_bus();
 
-    let result = gc0308::init(i2c, delay);
-
-    i2c.apply_config(
-        &I2cConfig::default().with_frequency(Rate::from_khz(SYSTEM_I2C_FREQUENCY_KHZ)),
-    )
-    .expect("400 kHz system-I2C configuration must be valid");
-
-    result
+    let pid = gc0308::init(&mut sccb, delay).unwrap_or_else(|never| match never {});
+    SensorInit {
+        pid,
+        nack_count: sccb.nack_count(),
+    }
 }
 
 pub const EXPECTED_SENSOR_PID: u8 = gc0308::EXPECTED_PID;
