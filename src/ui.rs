@@ -52,6 +52,9 @@ impl Ui {
 
     pub fn render_initial(&mut self, display: &mut Display) {
         navigation::render(display, self.presented_view);
+        if self.presented_view == ViewId::Log && self.present_log_if_dirty(display) {
+            return;
+        }
         self.views.present_shell(
             self.presented_view,
             &mut self.gui_surface,
@@ -90,12 +93,21 @@ impl Ui {
         })
     }
 
-    /// Commit a prepared transition and present the destination's static shell.
+    /// Commit a prepared transition and present the destination immediately.
     pub fn apply_navigation(&mut self, transition: ViewTransition, display: &mut Display) {
         debug_assert_eq!(transition.from, self.presented_view);
         self.presented_view = transition.to;
 
         navigation::render(display, transition.to);
+
+        // Log already owns a cached presentation snapshot and `request_view`
+        // marks it dirty before this transition is applied. Present that content
+        // directly so entering Log does not first transmit an empty shell and
+        // then transmit the same full content rectangle again.
+        if transition.to == ViewId::Log && self.present_log_if_dirty(display) {
+            return;
+        }
+
         let settings = if transition.to == ViewId::Settings {
             self.model.take_settings_display()
         } else {
@@ -140,13 +152,17 @@ impl Ui {
                 }
             }
             ViewId::Log => {
-                let model = &mut self.model;
-                let views = &mut self.views;
-                let surface = &mut self.gui_surface;
-                let _ = model.with_log_text(|text| {
-                    views.present_log(surface, display, text);
-                });
+                let _ = self.present_log_if_dirty(display);
             }
         }
+    }
+
+    fn present_log_if_dirty(&mut self, display: &mut Display) -> bool {
+        let model = &mut self.model;
+        let views = &mut self.views;
+        let surface = &mut self.gui_surface;
+        model
+            .with_log_text(|text| views.present_log(surface, display, text))
+            .is_some()
     }
 }
