@@ -11,6 +11,8 @@ use embedded_graphics::{pixelcolor::{IntoStorage, Rgb565, RgbColor}, prelude::Dr
 use embedded_gui::{
     DMACapableFrameBufferBackend, DisplayBackend, DisplayError, DmaTransfer,
     EndianCorrectedBuffer, EndianCorrection, FrameBuf, GuiContext, TransferError,
+    font::FontId,
+    style::Style,
 };
 
 use crate::{data_plane, display::{Display, Region}};
@@ -19,6 +21,17 @@ use super::design;
 
 pub(crate) type GuiFramebufferBackend = EndianCorrectedBuffer<'static, Rgb565>;
 type GuiFramebuffer = FrameBuf<Rgb565, GuiFramebufferBackend>;
+
+/// Explicit label style for pages presented on the firmware's white content
+/// surface. `embedded-gui`'s base label style is white-on-transparent, which is
+/// suitable for its dark themes but invisible on our light page background.
+pub(crate) fn light_label_style(font: FontId) -> Style {
+    let mut style = Style::label();
+    style.font = font;
+    style.foreground = Rgb565::BLACK;
+    style.text = Rgb565::BLACK;
+    style
+}
 
 /// One reusable fixed-size content surface for KDL-generated views.
 pub(crate) struct GuiSurface {
