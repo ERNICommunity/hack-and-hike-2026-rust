@@ -1,0 +1,8 @@
+screen id="Settings" width=276 height=240 theme="light" {
+    grid cols="1fr" rows="28px 18px 32px 18px 1fr" gap=8 padding=12 {
+        label id="title" text="SETTINGS" style="body" col=0 row=0
+        label id="brightness_label" text="DISPLAY BRIGHTNESS" style="body" col=0 row=1
+        slider id="brightness" min=0 max=100 value=100 col=0 row=2
+        label id="brightness_hint" text="Drag to adjust the LCD backlight" style="body-dim" col=0 row=3
+    }
+}
