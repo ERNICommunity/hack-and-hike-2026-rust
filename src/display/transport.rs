@@ -220,9 +220,12 @@ impl Transport {
     fn set_window(
         &mut self,
         spi: DisplaySpiDma,
-        line: usize,
-        range: Range<usize>,
+        columns: Range<usize>,
+        pages: Range<usize>,
     ) -> DisplaySpiDma {
+        debug_assert!(!columns.is_empty());
+        debug_assert!(!pages.is_empty());
+
         let control_rx = self
             .control_rx
             .take()
@@ -233,12 +236,13 @@ impl Transport {
             .expect("missing LCD control TX DMA buffer");
         let mut bus = DisplaySpiDmaBus::new(spi, control_rx, control_tx);
 
-        let x0 = range.start as u16;
-        let x1 = (range.end - 1) as u16;
-        let y = line as u16;
+        let x0 = columns.start as u16;
+        let x1 = (columns.end - 1) as u16;
+        let y0 = pages.start as u16;
+        let y1 = (pages.end - 1) as u16;
 
         let columns = [(x0 >> 8) as u8, x0 as u8, (x1 >> 8) as u8, x1 as u8];
-        let pages = [(y >> 8) as u8, y as u8, (y >> 8) as u8, y as u8];
+        let pages = [(y0 >> 8) as u8, y0 as u8, (y1 >> 8) as u8, y1 as u8];
 
         self.write_command(&mut bus, DCS_COLUMN_ADDRESS_SET, &columns);
         self.write_command(&mut bus, DCS_PAGE_ADDRESS_SET, &pages);
@@ -248,6 +252,33 @@ impl Transport {
         self.control_rx = Some(control_rx);
         self.control_tx = Some(control_tx);
         spi
+    }
+
+    /// Program one rectangular GRAM window before any of its scanlines are
+    /// queued. The controller auto-increments through that window, so the pixel
+    /// path only needs to stream consecutive RGB565 bytes afterwards.
+    pub(super) fn begin_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
+        if columns.is_empty() || pages.is_empty() {
+            return;
+        }
+
+        let state = self.state.take().expect("LCD DMA pipeline state missing");
+        let PipelineState::Idle {
+            spi,
+            first,
+            second,
+        } = state
+        else {
+            self.state = Some(state);
+            panic!("LCD region started while pixel DMA was still in flight");
+        };
+
+        let spi = self.set_window(spi, columns, pages);
+        self.state = Some(PipelineState::Idle {
+            spi,
+            first,
+            second,
+        });
     }
 
     fn encode_pixels(buffer: &mut DmaTxBuf, pixels: &[Pixel]) -> usize {
@@ -289,8 +320,11 @@ impl Transport {
         }
     }
 
-    pub(super) fn queue_line(&mut self, line: usize, range: Range<usize>, pixels: &[Pixel]) {
-        if range.is_empty() || pixels.is_empty() {
+    /// Queue the next scanline inside the window established by `begin_region`.
+    /// Chip select remains asserted between DMA chunks so the controller sees one
+    /// continuous memory-write stream rather than one transaction per line.
+    pub(super) fn queue_line(&mut self, pixels: &[Pixel]) {
+        if pixels.is_empty() {
             return;
         }
 
@@ -302,14 +336,11 @@ impl Transport {
                 second,
             } => {
                 let byte_len = Self::encode_pixels(&mut first, pixels);
-                let spi = self.set_window(spi, line, range);
                 self.start_pixel_transfer(spi, first, byte_len, second);
             }
             PipelineState::InFlight { transfer, mut free } => {
                 let byte_len = Self::encode_pixels(&mut free, pixels);
                 let (spi, completed) = transfer.wait();
-                self.cs.set_high();
-                let spi = self.set_window(spi, line, range);
                 self.start_pixel_transfer(spi, free, byte_len, completed);
             }
         }

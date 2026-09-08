@@ -48,6 +48,10 @@ impl Region {
         self.x + self.width
     }
 
+    const fn end_y(self) -> usize {
+        self.y + self.height
+    }
+
     const fn is_empty(self) -> bool {
         self.width == 0 || self.height == 0
     }
@@ -82,10 +86,10 @@ pub fn init(resources: Resources, delay: &mut Delay) -> Display {
 impl Display {
     /// Render a valid physical region one scanline at a time.
     ///
-    /// The closure receives a reusable RGB565 slice exactly as wide as the
-    /// region. Each completed line is queued immediately, allowing CPU rendering
-    /// of the next line to overlap the previous SPI-DMA transfer. No allocation
-    /// occurs in this path.
+    /// The LCD window is established once for the whole rectangle. Completed
+    /// lines are then streamed consecutively through the existing ping-pong DMA
+    /// buffers, allowing CPU rendering of the next line to overlap the previous
+    /// SPI transfer without repeating controller commands for every scanline.
     pub fn render_scanlines(
         &mut self,
         region: Region,
@@ -100,10 +104,11 @@ impl Display {
         let transport = &mut self.transport;
         let line_buffer = &mut self.line_buffer;
 
+        transport.begin_region(x_start..x_end, region.y..region.end_y());
         for local_y in 0..region.height {
             let pixels = &mut line_buffer[x_start..x_end];
             render_line(local_y, pixels);
-            transport.queue_line(region.y + local_y, x_start..x_end, pixels);
+            transport.queue_line(pixels);
         }
 
         transport.finish();
