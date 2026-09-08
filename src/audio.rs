@@ -5,6 +5,7 @@
 //! CPU0 publishes semantic playback state through a replace-latest control; the
 //! real-time synthesis/DMA state never leaves CPU1.
 
+mod chime;
 mod melody;
 
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -25,6 +26,7 @@ use esp_hal::{
 };
 
 use crate::{board, data_plane, diagnostics};
+use chime::FlashChime;
 use melody::MelodySynth;
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -37,9 +39,8 @@ const TX_DMA_BUFFER_BYTES: usize = 8 * 1024;
 const ES7210_ADDR: u8 = 0x40;
 const AW88298_ADDR: u8 = 0x36;
 
-// The user-supplied MP3 is converted offline to native 16 kHz mono signed-16
-// PCM so the real-time path stays deterministic and allocation-free.
-const CHIME_PCM: &[u8] = include_bytes!("../assets/speaker_chime.pcm");
+// The one-shot is derived offline from the user-supplied MP3 and stored as
+// flash-resident IMA ADPCM; decoding is incremental and allocation-free.
 
 /// Valid melody tempo in quarter-note beats per minute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -425,37 +426,4 @@ fn saturating_mix(a: i16, b: i16) -> i16 {
     i32::from(a)
         .saturating_add(i32::from(b))
         .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
-}
-
-struct FlashChime {
-    byte_index: usize,
-    playing: bool,
-}
-
-impl FlashChime {
-    const fn new() -> Self {
-        Self {
-            byte_index: 0,
-            playing: false,
-        }
-    }
-
-    fn restart(&mut self) {
-        self.byte_index = 0;
-        self.playing = true;
-    }
-
-    fn next_sample(&mut self) -> i16 {
-        if !self.playing || self.byte_index + 1 >= CHIME_PCM.len() {
-            self.playing = false;
-            return 0;
-        }
-
-        let sample = i16::from_le_bytes([
-            CHIME_PCM[self.byte_index],
-            CHIME_PCM[self.byte_index + 1],
-        ]);
-        self.byte_index += 2;
-        sample
-    }
 }
