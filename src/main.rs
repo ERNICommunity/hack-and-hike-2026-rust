@@ -30,7 +30,7 @@ mod waveform;
 
 extern crate alloc;
 
-use ::log::info;
+use ::log::{info, warn};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
 use esp_backtrace as _;
@@ -128,16 +128,43 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
     board::power::enable_lcd_backlight(&mut system_i2c);
     board::io_expander::reset_display_and_touch(&mut system_i2c, &mut delay);
-    board::io_expander::reset_camera(&mut system_i2c, &mut delay)
-        .expect("Failed to reset GC0308 camera");
-    let camera_pid = camera::init_sensor(&mut system_i2c, &mut delay)
-        .expect("Failed to initialize GC0308 camera");
-    assert_eq!(
-        camera_pid,
-        camera::EXPECTED_SENSOR_PID,
-        "Unexpected camera sensor PID"
-    );
-    info!("GC0308 camera ready (PID=0x{:02x})", camera_pid);
+
+    // CoreS3/CoreS3-Lite power the GC0308 from AXP2101 ALDO3. Camera bring-up
+    // is optional: a camera fault must not prevent the rest of the device from
+    // booting or make other views unavailable.
+    let camera_ready = match board::power::enable_camera(&mut system_i2c) {
+        Ok(()) => {
+            delay.delay_millis(10u32);
+            match board::io_expander::reset_camera(&mut system_i2c, &mut delay) {
+                Ok(()) => match camera::init_sensor(&mut system_i2c, &mut delay) {
+                    Ok(pid) if pid == camera::EXPECTED_SENSOR_PID => {
+                        info!("GC0308 camera ready (PID=0x{:02x})", pid);
+                        true
+                    }
+                    Ok(pid) => {
+                        warn!(
+                            "Camera disabled: unexpected GC0308 PID 0x{:02x} (expected 0x{:02x})",
+                            pid,
+                            camera::EXPECTED_SENSOR_PID
+                        );
+                        false
+                    }
+                    Err(error) => {
+                        warn!("Camera disabled: GC0308 initialization failed: {:?}", error);
+                        false
+                    }
+                },
+                Err(error) => {
+                    warn!("Camera disabled: GC0308 reset failed: {:?}", error);
+                    false
+                }
+            }
+        }
+        Err(error) => {
+            warn!("Camera disabled: failed to enable ALDO3 rail: {:?}", error);
+            false
+        }
+    };
 
     let mut display = display::init(display_resources, &mut delay);
     let mut camera = camera::init(camera_resources);
@@ -227,7 +254,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         ui.render(&mut display);
 
-        if ui.presented_view() == models::ViewId::Camera {
+        if camera_ready && ui.presented_view() == models::ViewId::Camera {
             if let Some(frame) = camera.capture() {
                 ui.render_camera(&mut display, &frame);
             }
