@@ -5,6 +5,7 @@
 //! updates never rebuild or repaint the GUI tree.
 
 use embedded_gui::{font::FontId, prelude::*};
+use static_cell::StaticCell;
 
 use crate::{display::Display, waveform::WaveformFrame};
 
@@ -23,6 +24,11 @@ const EVENT_CAPACITY: usize = 4;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
+// The fixed-capacity context is long-lived CPU0 presentation state. Keep it in
+// static internal RAM and construct it in place instead of embedding it in the
+// async main future's stack frame.
+static CONTEXT: StaticCell<Context> = StaticCell::new();
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Canvas {
     pub x: usize,
@@ -32,15 +38,15 @@ pub(super) struct Canvas {
 }
 
 pub(crate) struct View {
-    gui: Context,
+    gui: &'static mut Context,
     left: Canvas,
     right: Canvas,
 }
 
 impl View {
     pub(crate) fn new() -> Self {
-        let mut gui = Context::new(Rect::new(0, 0, 276, 240));
-        let app = generated::MicrophoneApp::build(&mut gui)
+        let gui = CONTEXT.init_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        let app = generated::MicrophoneApp::build(gui)
             .expect("microphone KDL exceeds embedded-gui fixed capacities");
 
         // KDL remains the single source of layout geometry. The published
@@ -85,7 +91,7 @@ impl View {
     }
 
     pub(crate) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
-        surface.present(display, &mut self.gui);
+        surface.present(display, self.gui);
     }
 
     pub(crate) fn render_waveform(&self, display: &mut Display, frame: &WaveformFrame) {
