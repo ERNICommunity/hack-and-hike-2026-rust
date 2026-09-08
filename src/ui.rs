@@ -148,6 +148,7 @@ impl Ui {
                         .present_speaker(&mut self.gui_surface, display, state);
                 }
             }
+            ViewId::Camera => {}
             ViewId::Settings => {
                 if let Some(settings) = self.model.take_settings_display() {
                     self.views

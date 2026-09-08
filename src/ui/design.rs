@@ -11,7 +11,9 @@ use crate::{
 };
 
 const NAV_WIDTH: usize = 44;
-const NAV_BUTTON_HEIGHT: usize = 40;
+pub(crate) const NAV_ICON_SIZE: usize = 16;
+pub(crate) const NAV_ITEM_COUNT: usize = 7;
+const NAV_BUTTON_HEIGHT: usize = display::HEIGHT / NAV_ITEM_COUNT;
 
 pub(crate) const CONTENT_WIDTH: usize = display::WIDTH - NAV_WIDTH;
 pub(crate) const CONTENT_HEIGHT: usize = display::HEIGHT;
@@ -19,9 +21,11 @@ pub(crate) const NAV_REGION: Region = Region::new(0, 0, NAV_WIDTH, display::HEIG
 pub(crate) const CONTENT_REGION: Region =
     Region::new(NAV_WIDTH, 0, CONTENT_WIDTH, CONTENT_HEIGHT);
 
-pub(crate) const NAV_ICON_SIZE: usize = 16;
-pub(crate) const NAV_ITEM_COUNT: usize = 6;
 pub(crate) type NavIcon = [u16; NAV_ICON_SIZE];
+pub(crate) const CAMERA_ICON: NavIcon = [
+    0x0000, 0x0000, 0x0F00, 0x1980, 0x7FFE, 0x4002, 0x43C2, 0x4662, 0x4C32, 0x4C32,
+    0x4662, 0x43C2, 0x4002, 0x7FFE, 0x0000, 0x0000,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UiColor(u16);
@@ -128,6 +132,10 @@ pub(crate) const UI: UiDesign = UiDesign {
                 ],
             },
             NavigationItemSpec {
+                view: ViewId::Camera,
+                icon: CAMERA_ICON,
+            },
+            NavigationItemSpec {
                 view: ViewId::Settings,
                 icon: [
                     0x0000, 0x0180, 0x0DB0, 0x1FF8, 0x319C, 0x6186, 0x6786, 0x6606,
@@ -151,5 +159,6 @@ pub(crate) const UI: UiDesign = UiDesign {
 };
 
 const _: () = assert!(NAV_WIDTH < display::WIDTH);
-const _: () = assert!(NAV_BUTTON_HEIGHT * NAV_ITEM_COUNT == display::HEIGHT);
+const _: () = assert!(NAV_BUTTON_HEIGHT > NAV_ICON_SIZE);
+const _: () = assert!(NAV_BUTTON_HEIGHT * NAV_ITEM_COUNT <= display::HEIGHT);
 const _: () = assert!(UI.navigation.width == NAV_WIDTH);

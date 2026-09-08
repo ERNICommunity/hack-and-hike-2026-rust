@@ -127,14 +127,14 @@ fn view_at(point: TouchPoint) -> Option<ViewId> {
         return None;
     }
 
-    let index = usize::from(point.y) / nav.button_height;
+    let index = (usize::from(point.y) / nav.button_height).min(nav.items.len() - 1);
     nav.items.get(index).map(|item| item.view)
 }
 
 pub(crate) fn render(display: &mut Display, active: ViewId) {
     let nav = design::UI.navigation;
     display.render_scanlines(design::NAV_REGION, |screen_y, pixels| {
-        let button_index = screen_y / nav.button_height;
+        let button_index = (screen_y / nav.button_height).min(nav.items.len() - 1);
         let item = &nav.items[button_index];
         let selected = item.view == active;
         let background = if selected {
@@ -151,7 +151,8 @@ pub(crate) fn render(display: &mut Display, active: ViewId) {
         pixels.fill(background.raw());
         pixels[nav.width - 1] = nav.divider.raw();
 
-        let local_y = screen_y % nav.button_height;
+        let button_start = button_index * nav.button_height;
+        let local_y = screen_y - button_start;
         if (ICON_Y_IN_BUTTON..ICON_Y_IN_BUTTON + design::NAV_ICON_SIZE).contains(&local_y) {
             let row_bits = item.icon[local_y - ICON_Y_IN_BUTTON];
             for icon_x in 0..design::NAV_ICON_SIZE {

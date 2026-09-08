@@ -27,6 +27,7 @@ pub enum ViewId {
     Imu,
     Microphone,
     Speaker,
+    Camera,
     Settings,
     Log,
 }
@@ -38,6 +39,7 @@ impl ViewId {
             Self::Imu => "Imu",
             Self::Microphone => "Microphone",
             Self::Speaker => "Speaker",
+            Self::Camera => "Camera",
             Self::Settings => "Settings",
             Self::Log => "Log",
         }
@@ -514,6 +516,7 @@ impl AppModel {
             ViewId::Imu => self.imu.mark_dirty(),
             ViewId::Microphone => self.waveform.mark_dirty(),
             ViewId::Speaker => self.speaker.mark_dirty(),
+            ViewId::Camera => {}
             ViewId::Settings => self.settings.mark_dirty(),
             ViewId::Log => self.log.mark_dirty(),
         }
@@ -525,7 +528,7 @@ impl AppModel {
             ViewId::Imu => self.imu.update_if_due(now),
             ViewId::Microphone => self.waveform.update_if_due(now),
             ViewId::Log => self.log.update_if_due(now),
-            ViewId::Settings | ViewId::Speaker => {}
+            ViewId::Camera | ViewId::Settings | ViewId::Speaker => {}
         }
     }
 

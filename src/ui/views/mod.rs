@@ -18,11 +18,13 @@ use crate::{
     display::Display,
     display_control::BrightnessPercent,
     models::{ImuDisplay, SettingsDisplay, SpeakerDisplay, ViewId},
-    network as network_service,
+    network as network_service, theme,
     waveform::WaveformFrame,
 };
 
-use super::{gui::GuiSurface, navigation::ContentPointer};
+use super::{design, gui::GuiSurface, navigation::ContentPointer};
+
+const CAMERA_SCALE: usize = 8;
 
 pub(crate) enum Interaction {
     SetBrightness(BrightnessPercent),
@@ -65,6 +67,7 @@ impl Views {
             ViewId::Imu => self.imu.present_shell(surface, display),
             ViewId::Microphone => self.microphone.present_shell(surface, display),
             ViewId::Speaker => self.speaker.present(surface, display),
+            ViewId::Camera => present_camera(display),
             ViewId::Settings => {
                 if let Some(state) = settings_display {
                     self.settings.sync_brightness(state.brightness);
@@ -145,4 +148,30 @@ impl Views {
     ) {
         self.log.present(surface, display, contents);
     }
+}
+
+fn present_camera(display: &mut Display) {
+    let image_width = design::NAV_ICON_SIZE * CAMERA_SCALE;
+    let image_height = design::NAV_ICON_SIZE * CAMERA_SCALE;
+    let image_x = (design::CONTENT_WIDTH - image_width) / 2;
+    let image_y = (design::CONTENT_HEIGHT - image_height) / 2;
+
+    display.render_scanlines(design::CONTENT_REGION, |local_y, pixels| {
+        pixels.fill(theme::WHITE_RGB565);
+
+        if !(image_y..image_y + image_height).contains(&local_y) {
+            return;
+        }
+
+        let icon_y = (local_y - image_y) / CAMERA_SCALE;
+        let row_bits = design::CAMERA_ICON[icon_y];
+        for icon_x in 0..design::NAV_ICON_SIZE {
+            if row_bits & (1 << (design::NAV_ICON_SIZE - 1 - icon_x)) == 0 {
+                continue;
+            }
+
+            let start = image_x + icon_x * CAMERA_SCALE;
+            pixels[start..start + CAMERA_SCALE].fill(theme::DARK_BLUE_RGB565);
+        }
+    });
 }
