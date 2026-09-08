@@ -25,7 +25,10 @@ embassy-sync = { version = "0.8.0" }
 critical-section = "1.2.0"
 static_cell = "2.1.1"
 embedded-graphics = "0.8"
-embedded-gui = { version = "=0.2.5", default-features = false, features = ["embedded-graphics", "macros", "rich-widgets"] }
+# Rich widgets use floating-point helpers such as round/sin/cos. On our
+# `no_std` Xtensa target those methods are supplied by embedded-gui's `libm`
+# feature rather than by `std`.
+embedded-gui = { version = "=0.2.5", default-features = false, features = ["embedded-graphics", "libm", "macros", "rich-widgets"] }
 # `embedded-gui` 0.2.5 declares semver ranges for its host-side KDL tooling.
 # Newer 0.2.6 macro/codegen releases require kdl 6.7 / Rust 1.95, while the
 # ESP Xtensa toolchain is currently Rust 1.93. Keep the compatible published
