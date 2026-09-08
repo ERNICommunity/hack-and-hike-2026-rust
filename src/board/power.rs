@@ -110,10 +110,10 @@ where
     )
 }
 
-/// Enable the onboard speaker amplifier rail (ALDO1) at 1.8 V.
+/// Enable the onboard AW88298 supply rail (ALDO1) at 1.8 V.
 ///
-/// AW88298 reset/enable routing remains owned by the AW9523 board-expander
-/// policy, while amplifier register configuration remains owned by `audio`.
+/// This is the PMIC half of CoreS3 speaker bring-up. AW9523 owns the separate
+/// speaker-enable gate, and `audio` owns the AW88298 device registers.
 pub fn enable_speaker_amplifier<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
