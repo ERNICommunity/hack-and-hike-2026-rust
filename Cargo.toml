@@ -25,10 +25,12 @@ embassy-sync = { version = "0.8.0" }
 critical-section = "1.2.0"
 static_cell = "2.1.1"
 embedded-graphics = "0.8"
+embedded-gui = { version = "=0.2.5", default-features = false, features = ["embedded-graphics", "macros", "rich-widgets"] }
 mipidsi = "0.8"
 display-interface-spi = "0.5"
 embedded-hal-bus = "0.3"
 embedded-hal = "1.0"
+embedded-hal-async = "1.0"
 arrayvec = { version = "0.7.8", default-features = false }
 
 [profile.dev]
