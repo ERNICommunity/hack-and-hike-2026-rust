@@ -190,11 +190,9 @@ impl View {
                 .set_slider_value(self.brightness, slider_value)
                 .expect("settings brightness widget is not a slider");
         }
-        if self.gui.value_of(self.brightness_value) != i32::from(brightness.get()) {
-            self.gui
-                .set_value_label(self.brightness_value, i32::from(brightness.get()))
-                .expect("settings brightness value widget is not a value label");
-        }
+        self.gui
+            .set_value_label(self.brightness_value, i32::from(brightness.get()))
+            .expect("settings brightness value widget is not a value label");
         drain_events(&mut self.gui);
     }
 }
