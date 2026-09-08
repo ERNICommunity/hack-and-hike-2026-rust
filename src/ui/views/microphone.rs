@@ -1,20 +1,55 @@
-//! Allocation-free partial renderer for the realtime microphone view.
-//!
-//! Static microphone chrome is buffered. Only each named channel canvas is
-//! submitted at audio presentation rate. Canvas divisibility by waveform point
-//! count is a compile-time invariant in `ui::design`.
+//! Microphone labels and realtime waveform rendering.
+
+use embedded_graphics::{
+    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    prelude::*,
+    text::{Baseline, Text},
+};
 
 use crate::{
     display::Display,
     waveform::{self, WaveformFrame},
 };
 
-use super::design::{self, ContentRect};
+use super::super::{
+    design::{self, ContentRect, WaveformPanelSpec},
+    framebuffer::{color, ContentFramebuffer},
+};
 
-pub(crate) fn render(display: &mut Display, frame: &WaveformFrame) {
+pub(super) fn render_shell(frame: &mut ContentFramebuffer) {
+    let microphone = design::UI.microphone;
+    frame.clear(design::UI.content_background);
+    draw_channel_shell(frame, microphone.left);
+    draw_channel_shell(frame, microphone.right);
+}
+
+pub(super) fn render(display: &mut Display, frame: &WaveformFrame) {
     let microphone = design::UI.microphone;
     render_channel(display, microphone.left.canvas, &frame.left);
     render_channel(display, microphone.right.canvas, &frame.right);
+}
+
+fn draw_channel_shell(frame: &mut ContentFramebuffer, panel: WaveformPanelSpec) {
+    let style = design::UI.microphone;
+    let label_style = MonoTextStyle::new(&FONT_6X10, color(style.label));
+    let _ = Text::with_baseline(
+        panel.label,
+        Point::new(
+            (panel.panel.x() + panel.label_x_offset) as i32,
+            (panel.panel.y() + panel.label_y_offset) as i32,
+        ),
+        label_style,
+        Baseline::Top,
+    )
+    .draw(frame);
+
+    frame.fill_rect(
+        panel.canvas.x(),
+        panel.canvas.y(),
+        panel.canvas.width(),
+        panel.canvas.height(),
+        style.canvas_background,
+    );
 }
 
 fn render_channel(

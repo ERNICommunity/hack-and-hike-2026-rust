@@ -9,5 +9,24 @@
 pub const DISPLAY_WIDTH: usize = 320;
 pub const DISPLAY_HEIGHT: usize = 240;
 
+/// Physical mounting orientation used by both LCD setup and touch coordinates.
+///
+/// Keeping this board fact shared prevents the rendered content and FT6336 touch
+/// positions from drifting into different coordinate systems.
+pub const DISPLAY_ROTATED_180: bool = true;
+
+/// Convert a point from the touch controller's native panel coordinates into the
+/// logical display coordinates consumed by presentation code.
+pub const fn logical_display_point(x: u16, y: u16) -> (u16, u16) {
+    if DISPLAY_ROTATED_180 {
+        (
+            DISPLAY_WIDTH as u16 - 1 - x,
+            DISPLAY_HEIGHT as u16 - 1 - y,
+        )
+    } else {
+        (x, y)
+    }
+}
+
 pub mod io_expander;
 pub mod power;

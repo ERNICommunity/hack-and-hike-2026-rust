@@ -18,6 +18,9 @@ use esp_hal::{
     spi::master::{Config as SpiConfig, Spi, SpiDma, SpiDmaBus, SpiDmaTransfer},
     time::Rate,
 };
+use mipidsi::options::{Orientation, Rotation};
+
+use crate::board;
 
 use super::{Pixel, Resources, WIDTH};
 
@@ -159,12 +162,18 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
         OwnedSpiDevice::new(dma_bus, cs).expect("Failed to initialize LCD SPI device");
     let di = display_interface_spi::SPIInterface::new(spi_device, dc);
 
+    let orientation = if board::DISPLAY_ROTATED_180 {
+        Orientation::new().rotate(Rotation::Deg180)
+    } else {
+        Orientation::new()
+    };
+
     // Keep mipidsi for the known-good controller initialization sequence, then
     // recover the bus and pins for the allocation-free steady-state DMA path.
     let display = mipidsi::Builder::new(mipidsi::models::ILI9342CRgb565, di)
         .color_order(mipidsi::options::ColorOrder::Bgr)
         .invert_colors(mipidsi::options::ColorInversion::Inverted)
-        .orientation(mipidsi::options::Orientation::new())
+        .orientation(orientation)
         .init(delay)
         .unwrap();
 
