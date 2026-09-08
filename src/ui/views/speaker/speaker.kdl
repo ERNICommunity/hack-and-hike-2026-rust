@@ -1,0 +1,6 @@
+screen id="Speaker" width=276 height=240 theme="light" {
+    grid cols="1fr" rows="1fr 18px 18px 1fr" gap=8 padding=12 {
+        label id="title_slot" text="" col=0 row=1
+        label id="subtitle_slot" text="" col=0 row=2
+    }
+}
