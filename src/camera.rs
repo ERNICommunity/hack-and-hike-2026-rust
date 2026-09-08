@@ -2,13 +2,14 @@
 //!
 //! The onboard GC0308 emits native QVGA RGB565 over its 8-bit DVP bus. LCD_CAM
 //! receives complete 320x240 frames into one permanently allocated, cache-line
-//! aligned PSRAM buffer. The UI crops that frame when presenting it.
+//! aligned PSRAM buffer. The UI scales the complete frame to fit without cropping.
 
 mod gc0308;
 
 use esp_hal::{
     delay::Delay,
     dma::{DmaRxBuf, ExternalBurstConfig},
+    i2c::master::{Config as I2cConfig, Error as I2cError},
     lcd_cam::{LcdCam, cam::{Camera as CameraDriver, Config as CameraConfig}},
     peripherals::{
         DMA_CH2, GPIO15, GPIO16, GPIO38, GPIO39, GPIO40, GPIO41, GPIO42, GPIO45, GPIO46,
@@ -17,7 +18,7 @@ use esp_hal::{
     time::Rate,
 };
 
-use crate::data_plane;
+use crate::{data_plane, system_i2c::SystemI2cBlocking};
 
 pub const WIDTH: usize = 320;
 pub const HEIGHT: usize = 240;
@@ -25,6 +26,8 @@ const BYTES_PER_PIXEL: usize = 2;
 const FRAME_BYTES: usize = WIDTH * HEIGHT * BYTES_PER_PIXEL;
 const PSRAM_ALIGNMENT: usize = 32;
 const DMA_CHUNK_BYTES: usize = 4064;
+const SCCB_FREQUENCY_KHZ: u32 = 100;
+const SYSTEM_I2C_FREQUENCY_KHZ: u32 = 400;
 
 #[repr(C, align(32))]
 #[derive(Clone, Copy)]
@@ -64,11 +67,24 @@ impl Frame<'_> {
 }
 
 /// Reset and program the GC0308 while startup still owns blocking system I2C.
-pub fn init_sensor<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<u8, I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    gc0308::init(i2c, delay)
+///
+/// Espressif's camera/SCCB examples default to 100 kHz for compatibility.
+/// Temporarily slow the shared CoreS3-Lite system bus for sensor programming,
+/// then restore its normal 400 kHz rate before it moves to CPU1.
+pub fn init_sensor(i2c: &mut SystemI2cBlocking, delay: &mut Delay) -> Result<u8, I2cError> {
+    i2c.apply_config(
+        &I2cConfig::default().with_frequency(Rate::from_khz(SCCB_FREQUENCY_KHZ)),
+    )
+    .expect("100 kHz SCCB configuration must be valid");
+
+    let result = gc0308::init(i2c, delay);
+
+    i2c.apply_config(
+        &I2cConfig::default().with_frequency(Rate::from_khz(SYSTEM_I2C_FREQUENCY_KHZ)),
+    )
+    .expect("400 kHz system-I2C configuration must be valid");
+
+    result
 }
 
 pub const EXPECTED_SENSOR_PID: u8 = gc0308::EXPECTED_PID;
