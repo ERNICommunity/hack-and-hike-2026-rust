@@ -120,17 +120,34 @@ impl Views {
     }
 
     pub(crate) fn render_camera(&self, display: &mut Display, frame: &camera::Frame<'_>) {
-        const CROP_X: usize = (camera::WIDTH - design::CONTENT_WIDTH) / 2;
-        const _: () = assert!(camera::WIDTH >= design::CONTENT_WIDTH);
-        const _: () = assert!(camera::HEIGHT == design::CONTENT_HEIGHT);
+        // Keep the whole 4:3 QVGA image visible. The 44 px navigation rail leaves
+        // 276x240 for content, so width is the limiting dimension: 320x240 scales
+        // to 276x207. The remaining 33 vertical pixels are letterboxed.
+        const IMAGE_WIDTH: usize = design::CONTENT_WIDTH;
+        const IMAGE_HEIGHT: usize = IMAGE_WIDTH * camera::HEIGHT / camera::WIDTH;
+        const IMAGE_Y: usize = (design::CONTENT_HEIGHT - IMAGE_HEIGHT) / 2;
+        const _: () = assert!(IMAGE_WIDTH <= design::CONTENT_WIDTH);
+        const _: () = assert!(IMAGE_HEIGHT <= design::CONTENT_HEIGHT);
+        const _: () = assert!(IMAGE_WIDTH > 1 && IMAGE_HEIGHT > 1);
 
         display.render_scanlines(design::CONTENT_REGION, |local_y, pixels| {
-            let source = frame.scanline(local_y);
-            let first = CROP_X * 2;
-            let source = &source[first..first + design::CONTENT_WIDTH * 2];
+            pixels.fill(theme::BLACK_RGB565);
 
-            for (pixel, bytes) in pixels.iter_mut().zip(source.chunks_exact(2)) {
-                *pixel = u16::from_be_bytes([bytes[0], bytes[1]]);
+            if !(IMAGE_Y..IMAGE_Y + IMAGE_HEIGHT).contains(&local_y) {
+                return;
+            }
+
+            // Endpoint-preserving nearest-neighbour scaling maps the first and
+            // last destination pixels to the first and last camera pixels, so
+            // the full sensor field is represented with no crop.
+            let image_y = local_y - IMAGE_Y;
+            let source_y = image_y * (camera::HEIGHT - 1) / (IMAGE_HEIGHT - 1);
+            let source = frame.scanline(source_y);
+
+            for (image_x, pixel) in pixels[..IMAGE_WIDTH].iter_mut().enumerate() {
+                let source_x = image_x * (camera::WIDTH - 1) / (IMAGE_WIDTH - 1);
+                let byte = source_x * 2;
+                *pixel = u16::from_be_bytes([source[byte], source[byte + 1]]);
             }
         });
     }
