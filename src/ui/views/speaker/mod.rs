@@ -318,7 +318,7 @@ fn draw_button(frame: &mut GuiFramebuffer, rect: Rect, label: &str, primary: boo
         rect.x,
         rect.y + ((rect.h as i32 - common::BODY_LINE_HEIGHT) / 2).max(0),
         rect.w,
-        common::BODY_LINE_HEIGHT as u16,
+        common::BODY_LINE_HEIGHT as u32,
     );
     common::draw_centered_body(frame, label_rect, label, foreground);
 }
