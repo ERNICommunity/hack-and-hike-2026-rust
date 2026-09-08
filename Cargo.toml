@@ -26,12 +26,22 @@ critical-section = "1.2.0"
 static_cell = "2.1.1"
 embedded-graphics = "0.8"
 embedded-gui = { version = "=0.2.5", default-features = false, features = ["embedded-graphics", "macros", "rich-widgets"] }
+# `embedded-gui` 0.2.5 declares semver ranges for its host-side KDL tooling.
+# Newer 0.2.6 macro/codegen releases require kdl 6.7 / Rust 1.95, while the
+# ESP Xtensa toolchain is currently Rust 1.93. Keep the compatible published
+# toolchain explicit until the ESP compiler catches up.
+embedded-gui-macros = "=0.2.3"
 mipidsi = "0.8"
 display-interface-spi = "0.5"
 embedded-hal-bus = "0.3"
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 arrayvec = { version = "0.7.8", default-features = false }
+
+[build-dependencies]
+# 0.2.4 still uses kdl 4.7 and has MSRV 1.87. This exact host-side
+# constraint also satisfies embedded-gui-macros 0.2.3's `^0.2.3` requirement.
+embedded-gui-codegen = "=0.2.4"
 
 [profile.dev]
 opt-level = "s"
