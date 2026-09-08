@@ -438,7 +438,7 @@ impl HeapMonitor {
 
             let counters = diagnostics::snapshot();
             ::log::info!(
-                "MEM runtime: internal free={} KiB min={} KiB peak={} KiB alloc={} KiB freed={} KiB dalloc={} B dfree={} B | PSRAM free={} KiB | CPU0 stack current={} KiB min={} KiB | CPU1 stack={} KiB min={} KiB | diag touch-readerr={} touch-drops={} audio-errors={} audio-full-drains={} net-init={} net-tx={} net-rx={} net-txerr={} net-invalid={} net-evict={}",
+                "MEM runtime: internal free={} KiB min={} KiB peak={} KiB alloc={} KiB freed={} KiB dalloc={} B dfree={} B | PSRAM free={} KiB | CPU0 stack current={} KiB min={} KiB | CPU1 stack={} KiB min={} KiB | diag touch-readerr={} touch-drops={} audio-errors={} audio-playback-errors={} audio-full-drains={} net-init={} net-tx={} net-rx={} net-txerr={} net-invalid={} net-evict={}",
                 snapshot.internal_free / 1024,
                 self.min_internal_free / 1024,
                 snapshot.internal_peak_used / 1024,
@@ -454,6 +454,7 @@ impl HeapMonitor {
                 counters.touch_read_errors,
                 counters.touch_edge_drops,
                 counters.audio_capture_errors,
+                counters.audio_playback_errors,
                 counters.audio_full_drains,
                 counters.network_init_errors,
                 counters.network_tx_packets,
