@@ -23,6 +23,17 @@ pub fn zeroed_bytes(len: usize) -> PsramVec<u8> {
     bytes
 }
 
+/// Allocate fixed PSRAM storage whose lifetime intentionally matches the device.
+///
+/// This is for APIs such as framebuffer/DMA abstractions that require a static
+/// backing slice. The allocation happens once during bootstrap and is never
+/// replaced or resized afterwards.
+pub fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
+    let mut storage = vec_with_capacity(len);
+    storage.resize(len, value);
+    storage.leak()
+}
+
 /// Fixed-size PSRAM-backed storage. Capacity is established once and never
 /// changes afterwards.
 pub struct FixedPsramBuffer<T> {
@@ -108,7 +119,6 @@ impl PsramByteRing {
         let capacity = self.capacity();
         let end = (self.start + self.len) % capacity;
         let first_len = bytes.len().min(capacity - end);
-
         self.storage[end..end + first_len].copy_from_slice(&bytes[..first_len]);
 
         let remaining = bytes.len() - first_len;
