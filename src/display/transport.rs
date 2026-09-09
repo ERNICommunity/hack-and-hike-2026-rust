@@ -18,7 +18,9 @@ use esp_hal::{
     spi::master::{Config as SpiConfig, Spi, SpiDma, SpiDmaBus, SpiDmaTransfer},
     time::Rate,
 };
-use mipidsi::options::{Orientation, Rotation};
+use mipidsi::options::{
+    HorizontalRefreshOrder, Orientation, RefreshOrder, Rotation, VerticalRefreshOrder,
+};
 
 use crate::board;
 
@@ -162,10 +164,28 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
         OwnedSpiDevice::new(dma_bus, cs).expect("Failed to initialize LCD SPI device");
     let di = display_interface_spi::SPIInterface::new(spi_device, dc);
 
-    let orientation = if board::DISPLAY_ROTATED_180 {
-        Orientation::new().rotate(Rotation::Deg180)
+    // The board is mounted 180 degrees, so logical top-to-bottom/left-to-right
+    // GRAM writes travel physically bottom-to-top/right-to-left. Match the
+    // ILI9342C's panel refresh direction to that same physical direction. The
+    // default refresh direction is the opposite, which maximizes the chance that
+    // an asynchronous full-screen camera write crosses the panel's live scan and
+    // exposes a moving horizontal tear boundary.
+    let (orientation, refresh_order) = if board::DISPLAY_ROTATED_180 {
+        (
+            Orientation::new().rotate(Rotation::Deg180),
+            RefreshOrder {
+                vertical: VerticalRefreshOrder::BottomToTop,
+                horizontal: HorizontalRefreshOrder::RightToLeft,
+            },
+        )
     } else {
-        Orientation::new()
+        (
+            Orientation::new(),
+            RefreshOrder {
+                vertical: VerticalRefreshOrder::TopToBottom,
+                horizontal: HorizontalRefreshOrder::LeftToRight,
+            },
+        )
     };
 
     // Keep mipidsi for the known-good controller initialization sequence, then
@@ -174,6 +194,7 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
         .color_order(mipidsi::options::ColorOrder::Bgr)
         .invert_colors(mipidsi::options::ColorInversion::Inverted)
         .orientation(orientation)
+        .refresh_order(refresh_order)
         .init(delay)
         .unwrap();
 
