@@ -274,6 +274,13 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     );
     let mut ui = ui::Ui::new(model, touch);
 
+    // The panel keeps its normal refresh timing everywhere except an active,
+    // usable Camera view. If Camera ever becomes the initial view, enter the
+    // long-blanking streaming profile before drawing its first shell/frame.
+    if camera_ready && ui.presented_view() == models::ViewId::Camera {
+        display.set_streaming_refresh_mode(true);
+    }
+
     let now = Instant::now();
     let mut heap_monitor = memory::HeapMonitor::new(now);
     heap_monitor.checkpoint("after model + UI construction");
@@ -287,6 +294,19 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         if let Some(transition) = transition {
             heap_monitor.begin_activity(transition.to.name());
+
+            // Change panel timing only at Camera view boundaries and before the
+            // destination shell is rendered. This keeps normal UI at its usual
+            // refresh rate while giving sustained camera GRAM writes a longer
+            // scan period in which to complete.
+            if transition.from == models::ViewId::Camera
+                || transition.to == models::ViewId::Camera
+            {
+                display.set_streaming_refresh_mode(
+                    camera_ready && transition.to == models::ViewId::Camera,
+                );
+            }
+
             ui.apply_navigation(transition, &mut display);
         }
 

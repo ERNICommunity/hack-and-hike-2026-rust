@@ -88,6 +88,16 @@ pub fn init(resources: Resources, delay: &mut Delay) -> Display {
 }
 
 impl Display {
+    /// Select a refresh profile for sustained full-region streaming.
+    ///
+    /// The normal UI keeps the controller's short default vertical porches.
+    /// Streaming mode lengthens vertical blanking so a 40 MHz RGB565 camera
+    /// update can complete within approximately one panel refresh period,
+    /// reducing scanout/write collisions without changing normal UI timing.
+    pub fn set_streaming_refresh_mode(&mut self, enabled: bool) {
+        self.transport.set_streaming_refresh_mode(enabled);
+    }
+
     /// Render a valid physical region one scanline at a time.
     ///
     /// The LCD window is established once for the whole rectangle. Completed
