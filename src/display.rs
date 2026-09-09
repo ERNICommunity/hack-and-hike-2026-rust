@@ -18,6 +18,8 @@ pub type Pixel = u16;
 
 pub const WIDTH: usize = board::DISPLAY_WIDTH;
 pub const HEIGHT: usize = board::DISPLAY_HEIGHT;
+const RGB565_BYTES_PER_PIXEL: usize = 2;
+const RAW_BATCH_BYTES: usize = WIDTH * RGB565_BYTES_PER_PIXEL * transport::RAW_BATCH_LINES;
 
 /// Valid rectangular region in the physical LCD coordinate space.
 ///
@@ -74,12 +76,14 @@ pub struct Resources {
 pub struct Display {
     transport: transport::Transport,
     line_buffer: [Pixel; WIDTH],
+    raw_batch_buffer: [u8; RAW_BATCH_BYTES],
 }
 
 pub fn init(resources: Resources, delay: &mut Delay) -> Display {
     Display {
         transport: transport::init(resources, delay),
         line_buffer: [0; WIDTH],
+        raw_batch_buffer: [0; RAW_BATCH_BYTES],
     }
 }
 
@@ -112,5 +116,59 @@ impl Display {
         }
 
         transport.finish();
+    }
+
+    /// Render already encoded big-endian RGB565 rows without converting them
+    /// through the normal `u16` presentation scratch path.
+    ///
+    /// Camera frames arrive from GC0308 in exactly the byte order the ILI9342C
+    /// expects on SPI. Up to four consecutive rows are therefore packed into one
+    /// DMA submission. This removes the camera byte -> u16 -> byte round trip and
+    /// cuts per-frame SPI DMA start/wait operations from 240 to 60 for QVGA.
+    ///
+    /// The callback returns `false` when its source frame becomes invalid. The
+    /// remainder of the programmed LCD region is then filled with black so the
+    /// controller's GRAM write stays structurally complete.
+    pub fn render_rgb565_be_scanlines(
+        &mut self,
+        region: Region,
+        mut render_line: impl FnMut(usize, &mut [u8]) -> bool,
+    ) -> bool {
+        if region.is_empty() {
+            return true;
+        }
+
+        let row_bytes = region.width * RGB565_BYTES_PER_PIXEL;
+        let transport = &mut self.transport;
+        let raw_batch_buffer = &mut self.raw_batch_buffer;
+        let mut valid = true;
+        let mut local_y = 0usize;
+
+        transport.begin_region(region.x..region.end_x(), region.y..region.end_y());
+
+        while local_y < region.height {
+            let lines = (region.height - local_y).min(transport::RAW_BATCH_LINES);
+            let batch_bytes = lines * row_bytes;
+            let batch = &mut raw_batch_buffer[..batch_bytes];
+
+            for line in 0..lines {
+                let start = line * row_bytes;
+                let end = start + row_bytes;
+                let row = &mut batch[start..end];
+
+                if valid {
+                    valid = render_line(local_y + line, row);
+                }
+                if !valid {
+                    row.fill(0);
+                }
+            }
+
+            transport.queue_bytes(batch);
+            local_y += lines;
+        }
+
+        transport.finish();
+        valid
     }
 }
