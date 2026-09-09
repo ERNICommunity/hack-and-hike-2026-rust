@@ -48,12 +48,18 @@ const GRID_EXTENT: f32 = 1024.0;
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
-// Compass labels are fixed world landmarks on the ground plane. A radius of
-// 256 units places them close to the visual horizon while still giving the
-// camera enough depth to move them naturally under yaw/pitch/roll. The text is
-// rendered as a camera-facing billboard at the projected 3-D anchor so it stays
-// readable instead of being sheared with the plane.
+// Compass labels stay at the original 256-unit world radius. Each glyph is a
+// small vector sign standing on the ground plane and tangent to that compass
+// ring. At the current 170 px attitude viewport, a centered glyph projects to
+// roughly 14x26 pixels: almost exactly twice the previous 7x13 screen font.
+// Off-axis rectilinear projection would otherwise magnify tangent signs even at
+// a fixed radial distance, so glyph dimensions are compensated per label while
+// the world anchor itself remains fixed to the same 256-unit compass ring.
 const COMPASS_LABEL_RADIUS: f32 = 256.0;
+const COMPASS_GLYPH_WIDTH: f32 = 42.0;
+const COMPASS_GLYPH_HEIGHT: f32 = 78.0;
+const COMPASS_GLYPH_GAP: f32 = 18.0;
+const COMPASS_STROKE_WIDTH: u32 = 3;
 const INV_SQRT_2: f32 = 0.70710677;
 const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
     ("N", 0.0, 1.0),
@@ -65,8 +71,33 @@ const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
     ("W", -1.0, 0.0),
     ("NW", -INV_SQRT_2, INV_SQRT_2),
 ];
+const GLYPH_N_STROKES: [[f32; 4]; 3] = [
+    [0.0, 0.0, 0.0, 7.0],
+    [0.0, 7.0, 4.0, 0.0],
+    [4.0, 0.0, 4.0, 7.0],
+];
+const GLYPH_E_STROKES: [[f32; 4]; 4] = [
+    [0.0, 0.0, 0.0, 7.0],
+    [0.0, 7.0, 4.0, 7.0],
+    [0.0, 3.5, 3.5, 3.5],
+    [0.0, 0.0, 4.0, 0.0],
+];
+const GLYPH_S_STROKES: [[f32; 4]; 5] = [
+    [4.0, 7.0, 0.0, 7.0],
+    [0.0, 7.0, 0.0, 4.2],
+    [0.0, 4.2, 4.0, 2.8],
+    [4.0, 2.8, 4.0, 0.0],
+    [4.0, 0.0, 0.0, 0.0],
+];
+const GLYPH_W_STROKES: [[f32; 4]; 4] = [
+    [0.0, 7.0, 0.8, 0.0],
+    [0.8, 0.0, 2.0, 3.2],
+    [2.0, 3.2, 3.2, 0.0],
+    [3.2, 0.0, 4.0, 7.0],
+];
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
+type ScreenLine = ((i32, i32), (i32, i32));
 
 #[derive(Clone, Copy)]
 struct Geometry {
@@ -394,40 +425,218 @@ fn draw_world_compass_labels(
     area: Rect,
     camera: PerspectiveCamera,
 ) {
+    let centered_depth = camera.sin_pitch * -PERSPECTIVE_PLANE_HEIGHT
+        + camera.cos_pitch * COMPASS_LABEL_RADIUS;
+    if centered_depth <= PERSPECTIVE_NEAR_Z {
+        return;
+    }
+
     for (label, unit_x, unit_z) in WORLD_COMPASS_LABELS {
-        let world_point = [
+        let anchor = [
             unit_x * COMPASS_LABEL_RADIUS,
             -PERSPECTIVE_PLANE_HEIGHT,
             unit_z * COMPASS_LABEL_RADIUS,
         ];
-        let camera_point = world_to_camera(world_point, camera);
-        if camera_point[2] <= PERSPECTIVE_NEAR_Z {
+        let anchor_camera = world_to_camera(anchor, camera);
+        if anchor_camera[2] <= PERSPECTIVE_NEAR_Z {
             continue;
         }
-        let Some((screen_x, screen_y)) = project_camera_point(camera_point, camera) else {
+        let Some((screen_x, _)) = project_camera_point(anchor_camera, camera) else {
             continue;
         };
-
-        let text_width = label.len() as i32 * 7;
-        let local_x = screen_x - text_width / 2;
-        // Start the billboard just below its ground-plane anchor so labels sit
-        // in the distant world rather than directly on top of the horizon line.
-        let local_y = screen_y + 2;
-        if local_x < 3
-            || local_x + text_width > area.w as i32 - 3
-            || local_y < 3
-            || local_y + common::BODY_LINE_HEIGHT > area.h as i32 - 3
-        {
+        // Cheap whole-label cull before projecting any glyph strokes.
+        if screen_x < -64 || screen_x > area.w as i32 + 64 {
             continue;
         }
 
-        common::draw_body(
-            frame,
-            label,
-            area.x + local_x,
-            area.y + local_y,
-            common::white(),
+        // A tangent sign on a fixed-radius ring grows as roughly sec(theta)^2
+        // horizontally and sec(theta) vertically under rectilinear projection.
+        // Counter-scale only the glyph dimensions, not its anchor, so the label
+        // keeps its true world direction and grid motion without looking closer
+        // as it approaches the edge of the viewport.
+        let depth_scale = (anchor_camera[2] / centered_depth).clamp(0.2, 1.0);
+        let horizontal_scale = depth_scale * depth_scale;
+        let vertical_scale = depth_scale;
+
+        // Tangent points screen-right whenever this compass direction is in the
+        // center of view. Off-axis labels still inherit real perspective/skew;
+        // only the unwanted rectilinear size inflation is normalized above.
+        let tangent = [unit_z, 0.0, -unit_x];
+        let glyph_width = COMPASS_GLYPH_WIDTH * horizontal_scale;
+        let glyph_gap = COMPASS_GLYPH_GAP * horizontal_scale;
+        let glyph_count = label.len() as f32;
+        let total_width =
+            glyph_count * glyph_width + (glyph_count - 1.0).max(0.0) * glyph_gap;
+        let mut glyph_offset = -0.5 * total_width;
+
+        for glyph in label.bytes() {
+            draw_world_compass_glyph(
+                frame,
+                area,
+                camera,
+                glyph,
+                anchor,
+                tangent,
+                glyph_offset,
+                horizontal_scale,
+                vertical_scale,
+            );
+            glyph_offset += glyph_width + glyph_gap;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_world_compass_glyph(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    camera: PerspectiveCamera,
+    glyph: u8,
+    anchor: [f32; 3],
+    tangent: [f32; 3],
+    glyph_offset: f32,
+    horizontal_scale: f32,
+    vertical_scale: f32,
+) {
+    for stroke in compass_glyph_strokes(glyph) {
+        let start = compass_glyph_world_point(
+            anchor,
+            tangent,
+            glyph_offset,
+            horizontal_scale,
+            vertical_scale,
+            stroke[0],
+            stroke[1],
         );
+        let end = compass_glyph_world_point(
+            anchor,
+            tangent,
+            glyph_offset,
+            horizontal_scale,
+            vertical_scale,
+            stroke[2],
+            stroke[3],
+        );
+        let start_camera = world_to_camera(start, camera);
+        let end_camera = world_to_camera(end, camera);
+
+        if let Some(line) = project_camera_solid_line(
+            area,
+            camera,
+            start_camera,
+            end_camera,
+            COMPASS_STROKE_WIDTH,
+        ) {
+            draw_solid_line_pixels(
+                frame,
+                area,
+                line.0.0,
+                line.0.1,
+                line.1.0,
+                line.1.1,
+                common::white(),
+                COMPASS_STROKE_WIDTH,
+            );
+        }
+    }
+}
+
+fn compass_glyph_strokes(glyph: u8) -> &'static [[f32; 4]] {
+    match glyph {
+        b'N' => &GLYPH_N_STROKES,
+        b'E' => &GLYPH_E_STROKES,
+        b'S' => &GLYPH_S_STROKES,
+        b'W' => &GLYPH_W_STROKES,
+        _ => &[],
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compass_glyph_world_point(
+    anchor: [f32; 3],
+    tangent: [f32; 3],
+    glyph_offset: f32,
+    horizontal_scale: f32,
+    vertical_scale: f32,
+    glyph_x: f32,
+    glyph_y: f32,
+) -> [f32; 3] {
+    let horizontal = glyph_offset
+        + glyph_x * (COMPASS_GLYPH_WIDTH * horizontal_scale / 4.0);
+    [
+        anchor[0] + tangent[0] * horizontal,
+        anchor[1] + glyph_y * (COMPASS_GLYPH_HEIGHT * vertical_scale / 7.0),
+        anchor[2] + tangent[2] * horizontal,
+    ]
+}
+
+fn project_camera_solid_line(
+    area: Rect,
+    camera: PerspectiveCamera,
+    mut a: [f32; 3],
+    mut b: [f32; 3],
+    width: u32,
+) -> Option<ScreenLine> {
+    if a[2] <= PERSPECTIVE_NEAR_Z && b[2] <= PERSPECTIVE_NEAR_Z {
+        return None;
+    }
+    if a[2] <= PERSPECTIVE_NEAR_Z {
+        a = clip_camera_near(a, b);
+    } else if b[2] <= PERSPECTIVE_NEAR_Z {
+        b = clip_camera_near(b, a);
+    }
+
+    let start = project_camera_point(a, camera)?;
+    let end = project_camera_point(b, camera)?;
+    let half = (width as i32) / 2;
+    clip_line(
+        start,
+        end,
+        2 + half,
+        area.w as i32 - 3 - half,
+        2 + half,
+        area.h as i32 - 3 - half,
+    )
+}
+
+fn draw_solid_line_pixels(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    mut x0: i32,
+    mut y0: i32,
+    x1: i32,
+    y1: i32,
+    color: embedded_graphics::pixelcolor::Rgb565,
+    width: u32,
+) {
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut error = dx + dy;
+    let half = (width as i32) / 2;
+
+    loop {
+        common::fill_box(
+            frame,
+            area.x + x0 - half,
+            area.y + y0 - half,
+            width,
+            width,
+            color,
+        );
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let doubled = 2 * error;
+        if doubled >= dy {
+            error += dy;
+            x0 += sx;
+        }
+        if doubled <= dx {
+            error += dx;
+            y0 += sy;
+        }
     }
 }
 
@@ -533,22 +742,30 @@ fn clip_line(
         let dx = (b.0 - a.0) as i64;
         let dy = (b.1 - a.1) as i64;
         let (x, y) = if code & 8 != 0 {
-            if dy == 0 { return None; }
+            if dy == 0 {
+                return None;
+            }
             let y = max_y;
             let x = a.0 + (dx * (y - a.1) as i64 / dy) as i32;
             (x, y)
         } else if code & 4 != 0 {
-            if dy == 0 { return None; }
+            if dy == 0 {
+                return None;
+            }
             let y = min_y;
             let x = a.0 + (dx * (y - a.1) as i64 / dy) as i32;
             (x, y)
         } else if code & 2 != 0 {
-            if dx == 0 { return None; }
+            if dx == 0 {
+                return None;
+            }
             let x = max_x;
             let y = a.1 + (dy * (x - a.0) as i64 / dx) as i32;
             (x, y)
         } else {
-            if dx == 0 { return None; }
+            if dx == 0 {
+                return None;
+            }
             let x = min_x;
             let y = a.1 + (dy * (x - a.0) as i64 / dx) as i32;
             (x, y)
@@ -564,10 +781,18 @@ fn clip_line(
 
 fn outcode(x: i32, y: i32, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u8 {
     let mut code = 0;
-    if x < min_x { code |= 1; }
-    if x > max_x { code |= 2; }
-    if y < min_y { code |= 4; }
-    if y > max_y { code |= 8; }
+    if x < min_x {
+        code |= 1;
+    }
+    if x > max_x {
+        code |= 2;
+    }
+    if y < min_y {
+        code |= 4;
+    }
+    if y > max_y {
+        code |= 8;
+    }
     code
 }
 

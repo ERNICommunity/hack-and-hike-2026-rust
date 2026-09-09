@@ -108,12 +108,9 @@ pub struct ImuDisplay {
     pub pitch_deg: i32,
     pub yaw_deg: i32,
     pub status: imu::Status,
-    pub read_errors: u32,
-    pub mag_errors: u32,
     pub mag_status: imu::MagStatus,
     pub mag_field_ut: i32,
     pub mag_calibration: u8,
-    pub gyro_bias_ready: bool,
 }
 
 struct ImuModel {
@@ -133,12 +130,9 @@ impl ImuModel {
                 pitch_deg: 0,
                 yaw_deg: 0,
                 status: imu::Status::Starting,
-                read_errors: 0,
-                mag_errors: 0,
                 mag_status: imu::MagStatus::Missing,
                 mag_field_ut: 0,
                 mag_calibration: 0,
-                gyro_bias_ready: false,
             },
             last_revision: 0,
             last_update: Instant::now(),
@@ -167,12 +161,9 @@ impl ImuModel {
             pitch_deg: round_units(snapshot.orientation.pitch_deg),
             yaw_deg: round_units(snapshot.orientation.yaw_deg),
             status: snapshot.status,
-            read_errors: snapshot.read_errors,
-            mag_errors: snapshot.mag_errors,
             mag_status: snapshot.mag_status,
             mag_field_ut: round_units(snapshot.mag_field_ut),
             mag_calibration: snapshot.mag_calibration_percent,
-            gyro_bias_ready: snapshot.gyro_bias_ready,
         };
         self.dirty = true;
     }
