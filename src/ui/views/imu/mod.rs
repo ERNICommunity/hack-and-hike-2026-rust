@@ -36,12 +36,15 @@ const RAD_TO_DEG: f32 = 180.0 / PI;
 const DEG_TO_RAD: f32 = PI / 180.0;
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 const YAW_TEXTURE_HEADINGS: [i32; 12] = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
-// A larger, more distant world grid reads as floor/ceiling rather than a pair
-// of planes floating close to the device. The planes extend through the user's
-// position; near geometry naturally projects outside the viewport.
-const GRID_COORDS: [f32; 11] = [-20.0, -16.0, -12.0, -8.0, -4.0, 0.0, 4.0, 8.0, 12.0, 16.0, 20.0];
-const GRID_EXTENT: f32 = 24.0;
-const PERSPECTIVE_PLANE_HEIGHT: f32 = 3.5;
+// Put the floor/ceiling farther from the viewer and extend the world far enough
+// that the last cross-lines crowd naturally into the horizon. Eight-unit spacing
+// keeps the line count modest even at +/-48 units.
+const GRID_COORDS: [f32; 13] = [
+    -48.0, -40.0, -32.0, -24.0, -16.0, -8.0, 0.0, 8.0, 16.0, 24.0, 32.0, 40.0,
+    48.0,
+];
+const GRID_EXTENT: f32 = 48.0;
+const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
@@ -303,8 +306,8 @@ fn draw_perspective_grid(
         cos_roll: cos_approx(roll),
     };
 
-    draw_world_grid_plane(frame, area, camera, PERSPECTIVE_PLANE_HEIGHT, common::dark_blue());
-    draw_world_grid_plane(frame, area, camera, -PERSPECTIVE_PLANE_HEIGHT, common::light_gray());
+    draw_world_grid_plane(frame, area, camera, PERSPECTIVE_PLANE_HEIGHT, true);
+    draw_world_grid_plane(frame, area, camera, -PERSPECTIVE_PLANE_HEIGHT, false);
 }
 
 fn draw_world_grid_plane(
@@ -312,9 +315,10 @@ fn draw_world_grid_plane(
     area: Rect,
     camera: PerspectiveCamera,
     world_y: f32,
-    color: embedded_graphics::pixelcolor::Rgb565,
+    sky: bool,
 ) {
     for coordinate in GRID_COORDS {
+        let color = grid_fade_color(sky, abs_f32(coordinate));
         draw_world_segment(
             frame,
             area,
@@ -331,6 +335,33 @@ fn draw_world_grid_plane(
             [GRID_EXTENT, world_y, coordinate],
             color,
         );
+    }
+}
+
+/// Cheap three-band distance fade. RGB565 colors are preselected blends toward
+/// the actual sky/ground fill colors, avoiding alpha blending or framebuffer
+/// reads. The outer +/-32..48 world-unit lines are intentionally subtle near
+/// the horizon while the local grid remains easy to read.
+fn grid_fade_color(
+    sky: bool,
+    distance: f32,
+) -> embedded_graphics::pixelcolor::Rgb565 {
+    use embedded_graphics::pixelcolor::Rgb565;
+
+    if sky {
+        if distance >= 32.0 {
+            Rgb565::new(0, 35, 24)
+        } else if distance >= 16.0 {
+            Rgb565::new(0, 28, 21)
+        } else {
+            common::dark_blue()
+        }
+    } else if distance >= 32.0 {
+        Rgb565::new(12, 25, 12)
+    } else if distance >= 16.0 {
+        Rgb565::new(16, 32, 16)
+    } else {
+        common::light_gray()
     }
 }
 

@@ -25,11 +25,10 @@ pub const GOOD_FIELD_MAX_UT: f32 = 100.0;
 // calibrated ellipsoid to a representative Earth-field radius so the health
 // window above remains meaningful even when the enclosure adds a large offset.
 const CALIBRATED_FIELD_RADIUS_UT: f32 = 50.0;
-// Require substantially more 3-D coverage than the first implementation. A
-// 35 uT span / 120 samples could declare calibration ready before the extrema
-// were representative, which made the calibration matrix change dramatically
-// with small subsequent movements.
-const CALIBRATION_TARGET_SPAN_UT: f32 = 50.0;
+// Keep the stronger 240-sample requirement, but use the 35 uT per-axis span that
+// was reachable on the physical CoreS3 Lite. Requiring 50 uT on every axis can
+// leave calibration permanently incomplete even after a thorough 3-D rotation.
+const CALIBRATION_TARGET_SPAN_UT: f32 = 35.0;
 const CALIBRATION_MIN_SAMPLES: u16 = 240;
 
 #[derive(Clone, Copy, Debug)]
