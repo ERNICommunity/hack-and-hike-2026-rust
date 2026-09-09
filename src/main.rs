@@ -294,9 +294,8 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         let camera_active = camera_ready && ui.presented_view() == models::ViewId::Camera;
         if camera_active {
-            if let Some(mut frame) = camera.begin_frame() {
-                ui.render_camera(&mut display, &mut frame);
-                let _ = frame.finish();
+            if let Some(frame) = camera.capture() {
+                ui.render_camera(&mut display, &frame);
             }
         }
 
