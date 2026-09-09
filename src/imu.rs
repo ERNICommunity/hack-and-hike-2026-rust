@@ -163,10 +163,21 @@ const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
 // only the calibrated field is later judged against Earth's expected strength.
 const MAG_LEARNING_MIN_UT: f32 = 5.0;
 const MAG_LEARNING_MAX_UT: f32 = 2000.0;
-const MAG_STATUS_HYSTERESIS_SAMPLES: u8 = 8;
+// Recover quickly after good magnetic data returns, but require roughly one
+// second of consecutive bad 30 Hz samples before declaring the magnetometer
+// disturbed. Short magnitude dips should not make the whole IMU status flap.
+const MAG_GOOD_SAMPLES_TO_READY: u8 = 8;
+const MAG_BAD_SAMPLES_TO_DISTURBED: u8 = 30;
 // A bad magnetic heading must never be able to erase a real turn. At 30 Hz this
 // permits at most about six degrees/second of magnetic drift correction.
 const MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG: f32 = 0.20;
+// The BMM150 cannot produce a real 20-degree heading step between adjacent 30 Hz
+// frames within the BMI270's +/-500 dps gyro range. Treat larger single-frame
+// changes as magnetic glitches instead of allowing them to drag yaw.
+const MAX_MAG_HEADING_STEP_DEG: f32 = 20.0;
+// Heading is numerically unstable when the leveled field points almost entirely
+// vertically. Require a small horizontal component before using atan2.
+const MIN_MAG_HORIZONTAL_FIELD_UT: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug)]
 enum Error {
@@ -437,6 +448,8 @@ impl GyroBias {
 #[derive(Clone, Copy)]
 struct Fusion {
     orientation: Orientation,
+    gravity_body: [f32; 3],
+    last_mag_heading: Option<f32>,
     initialized: bool,
 }
 
@@ -448,6 +461,8 @@ impl Fusion {
                 pitch_deg: 0.0,
                 yaw_deg: 0.0,
             },
+            gravity_body: [0.0, 0.0, 1.0],
+            last_mag_heading: None,
             initialized: false,
         }
     }
@@ -461,40 +476,76 @@ impl Fusion {
         magnetic_field_ut: Option<[f32; 3]>,
         yaw_alpha: f32,
     ) -> Orientation {
-        let [ax, ay, az] = accel_g;
-        let [gx, gy, _gz] = gyro_dps;
-
-        let acc_roll = radians_to_degrees(atan2_approx(ay, az));
-        let acc_pitch = radians_to_degrees(atan2_approx(-ax, sqrt_approx(ay * ay + az * az)));
-        let screen_accel = screen_vector_from_body(accel_g);
-        let screen_gyro = screen_vector_from_body(gyro_dps);
-        let gravity = normalize3(screen_accel);
-        let magnetic_heading = match (magnetic_field_ut.map(screen_vector_from_body), gravity) {
-            (Some(field), Some(gravity)) => gravity_compensated_heading(field, gravity),
-            _ => None,
-        };
+        let measured_gravity = normalize3(accel_g);
 
         if !self.initialized {
-            self.orientation.roll_deg = acc_roll;
-            self.orientation.pitch_deg = acc_pitch;
-            self.orientation.yaw_deg = magnetic_heading.unwrap_or(0.0);
+            if let Some(gravity) = measured_gravity {
+                self.gravity_body = gravity;
+            }
+            let (roll, pitch) = attitude_from_gravity(self.gravity_body);
+            self.orientation.roll_deg = roll;
+            self.orientation.pitch_deg = pitch;
+
+            let screen_gravity = normalize3(screen_vector_from_body(self.gravity_body))
+                .unwrap_or([0.0, 0.0, 1.0]);
+            let initial_heading = magnetic_field_ut
+                .map(screen_vector_from_body)
+                .and_then(|field| gravity_compensated_heading(field, screen_gravity));
+            self.orientation.yaw_deg = initial_heading.unwrap_or(0.0);
+            self.last_mag_heading = initial_heading;
             self.initialized = true;
             return self.orientation;
         }
 
+        // Propagate one gravity vector with the complete body-rate vector instead
+        // of integrating roll/pitch as independent Euler angles. A yaw rotation
+        // around gravity therefore leaves tilt unchanged by construction.
+        let predicted_gravity = integrate_gravity(self.gravity_body, gyro_dps, dt_seconds);
+        let accel_norm_sq = dot3(accel_g, accel_g);
+        let accel_plausible = (0.75 * 0.75..=1.25 * 1.25).contains(&accel_norm_sq);
         let alpha = clamp_f32(roll_pitch_alpha, 0.0, 1.0);
-        let accel_weight = 1.0 - alpha;
-        self.orientation.roll_deg = alpha * (self.orientation.roll_deg + gx * dt_seconds)
-            + accel_weight * acc_roll;
-        self.orientation.pitch_deg = alpha * (self.orientation.pitch_deg + gy * dt_seconds)
-            + accel_weight * acc_pitch;
+        self.gravity_body = if accel_plausible {
+            if let Some(measured) = measured_gravity {
+                let blended = [
+                    alpha * predicted_gravity[0] + (1.0 - alpha) * measured[0],
+                    alpha * predicted_gravity[1] + (1.0 - alpha) * measured[1],
+                    alpha * predicted_gravity[2] + (1.0 - alpha) * measured[2],
+                ];
+                normalize3(blended).unwrap_or(predicted_gravity)
+            } else {
+                predicted_gravity
+            }
+        } else {
+            predicted_gravity
+        };
 
-        // Yaw is rotation around the local gravity axis, not around one fixed
-        // BMI270 body axis. This gives -body gyro Y while upright, body gyro Z
-        // when face-up on a table, and a continuous blend in between.
-        let yaw_rate_dps = gravity
-            .map(|gravity| dot3(screen_gyro, gravity))
-            .unwrap_or(screen_gyro[2]);
+        let (roll, pitch) = attitude_from_gravity(self.gravity_body);
+        self.orientation.roll_deg = roll;
+        self.orientation.pitch_deg = pitch;
+
+        let screen_gravity = normalize3(screen_vector_from_body(self.gravity_body))
+            .unwrap_or([0.0, 0.0, 1.0]);
+        let screen_gyro = screen_vector_from_body(gyro_dps);
+        let raw_magnetic_heading = magnetic_field_ut
+            .map(screen_vector_from_body)
+            .and_then(|field| gravity_compensated_heading(field, screen_gravity));
+        let magnetic_heading = raw_magnetic_heading.and_then(|heading| {
+            let stable = self
+                .last_mag_heading
+                .map(|last| abs_f32(wrap_degrees(heading - last)) <= MAX_MAG_HEADING_STEP_DEG)
+                .unwrap_or(true);
+            if stable {
+                self.last_mag_heading = Some(heading);
+                Some(heading)
+            } else {
+                None
+            }
+        });
+
+        // Yaw rate is the component of angular velocity around local gravity.
+        // This is orientation-independent and uses the same filtered gravity
+        // estimate that defines roll/pitch, preventing axis leakage.
+        let yaw_rate_dps = dot3(screen_gyro, screen_gravity);
         let predicted_yaw = wrap_degrees(self.orientation.yaw_deg + yaw_rate_dps * dt_seconds);
 
         self.orientation.yaw_deg = if let Some(heading) = magnetic_heading {
@@ -690,7 +741,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                                             mag_status = MagStatus::Learning;
                                         } else {
                                             mag_bad_samples = mag_bad_samples.saturating_add(1);
-                                            if mag_bad_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                            if mag_bad_samples >= MAG_BAD_SAMPLES_TO_DISTURBED {
                                                 mag_status = MagStatus::Disturbed;
                                             }
                                         }
@@ -703,13 +754,16 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                                             mag_good_samples = mag_good_samples.saturating_add(1);
                                             mag_bad_samples = 0;
                                             magnetic_for_fusion = Some(corrected_field);
-                                            if mag_good_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                            if mag_good_samples >= MAG_GOOD_SAMPLES_TO_READY {
                                                 mag_status = MagStatus::Ready;
                                             }
                                         } else {
+                                            // Reject the individual bad vector immediately
+                                            // from yaw fusion, but do not flap the whole IMU
+                                            // to DEGRADED unless the mismatch persists.
                                             mag_bad_samples = mag_bad_samples.saturating_add(1);
                                             mag_good_samples = 0;
-                                            if mag_bad_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                            if mag_bad_samples >= MAG_BAD_SAMPLES_TO_DISTURBED {
                                                 mag_status = MagStatus::Disturbed;
                                             }
                                         }
@@ -719,7 +773,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                                 mag_errors = mag_errors.wrapping_add(1);
                                 mag_bad_samples = mag_bad_samples.saturating_add(1);
                                 mag_good_samples = 0;
-                                if mag_bad_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                if mag_bad_samples >= MAG_BAD_SAMPLES_TO_DISTURBED {
                                     mag_status = MagStatus::Disturbed;
                                 }
                             }
@@ -815,6 +869,7 @@ fn log_init_error(device: &str, error: Error) {
 
 const PI: f32 = 3.14159265358979323846;
 const RAD_TO_DEG: f32 = 180.0 / PI;
+const DEG_TO_RAD: f32 = PI / 180.0;
 
 fn radians_to_degrees(value: f32) -> f32 {
     value * RAD_TO_DEG
@@ -877,6 +932,14 @@ fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
 fn normalize3(value: [f32; 3]) -> Option<[f32; 3]> {
     let norm_sq = dot3(value, value);
     if norm_sq < 0.01 {
@@ -886,6 +949,30 @@ fn normalize3(value: [f32; 3]) -> Option<[f32; 3]> {
     Some([value[0] * inverse, value[1] * inverse, value[2] * inverse])
 }
 
+fn integrate_gravity(gravity: [f32; 3], gyro_dps: [f32; 3], dt_seconds: f32) -> [f32; 3] {
+    let omega = [
+        gyro_dps[0] * DEG_TO_RAD,
+        gyro_dps[1] * DEG_TO_RAD,
+        gyro_dps[2] * DEG_TO_RAD,
+    ];
+    // Coordinates of an inertially fixed gravity vector in a rotating body obey
+    // g_dot = -omega x g = g x omega.
+    let derivative = cross3(gravity, omega);
+    let predicted = [
+        gravity[0] + derivative[0] * dt_seconds,
+        gravity[1] + derivative[1] * dt_seconds,
+        gravity[2] + derivative[2] * dt_seconds,
+    ];
+    normalize3(predicted).unwrap_or(gravity)
+}
+
+fn attitude_from_gravity(gravity: [f32; 3]) -> (f32, f32) {
+    let [gx, gy, gz] = gravity;
+    let roll = radians_to_degrees(atan2_approx(gy, gz));
+    let pitch = radians_to_degrees(atan2_approx(-gx, sqrt_approx(gy * gy + gz * gz)));
+    (roll, pitch)
+}
+
 /// Level the magnetic vector directly from gravity rather than converting
 /// gravity to Euler roll/pitch first. The shortest-arc quaternion maps the
 /// measured gravity vector onto +Z, so heading remains well-conditioned when
@@ -893,7 +980,7 @@ fn normalize3(value: [f32; 3]) -> Option<[f32; 3]> {
 fn gravity_compensated_heading(field: [f32; 3], gravity: [f32; 3]) -> Option<f32> {
     let leveled = level_vector_to_gravity(field, gravity);
     let horizontal_sq = leveled[0] * leveled[0] + leveled[1] * leveled[1];
-    if horizontal_sq < 0.01 {
+    if horizontal_sq < MIN_MAG_HORIZONTAL_FIELD_UT * MIN_MAG_HORIZONTAL_FIELD_UT {
         return None;
     }
     Some(wrap_degrees(radians_to_degrees(atan2_approx(

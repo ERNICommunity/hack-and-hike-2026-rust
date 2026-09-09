@@ -36,14 +36,15 @@ const RAD_TO_DEG: f32 = 180.0 / PI;
 const DEG_TO_RAD: f32 = PI / 180.0;
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 const YAW_TEXTURE_HEADINGS: [i32; 12] = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
-// Put the floor/ceiling farther from the viewer and extend the world far enough
-// that the last cross-lines crowd naturally into the horizon. Eight-unit spacing
-// keeps the line count modest even at +/-48 units.
-const GRID_COORDS: [f32; 13] = [
-    -48.0, -40.0, -32.0, -24.0, -16.0, -8.0, 0.0, 8.0, 16.0, 24.0, 32.0, 40.0,
-    48.0,
+// Extend the floor/ceiling far enough that cross-lines accumulate tightly at the
+// horizon. Eight-unit spacing keeps the world regular while +/-96 gives twice
+// the previous depth without changing the plane height around the viewer.
+const GRID_COORDS: [f32; 25] = [
+    -96.0, -88.0, -80.0, -72.0, -64.0, -56.0, -48.0, -40.0, -32.0, -24.0, -16.0,
+    -8.0, 0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0, 72.0, 80.0, 88.0,
+    96.0,
 ];
-const GRID_EXTENT: f32 = 48.0;
+const GRID_EXTENT: f32 = 96.0;
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
@@ -338,10 +339,9 @@ fn draw_world_grid_plane(
     }
 }
 
-/// Cheap three-band distance fade. RGB565 colors are preselected blends toward
-/// the actual sky/ground fill colors, avoiding alpha blending or framebuffer
-/// reads. The outer +/-32..48 world-unit lines are intentionally subtle near
-/// the horizon while the local grid remains easy to read.
+/// Four discrete RGB565 fade bands provide a depth cue without alpha blending
+/// or framebuffer reads. The far bands are deliberately stronger than before so
+/// the +/-64..96 grid remains visible while still receding toward the background.
 fn grid_fade_color(
     sky: bool,
     distance: f32,
@@ -349,17 +349,21 @@ fn grid_fade_color(
     use embedded_graphics::pixelcolor::Rgb565;
 
     if sky {
-        if distance >= 32.0 {
-            Rgb565::new(0, 35, 24)
-        } else if distance >= 16.0 {
-            Rgb565::new(0, 28, 21)
+        if distance >= 72.0 {
+            Rgb565::new(0, 30, 22)
+        } else if distance >= 48.0 {
+            Rgb565::new(0, 25, 20)
+        } else if distance >= 24.0 {
+            Rgb565::new(0, 20, 18)
         } else {
             common::dark_blue()
         }
-    } else if distance >= 32.0 {
-        Rgb565::new(12, 25, 12)
-    } else if distance >= 16.0 {
-        Rgb565::new(16, 32, 16)
+    } else if distance >= 72.0 {
+        Rgb565::new(16, 31, 16)
+    } else if distance >= 48.0 {
+        Rgb565::new(18, 35, 18)
+    } else if distance >= 24.0 {
+        Rgb565::new(20, 39, 20)
     } else {
         common::light_gray()
     }

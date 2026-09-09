@@ -17,10 +17,13 @@ const OVERFLOW_Z: i16 = -16384;
 /// remove the offset before judging magnetic health.
 const LEARNING_FIELD_MIN_UT: f32 = 5.0;
 const LEARNING_FIELD_MAX_UT: f32 = 2000.0;
-/// Normal field-strength window after calibration. Samples outside this range
-/// are treated as magnetically disturbed and are not used for yaw correction.
-pub const GOOD_FIELD_MIN_UT: f32 = 15.0;
-pub const GOOD_FIELD_MAX_UT: f32 = 100.0;
+/// Broad post-calibration usability window. The calibrated vector is normalized
+/// toward 50 uT, but the simple diagonal ellipsoid fit can still change magnitude
+/// with orientation in the CoreS3's strong local field. Heading depends primarily
+/// on vector direction, so do not disable drift correction for ordinary dips below
+/// the previous 15 uT cutoff; only near-zero or very large vectors are rejected.
+pub const GOOD_FIELD_MIN_UT: f32 = 5.0;
+pub const GOOD_FIELD_MAX_UT: f32 = 150.0;
 // Heading depends on magnetic direction, not absolute scale. Normalize the
 // calibrated ellipsoid to a representative Earth-field radius so the health
 // window above remains meaningful even when the enclosure adds a large offset.
