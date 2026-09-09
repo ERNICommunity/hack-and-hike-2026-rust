@@ -14,6 +14,11 @@ const MIDI_MIN: i16 = 24;
 const MIDI_MAX: i16 = 60;
 const MIDI_OCTAVE_SHIFT: u32 = 2;
 const SYNTH_PEAK: i32 = 20_000;
+// Fixed, stateless attenuation for the melody. Applying this after synthesis
+// keeps every sample at exactly 70% of the previous level and prevents tempo or
+// pitch changes from ever introducing a playback-time gain increase.
+const MELODY_GAIN_NUMERATOR: i32 = 7;
+const MELODY_GAIN_DENOMINATOR: i32 = 10;
 
 #[derive(Clone, Copy)]
 struct MidiNote {
@@ -105,13 +110,14 @@ impl MelodySynth {
         let wave = i32::from(triangle_wave(self.phase));
         self.phase = self.phase.wrapping_add(step);
 
-        // The source uses velocity 50 for every note. Scale it to a much more
-        // useful speaker level while keeping headroom for the one-shot mixer.
+        // The source uses velocity 50 for every note. Keep the original synth
+        // headroom calculation, then apply one fixed 70% output gain below.
         let amplitude = ((SYNTH_PEAK * i32::from(note.velocity)) / 64)
             .clamp(4_000, SYNTH_PEAK);
         let envelope = envelope_q15(position_q32, duration_ticks);
+        let shaped = ((wave * amplitude) / 32_767) * envelope / 32_767;
 
-        (((wave * amplitude) / 32_767) * envelope / 32_767) as i16
+        ((shaped * MELODY_GAIN_NUMERATOR) / MELODY_GAIN_DENOMINATOR) as i16
     }
 }
 
