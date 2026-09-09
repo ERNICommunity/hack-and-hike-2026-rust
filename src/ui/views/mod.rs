@@ -156,7 +156,7 @@ impl Views {
         state: SpeakerDisplay,
     ) {
         self.speaker.sync(state);
-        self.speaker.present(surface, display, state);
+        self.speaker.present(surface, display);
     }
 
     pub(crate) fn present_settings(
@@ -166,7 +166,7 @@ impl Views {
         state: SettingsDisplay,
     ) {
         self.settings.sync_brightness(state.brightness);
-        self.settings.present(surface, display, state);
+        self.settings.present(surface, display);
     }
 
     pub(crate) fn present_log(
