@@ -23,6 +23,18 @@ const NODE_CAPACITY: usize = 8;
 const TEXT_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 2;
 
+// Fixed-point tan(angle) samples from 0..=80 degrees in five-degree steps.
+// Q10 keeps the horizon projection cheap on the ESP32-S3 while making the
+// displayed line follow the actual attitude angle instead of a damped linear
+// approximation.
+const TAN_SCALE: i32 = 1024;
+const TAN_STEP_DEG: i32 = 5;
+const TAN_MAX_DEG: i32 = 80;
+const TAN_Q10: [i32; 17] = [
+    0, 90, 181, 274, 373, 477, 591, 717, 859, 1024, 1220, 1462, 1774, 2196, 2814,
+    3822, 5807,
+];
+
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
 #[derive(Clone, Copy)]
@@ -160,14 +172,15 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::fill_rect(frame, area, common::light_blue());
 
     let (display_roll, display_pitch) = display_roll_pitch(imu);
-    let roll = display_roll.clamp(-45, 45);
-    let pitch = display_pitch.clamp(-40, 40);
+    let roll = display_roll.clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
+    let pitch = display_pitch.clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
     let center_x = width / 2;
     let center_y = height / 2;
+    let pitch_offset = project_angle(pitch, center_y);
+    let roll_tangent = tangent_q10(roll);
 
     for local_x in 0..width {
-        let pitch_offset = pitch * 4 / 5;
-        let roll_offset = roll * (local_x - center_x) / 300;
+        let roll_offset = roll_tangent * (local_x - center_x) / TAN_SCALE;
         let horizon = (center_y + pitch_offset + roll_offset).clamp(0, height);
         if horizon < height {
             common::vline(
@@ -248,12 +261,48 @@ fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::fill_box(frame, center - 2, area.y + 16, 4, 13, common::dark_blue());
 }
 
-/// Convert the BMI270 board axes to the way the CoreS3 Lite is viewed in use:
-/// upright in front of the user, with the camera above the display. In that
-/// orientation the sensor's roll/pitch axes are rotated 90 degrees relative to
-/// the screen, so sensor pitch is displayed as roll and sensor roll as pitch.
+/// Convert the BMI270 board axes to the CoreS3 Lite screen frame used by the
+/// attitude view. Sensor pitch already matches screen roll. Sensor roll reads
+/// -90 degrees when the device is standing upright with the camera above the
+/// display, so add 90 degrees to make that physical pose the zero-pitch datum.
 fn display_roll_pitch(imu: &ImuDisplay) -> (i32, i32) {
-    (imu.pitch_deg, imu.roll_deg)
+    (
+        imu.pitch_deg,
+        wrap_signed_degrees(imu.roll_deg.saturating_add(90)),
+    )
+}
+
+fn wrap_signed_degrees(mut degrees: i32) -> i32 {
+    while degrees > 180 {
+        degrees -= 360;
+    }
+    while degrees < -180 {
+        degrees += 360;
+    }
+    degrees
+}
+
+fn project_angle(degrees: i32, focal_pixels: i32) -> i32 {
+    focal_pixels * tangent_q10(degrees) / TAN_SCALE
+}
+
+fn tangent_q10(degrees: i32) -> i32 {
+    let clamped = degrees.clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
+    let (sign, magnitude) = if clamped < 0 {
+        (-1, -clamped)
+    } else {
+        (1, clamped)
+    };
+
+    let lower_index = (magnitude / TAN_STEP_DEG) as usize;
+    if lower_index >= TAN_Q10.len() - 1 {
+        return sign * TAN_Q10[TAN_Q10.len() - 1];
+    }
+
+    let remainder = magnitude % TAN_STEP_DEG;
+    let lower = TAN_Q10[lower_index];
+    let upper = TAN_Q10[lower_index + 1];
+    sign * (lower + (upper - lower) * remainder / TAN_STEP_DEG)
 }
 
 fn draw_border(frame: &mut GuiFramebuffer, area: Rect) {
