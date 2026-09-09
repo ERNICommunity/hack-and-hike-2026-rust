@@ -24,9 +24,8 @@ const TEXT_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 2;
 
 // Fixed-point tan(angle) samples from 0..=80 degrees in five-degree steps.
-// Q10 keeps the horizon projection cheap on the ESP32-S3 while making the
-// displayed line follow the actual attitude angle instead of a damped linear
-// approximation.
+// Q10 keeps pitch projection cheap on the ESP32-S3 while matching the real
+// horizon displacement much more closely than a linear pixels/degree scale.
 const TAN_SCALE: i32 = 1024;
 const TAN_STEP_DEG: i32 = 5;
 const TAN_MAX_DEG: i32 = 80;
@@ -34,6 +33,11 @@ const TAN_Q10: [i32; 17] = [
     0, 90, 181, 274, 373, 477, 591, 717, 859, 1024, 1220, 1462, 1774, 2196, 2814,
     3822, 5807,
 ];
+
+const PI: f32 = 3.14159265358979323846;
+const RAD_TO_DEG: f32 = 180.0 / PI;
+const DEG_TO_RAD: f32 = PI / 180.0;
+const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
@@ -171,25 +175,59 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     let height = area.h as i32;
     common::fill_rect(frame, area, common::light_blue());
 
-    let (display_roll, display_pitch) = display_roll_pitch(imu);
-    let roll = display_roll.clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
-    let pitch = display_pitch.clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
+    let (display_roll, display_pitch) = display_roll_pitch_f32(imu);
+    let pitch = round_degrees(display_pitch).clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
     let center_x = width / 2;
     let center_y = height / 2;
     let pitch_offset = project_angle(pitch, center_y);
-    let roll_tangent = tangent_q10(roll);
+    let roll_radians = display_roll * DEG_TO_RAD;
+    let sin_roll = sin_approx(roll_radians);
+    let cos_roll = cos_approx(roll_radians);
 
+    // Draw the horizon from its implicit line equation rather than clamping
+    // bank to +/-80 degrees. This keeps the line valid through 90 degrees and
+    // at 180 degrees: upside-down is a centered horizon with the ground above.
     for local_x in 0..width {
-        let roll_offset = roll_tangent * (local_x - center_x) / TAN_SCALE;
-        let horizon = (center_y + pitch_offset + roll_offset).clamp(0, height);
-        if horizon < height {
-            common::vline(
-                frame,
-                x0 + local_x,
-                y0 + horizon,
-                (height - horizon) as u32,
-                common::dark_gray(),
-            );
+        let x_delta = local_x - center_x;
+        if abs_f32(cos_roll) > HORIZON_VERTICAL_COS_EPSILON {
+            let horizon = round_f32(
+                center_y as f32
+                    + (pitch_offset as f32 + sin_roll * x_delta as f32) / cos_roll,
+            )
+            .clamp(0, height);
+
+            if cos_roll > 0.0 {
+                if horizon < height {
+                    common::vline(
+                        frame,
+                        x0 + local_x,
+                        y0 + horizon,
+                        (height - horizon) as u32,
+                        common::dark_gray(),
+                    );
+                }
+            } else if horizon > 0 {
+                common::vline(
+                    frame,
+                    x0 + local_x,
+                    y0,
+                    horizon as u32,
+                    common::dark_gray(),
+                );
+            }
+        } else {
+            // At +/-90 degrees the horizon is vertical. The line equation no
+            // longer depends on y, so each column is entirely sky or ground.
+            let ground_side = -sin_roll * x_delta as f32 - pitch_offset as f32 >= 0.0;
+            if ground_side {
+                common::vline(
+                    frame,
+                    x0 + local_x,
+                    y0,
+                    height as u32,
+                    common::dark_gray(),
+                );
+            }
         }
     }
 
@@ -202,7 +240,8 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::hline(frame, cx - 20, cy - 23, 40, common::white());
     common::hline(frame, cx - 12, cy + 22, 24, common::white());
 
-    let roll_x = (cx + roll * 21 / 20 - 2).clamp(x0, x0 + width - 5);
+    let marker_span = (width / 2 - 8).max(1);
+    let roll_x = (cx + round_f32(sin_roll * marker_span as f32) - 2).clamp(x0, x0 + width - 5);
     common::fill_box(frame, roll_x, y0 + 5, 5, 10, common::dark_blue());
     common::draw_body(frame, "PITCH / ROLL", x0 + 5, y0 + 4, common::dark_blue());
 
@@ -261,25 +300,38 @@ fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::fill_box(frame, center - 2, area.y + 16, 4, 13, common::dark_blue());
 }
 
-/// Convert the BMI270 board axes to the CoreS3 Lite screen frame used by the
-/// attitude view. Sensor pitch already matches screen roll. Sensor roll reads
-/// -90 degrees when the device is standing upright with the camera above the
-/// display, so add 90 degrees to make that physical pose the zero-pitch datum.
-fn display_roll_pitch(imu: &ImuDisplay) -> (i32, i32) {
-    (
-        imu.pitch_deg,
-        wrap_signed_degrees(imu.roll_deg.saturating_add(90)),
-    )
+/// Convert fused BMI270 Euler angles back to their gravity vector, rotate that
+/// vector into the upright screen frame, then derive screen Euler angles.
+///
+/// Working through gravity avoids the previous `sensor roll + 90` singularity:
+/// upright is roll=0/pitch=0, face-up is pitch=+90, and camera-below inverted
+/// is roll=180/pitch=0 rather than a false +/-180-degree pitch.
+fn display_roll_pitch_f32(imu: &ImuDisplay) -> (f32, f32) {
+    let sensor_roll = imu.roll_deg as f32 * DEG_TO_RAD;
+    let sensor_pitch = imu.pitch_deg as f32 * DEG_TO_RAD;
+    let sin_sensor_roll = sin_approx(sensor_roll);
+    let cos_sensor_roll = cos_approx(sensor_roll);
+    let sin_sensor_pitch = sin_approx(sensor_pitch);
+    let cos_sensor_pitch = cos_approx(sensor_pitch);
+
+    // Gravity in the sensor/body frame for the Euler convention used by
+    // imu::Fusion: roll=atan2(ay, az), pitch=atan2(-ax, hypot(ay, az)).
+    let ax = -sin_sensor_pitch;
+    let ay = sin_sensor_roll * cos_sensor_pitch;
+    let az = cos_sensor_roll * cos_sensor_pitch;
+
+    // CoreS3 Lite screen-frame remap for portrait/upright viewing. The roll sign
+    // preserves the already-confirmed behavior: rotating the device 90 degrees
+    // to the right reads -90 degrees.
+    let screen_roll = atan2_approx(-ax, -ay) * RAD_TO_DEG;
+    let horizontal = sqrt_approx(ax * ax + ay * ay);
+    let screen_pitch = atan2_approx(az, horizontal) * RAD_TO_DEG;
+    (screen_roll, screen_pitch)
 }
 
-fn wrap_signed_degrees(mut degrees: i32) -> i32 {
-    while degrees > 180 {
-        degrees -= 360;
-    }
-    while degrees < -180 {
-        degrees += 360;
-    }
-    degrees
+fn display_roll_pitch(imu: &ImuDisplay) -> (i32, i32) {
+    let (roll, pitch) = display_roll_pitch_f32(imu);
+    (round_degrees(roll), round_degrees(pitch))
 }
 
 fn project_angle(degrees: i32, focal_pixels: i32) -> i32 {
@@ -303,6 +355,76 @@ fn tangent_q10(degrees: i32) -> i32 {
     let lower = TAN_Q10[lower_index];
     let upper = TAN_Q10[lower_index + 1];
     sign * (lower + (upper - lower) * remainder / TAN_STEP_DEG)
+}
+
+fn round_degrees(value: f32) -> i32 {
+    round_f32(value)
+}
+
+fn round_f32(value: f32) -> i32 {
+    if value >= 0.0 {
+        (value + 0.5) as i32
+    } else {
+        (value - 0.5) as i32
+    }
+}
+
+fn abs_f32(value: f32) -> f32 {
+    if value < 0.0 { -value } else { value }
+}
+
+fn wrap_radians(mut value: f32) -> f32 {
+    while value > PI {
+        value -= 2.0 * PI;
+    }
+    while value < -PI {
+        value += 2.0 * PI;
+    }
+    value
+}
+
+fn sqrt_approx(value: f32) -> f32 {
+    if value <= 0.0 {
+        return 0.0;
+    }
+
+    let mut estimate = if value > 1.0 { value } else { 1.0 };
+    for _ in 0..6 {
+        estimate = 0.5 * (estimate + value / estimate);
+    }
+    estimate
+}
+
+fn atan2_approx(y: f32, x: f32) -> f32 {
+    if x == 0.0 && y == 0.0 {
+        return 0.0;
+    }
+
+    let abs_y = abs_f32(y) + 1.0e-10;
+    let (ratio, base) = if x < 0.0 {
+        ((x + abs_y) / (abs_y - x), 3.0 * PI / 4.0)
+    } else {
+        ((x - abs_y) / (x + abs_y), PI / 4.0)
+    };
+    let angle = base + (0.1963 * ratio * ratio - 0.9817) * ratio;
+
+    if y < 0.0 { -angle } else { angle }
+}
+
+fn sin_approx(value: f32) -> f32 {
+    let mut x = wrap_radians(value);
+    if x > PI * 0.5 {
+        x = PI - x;
+    } else if x < -PI * 0.5 {
+        x = -PI - x;
+    }
+
+    let x2 = x * x;
+    x * (1.0 - x2 / 6.0 + x2 * x2 / 120.0 - x2 * x2 * x2 / 5040.0)
+}
+
+fn cos_approx(value: f32) -> f32 {
+    sin_approx(value + PI * 0.5)
 }
 
 fn draw_border(frame: &mut GuiFramebuffer, area: Rect) {
