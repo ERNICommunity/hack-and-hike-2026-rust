@@ -131,23 +131,21 @@ impl Views {
     }
 
     pub(crate) fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
-        // Fill the complete 276x240 content region at native vertical resolution.
-        // QVGA is already 240 px tall, so no scaling is necessary: crop 22 px
-        // from each horizontal edge and copy the remaining 276x240 pixels 1:1.
+        // QVGA is already 240 px tall, so keep native vertical resolution and
+        // crop 22 px from each horizontal edge to fill the 276x240 content area.
+        // GC0308 hardware rotation already puts scanlines in display order.
         //
-        // The GC0308 now applies the board's 180-degree mounting correction in
-        // hardware. Camera DMA therefore arrives in display order and each line
-        // can be handed straight to the LCD scanline pipeline as it is captured.
-        display.render_scanlines(design::CONTENT_REGION, |_local_y, pixels| {
+        // Sensor RGB565 bytes are big-endian, exactly matching the ILI9342C SPI
+        // memory-write order. Copy them directly into the display's four-row DMA
+        // batches instead of decoding to u16 and immediately encoding back to the
+        // same two bytes for every pixel.
+        let _ = display.render_rgb565_be_scanlines(design::CONTENT_REGION, |_local_y, bytes| {
             let Some(source) = frame.next_scanline() else {
-                pixels.fill(theme::BLACK_RGB565);
-                return;
+                return false;
             };
             let cropped = &source[CAMERA_SOURCE_START_BYTE..CAMERA_SOURCE_END_BYTE];
-
-            for (pixel, bytes) in pixels.iter_mut().zip(cropped.chunks_exact(2)) {
-                *pixel = u16::from_be_bytes([bytes[0], bytes[1]]);
-            }
+            bytes.copy_from_slice(cropped);
+            true
         });
     }
 
