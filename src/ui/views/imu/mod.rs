@@ -125,13 +125,14 @@ fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         common::light_gray(),
     );
 
+    let (roll_deg, pitch_deg) = display_roll_pitch(imu);
     let first_x = area.x + 78;
     let column_width = ((area.w as i32 - 78) / 3).max(1);
-    draw_header_value(frame, "ROLL", imu.roll_deg, first_x, area.y);
+    draw_header_value(frame, "ROLL", roll_deg, first_x, area.y);
     draw_header_value(
         frame,
         "PITCH",
-        imu.pitch_deg,
+        pitch_deg,
         first_x + column_width,
         area.y,
     );
@@ -158,8 +159,9 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     let height = area.h as i32;
     common::fill_rect(frame, area, common::light_blue());
 
-    let roll = imu.roll_deg.clamp(-45, 45);
-    let pitch = imu.pitch_deg.clamp(-40, 40);
+    let (display_roll, display_pitch) = display_roll_pitch(imu);
+    let roll = display_roll.clamp(-45, 45);
+    let pitch = display_pitch.clamp(-40, 40);
     let center_x = width / 2;
     let center_y = height / 2;
 
@@ -244,6 +246,14 @@ fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     }
 
     common::fill_box(frame, center - 2, area.y + 16, 4, 13, common::dark_blue());
+}
+
+/// Convert the BMI270 board axes to the way the CoreS3 Lite is viewed in use:
+/// upright in front of the user, with the camera above the display. In that
+/// orientation the sensor's roll/pitch axes are rotated 90 degrees relative to
+/// the screen, so sensor pitch is displayed as roll and sensor roll as pitch.
+fn display_roll_pitch(imu: &ImuDisplay) -> (i32, i32) {
+    (imu.pitch_deg, imu.roll_deg)
 }
 
 fn draw_border(frame: &mut GuiFramebuffer, area: Rect) {
