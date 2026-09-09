@@ -35,11 +35,21 @@ pub const CHANNELS: usize = 2;
 pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 
 const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
+// Drain at most one presentation block (32 ms) per executor turn. The hardware
+// ring remains large, but a backed-up microphone reader can no longer monopolize
+// CPU1 for hundreds of milliseconds and starve the speaker producer.
+const RX_DRAIN_BYTES: usize = BLOCK_FRAMES * CHANNELS * 2;
 // esp-hal 1.1.x uses 4092-byte DMA chunks and balances circular buffers that
 // fit within two chunks across three descriptors. 8192 misses that path by only
 // 8 bytes, producing a pathological 4092 + 4092 + 8-byte TX ring.
 const TX_DMA_BUFFER_BYTES: usize = 8_184;
+// Render speaker data into a small staging block and feed it through `push`,
+// whose esp-hal 1.1.x implementation correctly propagates TX-underrun errors.
+// 1024 bytes is 16 ms of stereo 16-bit audio at 16 kHz, keeping controls snappy.
+const PLAYBACK_FILL_BYTES: usize = 1_024;
+const _: () = assert!(RX_DRAIN_BYTES % 4 == 0);
 const _: () = assert!(TX_DMA_BUFFER_BYTES % 4 == 0);
+const _: () = assert!(PLAYBACK_FILL_BYTES % 4 == 0);
 const ES7210_ADDR: u8 = 0x40;
 const AW88298_ADDR: u8 = 0x36;
 
@@ -234,6 +244,28 @@ pub fn copy_latest_interleaved(out: &mut [i16; BLOCK_SAMPLES]) -> Option<AudioBl
     Some(latest.info)
 }
 
+/// Yield exactly once even if the caller has more buffered work available.
+///
+/// Embassy is cooperative: an `.await` that is immediately ready does not give
+/// sibling tasks a turn. This helper forces the microphone drain loop to return
+/// `Pending` once so the continuous speaker refill can run before RX catch-up
+/// continues.
+async fn yield_to_executor() {
+    use core::task::Poll;
+
+    let mut yielded = false;
+    core::future::poll_fn(|cx| {
+        if yielded {
+            Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await;
+}
+
 /// Own I2S0 on CPU1, start the continuous speaker writer, then drain microphone
 /// RX forever. TX is the physical BCLK/WS master; RX follows the same signals
 /// through the peripheral's internal signal-loopback path.
@@ -290,7 +322,7 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
         SAMPLE_RATE_HZ
     );
 
-    let mut dma_drain = data_plane::FixedPsramBuffer::filled(RX_DMA_BUFFER_BYTES, 0u8);
+    let mut dma_drain = data_plane::FixedPsramBuffer::filled(RX_DRAIN_BYTES, 0u8);
     let mut samples = [0i16; BLOCK_SAMPLES];
     let mut frame_index = 0usize;
     let mut peak_left = 0u16;
@@ -305,10 +337,6 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
                 panic!("I2S circular DMA read failed");
             }
         };
-
-        if count == RX_DMA_BUFFER_BYTES {
-            diagnostics::record_audio_full_drain();
-        }
 
         for frame_bytes in dma_drain.as_slice()[..count].chunks_exact(4) {
             let left = i16::from_le_bytes([frame_bytes[0], frame_bytes[1]]);
@@ -336,6 +364,8 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
                 peak_right = 0;
             }
         }
+
+        yield_to_executor().await;
     }
 }
 
@@ -352,28 +382,40 @@ async fn playback_task(i2s_tx: I2sTx<'static, Async>, tx_buffer: &'static mut [u
     let mut engine = PlaybackEngine::new();
     let mut settings = PlaybackSettings::DEFAULT;
     let mut one_shot_seen = ONE_SHOT_SEQUENCE.load(Ordering::Acquire);
+    let mut staging = [0u8; PLAYBACK_FILL_BYTES];
+    let mut staging_offset = staging.len();
 
     loop {
-        if let Some(next) = PLAYBACK_SETTINGS.try_take() {
-            if next.melody_playing && !settings.melody_playing {
-                engine.melody.restart();
+        if staging_offset == staging.len() {
+            if let Some(next) = PLAYBACK_SETTINGS.try_take() {
+                if next.melody_playing && !settings.melody_playing {
+                    engine.melody.restart();
+                }
+                settings = next;
             }
-            settings = next;
+
+            let one_shot_sequence = ONE_SHOT_SEQUENCE.load(Ordering::Acquire);
+            if one_shot_sequence != one_shot_seen {
+                one_shot_seen = one_shot_sequence;
+                engine.chime.restart();
+            }
+
+            engine.fill(&mut staging, settings);
+            staging_offset = 0;
         }
 
-        let one_shot_sequence = ONE_SHOT_SEQUENCE.load(Ordering::Acquire);
-        if one_shot_sequence != one_shot_seen {
-            one_shot_seen = one_shot_sequence;
-            engine.chime.restart();
-        }
-
-        if transfer
-            .push_with(|bytes| engine.fill(bytes, settings))
-            .await
-            .is_err()
-        {
-            diagnostics::record_audio_playback_error();
-            panic!("I2S circular DMA write failed");
+        match transfer.push(&staging[staging_offset..]).await {
+            Ok(written) if written != 0 => staging_offset += written,
+            Ok(_) => {}
+            Err(_) => {
+                // `push` propagates esp-hal's DmaError::Late, unlike `push_with`
+                // in the pinned 1.1.x HAL. A late ring cannot be repaired through
+                // this API because the transfer owns I2sTx, so fail closed with a
+                // controlled reboot instead of replaying stale samples forever.
+                diagnostics::record_audio_playback_error();
+                ::log::error!("I2S TX DMA underrun; rebooting to recover audio");
+                esp_hal::system::software_reset();
+            }
         }
     }
 }
@@ -395,11 +437,10 @@ impl PlaybackEngine {
         }
     }
 
-    /// Fill every byte handed out by the circular-DMA adapter.
+    /// Fill every byte handed to the playback staging buffer.
     ///
-    /// `push_with` may split writable space at arbitrary byte boundaries. Keep
-    /// a partially emitted stereo frame across callbacks instead of rounding a
-    /// callback down to a multiple of four and leaving stale bytes in the ring.
+    /// Keeping a partially emitted stereo frame makes this helper byte-safe and
+    /// independent of the current staging size.
     fn fill(&mut self, bytes: &mut [u8], settings: PlaybackSettings) -> usize {
         for byte in bytes.iter_mut() {
             if self.pending_offset == self.pending_frame.len() {
