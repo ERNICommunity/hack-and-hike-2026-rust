@@ -27,7 +27,8 @@ use crate::board;
 use super::{Pixel, Resources, WIDTH};
 
 const DISPLAY_SPI_MHZ: u32 = 40;
-const PIXEL_DMA_BYTES: usize = WIDTH * 2;
+pub(super) const RAW_BATCH_LINES: usize = 4;
+const PIXEL_DMA_BYTES: usize = WIDTH * 2 * RAW_BATCH_LINES;
 const CONTROL_DMA_BYTES: usize = 256;
 
 const DCS_COLUMN_ADDRESS_SET: u8 = 0x2A;
@@ -123,8 +124,8 @@ enum PipelineState {
     },
 }
 
-/// Ping-pong DMA state. While one line is leaving SPI, the caller can prepare
-/// the next line in the second static DMA buffer.
+/// Ping-pong DMA state. While one chunk is leaving SPI, the caller can prepare
+/// the next chunk in the second static DMA buffer.
 pub(super) struct Transport {
     state: Option<PipelineState>,
     control_rx: Option<DmaRxBuf>,
@@ -203,10 +204,13 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
     let (dma_bus, cs) = spi_device.release();
     let (spi, control_rx, control_tx) = dma_bus.split();
 
+    // Four full-width rows fit comfortably inside one DMA buffer while keeping
+    // each camera crop batch below a single 4095-byte GDMA descriptor. Normal UI
+    // rendering still queues one row at a time using the same larger buffers.
     let first =
-        esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init scan line DMA buffer 1");
+        esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init pixel DMA buffer 1");
     let second =
-        esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init scan line DMA buffer 2");
+        esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init pixel DMA buffer 2");
 
     Transport {
         state: Some(PipelineState::Idle {
@@ -275,7 +279,7 @@ impl Transport {
         spi
     }
 
-    /// Program one rectangular GRAM window before any of its scanlines are
+    /// Program one rectangular GRAM window before any of its pixel chunks are
     /// queued. The controller auto-increments through that window, so the pixel
     /// path only needs to stream consecutive RGB565 bytes afterwards.
     pub(super) fn begin_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
@@ -315,6 +319,14 @@ impl Transport {
         byte_len
     }
 
+    fn copy_bytes(buffer: &mut DmaTxBuf, bytes: &[u8]) -> usize {
+        let byte_len = bytes.len();
+        debug_assert!(byte_len <= PIXEL_DMA_BYTES);
+        buffer.as_mut_slice()[..byte_len].copy_from_slice(bytes);
+        buffer.set_length(byte_len);
+        byte_len
+    }
+
     fn start_pixel_transfer(
         &mut self,
         spi: DisplaySpiDma,
@@ -341,9 +353,7 @@ impl Transport {
         }
     }
 
-    /// Queue the next scanline inside the window established by `begin_region`.
-    /// Chip select remains asserted between DMA chunks so the controller sees one
-    /// continuous memory-write stream rather than one transaction per line.
+    /// Queue one decoded RGB565 scanline inside the active window.
     pub(super) fn queue_line(&mut self, pixels: &[Pixel]) {
         if pixels.is_empty() {
             return;
@@ -361,6 +371,33 @@ impl Transport {
             }
             PipelineState::InFlight { transfer, mut free } => {
                 let byte_len = Self::encode_pixels(&mut free, pixels);
+                let (spi, completed) = transfer.wait();
+                self.start_pixel_transfer(spi, free, byte_len, completed);
+            }
+        }
+    }
+
+    /// Queue already encoded big-endian RGB565 bytes inside the active window.
+    /// The free ping-pong buffer is filled while the previous DMA transfer is
+    /// still in flight, preserving the same CPU/SPI overlap as `queue_line`.
+    pub(super) fn queue_bytes(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        debug_assert!(bytes.len() <= PIXEL_DMA_BYTES);
+
+        let state = self.state.take().expect("LCD DMA pipeline state missing");
+        match state {
+            PipelineState::Idle {
+                spi,
+                mut first,
+                second,
+            } => {
+                let byte_len = Self::copy_bytes(&mut first, bytes);
+                self.start_pixel_transfer(spi, first, byte_len, second);
+            }
+            PipelineState::InFlight { transfer, mut free } => {
+                let byte_len = Self::copy_bytes(&mut free, bytes);
                 let (spi, completed) = transfer.wait();
                 self.start_pixel_transfer(spi, free, byte_len, completed);
             }
