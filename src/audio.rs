@@ -35,10 +35,11 @@ pub const CHANNELS: usize = 2;
 pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 
 const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
-// Drain at most one presentation block (32 ms) per executor turn. The hardware
-// ring remains large, but a backed-up microphone reader can no longer monopolize
-// CPU1 for hundreds of milliseconds and starve the speaker producer.
-const RX_DRAIN_BYTES: usize = BLOCK_FRAMES * CHANNELS * 2;
+// esp-hal 1.1.x circular RX requires each `pop` destination to hold all bytes
+// currently available in the DMA ring. Drain into a full-ring PSRAM snapshot,
+// then process that snapshot one presentation block at a time so CPU1 still
+// yields regularly to the speaker producer while microphone RX catches up.
+const RX_PROCESS_CHUNK_BYTES: usize = BLOCK_FRAMES * CHANNELS * 2;
 // esp-hal 1.1.x uses 4092-byte DMA chunks and balances circular buffers that
 // fit within two chunks across three descriptors. 8192 misses that path by only
 // 8 bytes, producing a pathological 4092 + 4092 + 8-byte TX ring.
@@ -47,7 +48,7 @@ const TX_DMA_BUFFER_BYTES: usize = 8_184;
 // whose esp-hal 1.1.x implementation correctly propagates TX-underrun errors.
 // 1024 bytes is 16 ms of stereo 16-bit audio at 16 kHz, keeping controls snappy.
 const PLAYBACK_FILL_BYTES: usize = 1_024;
-const _: () = assert!(RX_DRAIN_BYTES % 4 == 0);
+const _: () = assert!(RX_PROCESS_CHUNK_BYTES % 4 == 0);
 const _: () = assert!(TX_DMA_BUFFER_BYTES % 4 == 0);
 const _: () = assert!(PLAYBACK_FILL_BYTES % 4 == 0);
 const ES7210_ADDR: u8 = 0x40;
@@ -322,7 +323,7 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
         SAMPLE_RATE_HZ
     );
 
-    let mut dma_drain = data_plane::FixedPsramBuffer::filled(RX_DRAIN_BYTES, 0u8);
+    let mut dma_drain = data_plane::FixedPsramBuffer::filled(RX_DMA_BUFFER_BYTES, 0u8);
     let mut samples = [0i16; BLOCK_SAMPLES];
     let mut frame_index = 0usize;
     let mut peak_left = 0u16;
@@ -338,34 +339,40 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
             }
         };
 
-        for frame_bytes in dma_drain.as_slice()[..count].chunks_exact(4) {
-            let left = i16::from_le_bytes([frame_bytes[0], frame_bytes[1]]);
-            let right = i16::from_le_bytes([frame_bytes[2], frame_bytes[3]]);
-            let sample_index = frame_index * CHANNELS;
-            samples[sample_index] = left;
-            samples[sample_index + 1] = right;
-            peak_left = peak_left.max(left.unsigned_abs());
-            peak_right = peak_right.max(right.unsigned_abs());
-            frame_index += 1;
-
-            if frame_index == BLOCK_FRAMES {
-                let sequence = publish(&samples, peak_left, peak_right).await;
-                if first_block {
-                    first_block = false;
-                    ::log::info!(
-                        "First audio block captured: seq={}, peak L={}, R={}",
-                        sequence,
-                        peak_left,
-                        peak_right
-                    );
-                }
-                frame_index = 0;
-                peak_left = 0;
-                peak_right = 0;
-            }
+        if count == RX_DMA_BUFFER_BYTES {
+            diagnostics::record_audio_full_drain();
         }
 
-        yield_to_executor().await;
+        for processing_chunk in dma_drain.as_slice()[..count].chunks(RX_PROCESS_CHUNK_BYTES) {
+            for frame_bytes in processing_chunk.chunks_exact(4) {
+                let left = i16::from_le_bytes([frame_bytes[0], frame_bytes[1]]);
+                let right = i16::from_le_bytes([frame_bytes[2], frame_bytes[3]]);
+                let sample_index = frame_index * CHANNELS;
+                samples[sample_index] = left;
+                samples[sample_index + 1] = right;
+                peak_left = peak_left.max(left.unsigned_abs());
+                peak_right = peak_right.max(right.unsigned_abs());
+                frame_index += 1;
+
+                if frame_index == BLOCK_FRAMES {
+                    let sequence = publish(&samples, peak_left, peak_right).await;
+                    if first_block {
+                        first_block = false;
+                        ::log::info!(
+                            "First audio block captured: seq={}, peak L={}, R={}",
+                            sequence,
+                            peak_left,
+                            peak_right
+                        );
+                    }
+                    frame_index = 0;
+                    peak_left = 0;
+                    peak_right = 0;
+                }
+            }
+
+            yield_to_executor().await;
+        }
     }
 }
 
