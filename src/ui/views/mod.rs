@@ -177,7 +177,7 @@ impl Views {
         display: &mut Display,
         contents: &str,
     ) {
-        self.log.present_shell(surface, display, contents);
+        self.log.present(surface, display, contents);
     }
 }
 
