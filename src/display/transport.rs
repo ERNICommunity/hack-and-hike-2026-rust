@@ -27,6 +27,11 @@ use crate::board;
 use super::{Pixel, Resources, WIDTH};
 
 const DISPLAY_SPI_MHZ: u32 = 40;
+// Experimental Camera-only pixel clock. ESP-HAL's ESP32-S3 clock divider jumps
+// directly from 40 MHz to the 80 MHz APB clock for targets above 60 MHz. Keep
+// all controller commands and all non-camera drawing at the board-proven 40 MHz;
+// only the already-open Camera GRAM pixel stream uses this faster clock.
+const CAMERA_PIXEL_SPI_MHZ: u32 = 80;
 pub(super) const RAW_BATCH_LINES: usize = 4;
 const PIXEL_DMA_BYTES: usize = WIDTH * 2 * RAW_BATCH_LINES;
 const CONTROL_DMA_BYTES: usize = 256;
@@ -279,10 +284,18 @@ impl Transport {
         spi
     }
 
-    /// Program one rectangular GRAM window before any of its pixel chunks are
-    /// queued. The controller auto-increments through that window, so the pixel
-    /// path only needs to stream consecutive RGB565 bytes afterwards.
-    pub(super) fn begin_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
+    fn apply_spi_frequency(spi: &mut DisplaySpiDma, mhz: u32) {
+        let config = SpiConfig::default().with_frequency(Rate::from_mhz(mhz));
+        spi.apply_config(&config)
+            .expect("Failed to change LCD SPI frequency");
+    }
+
+    fn begin_region_with_pixel_frequency(
+        &mut self,
+        columns: Range<usize>,
+        pages: Range<usize>,
+        pixel_spi_mhz: u32,
+    ) {
         if columns.is_empty() || pages.is_empty() {
             return;
         }
@@ -298,12 +311,31 @@ impl Transport {
             panic!("LCD region started while pixel DMA was still in flight");
         };
 
-        let spi = self.set_window(spi, columns, pages);
+        // Window/control commands always use the board-proven 40 MHz clock.
+        let mut spi = self.set_window(spi, columns, pages);
+        if pixel_spi_mhz != DISPLAY_SPI_MHZ {
+            Self::apply_spi_frequency(&mut spi, pixel_spi_mhz);
+        }
+
         self.state = Some(PipelineState::Idle {
             spi,
             first,
             second,
         });
+    }
+
+    /// Program one rectangular GRAM window before any of its pixel chunks are
+    /// queued. The controller auto-increments through that window, so the pixel
+    /// path only needs to stream consecutive RGB565 bytes afterwards.
+    pub(super) fn begin_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
+        self.begin_region_with_pixel_frequency(columns, pages, DISPLAY_SPI_MHZ);
+    }
+
+    /// Camera-specific GRAM window. Commands remain at 40 MHz, then only the
+    /// RGB565 pixel payload is shifted at the experimental 80 MHz clock. The
+    /// normal clock is restored by `finish_pumped` before any later command.
+    pub(super) fn begin_camera_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
+        self.begin_region_with_pixel_frequency(columns, pages, CAMERA_PIXEL_SPI_MHZ);
     }
 
     fn encode_pixels(buffer: &mut DmaTxBuf, pixels: &[Pixel]) -> usize {
@@ -459,7 +491,8 @@ impl Transport {
 
     /// Finish the final camera LCD transfer while continuing to pump the next
     /// camera frame. This keeps capture progress moving until the last SPI byte
-    /// of the current frozen frame has left the controller.
+    /// of the current frozen frame has left the controller, then restores the
+    /// board-proven 40 MHz SPI clock before any later LCD command is issued.
     pub(super) fn finish_pumped(&mut self, mut pump: impl FnMut()) {
         let Some(state) = self.state.take() else {
             return;
@@ -473,8 +506,9 @@ impl Transport {
                     core::hint::spin_loop();
                 }
                 pump();
-                let (spi, completed) = transfer.wait();
+                let (mut spi, completed) = transfer.wait();
                 self.cs.set_high();
+                Self::apply_spi_frequency(&mut spi, DISPLAY_SPI_MHZ);
                 self.state = Some(PipelineState::Idle {
                     spi,
                     first: free,
