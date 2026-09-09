@@ -130,16 +130,19 @@ impl Views {
         self.microphone.render_waveform(display, frame);
     }
 
-    pub(crate) fn render_camera(&self, display: &mut Display, frame: &camera::Frame<'_>) {
+    pub(crate) fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
         // Fill the complete 276x240 content region at native vertical resolution.
         // QVGA is already 240 px tall, so no scaling is necessary: crop 22 px
         // from each horizontal edge and copy the remaining 276x240 pixels 1:1.
         //
-        // GC0308 applies the board's 180-degree mounting correction in hardware.
-        // This frame is a frozen VSYNC-complete PSRAM buffer, so every LCD
-        // scanline belongs to the same camera exposure interval even during motion.
-        display.render_scanlines(design::CONTENT_REGION, |local_y, pixels| {
-            let source = frame.scanline(local_y);
+        // The GC0308 now applies the board's 180-degree mounting correction in
+        // hardware. Camera DMA therefore arrives in display order and each line
+        // can be handed straight to the LCD scanline pipeline as it is captured.
+        display.render_scanlines(design::CONTENT_REGION, |_local_y, pixels| {
+            let Some(source) = frame.next_scanline() else {
+                pixels.fill(theme::BLACK_RGB565);
+                return;
+            };
             let cropped = &source[CAMERA_SOURCE_START_BYTE..CAMERA_SOURCE_END_BYTE];
 
             for (pixel, bytes) in pixels.iter_mut().zip(cropped.chunks_exact(2)) {
