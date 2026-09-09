@@ -34,22 +34,6 @@ const CONTROL_DMA_BYTES: usize = 256;
 const DCS_COLUMN_ADDRESS_SET: u8 = 0x2A;
 const DCS_PAGE_ADDRESS_SET: u8 = 0x2B;
 const DCS_MEMORY_WRITE: u8 = 0x2C;
-const DCS_FRAME_RATE_CONTROL_NORMAL: u8 = 0xB1;
-const DCS_BLANKING_PORCH_CONTROL: u8 = 0xB5;
-const DCS_SET_EXTC: u8 = 0xC8;
-
-// ILI9342C level-2 timing commands require EXTC to be enabled. Keep normal
-// operation at the controller defaults. During sustained camera streaming, use
-// the maximum legal vertical front/back porches. With RTNA=0x1c the datasheet
-// rates the default 2+2 porch configuration at roughly 61 Hz; scaling the total
-// vertical period from 244 to 494 lines yields about 30 Hz. A 276x240 RGB565
-// update takes about 26.5 ms at the board-proven 40 MHz SPI rate, so it can fit
-// inside that longer display period instead of being guaranteed to cross a
-// faster panel scan on every frame.
-const EXTC_ENABLE: [u8; 3] = [0xFF, 0x93, 0x42];
-const NORMAL_FRAME_RATE: [u8; 2] = [0x00, 0x1C];
-const NORMAL_PORCH: [u8; 4] = [0x02, 0x02, 0x0A, 0x14];
-const STREAMING_PORCH: [u8; 4] = [0x7F, 0x7F, 0x0A, 0x14];
 
 type DisplaySpiDma = SpiDma<'static, Blocking>;
 type DisplaySpiDmaBus = SpiDmaBus<'static, Blocking>;
@@ -256,58 +240,6 @@ impl Transport {
         }
 
         self.cs.set_high();
-    }
-
-    /// Switch between the normal UI timing and a long-blanking streaming timing.
-    /// This is only called at view boundaries, when no pixel DMA is in flight.
-    pub(super) fn set_streaming_refresh_mode(&mut self, enabled: bool) {
-        let state = self.state.take().expect("LCD DMA pipeline state missing");
-        let PipelineState::Idle {
-            spi,
-            first,
-            second,
-        } = state
-        else {
-            self.state = Some(state);
-            panic!("LCD refresh timing changed while pixel DMA was still in flight");
-        };
-
-        let control_rx = self
-            .control_rx
-            .take()
-            .expect("missing LCD control RX DMA buffer");
-        let control_tx = self
-            .control_tx
-            .take()
-            .expect("missing LCD control TX DMA buffer");
-        let mut bus = DisplaySpiDmaBus::new(spi, control_rx, control_tx);
-
-        // Re-enable the ILI9342C extension page explicitly instead of depending
-        // on initialization state retained by a particular controller revision.
-        self.write_command(&mut bus, DCS_SET_EXTC, &EXTC_ENABLE);
-        self.write_command(
-            &mut bus,
-            DCS_FRAME_RATE_CONTROL_NORMAL,
-            &NORMAL_FRAME_RATE,
-        );
-        self.write_command(
-            &mut bus,
-            DCS_BLANKING_PORCH_CONTROL,
-            if enabled {
-                &STREAMING_PORCH
-            } else {
-                &NORMAL_PORCH
-            },
-        );
-
-        let (spi, control_rx, control_tx) = bus.split();
-        self.control_rx = Some(control_rx);
-        self.control_tx = Some(control_tx);
-        self.state = Some(PipelineState::Idle {
-            spi,
-            first,
-            second,
-        });
     }
 
     fn set_window(
