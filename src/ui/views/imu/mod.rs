@@ -48,6 +48,12 @@ const GRID_EXTENT: f32 = 1024.0;
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
+// Keep the preferred rectilinear renderer, but narrow only the horizontal field
+// of view to reduce its unavoidable sec(theta)^2 yaw-speed increase toward the
+// edges. tan(50deg) gives a 100deg horizontal FOV at any viewport width. Roll is
+// applied after projection, preserving the preferred horizon angle exactly.
+const HORIZONTAL_HALF_FOV_TAN: f32 = 1.1917536;
+
 // Compass labels stay at the original 256-unit world radius. Each glyph is a
 // small vector sign standing on the ground plane and tangent to that compass
 // ring. At the current 170 px attitude viewport, a centered glyph projects to
@@ -109,7 +115,8 @@ struct Geometry {
 struct PerspectiveCamera {
     center_x: i32,
     center_y: i32,
-    focal: f32,
+    focal_x: f32,
+    focal_y: f32,
     sin_yaw: f32,
     cos_yaw: f32,
     sin_pitch: f32,
@@ -334,6 +341,7 @@ fn draw_perspective_world(
     let cos_pitch = cos_approx(pitch);
     let sin_roll = sin_approx(roll);
     let cos_roll = cos_approx(roll);
+    let (focal_x, focal_y) = perspective_focals(center_x, center_y);
 
     // Use the exact displayed horizon geometry for fading. This keeps the depth
     // cue attached to the attitude horizon even at high pitch/roll angles.
@@ -351,7 +359,8 @@ fn draw_perspective_world(
     let camera = PerspectiveCamera {
         center_x,
         center_y,
-        focal: center_y.max(1) as f32,
+        focal_x,
+        focal_y,
         sin_yaw,
         cos_yaw,
         sin_pitch,
@@ -431,6 +440,11 @@ fn draw_world_compass_labels(
         return;
     }
 
+    // Keep the preferred centered glyph width after narrowing horizontal FOV.
+    // Roll happens after perspective projection, so this ratio is independent
+    // of roll and costs only one division per frame.
+    let glyph_horizontal_focal_scale = camera.focal_y / camera.focal_x;
+
     for (label, unit_x, unit_z) in WORLD_COMPASS_LABELS {
         let anchor = [
             unit_x * COMPASS_LABEL_RADIUS,
@@ -453,9 +467,11 @@ fn draw_world_compass_labels(
         // horizontally and sec(theta) vertically under rectilinear projection.
         // Counter-scale only the glyph dimensions, not its anchor, so the label
         // keeps its true world direction and grid motion without looking closer
-        // as it approaches the edge of the viewport.
+        // as it approaches the edge of the viewport. The focal correction keeps
+        // the centered glyph width identical to the preferred baseline.
         let depth_scale = (anchor_camera[2] / centered_depth).clamp(0.2, 1.0);
-        let horizontal_scale = depth_scale * depth_scale;
+        let horizontal_scale =
+            depth_scale * depth_scale * glyph_horizontal_focal_scale;
         let vertical_scale = depth_scale;
 
         // Tangent points screen-right whenever this compass direction is in the
@@ -673,11 +689,10 @@ fn world_to_camera(point: [f32; 3], camera: PerspectiveCamera) -> [f32; 3] {
     let pitched_y = camera.cos_pitch * point[1] - camera.sin_pitch * yaw_z;
     let pitched_z = camera.sin_pitch * point[1] + camera.cos_pitch * yaw_z;
 
-    [
-        camera.cos_roll * yaw_x + camera.sin_roll * pitched_y,
-        -camera.sin_roll * yaw_x + camera.cos_roll * pitched_y,
-        pitched_z,
-    ]
+    // Keep roll out of 3D camera space. Applying it after the anisotropic
+    // perspective projection preserves the exact roll angle of the preferred
+    // renderer while still allowing a narrower horizontal FOV.
+    [yaw_x, pitched_y, pitched_z]
 }
 
 fn clip_camera_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
@@ -697,9 +712,20 @@ fn project_camera_point(point: [f32; 3], camera: PerspectiveCamera) -> Option<(i
     if point[2] < PERSPECTIVE_NEAR_Z {
         return None;
     }
+
+    let unrolled_x = camera.focal_x * point[0] / point[2];
+    let unrolled_y = -camera.focal_y * point[1] / point[2];
     Some((
-        round_f32(camera.center_x as f32 + camera.focal * point[0] / point[2]),
-        round_f32(camera.center_y as f32 - camera.focal * point[1] / point[2]),
+        round_f32(
+            camera.center_x as f32
+                + camera.cos_roll * unrolled_x
+                - camera.sin_roll * unrolled_y,
+        ),
+        round_f32(
+            camera.center_y as f32
+                + camera.sin_roll * unrolled_x
+                + camera.cos_roll * unrolled_y,
+        ),
     ))
 }
 
@@ -929,6 +955,12 @@ fn display_roll_pitch(imu: &ImuDisplay) -> (i32, i32) {
 /// so fusion math and magnetic correction keep a single internal convention.
 fn display_yaw(imu: &ImuDisplay) -> i32 {
     -imu.yaw_deg
+}
+
+fn perspective_focals(center_x: i32, center_y: i32) -> (f32, f32) {
+    let focal_x = center_x.max(1) as f32 / HORIZONTAL_HALF_FOV_TAN;
+    let focal_y = center_y.max(1) as f32;
+    (focal_x, focal_y)
 }
 
 fn project_angle(degrees: i32, focal_pixels: i32) -> i32 {
