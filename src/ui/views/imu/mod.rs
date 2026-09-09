@@ -39,6 +39,9 @@ const RAD_TO_DEG: f32 = 180.0 / PI;
 const DEG_TO_RAD: f32 = PI / 180.0;
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 const YAW_TEXTURE_HEADINGS: [i32; 12] = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+const PERSPECTIVE_RADII: [f32; 6] = [1.4, 2.0, 2.9, 4.2, 6.2, 9.0];
+const PERSPECTIVE_PLANE_HEIGHT: f32 = 0.85;
+const PERSPECTIVE_NEAR_Z: f32 = 0.20;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
@@ -229,18 +232,18 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         }
     }
 
-    // Heading-anchored dotted meridians give both sky and ground a visible
-    // structure that slides laterally as yaw changes. They are clipped to the
-    // actual sky/ground side of the rolled/pitched horizon.
-    draw_yaw_texture(
+    // Project fixed world-space dot fields above and below the horizon through
+    // a pinhole camera. Unlike the old screen-space meridians, these dots are
+    // part of the attitude scene: they converge toward the horizon and rotate
+    // rigidly with yaw, pitch and roll.
+    draw_perspective_texture(
         frame,
         area,
         imu.yaw_deg,
+        display_roll,
+        display_pitch,
         center_x,
         center_y,
-        pitch_offset,
-        sin_roll,
-        cos_roll,
     );
 
     draw_border(frame, area);
@@ -260,7 +263,7 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         return;
     } else {
         match imu.mag_status {
-            sensor::MagStatus::Learning => "Rotate device - calibrating mag",
+            sensor::MagStatus::Learning => "Rotate/tilt device - calibrating mag",
             sensor::MagStatus::Disturbed => "Mag disturbed - gyro yaw active",
             sensor::MagStatus::Missing => "Mag missing - gyro yaw active",
             sensor::MagStatus::Ready if imu.gyro_bias_ready => "Mag heading - gyro bias ready",
@@ -270,57 +273,104 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     draw_footer(frame, area, footer);
 }
 
-fn draw_yaw_texture(
+fn draw_perspective_texture(
     frame: &mut GuiFramebuffer,
     area: Rect,
     yaw_deg: i32,
+    roll_deg: f32,
+    pitch_deg: f32,
     center_x: i32,
     center_y: i32,
-    pitch_offset: i32,
+) {
+    let pitch = pitch_deg * DEG_TO_RAD;
+    let roll = roll_deg * DEG_TO_RAD;
+    let sin_pitch = sin_approx(pitch);
+    let cos_pitch = cos_approx(pitch);
+    let sin_roll = sin_approx(roll);
+    let cos_roll = cos_approx(roll);
+    let focal = center_y.max(1) as f32;
+
+    for heading in YAW_TEXTURE_HEADINGS {
+        let relative_heading = wrap_heading_delta(heading, yaw_deg) as f32 * DEG_TO_RAD;
+        let sin_heading = sin_approx(relative_heading);
+        let cos_heading = cos_approx(relative_heading);
+
+        for radius in PERSPECTIVE_RADII {
+            let world_x = sin_heading * radius;
+            let world_z = cos_heading * radius;
+
+            project_texture_dot(
+                frame,
+                area,
+                world_x,
+                PERSPECTIVE_PLANE_HEIGHT,
+                world_z,
+                center_x,
+                center_y,
+                focal,
+                sin_pitch,
+                cos_pitch,
+                sin_roll,
+                cos_roll,
+                common::dark_blue(),
+            );
+            project_texture_dot(
+                frame,
+                area,
+                world_x,
+                -PERSPECTIVE_PLANE_HEIGHT,
+                world_z,
+                center_x,
+                center_y,
+                focal,
+                sin_pitch,
+                cos_pitch,
+                sin_roll,
+                cos_roll,
+                common::light_gray(),
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_texture_dot(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    world_x: f32,
+    world_y: f32,
+    world_z: f32,
+    center_x: i32,
+    center_y: i32,
+    focal: f32,
+    sin_pitch: f32,
+    cos_pitch: f32,
     sin_roll: f32,
     cos_roll: f32,
+    color: embedded_graphics::pixelcolor::Rgb565,
 ) {
+    // World -> camera. Yaw is already removed by using heading-yaw above.
+    // Positive pitch moves the real horizon down; positive roll gives the same
+    // down-to-the-right horizon slope used by the artificial horizon raster.
+    let pitched_y = cos_pitch * world_y - sin_pitch * world_z;
+    let camera_z = sin_pitch * world_y + cos_pitch * world_z;
+    if camera_z <= PERSPECTIVE_NEAR_Z {
+        return;
+    }
+
+    let camera_x = cos_roll * world_x + sin_roll * pitched_y;
+    let camera_y = -sin_roll * world_x + cos_roll * pitched_y;
+    let local_x = round_f32(center_x as f32 + focal * camera_x / camera_z);
+    let local_y = round_f32(center_y as f32 - focal * camera_y / camera_z);
     let width = area.w as i32;
     let height = area.h as i32;
 
-    for heading in YAW_TEXTURE_HEADINGS {
-        let delta = wrap_heading_delta(heading, yaw_deg);
-        // +/-90 degrees spans the attitude viewport. As the device yaws, the
-        // heading-anchored columns visibly slide across the horizon scene.
-        let local_x = center_x + delta * width / 180;
-        if local_x <= 1 || local_x >= width - 1 {
-            continue;
-        }
-
-        let mut local_y = 13;
-        while local_y < height - 18 {
-            let x_delta = local_x - center_x;
-            let y_delta = local_y - center_y;
-            let ground_value = cos_roll * y_delta as f32
-                - pitch_offset as f32
-                - sin_roll * x_delta as f32;
-            if ground_value >= 0.0 {
-                common::fill_box(
-                    frame,
-                    area.x + local_x,
-                    area.y + local_y,
-                    1,
-                    3,
-                    common::light_gray(),
-                );
-            } else {
-                common::fill_box(
-                    frame,
-                    area.x + local_x,
-                    area.y + local_y,
-                    1,
-                    2,
-                    common::white(),
-                );
-            }
-            local_y += 9;
-        }
+    // Keep the texture out of the title/footer bands so telemetry stays legible.
+    if local_x <= 1 || local_x >= width - 3 || local_y <= 12 || local_y >= height - 18 {
+        return;
     }
+
+    common::fill_box(frame, area.x + local_x, area.y + local_y, 2, 2, color);
 }
 
 fn draw_footer(frame: &mut GuiFramebuffer, area: Rect, text: &str) {

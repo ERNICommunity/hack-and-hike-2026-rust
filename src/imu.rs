@@ -157,8 +157,11 @@ const MAG_RETRY: Duration = Duration::from_secs(5);
 const MAG_STALE: Duration = Duration::from_secs(1);
 const SENSOR_STARTUP: Duration = Duration::from_millis(50);
 const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
+// Hard-iron offsets inside the CoreS3 enclosure can be several hundred uT.
+// Learn them while the sensor is still comfortably inside its measurement range;
+// only the calibrated field is later judged against Earth's expected strength.
 const MAG_LEARNING_MIN_UT: f32 = 5.0;
-const MAG_LEARNING_MAX_UT: f32 = 150.0;
+const MAG_LEARNING_MAX_UT: f32 = 2000.0;
 const MAG_STATUS_HYSTERESIS_SAMPLES: u8 = 8;
 
 #[derive(Clone, Copy, Debug)]
@@ -645,40 +648,56 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                                         -mag.field_ut[1],
                                         -mag.field_ut[2],
                                     ];
+                                    let raw_learnable = (MAG_LEARNING_MIN_UT..=MAG_LEARNING_MAX_UT)
+                                        .contains(&mag.field_strength_ut);
 
-                                    // Continue adapting the hard/soft-iron calibration
-                                    // for every broadly plausible field. Previously the
-                                    // calibration froze once "ready" whenever the raw
-                                    // field left 15..100 uT, which could make DISTURBED
-                                    // permanent after the magnetic environment changed.
-                                    if (MAG_LEARNING_MIN_UT..=MAG_LEARNING_MAX_UT)
-                                        .contains(&mag.field_strength_ut)
-                                    {
+                                    if raw_learnable {
                                         mag_calibration.observe(body_field);
                                     }
 
+                                    let calibration_ready = mag_calibration.is_ready();
                                     let corrected_field = mag_calibration.apply(body_field);
-                                    mag_field_ut = bmm150::vector_length(corrected_field);
-                                    let field_good = (bmm150::GOOD_FIELD_MIN_UT
-                                        ..=bmm150::GOOD_FIELD_MAX_UT)
-                                        .contains(&mag_field_ut);
+                                    mag_field_ut = if calibration_ready {
+                                        bmm150::vector_length(corrected_field)
+                                    } else {
+                                        mag.field_strength_ut
+                                    };
 
-                                    if field_good {
-                                        mag_good_samples = mag_good_samples.saturating_add(1);
-                                        mag_bad_samples = 0;
-                                        magnetic_for_fusion = Some(corrected_field);
-                                        if mag_good_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
-                                            mag_status = if mag_calibration.is_ready() {
-                                                MagStatus::Ready
-                                            } else {
-                                                MagStatus::Learning
-                                            };
+                                    if !calibration_ready {
+                                        // A large stable raw field is expected when a
+                                        // hard-iron offset is present. Stay in LEARNING
+                                        // while collecting the 3-D extrema; do not call
+                                        // it a disturbance until the field is outside the
+                                        // broad sensor-safe learning window.
+                                        magnetic_for_fusion = None;
+                                        mag_good_samples = 0;
+                                        if raw_learnable {
+                                            mag_bad_samples = 0;
+                                            mag_status = MagStatus::Learning;
+                                        } else {
+                                            mag_bad_samples = mag_bad_samples.saturating_add(1);
+                                            if mag_bad_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                                mag_status = MagStatus::Disturbed;
+                                            }
                                         }
                                     } else {
-                                        mag_bad_samples = mag_bad_samples.saturating_add(1);
-                                        mag_good_samples = 0;
-                                        if mag_bad_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
-                                            mag_status = MagStatus::Disturbed;
+                                        let field_good = (bmm150::GOOD_FIELD_MIN_UT
+                                            ..=bmm150::GOOD_FIELD_MAX_UT)
+                                            .contains(&mag_field_ut);
+
+                                        if field_good {
+                                            mag_good_samples = mag_good_samples.saturating_add(1);
+                                            mag_bad_samples = 0;
+                                            magnetic_for_fusion = Some(corrected_field);
+                                            if mag_good_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                                mag_status = MagStatus::Ready;
+                                            }
+                                        } else {
+                                            mag_bad_samples = mag_bad_samples.saturating_add(1);
+                                            mag_good_samples = 0;
+                                            if mag_bad_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                                mag_status = MagStatus::Disturbed;
+                                            }
                                         }
                                     }
                                 }

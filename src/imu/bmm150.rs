@@ -11,11 +11,12 @@
 const OVERFLOW_XY: i16 = -4096;
 const OVERFLOW_Z: i16 = -16384;
 
-/// Plausibility window used while learning calibration. This is intentionally
-/// wider than the expected Earth field so hard-iron offsets do not prevent
-/// initial learning.
+/// Plausibility window used while learning calibration. The CoreS3 family can
+/// have a large stable hard-iron offset from nearby hardware (speaker, chassis,
+/// etc.), so calibration must accept fields much larger than Earth's field and
+/// remove the offset before judging magnetic health.
 const LEARNING_FIELD_MIN_UT: f32 = 5.0;
-const LEARNING_FIELD_MAX_UT: f32 = 150.0;
+const LEARNING_FIELD_MAX_UT: f32 = 2000.0;
 /// Normal field-strength window after calibration. Samples outside this range
 /// are treated as magnetically disturbed and are not used for yaw correction.
 pub const GOOD_FIELD_MIN_UT: f32 = 15.0;
