@@ -166,7 +166,7 @@ impl Ui {
         }
     }
 
-    pub fn render_camera(&self, display: &mut Display, frame: &camera::Frame<'_>) {
+    pub fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
         if self.presented_view == ViewId::Camera {
             self.views.render_camera(display, frame);
         }
