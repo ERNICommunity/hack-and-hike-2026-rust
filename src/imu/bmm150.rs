@@ -21,8 +21,12 @@ const LEARNING_FIELD_MAX_UT: f32 = 2000.0;
 /// are treated as magnetically disturbed and are not used for yaw correction.
 pub const GOOD_FIELD_MIN_UT: f32 = 15.0;
 pub const GOOD_FIELD_MAX_UT: f32 = 100.0;
-const CALIBRATION_TARGET_SPAN_UT: f32 = 35.0;
-const CALIBRATION_MIN_SAMPLES: u16 = 120;
+// Require substantially more 3-D coverage than the first implementation. A
+// 35 uT span / 120 samples could declare calibration ready before the extrema
+// were representative, which made the calibration matrix change dramatically
+// with small subsequent movements.
+const CALIBRATION_TARGET_SPAN_UT: f32 = 50.0;
+const CALIBRATION_MIN_SAMPLES: u16 = 240;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Trim {

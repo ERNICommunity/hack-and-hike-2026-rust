@@ -35,8 +35,9 @@ pub struct Config {
 pub const DEFAULT_CONFIG: Config = Config {
     sample_period: Duration::from_millis(10),
     roll_pitch_alpha: 0.98,
-    // Applied only when a fresh 30 Hz magnetic sample is available.
-    yaw_alpha: 0.90,
+    // Magnetic heading is a slow drift correction; gyro remains authoritative
+    // for real motion. Applied only on fresh 30 Hz magnetic samples.
+    yaw_alpha: 0.98,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +164,9 @@ const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
 const MAG_LEARNING_MIN_UT: f32 = 5.0;
 const MAG_LEARNING_MAX_UT: f32 = 2000.0;
 const MAG_STATUS_HYSTERESIS_SAMPLES: u8 = 8;
+// A bad magnetic heading must never be able to erase a real turn. At 30 Hz this
+// permits at most about six degrees/second of magnetic drift correction.
+const MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG: f32 = 0.20;
 
 #[derive(Clone, Copy, Debug)]
 enum Error {
@@ -463,15 +467,17 @@ impl Fusion {
         let acc_roll = radians_to_degrees(atan2_approx(ay, az));
         let acc_pitch = radians_to_degrees(atan2_approx(-ax, sqrt_approx(ay * ay + az * az)));
         let screen_accel = screen_vector_from_body(accel_g);
-        let (screen_roll, screen_pitch) = attitude_from_accel(screen_accel);
-        let screen_field = magnetic_field_ut.map(screen_vector_from_body);
+        let screen_gyro = screen_vector_from_body(gyro_dps);
+        let gravity = normalize3(screen_accel);
+        let magnetic_heading = match (magnetic_field_ut.map(screen_vector_from_body), gravity) {
+            (Some(field), Some(gravity)) => gravity_compensated_heading(field, gravity),
+            _ => None,
+        };
 
         if !self.initialized {
             self.orientation.roll_deg = acc_roll;
             self.orientation.pitch_deg = acc_pitch;
-            self.orientation.yaw_deg = screen_field
-                .map(|field| tilt_compensated_heading(field, screen_roll, screen_pitch))
-                .unwrap_or(0.0);
+            self.orientation.yaw_deg = magnetic_heading.unwrap_or(0.0);
             self.initialized = true;
             return self.orientation;
         }
@@ -483,14 +489,23 @@ impl Fusion {
         self.orientation.pitch_deg = alpha * (self.orientation.pitch_deg + gy * dt_seconds)
             + accel_weight * acc_pitch;
 
-        // In the upright CoreS3 Lite screen frame, yaw is rotation around the
-        // screen's vertical axis. The fixed body->screen mapping is
-        // [x,y,z] -> [z,-x,-y], so screen yaw rate is -body gyro Y.
-        let predicted_yaw = wrap_degrees(self.orientation.yaw_deg - gy * dt_seconds);
-        self.orientation.yaw_deg = if let Some(field) = screen_field {
-            let heading = tilt_compensated_heading(field, screen_roll, screen_pitch);
+        // Yaw is rotation around the local gravity axis, not around one fixed
+        // BMI270 body axis. This gives -body gyro Y while upright, body gyro Z
+        // when face-up on a table, and a continuous blend in between.
+        let yaw_rate_dps = gravity
+            .map(|gravity| dot3(screen_gyro, gravity))
+            .unwrap_or(screen_gyro[2]);
+        let predicted_yaw = wrap_degrees(self.orientation.yaw_deg + yaw_rate_dps * dt_seconds);
+
+        self.orientation.yaw_deg = if let Some(heading) = magnetic_heading {
             let correction = wrap_degrees(heading - predicted_yaw);
-            wrap_degrees(predicted_yaw + (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * correction)
+            let requested = (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * correction;
+            let applied = clamp_f32(
+                requested,
+                -MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG,
+                MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG,
+            );
+            wrap_degrees(predicted_yaw + applied)
         } else {
             predicted_yaw
         };
@@ -651,7 +666,11 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                                     let raw_learnable = (MAG_LEARNING_MIN_UT..=MAG_LEARNING_MAX_UT)
                                         .contains(&mag.field_strength_ut);
 
-                                    if raw_learnable {
+                                    // Once calibration is accepted, freeze its extrema.
+                                    // Continuously moving min/max values made the heading
+                                    // jump whenever a small movement found a new extreme.
+                                    let calibration_ready_before = mag_calibration.is_ready();
+                                    if !calibration_ready_before && raw_learnable {
                                         mag_calibration.observe(body_field);
                                     }
 
@@ -664,11 +683,6 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                                     };
 
                                     if !calibration_ready {
-                                        // A large stable raw field is expected when a
-                                        // hard-iron offset is present. Stay in LEARNING
-                                        // while collecting the 3-D extrema; do not call
-                                        // it a disturbance until the field is outside the
-                                        // broad sensor-safe learning window.
                                         magnetic_for_fusion = None;
                                         mag_good_samples = 0;
                                         if raw_learnable {
@@ -801,7 +815,6 @@ fn log_init_error(device: &str, error: Error) {
 
 const PI: f32 = 3.14159265358979323846;
 const RAD_TO_DEG: f32 = 180.0 / PI;
-const DEG_TO_RAD: f32 = PI / 180.0;
 
 fn radians_to_degrees(value: f32) -> f32 {
     value * RAD_TO_DEG
@@ -844,16 +857,6 @@ fn wrap_degrees(mut value: f32) -> f32 {
     value
 }
 
-fn wrap_radians(mut value: f32) -> f32 {
-    while value > PI {
-        value -= 2.0 * PI;
-    }
-    while value < -PI {
-        value += 2.0 * PI;
-    }
-    value
-}
-
 fn sqrt_approx(value: f32) -> f32 {
     if value <= 0.0 {
         return 0.0;
@@ -866,15 +869,75 @@ fn sqrt_approx(value: f32) -> f32 {
     estimate
 }
 
-fn attitude_from_accel(accel_g: [f32; 3]) -> (f32, f32) {
-    let [ax, ay, az] = accel_g;
-    let roll = radians_to_degrees(atan2_approx(ay, az));
-    let pitch = radians_to_degrees(atan2_approx(-ax, sqrt_approx(ay * ay + az * az)));
-    (roll, pitch)
-}
-
 fn screen_vector_from_body(value: [f32; 3]) -> [f32; 3] {
     [value[2], -value[0], -value[1]]
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn normalize3(value: [f32; 3]) -> Option<[f32; 3]> {
+    let norm_sq = dot3(value, value);
+    if norm_sq < 0.01 {
+        return None;
+    }
+    let inverse = 1.0 / sqrt_approx(norm_sq);
+    Some([value[0] * inverse, value[1] * inverse, value[2] * inverse])
+}
+
+/// Level the magnetic vector directly from gravity rather than converting
+/// gravity to Euler roll/pitch first. The shortest-arc quaternion maps the
+/// measured gravity vector onto +Z, so heading remains well-conditioned when
+/// the display is face-up/face-down (where Euler yaw/roll are singular).
+fn gravity_compensated_heading(field: [f32; 3], gravity: [f32; 3]) -> Option<f32> {
+    let leveled = level_vector_to_gravity(field, gravity);
+    let horizontal_sq = leveled[0] * leveled[0] + leveled[1] * leveled[1];
+    if horizontal_sq < 0.01 {
+        return None;
+    }
+    Some(wrap_degrees(radians_to_degrees(atan2_approx(
+        -leveled[1],
+        leveled[0],
+    ))))
+}
+
+fn level_vector_to_gravity(value: [f32; 3], gravity: [f32; 3]) -> [f32; 3] {
+    let gz = clamp_f32(gravity[2], -1.0, 1.0);
+
+    // gravity ~= -Z needs an explicit 180-degree leveling axis because the
+    // shortest-arc quaternion's scalar/vector terms both approach zero.
+    if gz < -0.999 {
+        return [value[0], -value[1], -value[2]];
+    }
+
+    let mut qw = 1.0 + gz;
+    let mut qx = gravity[1];
+    let mut qy = -gravity[0];
+    let mut qz = 0.0;
+    let norm = sqrt_approx(qw * qw + qx * qx + qy * qy + qz * qz);
+    if norm <= 0.0001 {
+        return value;
+    }
+    let inverse = 1.0 / norm;
+    qw *= inverse;
+    qx *= inverse;
+    qy *= inverse;
+    qz *= inverse;
+
+    rotate_by_quaternion(value, qw, qx, qy, qz)
+}
+
+fn rotate_by_quaternion(value: [f32; 3], qw: f32, qx: f32, qy: f32, qz: f32) -> [f32; 3] {
+    let tx = 2.0 * (qy * value[2] - qz * value[1]);
+    let ty = 2.0 * (qz * value[0] - qx * value[2]);
+    let tz = 2.0 * (qx * value[1] - qy * value[0]);
+
+    [
+        value[0] + qw * tx + (qy * tz - qz * ty),
+        value[1] + qw * ty + (qz * tx - qx * tz),
+        value[2] + qw * tz + (qx * ty - qy * tx),
+    ]
 }
 
 fn atan2_approx(y: f32, x: f32) -> f32 {
@@ -891,35 +954,4 @@ fn atan2_approx(y: f32, x: f32) -> f32 {
     let angle = base + (0.1963 * ratio * ratio - 0.9817) * ratio;
 
     if y < 0.0 { -angle } else { angle }
-}
-
-fn sin_approx(value: f32) -> f32 {
-    let mut x = wrap_radians(value);
-    if x > PI * 0.5 {
-        x = PI - x;
-    } else if x < -PI * 0.5 {
-        x = -PI - x;
-    }
-
-    let x2 = x * x;
-    x * (1.0 - x2 / 6.0 + x2 * x2 / 120.0 - x2 * x2 * x2 / 5040.0)
-}
-
-fn cos_approx(value: f32) -> f32 {
-    sin_approx(value + PI * 0.5)
-}
-
-fn tilt_compensated_heading(field_ut: [f32; 3], roll_deg: f32, pitch_deg: f32) -> f32 {
-    let roll = roll_deg * DEG_TO_RAD;
-    let pitch = pitch_deg * DEG_TO_RAD;
-    let sin_roll = sin_approx(roll);
-    let cos_roll = cos_approx(roll);
-    let sin_pitch = sin_approx(pitch);
-    let cos_pitch = cos_approx(pitch);
-
-    let [mx, my, mz] = field_ut;
-    let horizontal_x = mx * cos_pitch + mz * sin_pitch;
-    let horizontal_y = mx * sin_roll * sin_pitch + my * cos_roll - mz * sin_roll * cos_pitch;
-
-    wrap_degrees(radians_to_degrees(atan2_approx(-horizontal_y, horizontal_x)))
 }

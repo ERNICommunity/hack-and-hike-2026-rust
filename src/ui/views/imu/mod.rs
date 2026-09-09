@@ -23,9 +23,6 @@ const NODE_CAPACITY: usize = 8;
 const TEXT_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 2;
 
-// Fixed-point tan(angle) samples from 0..=80 degrees in five-degree steps.
-// Q10 keeps pitch projection cheap on the ESP32-S3 while matching the real
-// horizon displacement much more closely than a linear pixels/degree scale.
 const TAN_SCALE: i32 = 1024;
 const TAN_STEP_DEG: i32 = 5;
 const TAN_MAX_DEG: i32 = 80;
@@ -39,9 +36,11 @@ const RAD_TO_DEG: f32 = 180.0 / PI;
 const DEG_TO_RAD: f32 = PI / 180.0;
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 const YAW_TEXTURE_HEADINGS: [i32; 12] = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
-const PERSPECTIVE_RADII: [f32; 6] = [1.4, 2.0, 2.9, 4.2, 6.2, 9.0];
+const GRID_COORDS: [f32; 7] = [-9.0, -6.0, -3.0, 0.0, 3.0, 6.0, 9.0];
+const GRID_EXTENT: f32 = 12.0;
+const GRID_SEGMENT: f32 = 2.0;
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 0.85;
-const PERSPECTIVE_NEAR_Z: f32 = 0.20;
+const PERSPECTIVE_NEAR_Z: f32 = 0.30;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
@@ -50,6 +49,19 @@ struct Geometry {
     header: Rect,
     attitude: Rect,
     compass: Rect,
+}
+
+#[derive(Clone, Copy)]
+struct PerspectiveCamera {
+    center_x: i32,
+    center_y: i32,
+    focal: f32,
+    sin_yaw: f32,
+    cos_yaw: f32,
+    sin_pitch: f32,
+    cos_pitch: f32,
+    sin_roll: f32,
+    cos_roll: f32,
 }
 
 pub(crate) struct View {
@@ -151,13 +163,7 @@ fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     let first_x = area.x + 78;
     let column_width = ((area.w as i32 - 78) / 3).max(1);
     draw_header_value(frame, "ROLL", roll_deg, first_x, area.y);
-    draw_header_value(
-        frame,
-        "PITCH",
-        pitch_deg,
-        first_x + column_width,
-        area.y,
-    );
+    draw_header_value(frame, "PITCH", pitch_deg, first_x + column_width, area.y);
     draw_header_value(
         frame,
         "YAW",
@@ -232,11 +238,7 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         }
     }
 
-    // Project fixed world-space dot fields above and below the horizon through
-    // a pinhole camera. Unlike the old screen-space meridians, these dots are
-    // part of the attitude scene: they converge toward the horizon and rotate
-    // rigidly with yaw, pitch and roll.
-    draw_perspective_texture(
+    draw_perspective_grid(
         frame,
         area,
         imu.yaw_deg,
@@ -273,7 +275,7 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     draw_footer(frame, area, footer);
 }
 
-fn draw_perspective_texture(
+fn draw_perspective_grid(
     frame: &mut GuiFramebuffer,
     area: Rect,
     yaw_deg: i32,
@@ -282,95 +284,225 @@ fn draw_perspective_texture(
     center_x: i32,
     center_y: i32,
 ) {
+    let yaw = yaw_deg as f32 * DEG_TO_RAD;
     let pitch = pitch_deg * DEG_TO_RAD;
     let roll = roll_deg * DEG_TO_RAD;
-    let sin_pitch = sin_approx(pitch);
-    let cos_pitch = cos_approx(pitch);
-    let sin_roll = sin_approx(roll);
-    let cos_roll = cos_approx(roll);
-    let focal = center_y.max(1) as f32;
+    let camera = PerspectiveCamera {
+        center_x,
+        center_y,
+        focal: center_y.max(1) as f32,
+        sin_yaw: sin_approx(yaw),
+        cos_yaw: cos_approx(yaw),
+        sin_pitch: sin_approx(pitch),
+        cos_pitch: cos_approx(pitch),
+        sin_roll: sin_approx(roll),
+        cos_roll: cos_approx(roll),
+    };
 
-    for heading in YAW_TEXTURE_HEADINGS {
-        let relative_heading = wrap_heading_delta(heading, yaw_deg) as f32 * DEG_TO_RAD;
-        let sin_heading = sin_approx(relative_heading);
-        let cos_heading = cos_approx(relative_heading);
+    draw_world_grid_plane(frame, area, camera, PERSPECTIVE_PLANE_HEIGHT, common::dark_blue());
+    draw_world_grid_plane(frame, area, camera, -PERSPECTIVE_PLANE_HEIGHT, common::light_gray());
+}
 
-        for radius in PERSPECTIVE_RADII {
-            let world_x = sin_heading * radius;
-            let world_z = cos_heading * radius;
-
-            project_texture_dot(
+fn draw_world_grid_plane(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    camera: PerspectiveCamera,
+    world_y: f32,
+    color: embedded_graphics::pixelcolor::Rgb565,
+) {
+    for coordinate in GRID_COORDS {
+        let mut along = -GRID_EXTENT;
+        while along < GRID_EXTENT {
+            let next = (along + GRID_SEGMENT).min(GRID_EXTENT);
+            draw_world_segment(
                 frame,
                 area,
-                world_x,
-                PERSPECTIVE_PLANE_HEIGHT,
-                world_z,
-                center_x,
-                center_y,
-                focal,
-                sin_pitch,
-                cos_pitch,
-                sin_roll,
-                cos_roll,
-                common::dark_blue(),
+                camera,
+                [coordinate, world_y, along],
+                [coordinate, world_y, next],
+                color,
             );
-            project_texture_dot(
+            draw_world_segment(
                 frame,
                 area,
-                world_x,
-                -PERSPECTIVE_PLANE_HEIGHT,
-                world_z,
-                center_x,
-                center_y,
-                focal,
-                sin_pitch,
-                cos_pitch,
-                sin_roll,
-                cos_roll,
-                common::light_gray(),
+                camera,
+                [along, world_y, coordinate],
+                [next, world_y, coordinate],
+                color,
             );
+            along = next;
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn project_texture_dot(
+fn draw_world_segment(
     frame: &mut GuiFramebuffer,
     area: Rect,
-    world_x: f32,
-    world_y: f32,
-    world_z: f32,
-    center_x: i32,
-    center_y: i32,
-    focal: f32,
-    sin_pitch: f32,
-    cos_pitch: f32,
-    sin_roll: f32,
-    cos_roll: f32,
+    camera: PerspectiveCamera,
+    start: [f32; 3],
+    end: [f32; 3],
     color: embedded_graphics::pixelcolor::Rgb565,
 ) {
-    // World -> camera. Yaw is already removed by using heading-yaw above.
-    // Positive pitch moves the real horizon down; positive roll gives the same
-    // down-to-the-right horizon slope used by the artificial horizon raster.
-    let pitched_y = cos_pitch * world_y - sin_pitch * world_z;
-    let camera_z = sin_pitch * world_y + cos_pitch * world_z;
-    if camera_z <= PERSPECTIVE_NEAR_Z {
+    let mut a = world_to_camera(start, camera);
+    let mut b = world_to_camera(end, camera);
+    if a[2] <= PERSPECTIVE_NEAR_Z && b[2] <= PERSPECTIVE_NEAR_Z {
         return;
     }
 
-    let camera_x = cos_roll * world_x + sin_roll * pitched_y;
-    let camera_y = -sin_roll * world_x + cos_roll * pitched_y;
-    let local_x = round_f32(center_x as f32 + focal * camera_x / camera_z);
-    let local_y = round_f32(center_y as f32 - focal * camera_y / camera_z);
-    let width = area.w as i32;
-    let height = area.h as i32;
-
-    // Keep the texture out of the title/footer bands so telemetry stays legible.
-    if local_x <= 1 || local_x >= width - 3 || local_y <= 12 || local_y >= height - 18 {
-        return;
+    if a[2] <= PERSPECTIVE_NEAR_Z {
+        a = clip_camera_near(a, b);
+    } else if b[2] <= PERSPECTIVE_NEAR_Z {
+        b = clip_camera_near(b, a);
     }
 
-    common::fill_box(frame, area.x + local_x, area.y + local_y, 2, 2, color);
+    let start_screen = project_camera_point(a, camera);
+    let end_screen = project_camera_point(b, camera);
+    if let (Some(start_screen), Some(end_screen)) = (start_screen, end_screen) {
+        draw_clipped_line(frame, area, start_screen, end_screen, color);
+    }
+}
+
+fn world_to_camera(point: [f32; 3], camera: PerspectiveCamera) -> [f32; 3] {
+    let yaw_x = camera.cos_yaw * point[0] - camera.sin_yaw * point[2];
+    let yaw_z = camera.sin_yaw * point[0] + camera.cos_yaw * point[2];
+    let pitched_y = camera.cos_pitch * point[1] - camera.sin_pitch * yaw_z;
+    let pitched_z = camera.sin_pitch * point[1] + camera.cos_pitch * yaw_z;
+
+    [
+        camera.cos_roll * yaw_x + camera.sin_roll * pitched_y,
+        -camera.sin_roll * yaw_x + camera.cos_roll * pitched_y,
+        pitched_z,
+    ]
+}
+
+fn clip_camera_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
+    let denominator = front[2] - behind[2];
+    if abs_f32(denominator) < 0.0001 {
+        return [behind[0], behind[1], PERSPECTIVE_NEAR_Z];
+    }
+    let t = (PERSPECTIVE_NEAR_Z - behind[2]) / denominator;
+    [
+        behind[0] + (front[0] - behind[0]) * t,
+        behind[1] + (front[1] - behind[1]) * t,
+        PERSPECTIVE_NEAR_Z,
+    ]
+}
+
+fn project_camera_point(point: [f32; 3], camera: PerspectiveCamera) -> Option<(i32, i32)> {
+    if point[2] < PERSPECTIVE_NEAR_Z {
+        return None;
+    }
+    Some((
+        round_f32(camera.center_x as f32 + camera.focal * point[0] / point[2]),
+        round_f32(camera.center_y as f32 - camera.focal * point[1] / point[2]),
+    ))
+}
+
+fn draw_clipped_line(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    start: (i32, i32),
+    end: (i32, i32),
+    color: embedded_graphics::pixelcolor::Rgb565,
+) {
+    let min_x = 2;
+    let max_x = area.w as i32 - 3;
+    let min_y = 13;
+    let max_y = area.h as i32 - 19;
+    if let Some(((x0, y0), (x1, y1))) = clip_line(start, end, min_x, max_x, min_y, max_y) {
+        draw_line_pixels(frame, area.x + x0, area.y + y0, area.x + x1, area.y + y1, color);
+    }
+}
+
+fn clip_line(
+    mut a: (i32, i32),
+    mut b: (i32, i32),
+    min_x: i32,
+    max_x: i32,
+    min_y: i32,
+    max_y: i32,
+) -> Option<((i32, i32), (i32, i32))> {
+    loop {
+        let code_a = outcode(a.0, a.1, min_x, max_x, min_y, max_y);
+        let code_b = outcode(b.0, b.1, min_x, max_x, min_y, max_y);
+        if code_a | code_b == 0 {
+            return Some((a, b));
+        }
+        if code_a & code_b != 0 {
+            return None;
+        }
+
+        let code = if code_a != 0 { code_a } else { code_b };
+        let dx = (b.0 - a.0) as i64;
+        let dy = (b.1 - a.1) as i64;
+        let (x, y) = if code & 8 != 0 {
+            if dy == 0 { return None; }
+            let y = max_y;
+            let x = a.0 + (dx * (y - a.1) as i64 / dy) as i32;
+            (x, y)
+        } else if code & 4 != 0 {
+            if dy == 0 { return None; }
+            let y = min_y;
+            let x = a.0 + (dx * (y - a.1) as i64 / dy) as i32;
+            (x, y)
+        } else if code & 2 != 0 {
+            if dx == 0 { return None; }
+            let x = max_x;
+            let y = a.1 + (dy * (x - a.0) as i64 / dx) as i32;
+            (x, y)
+        } else {
+            if dx == 0 { return None; }
+            let x = min_x;
+            let y = a.1 + (dy * (x - a.0) as i64 / dx) as i32;
+            (x, y)
+        };
+
+        if code == code_a {
+            a = (x, y);
+        } else {
+            b = (x, y);
+        }
+    }
+}
+
+fn outcode(x: i32, y: i32, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u8 {
+    let mut code = 0;
+    if x < min_x { code |= 1; }
+    if x > max_x { code |= 2; }
+    if y < min_y { code |= 4; }
+    if y > max_y { code |= 8; }
+    code
+}
+
+fn draw_line_pixels(
+    frame: &mut GuiFramebuffer,
+    mut x0: i32,
+    mut y0: i32,
+    x1: i32,
+    y1: i32,
+    color: embedded_graphics::pixelcolor::Rgb565,
+) {
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut error = dx + dy;
+
+    loop {
+        common::fill_box(frame, x0, y0, 1, 1, color);
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let doubled = 2 * error;
+        if doubled >= dy {
+            error += dy;
+            x0 += sx;
+        }
+        if doubled <= dx {
+            error += dx;
+            y0 += sy;
+        }
+    }
 }
 
 fn draw_footer(frame: &mut GuiFramebuffer, area: Rect, text: &str) {
@@ -396,8 +528,6 @@ fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
 
     let center = area.x + area.w as i32 / 2;
 
-    // Active 30-degree tick bar, with the four cardinal labels moving under a
-    // fixed center index as yaw changes.
     for heading in YAW_TEXTURE_HEADINGS {
         let delta = wrap_heading_delta(heading, imu.yaw_deg);
         let tick_x = center + delta * 58 / 100;
@@ -429,12 +559,6 @@ fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::fill_box(frame, center - 2, area.y + 16, 4, 13, common::dark_blue());
 }
 
-/// Convert fused BMI270 Euler angles back to their gravity vector, rotate that
-/// vector into the upright screen frame, then derive screen Euler angles.
-///
-/// Working through gravity avoids the previous `sensor roll + 90` singularity:
-/// upright is roll=0/pitch=0, face-up is pitch=-90, and camera-below inverted
-/// is roll=180/pitch=0 rather than a false +/-180-degree pitch.
 fn display_roll_pitch_f32(imu: &ImuDisplay) -> (f32, f32) {
     let sensor_roll = imu.roll_deg as f32 * DEG_TO_RAD;
     let sensor_pitch = imu.pitch_deg as f32 * DEG_TO_RAD;
