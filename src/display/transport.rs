@@ -27,11 +27,10 @@ use crate::board;
 use super::{Pixel, Resources, WIDTH};
 
 const DISPLAY_SPI_MHZ: u32 = 40;
-// Experimental Camera-only pixel clock. ESP-HAL's ESP32-S3 clock divider jumps
-// directly from 40 MHz to the 80 MHz APB clock for targets above 60 MHz. Keep
-// all controller commands and all non-camera drawing at the board-proven 40 MHz;
-// only the already-open Camera GRAM pixel stream uses this faster clock.
-const CAMERA_PIXEL_SPI_MHZ: u32 = 80;
+// Keep Camera pixels at the same board-proven 40 MHz clock as the rest of the
+// display. The 80 MHz experiment corrupted/interleaved pixel writes on hardware.
+// Retain the separate Camera hook so timing experiments remain isolated.
+const CAMERA_PIXEL_SPI_MHZ: u32 = DISPLAY_SPI_MHZ;
 pub(super) const RAW_BATCH_LINES: usize = 4;
 const PIXEL_DMA_BYTES: usize = WIDTH * 2 * RAW_BATCH_LINES;
 const CONTROL_DMA_BYTES: usize = 256;
@@ -311,7 +310,6 @@ impl Transport {
             panic!("LCD region started while pixel DMA was still in flight");
         };
 
-        // Window/control commands always use the board-proven 40 MHz clock.
         let mut spi = self.set_window(spi, columns, pages);
         if pixel_spi_mhz != DISPLAY_SPI_MHZ {
             Self::apply_spi_frequency(&mut spi, pixel_spi_mhz);
@@ -331,9 +329,8 @@ impl Transport {
         self.begin_region_with_pixel_frequency(columns, pages, DISPLAY_SPI_MHZ);
     }
 
-    /// Camera-specific GRAM window. Commands remain at 40 MHz, then only the
-    /// RGB565 pixel payload is shifted at the experimental 80 MHz clock. The
-    /// normal clock is restored by `finish_pumped` before any later command.
+    /// Camera-specific GRAM window. The clock is currently pinned to the same
+    /// board-proven rate as normal rendering after the 80 MHz hardware failure.
     pub(super) fn begin_camera_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
         self.begin_region_with_pixel_frequency(columns, pages, CAMERA_PIXEL_SPI_MHZ);
     }
@@ -434,8 +431,6 @@ impl Transport {
                     pump();
                     core::hint::spin_loop();
                 }
-                // Drain anything that arrived during the last DMA polling window
-                // before starting the next LCD transfer.
                 pump();
                 let (spi, completed) = transfer.wait();
                 self.start_pixel_transfer(spi, free, byte_len, completed);
@@ -464,8 +459,7 @@ impl Transport {
 
     /// Finish the final camera LCD transfer while continuing to pump the next
     /// camera frame. This keeps capture progress moving until the last SPI byte
-    /// of the current frozen frame has left the controller, then restores the
-    /// board-proven 40 MHz SPI clock before any later LCD command is issued.
+    /// of the current frozen frame has left the controller.
     pub(super) fn finish_pumped(&mut self, mut pump: impl FnMut()) {
         let Some(state) = self.state.take() else {
             return;
@@ -481,7 +475,9 @@ impl Transport {
                 pump();
                 let (mut spi, completed) = transfer.wait();
                 self.cs.set_high();
-                Self::apply_spi_frequency(&mut spi, DISPLAY_SPI_MHZ);
+                if CAMERA_PIXEL_SPI_MHZ != DISPLAY_SPI_MHZ {
+                    Self::apply_spi_frequency(&mut spi, DISPLAY_SPI_MHZ);
+                }
                 self.state = Some(PipelineState::Idle {
                     spi,
                     first: free,
