@@ -1,8 +1,9 @@
-//! IMU attitude and compass view.
+//! IMU attitude view with a perspective world compass.
 //!
-//! KDL owns the three instrument regions. The horizon and compass are specialized
-//! view pixels drawn inside those regions after layout, analogous to the direct
-//! waveform canvas on the Microphone screen.
+//! KDL owns the header and artificial-horizon regions. The horizon, grid and
+//! distant compass labels are specialized view pixels drawn inside the attitude
+//! region after layout, analogous to the direct waveform canvas on the
+//! Microphone screen.
 
 use core::fmt::Write as _;
 
@@ -35,7 +36,6 @@ const PI: f32 = 3.14159265358979323846;
 const RAD_TO_DEG: f32 = 180.0 / PI;
 const DEG_TO_RAD: f32 = PI / 180.0;
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
-const YAW_TEXTURE_HEADINGS: [i32; 12] = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
 // Keep an 8-unit regular grid near the viewer, then progressively thin lines
 // that are already sub-pixel close together. At +/-1024 world units the +/-8
 // floor/ceiling planes project to less than one pixel from the horizon, so this
@@ -48,13 +48,30 @@ const GRID_EXTENT: f32 = 1024.0;
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
+// Compass labels are fixed world landmarks on the ground plane. A radius of
+// 256 units places them close to the visual horizon while still giving the
+// camera enough depth to move them naturally under yaw/pitch/roll. The text is
+// rendered as a camera-facing billboard at the projected 3-D anchor so it stays
+// readable instead of being sheared with the plane.
+const COMPASS_LABEL_RADIUS: f32 = 256.0;
+const INV_SQRT_2: f32 = 0.70710677;
+const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
+    ("N", 0.0, 1.0),
+    ("NE", INV_SQRT_2, INV_SQRT_2),
+    ("E", 1.0, 0.0),
+    ("SE", INV_SQRT_2, -INV_SQRT_2),
+    ("S", 0.0, -1.0),
+    ("SW", -INV_SQRT_2, -INV_SQRT_2),
+    ("W", -1.0, 0.0),
+    ("NW", -INV_SQRT_2, INV_SQRT_2),
+];
+
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
 #[derive(Clone, Copy)]
 struct Geometry {
     header: Rect,
     attitude: Rect,
-    compass: Rect,
 }
 
 #[derive(Clone, Copy)]
@@ -89,7 +106,6 @@ impl View {
             geometry: Geometry {
                 header: required_rect(gui, app.widgets.header_slot, "IMU header"),
                 attitude: required_rect(gui, app.widgets.attitude_slot, "IMU attitude"),
-                compass: required_rect(gui, app.widgets.compass_slot, "IMU compass"),
             },
             gui,
         }
@@ -112,7 +128,6 @@ impl View {
         surface.present_with_overlay(display, self.gui, move |frame| {
             draw_header(frame, geometry.header, imu);
             draw_attitude(frame, geometry.attitude, imu);
-            draw_compass(frame, geometry.compass, imu);
         });
     }
 }
@@ -135,8 +150,6 @@ fn draw_shell(frame: &mut GuiFramebuffer, geometry: Geometry) {
     );
     common::fill_rect(frame, geometry.attitude, common::light_blue());
     draw_border(frame, geometry.attitude);
-    common::fill_rect(frame, geometry.compass, common::white());
-    draw_border(frame, geometry.compass);
 }
 
 fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
@@ -252,7 +265,7 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         }
     }
 
-    draw_perspective_grid(
+    draw_perspective_world(
         frame,
         area,
         yaw_deg,
@@ -272,7 +285,7 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::hline(frame, cx - 12, cy + 22, 24, common::white());
 }
 
-fn draw_perspective_grid(
+fn draw_perspective_world(
     frame: &mut GuiFramebuffer,
     area: Rect,
     yaw_deg: i32,
@@ -321,6 +334,7 @@ fn draw_perspective_grid(
 
     draw_world_grid_plane(frame, area, camera, PERSPECTIVE_PLANE_HEIGHT, true);
     draw_world_grid_plane(frame, area, camera, -PERSPECTIVE_PLANE_HEIGHT, false);
+    draw_world_compass_labels(frame, area, camera);
 }
 
 fn draw_world_grid_plane(
@@ -373,6 +387,48 @@ fn draw_world_grid_coordinate(
         [GRID_EXTENT, world_y, coordinate],
         sky,
     );
+}
+
+fn draw_world_compass_labels(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    camera: PerspectiveCamera,
+) {
+    for (label, unit_x, unit_z) in WORLD_COMPASS_LABELS {
+        let world_point = [
+            unit_x * COMPASS_LABEL_RADIUS,
+            -PERSPECTIVE_PLANE_HEIGHT,
+            unit_z * COMPASS_LABEL_RADIUS,
+        ];
+        let camera_point = world_to_camera(world_point, camera);
+        if camera_point[2] <= PERSPECTIVE_NEAR_Z {
+            continue;
+        }
+        let Some((screen_x, screen_y)) = project_camera_point(camera_point, camera) else {
+            continue;
+        };
+
+        let text_width = label.len() as i32 * 7;
+        let local_x = screen_x - text_width / 2;
+        // Start the billboard just below its ground-plane anchor so labels sit
+        // in the distant world rather than directly on top of the horizon line.
+        let local_y = screen_y + 2;
+        if local_x < 3
+            || local_x + text_width > area.w as i32 - 3
+            || local_y < 3
+            || local_y + common::BODY_LINE_HEIGHT > area.h as i32 - 3
+        {
+            continue;
+        }
+
+        common::draw_body(
+            frame,
+            label,
+            area.x + local_x,
+            area.y + local_y,
+            common::white(),
+        );
+    }
 }
 
 fn draw_world_segment(
@@ -484,7 +540,7 @@ fn clip_line(
         } else if code & 4 != 0 {
             if dy == 0 { return None; }
             let y = min_y;
-            let x = a.0 + (dx * (y - a.1) as i64 / dy) as i32;
+            let x = a.0 + (dx * (y - a.0) as i64 / dy) as i32;
             (x, y)
         } else if code & 2 != 0 {
             if dx == 0 { return None; }
@@ -618,51 +674,6 @@ fn grid_pixel_color(
     } else {
         Rgb565::new(11, 23, 11)
     }
-}
-
-fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
-    common::fill_rect(frame, area, common::white());
-    draw_border(frame, area);
-    common::hline(
-        frame,
-        area.x + 8,
-        area.y + 19,
-        area.w.saturating_sub(16) as u32,
-        common::light_gray(),
-    );
-
-    let center = area.x + area.w as i32 / 2;
-    let yaw_deg = display_yaw(imu);
-
-    for heading in YAW_TEXTURE_HEADINGS {
-        let delta = wrap_heading_delta(heading, yaw_deg);
-        let tick_x = center + delta * 58 / 100;
-        if tick_x >= area.x + 3 && tick_x < area.x + area.w as i32 - 3 {
-            let tick_height = if heading % 90 == 0 { 7 } else { 4 };
-            common::vline(
-                frame,
-                tick_x,
-                area.y + 20 - tick_height,
-                tick_height as u32,
-                common::light_gray(),
-            );
-        }
-    }
-
-    for (label, heading, color) in [
-        ("N", 0, common::dark_blue()),
-        ("E", 90, common::dark_gray()),
-        ("S", 180, common::dark_gray()),
-        ("W", 270, common::dark_gray()),
-    ] {
-        let delta = wrap_heading_delta(heading, yaw_deg);
-        let label_x = center + delta * 58 / 100 - 3;
-        if label_x >= area.x - 6 && label_x < area.x + area.w as i32 {
-            common::draw_body(frame, label, label_x, area.y + 2, color);
-        }
-    }
-
-    common::fill_box(frame, center - 2, area.y + 16, 4, 13, common::dark_blue());
 }
 
 fn display_roll_pitch_f32(imu: &ImuDisplay) -> (f32, f32) {
@@ -816,17 +827,6 @@ fn status_text(status: sensor::Status) -> &'static str {
         sensor::Status::Degraded => "DEGRADED",
         sensor::Status::Fault => "FAULT",
     }
-}
-
-fn wrap_heading_delta(target: i32, yaw: i32) -> i32 {
-    let mut delta = target - yaw;
-    while delta > 180 {
-        delta -= 360;
-    }
-    while delta < -180 {
-        delta += 360;
-    }
-    delta
 }
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
