@@ -532,11 +532,11 @@ fn outcode(x: i32, y: i32, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u8
     code
 }
 
-/// Rasterize with an aggressive perspective fade toward the horizon. Distance
-/// is computed from an integer Q10 implicit horizon line, so the hot pixel loop
-/// has no floating-point work or framebuffer readback. Color approaches the
-/// actual sky/ground fill and a deterministic screen-door pattern reduces pixel
-/// density as projected depth approaches infinity.
+/// Rasterize with a long perspective fade toward the horizon. Distance is
+/// measured from the displayed horizon in integer Q10 pixels. Unlike the old
+/// screen-door fade, projected lines remain continuous all the way to the
+/// vanishing line; only their RGB565 contrast is reduced, so there is no empty
+/// band immediately above or below the horizon.
 fn draw_line_pixels(
     frame: &mut GuiFramebuffer,
     area: Rect,
@@ -555,9 +555,8 @@ fn draw_line_pixels(
 
     loop {
         let distance = horizon_distance_pixels(camera, x0, y0);
-        if let Some(color) = grid_pixel_color(sky, distance, x0, y0) {
-            common::fill_box(frame, area.x + x0, area.y + y0, 1, 1, color);
-        }
+        let color = grid_pixel_color(sky, distance);
+        common::fill_box(frame, area.x + x0, area.y + y0, 1, 1, color);
         if x0 == x1 && y0 == y1 {
             break;
         }
@@ -583,49 +582,59 @@ fn horizon_distance_pixels(camera: PerspectiveCamera, x: i32, y: i32) -> i32 {
 fn grid_pixel_color(
     sky: bool,
     distance: i32,
-    x: i32,
-    y: i32,
-) -> Option<embedded_graphics::pixelcolor::Rgb565> {
+) -> embedded_graphics::pixelcolor::Rgb565 {
     use embedded_graphics::pixelcolor::Rgb565;
 
-    let phase = x.wrapping_mul(3).wrapping_add(y.wrapping_mul(5)).abs();
-    if distance >= 18 {
-        return Some(if sky { common::dark_blue() } else { common::light_gray() });
-    }
-
-    if distance >= 12 {
-        if phase & 3 == 0 {
-            return None;
+    // Start fading much earlier than before. These RGB565 bands approximate a
+    // smooth blend from the grid color toward the actual plane background:
+    // sky dark-blue -> light-blue, ground light-gray -> dark-gray.
+    if sky {
+        if distance >= 56 {
+            common::dark_blue()
+        } else if distance >= 44 {
+            Rgb565::new(0, 16, 16)
+        } else if distance >= 36 {
+            Rgb565::new(0, 19, 17)
+        } else if distance >= 28 {
+            Rgb565::new(0, 22, 19)
+        } else if distance >= 22 {
+            Rgb565::new(0, 25, 20)
+        } else if distance >= 16 {
+            Rgb565::new(0, 28, 21)
+        } else if distance >= 11 {
+            Rgb565::new(0, 31, 23)
+        } else if distance >= 7 {
+            Rgb565::new(0, 34, 24)
+        } else if distance >= 4 {
+            Rgb565::new(0, 37, 25)
+        } else if distance >= 2 {
+            Rgb565::new(0, 39, 26)
+        } else {
+            Rgb565::new(0, 40, 26)
         }
-        return Some(if sky { Rgb565::new(0, 20, 18) } else { Rgb565::new(19, 38, 19) });
+    } else if distance >= 56 {
+        common::light_gray()
+    } else if distance >= 44 {
+        Rgb565::new(21, 41, 21)
+    } else if distance >= 36 {
+        Rgb565::new(20, 38, 20)
+    } else if distance >= 28 {
+        Rgb565::new(18, 35, 18)
+    } else if distance >= 22 {
+        Rgb565::new(17, 33, 17)
+    } else if distance >= 16 {
+        Rgb565::new(16, 31, 16)
+    } else if distance >= 11 {
+        Rgb565::new(15, 29, 15)
+    } else if distance >= 7 {
+        Rgb565::new(14, 27, 14)
+    } else if distance >= 4 {
+        Rgb565::new(13, 25, 13)
+    } else if distance >= 2 {
+        Rgb565::new(12, 24, 12)
+    } else {
+        Rgb565::new(11, 23, 11)
     }
-
-    if distance >= 8 {
-        if phase & 1 != 0 {
-            return None;
-        }
-        return Some(if sky { Rgb565::new(0, 27, 21) } else { Rgb565::new(16, 32, 16) });
-    }
-
-    if distance >= 5 {
-        if phase % 3 != 0 {
-            return None;
-        }
-        return Some(if sky { Rgb565::new(0, 33, 24) } else { Rgb565::new(13, 27, 13) });
-    }
-
-    if distance >= 3 {
-        if phase & 3 != 0 {
-            return None;
-        }
-        return Some(if sky { Rgb565::new(0, 37, 25) } else { Rgb565::new(12, 24, 12) });
-    }
-
-    if distance >= 1 && phase & 7 == 0 {
-        return Some(if sky { Rgb565::new(0, 40, 26) } else { Rgb565::new(11, 22, 11) });
-    }
-
-    None
 }
 
 fn draw_footer(frame: &mut GuiFramebuffer, area: Rect, text: &str) {

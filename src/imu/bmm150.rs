@@ -36,6 +36,11 @@ const CALIBRATED_FIELD_RADIUS_UT: f32 = 50.0;
 // leave calibration permanently incomplete even after a thorough 3-D rotation.
 const CALIBRATION_TARGET_SPAN_UT: f32 = 35.0;
 const CALIBRATION_MIN_SAMPLES: u16 = 240;
+// Once calibration is ready, missed extrema are incorporated gradually instead
+// of freezing forever or jumping immediately. At 30 Hz, a persistent new extreme
+// is mostly absorbed over a few seconds while one-off magnetic spikes have only a
+// small effect on the learned center/scale.
+const READY_EXTREMA_ADAPT_RATE: f32 = 0.02;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Trim {
@@ -198,9 +203,25 @@ impl Calibration {
         self.samples >= CALIBRATION_MIN_SAMPLES && self.minimum_span() >= CALIBRATION_TARGET_SPAN_UT
     }
 
-    pub fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
+    pub fn apply(&mut self, field_ut: [f32; 3]) -> [f32; 3] {
         if !self.is_ready() {
             return field_ut;
+        }
+
+        // Calibration used to freeze exactly at the first moment it became
+        // ready. If that initial motion missed an extremum, later ordinary
+        // orientations could land far outside the learned ellipsoid and produce
+        // corrected magnitudes of several hundred uT. Expand only toward genuine
+        // new extrema, and do so slowly enough that heading cannot jump.
+        let strength = vector_length(field_ut);
+        if (LEARNING_FIELD_MIN_UT..=LEARNING_FIELD_MAX_UT).contains(&strength) {
+            for axis in 0..3 {
+                if field_ut[axis] < self.min[axis] {
+                    self.min[axis] += (field_ut[axis] - self.min[axis]) * READY_EXTREMA_ADAPT_RATE;
+                } else if field_ut[axis] > self.max[axis] {
+                    self.max[axis] += (field_ut[axis] - self.max[axis]) * READY_EXTREMA_ADAPT_RATE;
+                }
+            }
         }
 
         let radii = [
