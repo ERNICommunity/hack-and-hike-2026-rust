@@ -21,6 +21,10 @@ const LEARNING_FIELD_MAX_UT: f32 = 2000.0;
 /// are treated as magnetically disturbed and are not used for yaw correction.
 pub const GOOD_FIELD_MIN_UT: f32 = 15.0;
 pub const GOOD_FIELD_MAX_UT: f32 = 100.0;
+// Heading depends on magnetic direction, not absolute scale. Normalize the
+// calibrated ellipsoid to a representative Earth-field radius so the health
+// window above remains meaningful even when the enclosure adds a large offset.
+const CALIBRATED_FIELD_RADIUS_UT: f32 = 50.0;
 // Require substantially more 3-D coverage than the first implementation. A
 // 35 uT span / 120 samples could declare calibration ready before the extrema
 // were representative, which made the calibration matrix change dramatically
@@ -203,7 +207,6 @@ impl Calibration {
             return field_ut;
         }
 
-        let average_radius = (radii[0] + radii[1] + radii[2]) / 3.0;
         let center = [
             (self.max[0] + self.min[0]) * 0.5,
             (self.max[1] + self.min[1]) * 0.5,
@@ -211,9 +214,9 @@ impl Calibration {
         ];
 
         [
-            (field_ut[0] - center[0]) * average_radius / radii[0],
-            (field_ut[1] - center[1]) * average_radius / radii[1],
-            (field_ut[2] - center[2]) * average_radius / radii[2],
+            (field_ut[0] - center[0]) * CALIBRATED_FIELD_RADIUS_UT / radii[0],
+            (field_ut[1] - center[1]) * CALIBRATED_FIELD_RADIUS_UT / radii[1],
+            (field_ut[2] - center[2]) * CALIBRATED_FIELD_RADIUS_UT / radii[2],
         ]
     }
 

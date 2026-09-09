@@ -36,11 +36,13 @@ const RAD_TO_DEG: f32 = 180.0 / PI;
 const DEG_TO_RAD: f32 = PI / 180.0;
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 const YAW_TEXTURE_HEADINGS: [i32; 12] = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
-const GRID_COORDS: [f32; 7] = [-9.0, -6.0, -3.0, 0.0, 3.0, 6.0, 9.0];
-const GRID_EXTENT: f32 = 12.0;
-const GRID_SEGMENT: f32 = 2.0;
-const PERSPECTIVE_PLANE_HEIGHT: f32 = 0.85;
-const PERSPECTIVE_NEAR_Z: f32 = 0.30;
+// A larger, more distant world grid reads as floor/ceiling rather than a pair
+// of planes floating close to the device. The planes extend through the user's
+// position; near geometry naturally projects outside the viewport.
+const GRID_COORDS: [f32; 11] = [-20.0, -16.0, -12.0, -8.0, -4.0, 0.0, 4.0, 8.0, 12.0, 16.0, 20.0];
+const GRID_EXTENT: f32 = 24.0;
+const PERSPECTIVE_PLANE_HEIGHT: f32 = 3.5;
+const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
@@ -160,6 +162,7 @@ fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     );
 
     let (roll_deg, pitch_deg) = display_roll_pitch(imu);
+    let yaw_deg = display_yaw(imu);
     let first_x = area.x + 78;
     let column_width = ((area.w as i32 - 78) / 3).max(1);
     draw_header_value(frame, "ROLL", roll_deg, first_x, area.y);
@@ -167,7 +170,7 @@ fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     draw_header_value(
         frame,
         "YAW",
-        imu.yaw_deg,
+        yaw_deg,
         first_x + column_width * 2,
         area.y,
     );
@@ -188,6 +191,7 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::fill_rect(frame, area, common::light_blue());
 
     let (display_roll, display_pitch) = display_roll_pitch_f32(imu);
+    let yaw_deg = display_yaw(imu);
     let pitch = round_degrees(display_pitch).clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
     let center_x = width / 2;
     let center_y = height / 2;
@@ -241,7 +245,7 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     draw_perspective_grid(
         frame,
         area,
-        imu.yaw_deg,
+        yaw_deg,
         display_roll,
         display_pitch,
         center_x,
@@ -311,27 +315,22 @@ fn draw_world_grid_plane(
     color: embedded_graphics::pixelcolor::Rgb565,
 ) {
     for coordinate in GRID_COORDS {
-        let mut along = -GRID_EXTENT;
-        while along < GRID_EXTENT {
-            let next = (along + GRID_SEGMENT).min(GRID_EXTENT);
-            draw_world_segment(
-                frame,
-                area,
-                camera,
-                [coordinate, world_y, along],
-                [coordinate, world_y, next],
-                color,
-            );
-            draw_world_segment(
-                frame,
-                area,
-                camera,
-                [along, world_y, coordinate],
-                [next, world_y, coordinate],
-                color,
-            );
-            along = next;
-        }
+        draw_world_segment(
+            frame,
+            area,
+            camera,
+            [coordinate, world_y, -GRID_EXTENT],
+            [coordinate, world_y, GRID_EXTENT],
+            color,
+        );
+        draw_world_segment(
+            frame,
+            area,
+            camera,
+            [-GRID_EXTENT, world_y, coordinate],
+            [GRID_EXTENT, world_y, coordinate],
+            color,
+        );
     }
 }
 
@@ -527,9 +526,10 @@ fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     );
 
     let center = area.x + area.w as i32 / 2;
+    let yaw_deg = display_yaw(imu);
 
     for heading in YAW_TEXTURE_HEADINGS {
-        let delta = wrap_heading_delta(heading, imu.yaw_deg);
+        let delta = wrap_heading_delta(heading, yaw_deg);
         let tick_x = center + delta * 58 / 100;
         if tick_x >= area.x + 3 && tick_x < area.x + area.w as i32 - 3 {
             let tick_height = if heading % 90 == 0 { 7 } else { 4 };
@@ -549,7 +549,7 @@ fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         ("S", 180, common::dark_gray()),
         ("W", 270, common::dark_gray()),
     ] {
-        let delta = wrap_heading_delta(heading, imu.yaw_deg);
+        let delta = wrap_heading_delta(heading, yaw_deg);
         let label_x = center + delta * 58 / 100 - 3;
         if label_x >= area.x - 6 && label_x < area.x + area.w as i32 {
             common::draw_body(frame, label, label_x, area.y + 2, color);
@@ -580,6 +580,13 @@ fn display_roll_pitch_f32(imu: &ImuDisplay) -> (f32, f32) {
 fn display_roll_pitch(imu: &ImuDisplay) -> (i32, i32) {
     let (roll, pitch) = display_roll_pitch_f32(imu);
     (round_degrees(roll), round_degrees(pitch))
+}
+
+/// The fused yaw convention is opposite to the physical left/right direction
+/// desired by the screen instruments. Flip it only at the presentation boundary
+/// so fusion math and magnetic correction keep a single internal convention.
+fn display_yaw(imu: &ImuDisplay) -> i32 {
+    -imu.yaw_deg
 }
 
 fn project_angle(degrees: i32, focal_pixels: i32) -> i32 {
