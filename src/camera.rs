@@ -1,21 +1,19 @@
 //! CPU0-owned CoreS3 Lite camera capture.
 //!
 //! The onboard GC0308 emits native QVGA RGB565 over its 8-bit DVP bus. LCD_CAM
-//! receives frames into two permanently allocated, cache-line aligned PSRAM
-//! buffers. VSYNC is used only to align the start of a capture; DMA completion
-//! is driven by buffer exhaustion rather than by the next VSYNC pulse.
+//! is a free-running source, so capture uses ESP-HAL's streaming RX buffer rather
+//! than a one-shot DMA buffer. The stream is synchronized by discarding through
+//! one hardware VSYNC EOF, then exactly one VSYNC-bounded frame is copied into a
+//! permanently allocated PSRAM framebuffer for rendering.
 
 mod gc0308;
 
 use esp_hal::{
     delay::Delay,
-    dma::{DmaError, DmaRxBuf, ExternalBurstConfig},
-    gpio::{Flex, InputConfig},
+    dma::DmaRxStreamBuf,
     lcd_cam::{
         LcdCam,
-        cam::{
-            Camera as CameraDriver, CameraTransfer, Config as CameraConfig, EofMode,
-        },
+        cam::{Camera as CameraDriver, CameraTransfer, Config as CameraConfig},
     },
     peripherals::{
         DMA_CH2, GPIO15, GPIO16, GPIO38, GPIO39, GPIO40, GPIO41, GPIO42, GPIO45, GPIO46,
@@ -32,20 +30,18 @@ const BYTES_PER_PIXEL: usize = 2;
 const SCANLINE_BYTES: usize = WIDTH * BYTES_PER_PIXEL;
 const FRAME_BYTES: usize = WIDTH * HEIGHT * BYTES_PER_PIXEL;
 const PSRAM_ALIGNMENT: usize = 32;
-// DmaRxBuf::new_with_config(..., ExternalBurstConfig::Size32) relinks PSRAM RX
-// descriptors at its maximum compatible size: 4096 - 32 = 4064 bytes.
-const DMA_CHUNK_BYTES: usize = 4096 - PSRAM_ALIGNMENT;
-// Espressif's ESP32-S3 camera driver does not use VSYNC as GDMA SUC_EOF. Use
-// byte-count EOF instead; the value is programmed as count - 1. The DMA keeps
-// consuming descriptors after these intermediate EOF markers and finally stops
-// when the frame-sized descriptor chain is exhausted.
-const DMA_EOF_BYTE_LEN: u16 = u16::MAX;
-const SHORT_FRAME_LOG_INTERVAL: u32 = 32;
 
-type InFlight = CameraTransfer<'static, DmaRxBuf>;
+// Streaming DMA is intentionally backed by internal RAM. Eight chunks of five
+// RGB565 scanlines provide enough elasticity for CPU0 to copy completed chunks
+// into PSRAM while LCD_CAM continues receiving the following pixels.
+const STREAM_CHUNK_BYTES: usize = SCANLINE_BYTES * 5;
+const STREAM_BUFFER_BYTES: usize = STREAM_CHUNK_BYTES * 8;
+const BAD_FRAME_LOG_INTERVAL: u32 = 32;
 
-const _: () = assert!(DMA_CHUNK_BYTES <= 4095);
-const _: () = assert!(DMA_CHUNK_BYTES % PSRAM_ALIGNMENT == 0);
+type InFlight = CameraTransfer<'static, DmaRxStreamBuf>;
+
+const _: () = assert!(STREAM_CHUNK_BYTES <= 4095);
+const _: () = assert!(STREAM_BUFFER_BYTES % STREAM_CHUNK_BYTES == 0);
 const _: () = assert!(FRAME_BYTES % PSRAM_ALIGNMENT == 0);
 
 #[repr(C, align(32))]
@@ -69,18 +65,10 @@ pub struct Resources {
 }
 
 pub struct Camera {
-    // `driver` + `spare_buffer` are populated only while no transfer is armed.
-    // During normal streaming the driver and one DMA buffer live in `in_flight`,
-    // while `display_buffer` is exclusively owned by the renderer.
     driver: Option<CameraDriver<'static>>,
-    display_buffer: Option<DmaRxBuf>,
-    spare_buffer: Option<DmaRxBuf>,
-    in_flight: Option<InFlight>,
-    // Flex::peripheral_input() leaves GPIO46 readable while a frozen input
-    // signal is also routed to LCD_CAM, so software can align a fresh transfer
-    // to the real sensor VSYNC without unsafe pin aliasing.
-    vsync: Flex<'static>,
-    short_frames: u32,
+    stream_buffer: Option<DmaRxStreamBuf>,
+    frame_buffer: &'static mut [u8],
+    bad_frames: u32,
 }
 
 pub struct Frame<'a> {
@@ -128,21 +116,16 @@ pub fn init(resources: Resources) -> Camera {
     } = resources;
 
     let lcd_cam = LcdCam::new(lcd_cam);
-
-    let mut vsync = Flex::new(vsync);
-    vsync.apply_input_config(&InputConfig::default());
-    vsync.set_input_enable(true);
-    let vsync_signal = vsync.peripheral_input();
-
-    let config = CameraConfig::default()
-        .with_frequency(Rate::from_mhz(20))
-        .with_eof_mode(EofMode::ByteLen(DMA_EOF_BYTE_LEN));
+    // Keep ESP-HAL's default VSYNC EOF mode. DmaRxStreamBuf is specifically
+    // designed to preserve and consume multiple RX EOF boundaries while DMA
+    // continues, unlike the one-shot DmaRxBuf used by the previous attempts.
+    let config = CameraConfig::default().with_frequency(Rate::from_mhz(20));
     let driver = CameraDriver::new(lcd_cam.cam, dma, config)
         .expect("Failed to configure LCD_CAM camera input")
         // CoreS3 Lite has no MCU-driven camera XCLK pin, so this deliberately
         // stays in LCD_CAM slave mode. The board provides its own 20 MHz clock.
         .with_pixel_clock(pclk)
-        .with_vsync(vsync_signal)
+        .with_vsync(vsync)
         .with_h_enable(href)
         .with_data0(d0)
         .with_data1(d1)
@@ -153,49 +136,26 @@ pub fn init(resources: Resources) -> Camera {
         .with_data6(d6)
         .with_data7(d7);
 
-    let display_buffer = {
+    let frame_buffer = {
         let blocks = data_plane::leaked_filled_slice(
             FRAME_BYTES / PSRAM_ALIGNMENT,
             AlignedBlock([0; PSRAM_ALIGNMENT]),
         );
-        let frame_bytes = unsafe {
-            core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), FRAME_BYTES)
-        };
-        let (rx_descriptors, _tx_descriptors) =
-            esp_hal::dma_descriptors_chunk_size!(FRAME_BYTES, DMA_CHUNK_BYTES);
-        DmaRxBuf::new_with_config(
-            rx_descriptors,
-            frame_bytes,
-            ExternalBurstConfig::Size32,
-        )
-        .expect("Failed to construct camera display DMA buffer")
+        unsafe { core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), FRAME_BYTES) }
     };
 
-    let spare_buffer = {
-        let blocks = data_plane::leaked_filled_slice(
-            FRAME_BYTES / PSRAM_ALIGNMENT,
-            AlignedBlock([0; PSRAM_ALIGNMENT]),
-        );
-        let frame_bytes = unsafe {
-            core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), FRAME_BYTES)
-        };
-        let (rx_descriptors, _tx_descriptors) =
-            esp_hal::dma_descriptors_chunk_size!(FRAME_BYTES, DMA_CHUNK_BYTES);
-        DmaRxBuf::new_with_config(
-            rx_descriptors,
-            frame_bytes,
-            ExternalBurstConfig::Size32,
-        )
-        .expect("Failed to construct camera capture DMA buffer")
-    };
+    // The stream buffer and its descriptors are statically allocated in
+    // DMA-capable internal memory by the macro. It is intentionally much
+    // smaller than one frame because consumed descriptors are continuously
+    // recycled back to GDMA.
+    let stream_buffer =
+        esp_hal::dma_rx_stream_buffer!(STREAM_BUFFER_BYTES, STREAM_CHUNK_BYTES);
 
     Camera {
         driver: Some(driver),
-        display_buffer: Some(display_buffer),
-        spare_buffer: Some(spare_buffer),
-        in_flight: None,
-        vsync,
-        short_frames: 0,
+        stream_buffer: Some(stream_buffer),
+        frame_buffer,
+        bad_frames: 0,
     }
 }
 
@@ -203,8 +163,8 @@ impl Camera {
     fn receive(
         &mut self,
         driver: CameraDriver<'static>,
-        buffer: DmaRxBuf,
-    ) -> Result<InFlight, (CameraDriver<'static>, DmaRxBuf)> {
+        buffer: DmaRxStreamBuf,
+    ) -> Result<InFlight, (CameraDriver<'static>, DmaRxStreamBuf)> {
         match driver.receive(buffer) {
             Ok(transfer) => Ok(transfer),
             Err((error, driver, buffer)) => {
@@ -214,134 +174,138 @@ impl Camera {
         }
     }
 
-    fn wait_transfer(
-        &mut self,
-        transfer: InFlight,
-    ) -> (Result<(), DmaError>, CameraDriver<'static>, DmaRxBuf) {
-        transfer.wait()
-    }
-
-    /// Wait for the beginning of a fresh VSYNC pulse.
+    /// Discard the partial frame that was already in progress when DMA started.
     ///
-    /// If we arrive while VSYNC is already active, first wait for it to become
-    /// inactive so we never mistake an old pulse for a new frame boundary. DMA
-    /// is then armed during the new vertical blanking interval, before active
-    /// HREF pixels begin.
-    fn wait_for_fresh_vsync(&self) {
-        while self.vsync.is_high() {
-            core::hint::spin_loop();
-        }
-        while self.vsync.is_low() {
-            core::hint::spin_loop();
-        }
-    }
-
-    fn start_aligned(
-        &mut self,
-        driver: CameraDriver<'static>,
-        buffer: DmaRxBuf,
-    ) -> Result<InFlight, (CameraDriver<'static>, DmaRxBuf)> {
-        self.wait_for_fresh_vsync();
-        self.receive(driver, buffer)
-    }
-
-    fn report_frame_result(&mut self, result: Result<(), DmaError>, received: usize) -> bool {
-        if let Err(error) = result {
-            log::warn!("Camera frame DMA failed: {:?}", error);
-            return false;
-        }
-        if received >= FRAME_BYTES {
-            return true;
-        }
-
-        self.short_frames = self.short_frames.saturating_add(1);
-        if self.short_frames == 1 || self.short_frames % SHORT_FRAME_LOG_INTERVAL == 0 {
-            log::warn!(
-                "Camera dropped short frame: {} / {} bytes (total short frames={})",
-                received,
-                FRAME_BYTES,
-                self.short_frames
-            );
-        }
-        false
-    }
-
-    fn arm_next(
-        &mut self,
-        driver: CameraDriver<'static>,
-        buffer: DmaRxBuf,
-        align_to_vsync: bool,
-    ) -> bool {
-        let result = if align_to_vsync {
-            self.start_aligned(driver, buffer)
-        } else {
-            self.receive(driver, buffer)
-        };
-
-        match result {
-            Ok(transfer) => {
-                self.in_flight = Some(transfer);
-                true
-            }
-            Err((driver, buffer)) => {
-                self.driver = Some(driver);
-                self.spare_buffer = Some(buffer);
-                false
-            }
-        }
-    }
-
-    /// Return the newest complete QVGA frame while immediately arming the other
-    /// PSRAM buffer for the following frame.
-    ///
-    /// LCD_CAM uses byte-count EOF so physical VSYNC cannot terminate a DMA
-    /// chain early. A fresh stream (or one resumed after its previous transfer
-    /// completed while CPU0 was away) is aligned by polling the real GPIO46
-    /// VSYNC edge before arming DMA. During steady-state streaming, the next
-    /// transfer is armed immediately after the previous frame-sized buffer fills,
-    /// before rendering starts, so capture overlaps the 40 MHz LCD transfer.
-    pub fn capture(&mut self) -> Option<Frame<'_>> {
-        let (result, driver, completed_buffer, next_needs_sync) =
-            if let Some(transfer) = self.in_flight.take() {
-                // A transfer that finished before we returned here still contains
-                // a complete aligned frame. Its completion boundary is simply too
-                // old to use as the launch point for the *next* buffer.
-                let next_needs_sync = transfer.is_done();
-                let (result, driver, buffer) = self.wait_transfer(transfer);
-                (result, driver, buffer, next_needs_sync)
-            } else {
-                let driver = self.driver.take().expect("Camera driver missing");
-                let buffer = self.spare_buffer.take().expect("Camera spare DMA buffer missing");
-                let transfer = match self.start_aligned(driver, buffer) {
-                    Ok(transfer) => transfer,
-                    Err((driver, buffer)) => {
-                        self.driver = Some(driver);
-                        self.spare_buffer = Some(buffer);
-                        return None;
-                    }
-                };
-                let (result, driver, buffer) = self.wait_transfer(transfer);
-                (result, driver, buffer, false)
+    /// `peek_until_eof()` exposes the VSYNC-generated EOF carried by the RX
+    /// descriptor. Once that EOF is consumed, the next byte belongs to a fresh
+    /// camera frame. This avoids racing software against the physical VSYNC pin.
+    fn discard_until_vsync(transfer: &mut InFlight) -> bool {
+        loop {
+            let (available, eof) = {
+                let (chunk, eof) = transfer.peek_until_eof();
+                (chunk.len(), eof)
             };
 
-        let received = completed_buffer.number_of_received_bytes();
-        let complete = self.report_frame_result(result, received);
+            if available != 0 {
+                transfer.consume(available);
+            }
 
-        // Start the following capture before exposing this completed buffer to
-        // the renderer. If the previous transfer had already been sitting idle,
-        // or if it was incomplete, first wait for a fresh physical VSYNC edge.
-        let next_buffer = self
-            .display_buffer
+            if eof {
+                return true;
+            }
+
+            if available == 0 {
+                if transfer.is_done() {
+                    return false;
+                }
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    /// Copy exactly one hardware-VSYNC-bounded frame from the internal DMA
+    /// stream into the persistent PSRAM framebuffer.
+    ///
+    /// Returns the actual byte count observed at the next VSYNC. A count other
+    /// than QVGA RGB565's 153600 bytes is rejected rather than exposing a torn
+    /// frame to the renderer.
+    fn copy_one_frame(&mut self, transfer: &mut InFlight) -> Option<usize> {
+        let mut frame_bytes = 0usize;
+
+        loop {
+            let (available, eof) = {
+                let (chunk, eof) = transfer.peek_until_eof();
+                let available = chunk.len();
+                let copy_start = frame_bytes.min(FRAME_BYTES);
+                let copy_len = available.min(FRAME_BYTES.saturating_sub(copy_start));
+
+                if copy_len != 0 {
+                    self.frame_buffer[copy_start..copy_start + copy_len]
+                        .copy_from_slice(&chunk[..copy_len]);
+                }
+
+                (available, eof)
+            };
+
+            if available != 0 {
+                frame_bytes = frame_bytes.saturating_add(available);
+                transfer.consume(available);
+            }
+
+            if eof {
+                return Some(frame_bytes);
+            }
+
+            if available == 0 {
+                if transfer.is_done() {
+                    return None;
+                }
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    fn report_bad_frame(&mut self, received: Option<usize>) {
+        self.bad_frames = self.bad_frames.saturating_add(1);
+        if self.bad_frames != 1 && self.bad_frames % BAD_FRAME_LOG_INTERVAL != 0 {
+            return;
+        }
+
+        match received {
+            Some(received) => log::warn!(
+                "Camera VSYNC frame size mismatch: {} / {} bytes (total bad frames={})",
+                received,
+                FRAME_BYTES,
+                self.bad_frames
+            ),
+            None => log::warn!(
+                "Camera stream DMA stopped before the next VSYNC (total bad frames={})",
+                self.bad_frames
+            ),
+        }
+    }
+
+    /// Capture one complete QVGA frame.
+    ///
+    /// The transfer starts at an arbitrary point in the free-running DVP stream.
+    /// We drain through the first VSYNC EOF to establish a hardware frame
+    /// boundary, then copy bytes until the following VSYNC. DMA is stopped before
+    /// returning the frame, so the renderer has exclusive access to PSRAM while
+    /// it pushes the image to the LCD.
+    pub fn capture(&mut self) -> Option<Frame<'_>> {
+        let driver = self.driver.take().expect("Camera driver missing");
+        let stream_buffer = self
+            .stream_buffer
             .take()
-            .expect("Camera display DMA buffer missing");
-        let next_armed = self.arm_next(driver, next_buffer, next_needs_sync || !complete);
-        self.display_buffer = Some(completed_buffer);
+            .expect("Camera stream DMA buffer missing");
 
-        if !complete || !next_armed {
+        let mut transfer = match self.receive(driver, stream_buffer) {
+            Ok(transfer) => transfer,
+            Err((driver, stream_buffer)) => {
+                self.driver = Some(driver);
+                self.stream_buffer = Some(stream_buffer);
+                return None;
+            }
+        };
+
+        let synchronized = Self::discard_until_vsync(&mut transfer);
+        let received = if synchronized {
+            self.copy_one_frame(&mut transfer)
+        } else {
+            None
+        };
+
+        let (driver, stream_buffer) = transfer.stop();
+        self.driver = Some(driver);
+        self.stream_buffer = Some(stream_buffer);
+
+        if received != Some(FRAME_BYTES) {
+            self.report_bad_frame(received);
             return None;
         }
 
-        let bytes = &self.display_buffer.as_ref()?.as_slice()[..FRAME_BYTES];
-        Some(Frame { bytes })
+        Some(Frame {
+            bytes: &self.frame_buffer[..FRAME_BYTES],
+        })
     }
 }
