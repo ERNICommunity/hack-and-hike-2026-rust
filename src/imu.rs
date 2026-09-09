@@ -72,12 +72,9 @@ pub struct Snapshot {
     pub revision: u32,
     pub status: Status,
     pub orientation: Orientation,
-    pub read_errors: u32,
-    pub mag_errors: u32,
     pub mag_status: MagStatus,
     pub mag_field_ut: f32,
     pub mag_calibration_percent: u8,
-    pub gyro_bias_ready: bool,
 }
 
 static LATEST: Signal<CriticalSectionRawMutex, Snapshot> = Signal::new();
@@ -570,24 +567,18 @@ fn publish(
     revision: &mut u32,
     status: Status,
     orientation: Orientation,
-    read_errors: u32,
-    mag_errors: u32,
     mag_status: MagStatus,
     mag_field_ut: f32,
     mag_calibration_percent: u8,
-    gyro_bias_ready: bool,
 ) {
     *revision = revision.wrapping_add(1);
     LATEST.signal(Snapshot {
         revision: *revision,
         status,
         orientation,
-        read_errors,
-        mag_errors,
         mag_status,
         mag_field_ut,
         mag_calibration_percent,
-        gyro_bias_ready,
     });
 }
 
@@ -595,8 +586,6 @@ fn publish(
 pub async fn capture_task(bus: SystemI2cBus, config: Config) {
     let sensor = Bmi270::new(bus);
     let mut revision = 0u32;
-    let mut read_errors = 0u32;
-    let mut mag_errors = 0u32;
     let mut last_orientation = Orientation::default();
 
     loop {
@@ -604,12 +593,9 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
             &mut revision,
             Status::Starting,
             last_orientation,
-            read_errors,
-            mag_errors,
             MagStatus::Missing,
             0.0,
             0,
-            false,
         );
 
         match sensor.initialize().await {
@@ -620,12 +606,9 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                     &mut revision,
                     Status::Fault,
                     last_orientation,
-                    read_errors,
-                    mag_errors,
                     MagStatus::Missing,
                     0.0,
                     0,
-                    false,
                 );
                 Timer::after(INIT_RETRY).await;
                 continue;
@@ -643,7 +626,6 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                 Some(trim)
             }
             Err(error) => {
-                mag_errors = mag_errors.wrapping_add(1);
                 log_init_error("BMM150", error);
                 sensor.disable_aux().await;
                 ::log::warn!("IMU continuing in 6-axis fallback; BMM150 will retry");
@@ -686,7 +668,6 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                         last_mag_update = now;
                     }
                     Err(_) => {
-                        mag_errors = mag_errors.wrapping_add(1);
                         sensor.disable_aux().await;
                     }
                 }
@@ -771,7 +752,6 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                                     }
                                 }
                             } else {
-                                mag_errors = mag_errors.wrapping_add(1);
                                 mag_bad_samples = mag_bad_samples.saturating_add(1);
                                 mag_good_samples = 0;
                                 if mag_bad_samples >= MAG_BAD_SAMPLES_TO_DISTURBED {
@@ -808,27 +788,20 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                         &mut revision,
                         status,
                         last_orientation,
-                        read_errors,
-                        mag_errors,
                         mag_status,
                         mag_field_ut,
                         mag_calibration.progress_percent(),
-                        gyro_bias.ready,
                     );
                 }
                 Err(_) => {
-                    read_errors = read_errors.wrapping_add(1);
                     consecutive_errors = consecutive_errors.saturating_add(1);
                     publish(
                         &mut revision,
                         Status::Degraded,
                         last_orientation,
-                        read_errors,
-                        mag_errors,
                         mag_status,
                         mag_field_ut,
                         mag_calibration.progress_percent(),
-                        gyro_bias.ready,
                     );
 
                     if consecutive_errors >= MAX_CONSECUTIVE_READ_ERRORS {
@@ -840,12 +813,9 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                             &mut revision,
                             Status::Fault,
                             last_orientation,
-                            read_errors,
-                            mag_errors,
                             mag_status,
                             mag_field_ut,
                             mag_calibration.progress_percent(),
-                            gyro_bias.ready,
                         );
                         Timer::after(Duration::from_millis(250)).await;
                         break;
