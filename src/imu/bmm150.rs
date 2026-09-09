@@ -14,9 +14,12 @@ const OVERFLOW_Z: i16 = -16384;
 /// Plausibility window used while learning calibration. The CoreS3 family can
 /// have a large stable hard-iron offset from nearby hardware (speaker, chassis,
 /// etc.), so calibration must accept fields much larger than Earth's field and
-/// remove the offset before judging magnetic health.
+/// remove the offset before judging magnetic health. Bosch specifies roughly
+/// +/-1300 uT on X/Y and +/-2500 uT on Z; 4000 uT vector magnitude leaves margin
+/// for valid combinations of those component limits without treating them as
+/// geomagnetic health values before calibration.
 const LEARNING_FIELD_MIN_UT: f32 = 5.0;
-const LEARNING_FIELD_MAX_UT: f32 = 2000.0;
+const LEARNING_FIELD_MAX_UT: f32 = 4000.0;
 /// Broad post-calibration usability window. The calibrated vector is normalized
 /// toward 50 uT, but the simple diagonal ellipsoid fit can still change magnitude
 /// with orientation in the CoreS3's strong local field. Heading depends primarily

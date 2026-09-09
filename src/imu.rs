@@ -158,11 +158,12 @@ const MAG_RETRY: Duration = Duration::from_secs(5);
 const MAG_STALE: Duration = Duration::from_secs(1);
 const SENSOR_STARTUP: Duration = Duration::from_millis(50);
 const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
-// Hard-iron offsets inside the CoreS3 enclosure can be several hundred uT.
-// Learn them while the sensor is still comfortably inside its measurement range;
-// only the calibrated field is later judged against Earth's expected strength.
+// Hard-iron offsets inside the CoreS3 enclosure can approach the BMM150's own
+// measurement limits. The sensor is specified around +/-1300 uT on X/Y and
+// +/-2500 uT on Z, so a valid 3-D vector can exceed 2000 uT in magnitude. Learn
+// those raw offsets first; only the calibrated vector is judged as geomagnetic.
 const MAG_LEARNING_MIN_UT: f32 = 5.0;
-const MAG_LEARNING_MAX_UT: f32 = 2000.0;
+const MAG_LEARNING_MAX_UT: f32 = 4000.0;
 // Recover quickly after good magnetic data returns, but require roughly one
 // second of consecutive bad 30 Hz samples before declaring the magnetometer
 // disturbed. Short magnitude dips should not make the whole IMU status flap.

@@ -36,15 +36,15 @@ const RAD_TO_DEG: f32 = 180.0 / PI;
 const DEG_TO_RAD: f32 = PI / 180.0;
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 const YAW_TEXTURE_HEADINGS: [i32; 12] = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
-// Extend the floor/ceiling far enough that cross-lines accumulate tightly at the
-// horizon. Eight-unit spacing keeps the world regular while +/-96 gives twice
-// the previous depth without changing the plane height around the viewer.
-const GRID_COORDS: [f32; 25] = [
-    -96.0, -88.0, -80.0, -72.0, -64.0, -56.0, -48.0, -40.0, -32.0, -24.0, -16.0,
-    -8.0, 0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0, 72.0, 80.0, 88.0,
-    96.0,
-];
-const GRID_EXTENT: f32 = 96.0;
+// Keep an 8-unit regular grid near the viewer, then progressively thin lines
+// that are already sub-pixel close together. At +/-1024 world units the +/-8
+// floor/ceiling planes project to less than one pixel from the horizon, so this
+// is effectively the mathematical horizon at the display's resolution.
+const GRID_NEAR_SPACING: f32 = 8.0;
+const GRID_NEAR_EXTENT: f32 = 96.0;
+const GRID_MID_EXTENT: f32 = 192.0;
+const GRID_FAR_EXTENT: f32 = 384.0;
+const GRID_EXTENT: f32 = 1024.0;
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
@@ -68,6 +68,12 @@ struct PerspectiveCamera {
     cos_pitch: f32,
     sin_roll: f32,
     cos_roll: f32,
+    // Q10 coefficients for the displayed horizon's implicit line:
+    // a*x + b*y + c = 0. Perpendicular screen distance from this line is a
+    // cheap proxy for inverse world depth on the sky/ground planes.
+    horizon_a_q10: i32,
+    horizon_b_q10: i32,
+    horizon_c_q10: i32,
 }
 
 pub(crate) struct View {
@@ -295,16 +301,39 @@ fn draw_perspective_grid(
     let yaw = yaw_deg as f32 * DEG_TO_RAD;
     let pitch = pitch_deg * DEG_TO_RAD;
     let roll = roll_deg * DEG_TO_RAD;
+    let sin_yaw = sin_approx(yaw);
+    let cos_yaw = cos_approx(yaw);
+    let sin_pitch = sin_approx(pitch);
+    let cos_pitch = cos_approx(pitch);
+    let sin_roll = sin_approx(roll);
+    let cos_roll = cos_approx(roll);
+
+    // Use the exact displayed horizon geometry for fading. This keeps the depth
+    // cue attached to the attitude horizon even at high pitch/roll angles.
+    let visual_pitch = round_degrees(pitch_deg).clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
+    let pitch_offset = project_angle(visual_pitch, center_y);
+    let horizon_a_q10 = round_f32(-sin_roll * TAN_SCALE as f32);
+    let horizon_b_q10 = round_f32(cos_roll * TAN_SCALE as f32);
+    let horizon_c_q10 = round_f32(
+        (sin_roll * center_x as f32
+            - cos_roll * center_y as f32
+            - pitch_offset as f32)
+            * TAN_SCALE as f32,
+    );
+
     let camera = PerspectiveCamera {
         center_x,
         center_y,
         focal: center_y.max(1) as f32,
-        sin_yaw: sin_approx(yaw),
-        cos_yaw: cos_approx(yaw),
-        sin_pitch: sin_approx(pitch),
-        cos_pitch: cos_approx(pitch),
-        sin_roll: sin_approx(roll),
-        cos_roll: cos_approx(roll),
+        sin_yaw,
+        cos_yaw,
+        sin_pitch,
+        cos_pitch,
+        sin_roll,
+        cos_roll,
+        horizon_a_q10,
+        horizon_b_q10,
+        horizon_c_q10,
     };
 
     draw_world_grid_plane(frame, area, camera, PERSPECTIVE_PLANE_HEIGHT, true);
@@ -318,55 +347,49 @@ fn draw_world_grid_plane(
     world_y: f32,
     sky: bool,
 ) {
-    for coordinate in GRID_COORDS {
-        let color = grid_fade_color(sky, abs_f32(coordinate));
-        draw_world_segment(
-            frame,
-            area,
-            camera,
-            [coordinate, world_y, -GRID_EXTENT],
-            [coordinate, world_y, GRID_EXTENT],
-            color,
-        );
-        draw_world_segment(
-            frame,
-            area,
-            camera,
-            [-GRID_EXTENT, world_y, coordinate],
-            [GRID_EXTENT, world_y, coordinate],
-            color,
-        );
+    draw_world_grid_coordinate(frame, area, camera, world_y, 0.0, sky);
+
+    let mut distance = GRID_NEAR_SPACING;
+    while distance <= GRID_EXTENT {
+        draw_world_grid_coordinate(frame, area, camera, world_y, distance, sky);
+        draw_world_grid_coordinate(frame, area, camera, world_y, -distance, sky);
+
+        distance += if distance < GRID_NEAR_EXTENT {
+            GRID_NEAR_SPACING
+        } else if distance < GRID_MID_EXTENT {
+            16.0
+        } else if distance < GRID_FAR_EXTENT {
+            32.0
+        } else {
+            64.0
+        };
     }
 }
 
-/// Four discrete RGB565 fade bands provide a depth cue without alpha blending
-/// or framebuffer reads. The far bands are deliberately stronger than before so
-/// the +/-64..96 grid remains visible while still receding toward the background.
-fn grid_fade_color(
+fn draw_world_grid_coordinate(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    camera: PerspectiveCamera,
+    world_y: f32,
+    coordinate: f32,
     sky: bool,
-    distance: f32,
-) -> embedded_graphics::pixelcolor::Rgb565 {
-    use embedded_graphics::pixelcolor::Rgb565;
-
-    if sky {
-        if distance >= 72.0 {
-            Rgb565::new(0, 30, 22)
-        } else if distance >= 48.0 {
-            Rgb565::new(0, 25, 20)
-        } else if distance >= 24.0 {
-            Rgb565::new(0, 20, 18)
-        } else {
-            common::dark_blue()
-        }
-    } else if distance >= 72.0 {
-        Rgb565::new(16, 31, 16)
-    } else if distance >= 48.0 {
-        Rgb565::new(18, 35, 18)
-    } else if distance >= 24.0 {
-        Rgb565::new(20, 39, 20)
-    } else {
-        common::light_gray()
-    }
+) {
+    draw_world_segment(
+        frame,
+        area,
+        camera,
+        [coordinate, world_y, -GRID_EXTENT],
+        [coordinate, world_y, GRID_EXTENT],
+        sky,
+    );
+    draw_world_segment(
+        frame,
+        area,
+        camera,
+        [-GRID_EXTENT, world_y, coordinate],
+        [GRID_EXTENT, world_y, coordinate],
+        sky,
+    );
 }
 
 fn draw_world_segment(
@@ -375,7 +398,7 @@ fn draw_world_segment(
     camera: PerspectiveCamera,
     start: [f32; 3],
     end: [f32; 3],
-    color: embedded_graphics::pixelcolor::Rgb565,
+    sky: bool,
 ) {
     let mut a = world_to_camera(start, camera);
     let mut b = world_to_camera(end, camera);
@@ -392,7 +415,7 @@ fn draw_world_segment(
     let start_screen = project_camera_point(a, camera);
     let end_screen = project_camera_point(b, camera);
     if let (Some(start_screen), Some(end_screen)) = (start_screen, end_screen) {
-        draw_clipped_line(frame, area, start_screen, end_screen, color);
+        draw_clipped_line(frame, area, camera, start_screen, end_screen, sky);
     }
 }
 
@@ -435,16 +458,17 @@ fn project_camera_point(point: [f32; 3], camera: PerspectiveCamera) -> Option<(i
 fn draw_clipped_line(
     frame: &mut GuiFramebuffer,
     area: Rect,
+    camera: PerspectiveCamera,
     start: (i32, i32),
     end: (i32, i32),
-    color: embedded_graphics::pixelcolor::Rgb565,
+    sky: bool,
 ) {
     let min_x = 2;
     let max_x = area.w as i32 - 3;
     let min_y = 13;
     let max_y = area.h as i32 - 19;
     if let Some(((x0, y0), (x1, y1))) = clip_line(start, end, min_x, max_x, min_y, max_y) {
-        draw_line_pixels(frame, area.x + x0, area.y + y0, area.x + x1, area.y + y1, color);
+        draw_line_pixels(frame, area, camera, x0, y0, x1, y1, sky);
     }
 }
 
@@ -508,13 +532,20 @@ fn outcode(x: i32, y: i32, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u8
     code
 }
 
+/// Rasterize with an aggressive perspective fade toward the horizon. Distance
+/// is computed from an integer Q10 implicit horizon line, so the hot pixel loop
+/// has no floating-point work or framebuffer readback. Color approaches the
+/// actual sky/ground fill and a deterministic screen-door pattern reduces pixel
+/// density as projected depth approaches infinity.
 fn draw_line_pixels(
     frame: &mut GuiFramebuffer,
+    area: Rect,
+    camera: PerspectiveCamera,
     mut x0: i32,
     mut y0: i32,
     x1: i32,
     y1: i32,
-    color: embedded_graphics::pixelcolor::Rgb565,
+    sky: bool,
 ) {
     let dx = (x1 - x0).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
@@ -523,7 +554,10 @@ fn draw_line_pixels(
     let mut error = dx + dy;
 
     loop {
-        common::fill_box(frame, x0, y0, 1, 1, color);
+        let distance = horizon_distance_pixels(camera, x0, y0);
+        if let Some(color) = grid_pixel_color(sky, distance, x0, y0) {
+            common::fill_box(frame, area.x + x0, area.y + y0, 1, 1, color);
+        }
         if x0 == x1 && y0 == y1 {
             break;
         }
@@ -537,6 +571,61 @@ fn draw_line_pixels(
             y0 += sy;
         }
     }
+}
+
+fn horizon_distance_pixels(camera: PerspectiveCamera, x: i32, y: i32) -> i32 {
+    let signed_q10 = camera.horizon_a_q10 as i64 * x as i64
+        + camera.horizon_b_q10 as i64 * y as i64
+        + camera.horizon_c_q10 as i64;
+    ((signed_q10.abs() + (TAN_SCALE as i64 / 2)) / TAN_SCALE as i64) as i32
+}
+
+fn grid_pixel_color(
+    sky: bool,
+    distance: i32,
+    x: i32,
+    y: i32,
+) -> Option<embedded_graphics::pixelcolor::Rgb565> {
+    use embedded_graphics::pixelcolor::Rgb565;
+
+    let phase = x.wrapping_mul(3).wrapping_add(y.wrapping_mul(5)).abs();
+    if distance >= 18 {
+        return Some(if sky { common::dark_blue() } else { common::light_gray() });
+    }
+
+    if distance >= 12 {
+        if phase & 3 == 0 {
+            return None;
+        }
+        return Some(if sky { Rgb565::new(0, 20, 18) } else { Rgb565::new(19, 38, 19) });
+    }
+
+    if distance >= 8 {
+        if phase & 1 != 0 {
+            return None;
+        }
+        return Some(if sky { Rgb565::new(0, 27, 21) } else { Rgb565::new(16, 32, 16) });
+    }
+
+    if distance >= 5 {
+        if phase % 3 != 0 {
+            return None;
+        }
+        return Some(if sky { Rgb565::new(0, 33, 24) } else { Rgb565::new(13, 27, 13) });
+    }
+
+    if distance >= 3 {
+        if phase & 3 != 0 {
+            return None;
+        }
+        return Some(if sky { Rgb565::new(0, 37, 25) } else { Rgb565::new(12, 24, 12) });
+    }
+
+    if distance >= 1 && phase & 7 == 0 {
+        return Some(if sky { Rgb565::new(0, 40, 26) } else { Rgb565::new(11, 22, 11) });
+    }
+
+    None
 }
 
 fn draw_footer(frame: &mut GuiFramebuffer, area: Rect, text: &str) {
