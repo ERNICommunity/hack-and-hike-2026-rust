@@ -1,46 +1,19 @@
-//! BMM150 magnetometer data decoding, factory compensation, and runtime calibration.
+//! BMM150 magnetometer data decoding and Bosch factory compensation.
 //!
 //! Hardware transport lives in `imu.rs` because the BMM150 is reached through
-//! the BMI270 auxiliary I²C interface. This module is deliberately pure: it
-//! converts the eight auxiliary data bytes plus Bosch factory trim into µT and
-//! maintains a small allocation-free hard/soft-iron calibration estimate.
+//! the BMI270 auxiliary I²C interface. Runtime hard/soft-iron calibration lives
+//! in the `calibration` submodule; this facade keeps the acquisition layer API
+//! stable while separating sensor compensation from environmental calibration.
 //!
 //! The compensation equations are derived from Bosch Sensortec's BSD-3-Clause
 //! BMM150 SensorAPI v2.0.0.
 
+mod calibration;
+
+pub use calibration::{Calibration, GOOD_FIELD_MAX_UT, GOOD_FIELD_MIN_UT, vector_length};
+
 const OVERFLOW_XY: i16 = -4096;
 const OVERFLOW_Z: i16 = -16384;
-
-/// Plausibility window used while learning calibration. The CoreS3 family can
-/// have a large stable hard-iron offset from nearby hardware (speaker, chassis,
-/// etc.), so calibration must accept fields much larger than Earth's field and
-/// remove the offset before judging magnetic health. Bosch specifies roughly
-/// +/-1300 uT on X/Y and +/-2500 uT on Z; 4000 uT vector magnitude leaves margin
-/// for valid combinations of those component limits without treating them as
-/// geomagnetic health values before calibration.
-const LEARNING_FIELD_MIN_UT: f32 = 5.0;
-const LEARNING_FIELD_MAX_UT: f32 = 4000.0;
-/// Broad post-calibration usability window. The calibrated vector is normalized
-/// toward 50 uT, but the simple diagonal ellipsoid fit can still change magnitude
-/// with orientation in the CoreS3's strong local field. Heading depends primarily
-/// on vector direction, so do not disable drift correction for ordinary dips below
-/// the previous 15 uT cutoff; only near-zero or very large vectors are rejected.
-pub const GOOD_FIELD_MIN_UT: f32 = 5.0;
-pub const GOOD_FIELD_MAX_UT: f32 = 150.0;
-// Heading depends on magnetic direction, not absolute scale. Normalize the
-// calibrated ellipsoid to a representative Earth-field radius so the health
-// window above remains meaningful even when the enclosure adds a large offset.
-const CALIBRATED_FIELD_RADIUS_UT: f32 = 50.0;
-// Keep the stronger 240-sample requirement, but use the 35 uT per-axis span that
-// was reachable on the physical CoreS3 Lite. Requiring 50 uT on every axis can
-// leave calibration permanently incomplete even after a thorough 3-D rotation.
-const CALIBRATION_TARGET_SPAN_UT: f32 = 35.0;
-const CALIBRATION_MIN_SAMPLES: u16 = 240;
-// Once calibration is ready, missed extrema are incorporated gradually instead
-// of freezing forever or jumping immediately. At 30 Hz, a persistent new extreme
-// is mostly absorbed over a few seconds while one-off magnetic spikes have only a
-// small effect on the learned center/scale.
-const READY_EXTREMA_ADAPT_RATE: f32 = 0.02;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Trim {
@@ -150,133 +123,6 @@ fn compensate_z(raw: i16, rhall: u16, trim: Trim) -> Option<f32> {
     }
     let z5 = z0 * 131072.0 - z2;
     Some((z5 / (z4 * 4.0)) / 16.0)
-}
-
-/// Online min/max calibration. It learns hard-iron center and a simple diagonal
-/// soft-iron scale from normal device motion without allocating or retaining a
-/// sample history. Calibration resets at boot; persistence can be added later
-/// once the product has a settings/NVS owner.
-#[derive(Clone, Copy)]
-pub struct Calibration {
-    min: [f32; 3],
-    max: [f32; 3],
-    samples: u16,
-}
-
-impl Calibration {
-    pub const fn new() -> Self {
-        Self {
-            min: [f32::MAX; 3],
-            max: [f32::MIN; 3],
-            samples: 0,
-        }
-    }
-
-    pub fn observe(&mut self, field_ut: [f32; 3]) {
-        let strength = vector_length(field_ut);
-        if !(LEARNING_FIELD_MIN_UT..=LEARNING_FIELD_MAX_UT).contains(&strength) {
-            return;
-        }
-
-        for axis in 0..3 {
-            self.min[axis] = min_f32(self.min[axis], field_ut[axis]);
-            self.max[axis] = max_f32(self.max[axis], field_ut[axis]);
-        }
-        self.samples = self.samples.saturating_add(1);
-    }
-
-    pub fn progress_percent(&self) -> u8 {
-        if self.samples == 0 {
-            return 0;
-        }
-        let span = self.minimum_span();
-        let span_progress = clamp_f32(span / CALIBRATION_TARGET_SPAN_UT, 0.0, 1.0);
-        let sample_progress = clamp_f32(
-            f32::from(self.samples) / f32::from(CALIBRATION_MIN_SAMPLES),
-            0.0,
-            1.0,
-        );
-        (100.0 * min_f32(span_progress, sample_progress)) as u8
-    }
-
-    pub fn is_ready(&self) -> bool {
-        self.samples >= CALIBRATION_MIN_SAMPLES && self.minimum_span() >= CALIBRATION_TARGET_SPAN_UT
-    }
-
-    pub fn apply(&mut self, field_ut: [f32; 3]) -> [f32; 3] {
-        if !self.is_ready() {
-            return field_ut;
-        }
-
-        // Calibration used to freeze exactly at the first moment it became
-        // ready. If that initial motion missed an extremum, later ordinary
-        // orientations could land far outside the learned ellipsoid and produce
-        // corrected magnitudes of several hundred uT. Expand only toward genuine
-        // new extrema, and do so slowly enough that heading cannot jump.
-        let strength = vector_length(field_ut);
-        if (LEARNING_FIELD_MIN_UT..=LEARNING_FIELD_MAX_UT).contains(&strength) {
-            for axis in 0..3 {
-                if field_ut[axis] < self.min[axis] {
-                    self.min[axis] += (field_ut[axis] - self.min[axis]) * READY_EXTREMA_ADAPT_RATE;
-                } else if field_ut[axis] > self.max[axis] {
-                    self.max[axis] += (field_ut[axis] - self.max[axis]) * READY_EXTREMA_ADAPT_RATE;
-                }
-            }
-        }
-
-        let radii = [
-            (self.max[0] - self.min[0]) * 0.5,
-            (self.max[1] - self.min[1]) * 0.5,
-            (self.max[2] - self.min[2]) * 0.5,
-        ];
-        if radii[0] < 0.001 || radii[1] < 0.001 || radii[2] < 0.001 {
-            return field_ut;
-        }
-
-        let center = [
-            (self.max[0] + self.min[0]) * 0.5,
-            (self.max[1] + self.min[1]) * 0.5,
-            (self.max[2] + self.min[2]) * 0.5,
-        ];
-
-        [
-            (field_ut[0] - center[0]) * CALIBRATED_FIELD_RADIUS_UT / radii[0],
-            (field_ut[1] - center[1]) * CALIBRATED_FIELD_RADIUS_UT / radii[1],
-            (field_ut[2] - center[2]) * CALIBRATED_FIELD_RADIUS_UT / radii[2],
-        ]
-    }
-
-    fn minimum_span(&self) -> f32 {
-        if self.samples == 0 {
-            return 0.0;
-        }
-        let x = self.max[0] - self.min[0];
-        let y = self.max[1] - self.min[1];
-        let z = self.max[2] - self.min[2];
-        min_f32(x, min_f32(y, z))
-    }
-}
-
-pub fn vector_length(value: [f32; 3]) -> f32 {
-    sqrt_approx(value[0] * value[0] + value[1] * value[1] + value[2] * value[2])
-}
-
-fn min_f32(a: f32, b: f32) -> f32 {
-    if a < b { a } else { b }
-}
-
-fn max_f32(a: f32, b: f32) -> f32 {
-    if a > b { a } else { b }
-}
-
-fn clamp_f32(value: f32, min: f32, max: f32) -> f32 {
-    if value < min {
-        min
-    } else if value > max {
-        max
-    } else {
-        value
-    }
 }
 
 fn sqrt_approx(value: f32) -> f32 {
