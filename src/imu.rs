@@ -157,6 +157,9 @@ const MAG_RETRY: Duration = Duration::from_secs(5);
 const MAG_STALE: Duration = Duration::from_secs(1);
 const SENSOR_STARTUP: Duration = Duration::from_millis(50);
 const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
+const MAG_LEARNING_MIN_UT: f32 = 5.0;
+const MAG_LEARNING_MAX_UT: f32 = 150.0;
+const MAG_STATUS_HYSTERESIS_SAMPLES: u8 = 8;
 
 #[derive(Clone, Copy, Debug)]
 enum Error {
@@ -213,8 +216,6 @@ impl Bmi270 {
             packet[0] = REG_INIT_DATA;
             packet[1..1 + chunk.len()].copy_from_slice(chunk);
 
-            // Keep the init-address and matching data transaction together so
-            // another CPU1 system-I2C client cannot interleave them.
             let mut i2c = self.bus.lock().await;
             i2c.write_async(BMI270_ADDR, &address)
                 .await
@@ -300,12 +301,9 @@ impl Bmi270 {
         Ok(result)
     }
 
-    /// Configure the BMM150 through BMI270 setup mode and return its factory
-    /// trim. If this fails, accel/gyro remain usable and the caller can retry.
     async fn initialize_bmm150(&self) -> Result<bmm150::Trim, Error> {
         self.write_register(REG_IF_CONF, 0x20).await?;
         self.write_register(REG_PWR_CONF, 0x00).await?;
-        // Setup mode requires AUX disabled while manual transactions are issued.
         self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR).await?;
         self.write_register(REG_AUX_IF_TRIM, AUX_IF_TRIM_2K_PULLUP).await?;
         self.write_register(REG_AUX_IF_CONF, AUX_IF_MANUAL_MODE).await?;
@@ -332,7 +330,6 @@ impl Bmi270 {
         self.aux_write_register(BMM_REG_OP_MODE, BMM_NORMAL_30HZ)
             .await?;
 
-        // Switch BMI270 from manual AUX setup to continuous data mode.
         self.write_register(REG_AUX_CONF, AUX_CONF_50HZ).await?;
         self.write_register(REG_AUX_IF_CONF, AUX_IF_DATA_MODE_8_BYTES)
             .await?;
@@ -348,8 +345,6 @@ impl Bmi270 {
         let _ = self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR).await;
     }
 
-    /// One primary-I²C burst reads the BMI270's cached 8-byte auxiliary frame
-    /// plus the current accelerometer and gyroscope values.
     async fn read_sample(&self) -> Result<RawSample, Error> {
         let mut bytes = [0u8; 20];
         let mut i2c = self.bus.lock().await;
@@ -460,16 +455,19 @@ impl Fusion {
         yaw_alpha: f32,
     ) -> Orientation {
         let [ax, ay, az] = accel_g;
-        let [gx, gy, gz] = gyro_dps;
+        let [gx, gy, _gz] = gyro_dps;
 
         let acc_roll = radians_to_degrees(atan2_approx(ay, az));
         let acc_pitch = radians_to_degrees(atan2_approx(-ax, sqrt_approx(ay * ay + az * az)));
+        let screen_accel = screen_vector_from_body(accel_g);
+        let (screen_roll, screen_pitch) = attitude_from_accel(screen_accel);
+        let screen_field = magnetic_field_ut.map(screen_vector_from_body);
 
         if !self.initialized {
             self.orientation.roll_deg = acc_roll;
             self.orientation.pitch_deg = acc_pitch;
-            self.orientation.yaw_deg = magnetic_field_ut
-                .map(|field| tilt_compensated_heading(field, acc_roll, acc_pitch))
+            self.orientation.yaw_deg = screen_field
+                .map(|field| tilt_compensated_heading(field, screen_roll, screen_pitch))
                 .unwrap_or(0.0);
             self.initialized = true;
             return self.orientation;
@@ -482,13 +480,12 @@ impl Fusion {
         self.orientation.pitch_deg = alpha * (self.orientation.pitch_deg + gy * dt_seconds)
             + accel_weight * acc_pitch;
 
-        let predicted_yaw = wrap_degrees(self.orientation.yaw_deg + gz * dt_seconds);
-        self.orientation.yaw_deg = if let Some(field) = magnetic_field_ut {
-            let heading = tilt_compensated_heading(
-                field,
-                self.orientation.roll_deg,
-                self.orientation.pitch_deg,
-            );
+        // In the upright CoreS3 Lite screen frame, yaw is rotation around the
+        // screen's vertical axis. The fixed body->screen mapping is
+        // [x,y,z] -> [z,-x,-y], so screen yaw rate is -body gyro Y.
+        let predicted_yaw = wrap_degrees(self.orientation.yaw_deg - gy * dt_seconds);
+        self.orientation.yaw_deg = if let Some(field) = screen_field {
+            let heading = tilt_compensated_heading(field, screen_roll, screen_pitch);
             let correction = wrap_degrees(heading - predicted_yaw);
             wrap_degrees(predicted_yaw + (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * correction)
         } else {
@@ -524,11 +521,6 @@ fn publish(
     });
 }
 
-/// CPU1 acquisition/fusion task.
-///
-/// Accel/gyro and fusion run at ~100 Hz. BMM150 produces 30 Hz magnetometer
-/// samples through the BMI270 sensor hub. CPU0 consumes only latest fused state,
-/// normally at 25 Hz, so no raw sensor stream crosses cores.
 #[embassy_executor::task]
 pub async fn capture_task(bus: SystemI2cBus, config: Config) {
     let sensor = Bmi270::new(bus);
@@ -603,6 +595,8 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
         let mut last_mag_retry = Instant::now();
         let mut last_sample_time = Instant::now();
         let mut consecutive_errors = 0u8;
+        let mut mag_good_samples = 0u8;
+        let mut mag_bad_samples = 0u8;
 
         loop {
             Timer::after(config.sample_period).await;
@@ -616,6 +610,8 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                         mag_trim = Some(trim);
                         mag_calibration = bmm150::Calibration::new();
                         mag_status = MagStatus::Learning;
+                        mag_good_samples = 0;
+                        mag_bad_samples = 0;
                         last_mag_frame = None;
                         last_mag_update = now;
                     }
@@ -634,8 +630,6 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                     let dt_seconds = elapsed_ms as f32 * 0.001;
 
                     let corrected_gyro = gyro_bias.correct(sample.accel_g, sample.gyro_dps);
-                    // Yaw correction is intentionally single-shot per fresh 30 Hz
-                    // BMM150 frame; the 100 Hz fusion ticks between frames are gyro-only.
                     let mut magnetic_for_fusion: Option<[f32; 3]> = None;
 
                     if let Some(trim) = mag_trim {
@@ -646,53 +640,62 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                                 if mag.data_ready {
                                     last_mag_update = now;
 
-                                    // CoreS3 BMI270+BMM150 mounting: M5Unified
-                                    // maps magnetometer Y and Z with inverted sign
-                                    // to align it with the accel/gyro body frame.
                                     let body_field = [
                                         mag.field_ut[0],
                                         -mag.field_ut[1],
                                         -mag.field_ut[2],
                                     ];
-                                    // Once calibrated, do not let an abnormal external
-                                    // magnetic field move the learned extrema.
-                                    if !mag_calibration.is_ready()
-                                        || (bmm150::GOOD_FIELD_MIN_UT..=bmm150::GOOD_FIELD_MAX_UT)
-                                            .contains(&mag.field_strength_ut)
+
+                                    // Continue adapting the hard/soft-iron calibration
+                                    // for every broadly plausible field. Previously the
+                                    // calibration froze once "ready" whenever the raw
+                                    // field left 15..100 uT, which could make DISTURBED
+                                    // permanent after the magnetic environment changed.
+                                    if (MAG_LEARNING_MIN_UT..=MAG_LEARNING_MAX_UT)
+                                        .contains(&mag.field_strength_ut)
                                     {
                                         mag_calibration.observe(body_field);
                                     }
+
                                     let corrected_field = mag_calibration.apply(body_field);
                                     mag_field_ut = bmm150::vector_length(corrected_field);
+                                    let field_good = (bmm150::GOOD_FIELD_MIN_UT
+                                        ..=bmm150::GOOD_FIELD_MAX_UT)
+                                        .contains(&mag_field_ut);
 
-                                    let plausible = if mag_calibration.is_ready() {
-                                        (bmm150::GOOD_FIELD_MIN_UT..=bmm150::GOOD_FIELD_MAX_UT)
-                                            .contains(&mag_field_ut)
-                                    } else {
-                                        (5.0..=150.0).contains(&mag_field_ut)
-                                    };
-
-                                    if plausible {
-                                        mag_status = if mag_calibration.is_ready() {
-                                            MagStatus::Ready
-                                        } else {
-                                            MagStatus::Learning
-                                        };
+                                    if field_good {
+                                        mag_good_samples = mag_good_samples.saturating_add(1);
+                                        mag_bad_samples = 0;
                                         magnetic_for_fusion = Some(corrected_field);
+                                        if mag_good_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                            mag_status = if mag_calibration.is_ready() {
+                                                MagStatus::Ready
+                                            } else {
+                                                MagStatus::Learning
+                                            };
+                                        }
                                     } else {
-                                        mag_status = MagStatus::Disturbed;
-                                        magnetic_for_fusion = None;
+                                        mag_bad_samples = mag_bad_samples.saturating_add(1);
+                                        mag_good_samples = 0;
+                                        if mag_bad_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                            mag_status = MagStatus::Disturbed;
+                                        }
                                     }
                                 }
                             } else {
                                 mag_errors = mag_errors.wrapping_add(1);
-                                mag_status = MagStatus::Disturbed;
-                                magnetic_for_fusion = None;
+                                mag_bad_samples = mag_bad_samples.saturating_add(1);
+                                mag_good_samples = 0;
+                                if mag_bad_samples >= MAG_STATUS_HYSTERESIS_SAMPLES {
+                                    mag_status = MagStatus::Disturbed;
+                                }
                             }
                         }
 
                         if now - last_mag_update >= MAG_STALE {
                             mag_status = MagStatus::Missing;
+                            mag_good_samples = 0;
+                            mag_bad_samples = 0;
                             magnetic_for_fusion = None;
                         }
                     } else {
@@ -844,8 +847,17 @@ fn sqrt_approx(value: f32) -> f32 {
     estimate
 }
 
-/// Fast atan2 approximation suitable for attitude/heading fusion without a
-/// libm dependency.
+fn attitude_from_accel(accel_g: [f32; 3]) -> (f32, f32) {
+    let [ax, ay, az] = accel_g;
+    let roll = radians_to_degrees(atan2_approx(ay, az));
+    let pitch = radians_to_degrees(atan2_approx(-ax, sqrt_approx(ay * ay + az * az)));
+    (roll, pitch)
+}
+
+fn screen_vector_from_body(value: [f32; 3]) -> [f32; 3] {
+    [value[2], -value[0], -value[1]]
+}
+
 fn atan2_approx(y: f32, x: f32) -> f32 {
     if x == 0.0 && y == 0.0 {
         return 0.0;

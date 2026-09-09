@@ -38,6 +38,7 @@ const PI: f32 = 3.14159265358979323846;
 const RAD_TO_DEG: f32 = 180.0 / PI;
 const DEG_TO_RAD: f32 = PI / 180.0;
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
+const YAW_TEXTURE_HEADINGS: [i32; 12] = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
@@ -130,7 +131,9 @@ fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         sensor::MagStatus::Learning => {
             let _ = write!(&mut mag, "CAL {}%", imu.mag_calibration);
         }
-        sensor::MagStatus::Disturbed => mag.push_str("MAG DISTURBED"),
+        sensor::MagStatus::Disturbed => {
+            let _ = write!(&mut mag, "DIST {}uT", imu.mag_field_ut);
+        }
         sensor::MagStatus::Missing => mag.push_str("MAG MISSING"),
     }
     common::draw_body(
@@ -184,9 +187,6 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     let sin_roll = sin_approx(roll_radians);
     let cos_roll = cos_approx(roll_radians);
 
-    // Draw the horizon from its implicit line equation rather than clamping
-    // bank to +/-80 degrees. This keeps the line valid through 90 degrees and
-    // at 180 degrees: upside-down is a centered horizon with the ground above.
     for local_x in 0..width {
         let x_delta = local_x - center_x;
         if abs_f32(cos_roll) > HORIZON_VERTICAL_COS_EPSILON {
@@ -216,8 +216,6 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
                 );
             }
         } else {
-            // At +/-90 degrees the horizon is vertical. The line equation no
-            // longer depends on y, so each column is entirely sky or ground.
             let ground_side = -sin_roll * x_delta as f32 - pitch_offset as f32 >= 0.0;
             if ground_side {
                 common::vline(
@@ -231,6 +229,20 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         }
     }
 
+    // Heading-anchored dotted meridians give both sky and ground a visible
+    // structure that slides laterally as yaw changes. They are clipped to the
+    // actual sky/ground side of the rolled/pitched horizon.
+    draw_yaw_texture(
+        frame,
+        area,
+        imu.yaw_deg,
+        center_x,
+        center_y,
+        pitch_offset,
+        sin_roll,
+        cos_roll,
+    );
+
     draw_border(frame, area);
     let cx = x0 + center_x;
     let cy = y0 + center_y;
@@ -239,11 +251,7 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::vline(frame, cx, cy - 5, 11, common::white());
     common::hline(frame, cx - 20, cy - 23, 40, common::white());
     common::hline(frame, cx - 12, cy + 22, 24, common::white());
-
-    let marker_span = (width / 2 - 8).max(1);
-    let roll_x = (cx + round_f32(sin_roll * marker_span as f32) - 2).clamp(x0, x0 + width - 5);
-    common::fill_box(frame, roll_x, y0 + 5, 5, 10, common::dark_blue());
-    common::draw_body(frame, "PITCH / ROLL", x0 + 5, y0 + 4, common::dark_blue());
+    common::draw_body(frame, "PITCH / ROLL / YAW", x0 + 5, y0 + 4, common::dark_blue());
 
     let footer = if imu.read_errors > 0 || imu.mag_errors > 0 {
         let mut errors = ArrayString::<32>::new();
@@ -253,13 +261,66 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     } else {
         match imu.mag_status {
             sensor::MagStatus::Learning => "Rotate device - calibrating mag",
-            sensor::MagStatus::Disturbed => "Mag disturbance - yaw paused",
-            sensor::MagStatus::Missing => "Mag missing - gyro yaw",
+            sensor::MagStatus::Disturbed => "Mag disturbed - gyro yaw active",
+            sensor::MagStatus::Missing => "Mag missing - gyro yaw active",
             sensor::MagStatus::Ready if imu.gyro_bias_ready => "Mag heading - gyro bias ready",
             sensor::MagStatus::Ready => "Mag heading - learning gyro bias",
         }
     };
     draw_footer(frame, area, footer);
+}
+
+fn draw_yaw_texture(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    yaw_deg: i32,
+    center_x: i32,
+    center_y: i32,
+    pitch_offset: i32,
+    sin_roll: f32,
+    cos_roll: f32,
+) {
+    let width = area.w as i32;
+    let height = area.h as i32;
+
+    for heading in YAW_TEXTURE_HEADINGS {
+        let delta = wrap_heading_delta(heading, yaw_deg);
+        // +/-90 degrees spans the attitude viewport. As the device yaws, the
+        // heading-anchored columns visibly slide across the horizon scene.
+        let local_x = center_x + delta * width / 180;
+        if local_x <= 1 || local_x >= width - 1 {
+            continue;
+        }
+
+        let mut local_y = 13;
+        while local_y < height - 18 {
+            let x_delta = local_x - center_x;
+            let y_delta = local_y - center_y;
+            let ground_value = cos_roll * y_delta as f32
+                - pitch_offset as f32
+                - sin_roll * x_delta as f32;
+            if ground_value >= 0.0 {
+                common::fill_box(
+                    frame,
+                    area.x + local_x,
+                    area.y + local_y,
+                    1,
+                    3,
+                    common::light_gray(),
+                );
+            } else {
+                common::fill_box(
+                    frame,
+                    area.x + local_x,
+                    area.y + local_y,
+                    1,
+                    2,
+                    common::white(),
+                );
+            }
+            local_y += 9;
+        }
+    }
 }
 
 fn draw_footer(frame: &mut GuiFramebuffer, area: Rect, text: &str) {
@@ -284,6 +345,24 @@ fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     );
 
     let center = area.x + area.w as i32 / 2;
+
+    // Active 30-degree tick bar, with the four cardinal labels moving under a
+    // fixed center index as yaw changes.
+    for heading in YAW_TEXTURE_HEADINGS {
+        let delta = wrap_heading_delta(heading, imu.yaw_deg);
+        let tick_x = center + delta * 58 / 100;
+        if tick_x >= area.x + 3 && tick_x < area.x + area.w as i32 - 3 {
+            let tick_height = if heading % 90 == 0 { 7 } else { 4 };
+            common::vline(
+                frame,
+                tick_x,
+                area.y + 20 - tick_height,
+                tick_height as u32,
+                common::light_gray(),
+            );
+        }
+    }
+
     for (label, heading, color) in [
         ("N", 0, common::dark_blue()),
         ("E", 90, common::dark_gray()),
@@ -314,16 +393,10 @@ fn display_roll_pitch_f32(imu: &ImuDisplay) -> (f32, f32) {
     let sin_sensor_pitch = sin_approx(sensor_pitch);
     let cos_sensor_pitch = cos_approx(sensor_pitch);
 
-    // Gravity in the sensor/body frame for the Euler convention used by
-    // imu::Fusion: roll=atan2(ay, az), pitch=atan2(-ax, hypot(ay, az)).
     let ax = -sin_sensor_pitch;
     let ay = sin_sensor_roll * cos_sensor_pitch;
     let az = cos_sensor_roll * cos_sensor_pitch;
 
-    // CoreS3 Lite screen-frame remap for portrait/upright viewing. The roll sign
-    // preserves the already-confirmed behavior: rotating the device 90 degrees
-    // to the right reads -90 degrees. Pitch uses the opposite sign so forward
-    // and backward tilt match the user's screen-relative convention.
     let screen_roll = atan2_approx(-ax, -ay) * RAD_TO_DEG;
     let horizontal = sqrt_approx(ax * ax + ay * ay);
     let screen_pitch = -atan2_approx(az, horizontal) * RAD_TO_DEG;
