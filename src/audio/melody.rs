@@ -13,11 +13,12 @@ const LOOP_TICKS: u32 = 3_072;
 const MIDI_MIN: i16 = 24;
 const MIDI_MAX: i16 = 60;
 const MIDI_OCTAVE_SHIFT: u32 = 2;
-// Sustained triangle-wave energy is much louder on the CoreS3 Lite speaker than
-// the short decoded chime. Keep the melody at a conservative absolute digital
-// ceiling instead of scaling from the old 20k synth peak. At the score's normal
-// velocity (50), the oscillator can never exceed +/-3000 before mixing.
-const MELODY_OUTPUT_PEAK: i32 = 3_000;
+// A pure sine keeps the melody spectrally clean across the pitch range. The
+// previous triangle oscillator produced strong odd harmonics; on the CoreS3 Lite
+// those harmonics made low notes sound like digital distortion even at low gain.
+// Keep a fixed absolute ceiling so tempo, pitch, and runtime state cannot boost
+// the melody level.
+const MELODY_OUTPUT_PEAK: i32 = 5_000;
 const SCORE_REFERENCE_VELOCITY: i32 = 50;
 
 #[derive(Clone, Copy)]
@@ -107,12 +108,12 @@ impl MelodySynth {
         // Doubling oscillator frequency per octave keeps the pitch slider
         // relative to the source notes while moving the whole melody +24 st.
         let step = phase_step(midi) << MIDI_OCTAVE_SHIFT;
-        let wave = i32::from(triangle_wave(self.phase));
+        let wave = i32::from(sine_wave(self.phase));
         self.phase = self.phase.wrapping_add(step);
 
         // The supplied score uses velocity 50. Treat that as the maximum normal
         // melody level: lower velocities may attenuate, but no velocity can push
-        // the sustained synth above MELODY_OUTPUT_PEAK.
+        // the synth above MELODY_OUTPUT_PEAK.
         let amplitude = ((MELODY_OUTPUT_PEAK * i32::from(note.velocity))
             / SCORE_REFERENCE_VELOCITY)
             .clamp(0, MELODY_OUTPUT_PEAK);
@@ -152,18 +153,8 @@ fn envelope_q15(position_q32: u64, duration_ticks: u32) -> i32 {
     attack.min(release).clamp(0, 32_767)
 }
 
-fn triangle_wave(phase: u32) -> i16 {
-    // One full Q0.32 phase turn maps to 0 -> +1 -> -1 -> 0. Starting every
-    // note at zero phase combines with the tiny attack envelope for clean edges.
-    let position = (phase >> 16) as i32;
-    let sample = if position < 16_384 {
-        position * 2
-    } else if position < 49_152 {
-        32_767 - (position - 16_384) * 2
-    } else {
-        -32_767 + (position - 49_152) * 2
-    };
-    sample.clamp(-32_767, 32_767) as i16
+fn sine_wave(phase: u32) -> i16 {
+    SINE_256[(phase >> 24) as usize]
 }
 
 fn phase_step(midi: i16) -> u32 {
@@ -177,3 +168,24 @@ fn phase_step(midi: i16) -> u32 {
     ];
     STEPS[(midi.clamp(MIDI_MIN, MIDI_MAX) - MIDI_MIN) as usize]
 }
+
+// Flash-resident Q15 sine lookup. This table was used by the earlier melody
+// implementation and avoids introducing runtime floating-point work on CPU1.
+const SINE_256: [i16; 256] = [
+    0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179, 7962, 8739, 9512, 10278, 11039, 11793,
+    12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530, 18204, 18868, 19519, 20159, 20787, 21403, 22005, 22594,
+    23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790, 27245, 27683, 28105, 28510, 28898, 29268, 29621, 29956,
+    30273, 30571, 30852, 31113, 31356, 31580, 31785, 31971, 32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757,
+    32767, 32757, 32728, 32678, 32609, 32521, 32412, 32285, 32137, 31971, 31785, 31580, 31356, 31113, 30852, 30571,
+    30273, 29956, 29621, 29268, 28898, 28510, 28105, 27683, 27245, 26790, 26319, 25832, 25329, 24811, 24279, 23731,
+    23170, 22594, 22005, 21403, 20787, 20159, 19519, 18868, 18204, 17530, 16846, 16151, 15446, 14732, 14010, 13279,
+    12539, 11793, 11039, 10278, 9512, 8739, 7962, 7179, 6393, 5602, 4808, 4011, 3212, 2410, 1608, 804,
+    0, -804, -1608, -2410, -3212, -4011, -4808, -5602, -6393, -7179, -7962, -8739, -9512, -10278, -11039, -11793,
+    -12539, -13279, -14010, -14732, -15446, -16151, -16846, -17530, -18204, -18868, -19519, -20159, -20787, -21403, -22005, -22594,
+    -23170, -23731, -24279, -24811, -25329, -25832, -26319, -26790, -27245, -27683, -28105, -28510, -28898, -29268, -29621, -29956,
+    -30273, -30571, -30852, -31113, -31356, -31580, -31785, -31971, -32137, -32285, -32412, -32521, -32609, -32678, -32728, -32757,
+    -32767, -32757, -32728, -32678, -32609, -32521, -32412, -32285, -32137, -31971, -31785, -31580, -31356, -31113, -30852, -30571,
+    -30273, -29956, -29621, -29268, -28898, -28510, -28105, -27683, -27245, -26790, -26319, -25832, -25329, -24811, -24279, -23731,
+    -23170, -22594, -22005, -21403, -20787, -20159, -19519, -18868, -18204, -17530, -16846, -16151, -15446, -14732, -14010, -13279,
+    -12539, -11793, -11039, -10278, -9512, -8739, -7962, -7179, -6393, -5602, -4808, -4011, -3212, -2410, -1608, -804,
+];
