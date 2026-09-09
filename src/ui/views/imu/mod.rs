@@ -1,4 +1,4 @@
-//! IMU attitude view with a perspective world compass.
+//! IMU attitude view with a perspective grid and grid-anchored compass landmarks.
 //!
 //! KDL owns the header and artificial-horizon regions. The horizon, grid and
 //! distant compass labels are specialized view pixels drawn inside the attitude
@@ -48,28 +48,67 @@ const GRID_EXTENT: f32 = 1024.0;
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
-// Compass labels stay at the original 256-unit world radius. Each glyph is a
-// small vector sign standing on the ground plane and tangent to that compass
-// ring. At the current 170 px attitude viewport, a centered glyph projects to
-// roughly 14x26 pixels: almost exactly twice the previous 7x13 screen font.
-// Off-axis rectilinear projection would otherwise magnify tangent signs even at
-// a fixed radial distance, so glyph dimensions are compensated per label while
-// the world anchor itself remains fixed to the same 256-unit compass ring.
-const COMPASS_LABEL_RADIUS: f32 = 256.0;
-const COMPASS_GLYPH_WIDTH: f32 = 42.0;
-const COMPASS_GLYPH_HEIGHT: f32 = 78.0;
-const COMPASS_GLYPH_GAP: f32 = 18.0;
+// Compass labels are real landmarks on visible far-grid intersections. Their
+// anchors go through the exact same world->camera->screen projection as the
+// grid, so they cannot slide relative to it. The glyph strokes are small
+// camera-facing billboards attached to those anchors: this keeps the text
+// readable and constant in apparent size without the edge shear/scale inflation
+// of a world-space tangent sign.
+const COMPASS_LANDMARK_EXTENT: f32 = 256.0;
+const COMPASS_GLYPH_WIDTH_PX: f32 = 14.0;
+const COMPASS_GLYPH_HEIGHT_PX: f32 = 26.0;
+const COMPASS_GLYPH_GAP_PX: f32 = 6.0;
+const COMPASS_CULL_MARGIN_PX: i32 = 40;
 const COMPASS_STROKE_WIDTH: u32 = 3;
-const INV_SQRT_2: f32 = 0.70710677;
-const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
-    ("N", 0.0, 1.0),
-    ("NE", INV_SQRT_2, INV_SQRT_2),
-    ("E", 1.0, 0.0),
-    ("SE", INV_SQRT_2, -INV_SQRT_2),
-    ("S", 0.0, -1.0),
-    ("SW", -INV_SQRT_2, -INV_SQRT_2),
-    ("W", -1.0, 0.0),
-    ("NW", -INV_SQRT_2, INV_SQRT_2),
+const WORLD_COMPASS_LANDMARKS: [(&str, [f32; 3]); 8] = [
+    (
+        "N",
+        [0.0, -PERSPECTIVE_PLANE_HEIGHT, COMPASS_LANDMARK_EXTENT],
+    ),
+    (
+        "NE",
+        [
+            COMPASS_LANDMARK_EXTENT,
+            -PERSPECTIVE_PLANE_HEIGHT,
+            COMPASS_LANDMARK_EXTENT,
+        ],
+    ),
+    (
+        "E",
+        [COMPASS_LANDMARK_EXTENT, -PERSPECTIVE_PLANE_HEIGHT, 0.0],
+    ),
+    (
+        "SE",
+        [
+            COMPASS_LANDMARK_EXTENT,
+            -PERSPECTIVE_PLANE_HEIGHT,
+            -COMPASS_LANDMARK_EXTENT,
+        ],
+    ),
+    (
+        "S",
+        [0.0, -PERSPECTIVE_PLANE_HEIGHT, -COMPASS_LANDMARK_EXTENT],
+    ),
+    (
+        "SW",
+        [
+            -COMPASS_LANDMARK_EXTENT,
+            -PERSPECTIVE_PLANE_HEIGHT,
+            -COMPASS_LANDMARK_EXTENT,
+        ],
+    ),
+    (
+        "W",
+        [-COMPASS_LANDMARK_EXTENT, -PERSPECTIVE_PLANE_HEIGHT, 0.0],
+    ),
+    (
+        "NW",
+        [
+            -COMPASS_LANDMARK_EXTENT,
+            -PERSPECTIVE_PLANE_HEIGHT,
+            COMPASS_LANDMARK_EXTENT,
+        ],
+    ),
 ];
 const GLYPH_N_STROKES: [[f32; 4]; 3] = [
     [0.0, 0.0, 0.0, 7.0],
@@ -97,7 +136,6 @@ const GLYPH_W_STROKES: [[f32; 4]; 4] = [
 ];
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
-type ScreenLine = ((i32, i32), (i32, i32));
 
 #[derive(Clone, Copy)]
 struct Geometry {
@@ -365,7 +403,7 @@ fn draw_perspective_world(
 
     draw_world_grid_plane(frame, area, camera, PERSPECTIVE_PLANE_HEIGHT, true);
     draw_world_grid_plane(frame, area, camera, -PERSPECTIVE_PLANE_HEIGHT, false);
-    draw_world_compass_labels(frame, area, camera);
+    draw_world_compass_landmarks(frame, area, camera);
 }
 
 fn draw_world_grid_plane(
@@ -420,120 +458,101 @@ fn draw_world_grid_coordinate(
     );
 }
 
-fn draw_world_compass_labels(
+fn draw_world_compass_landmarks(
     frame: &mut GuiFramebuffer,
     area: Rect,
     camera: PerspectiveCamera,
 ) {
-    let centered_depth = camera.sin_pitch * -PERSPECTIVE_PLANE_HEIGHT
-        + camera.cos_pitch * COMPASS_LABEL_RADIUS;
-    if centered_depth <= PERSPECTIVE_NEAR_Z {
-        return;
-    }
+    // Billboard axes are screen-space but rotate with the horizon. Only the
+    // glyph shape uses this basis; each anchor itself is a real world point.
+    let tangent_x = camera.cos_roll;
+    let tangent_y = camera.sin_roll;
+    let up_x = camera.sin_roll;
+    let up_y = -camera.cos_roll;
 
-    for (label, unit_x, unit_z) in WORLD_COMPASS_LABELS {
-        let anchor = [
-            unit_x * COMPASS_LABEL_RADIUS,
-            -PERSPECTIVE_PLANE_HEIGHT,
-            unit_z * COMPASS_LABEL_RADIUS,
-        ];
-        let anchor_camera = world_to_camera(anchor, camera);
-        if anchor_camera[2] <= PERSPECTIVE_NEAR_Z {
-            continue;
-        }
-        let Some((screen_x, _)) = project_camera_point(anchor_camera, camera) else {
+    for (label, anchor_world) in WORLD_COMPASS_LANDMARKS {
+        let anchor_camera = world_to_camera(anchor_world, camera);
+        let Some((anchor_x, anchor_y)) = project_camera_point(anchor_camera, camera) else {
             continue;
         };
-        // Cheap whole-label cull before projecting any glyph strokes.
-        if screen_x < -64 || screen_x > area.w as i32 + 64 {
+
+        if anchor_x < -COMPASS_CULL_MARGIN_PX
+            || anchor_x > area.w as i32 + COMPASS_CULL_MARGIN_PX
+            || anchor_y < -COMPASS_CULL_MARGIN_PX
+            || anchor_y > area.h as i32 + COMPASS_CULL_MARGIN_PX
+        {
             continue;
         }
 
-        // A tangent sign on a fixed-radius ring grows as roughly sec(theta)^2
-        // horizontally and sec(theta) vertically under rectilinear projection.
-        // Counter-scale only the glyph dimensions, not its anchor, so the label
-        // keeps its true world direction and grid motion without looking closer
-        // as it approaches the edge of the viewport.
-        let depth_scale = (anchor_camera[2] / centered_depth).clamp(0.2, 1.0);
-        let horizontal_scale = depth_scale * depth_scale;
-        let vertical_scale = depth_scale;
-
-        // Tangent points screen-right whenever this compass direction is in the
-        // center of view. Off-axis labels still inherit real perspective/skew;
-        // only the unwanted rectilinear size inflation is normalized above.
-        let tangent = [unit_z, 0.0, -unit_x];
-        let glyph_width = COMPASS_GLYPH_WIDTH * horizontal_scale;
-        let glyph_gap = COMPASS_GLYPH_GAP * horizontal_scale;
         let glyph_count = label.len() as f32;
-        let total_width =
-            glyph_count * glyph_width + (glyph_count - 1.0).max(0.0) * glyph_gap;
+        let total_width = glyph_count * COMPASS_GLYPH_WIDTH_PX
+            + (glyph_count - 1.0).max(0.0) * COMPASS_GLYPH_GAP_PX;
         let mut glyph_offset = -0.5 * total_width;
 
         for glyph in label.bytes() {
-            draw_world_compass_glyph(
+            draw_compass_billboard_glyph(
                 frame,
                 area,
-                camera,
                 glyph,
-                anchor,
-                tangent,
+                anchor_x as f32,
+                anchor_y as f32,
+                tangent_x,
+                tangent_y,
+                up_x,
+                up_y,
                 glyph_offset,
-                horizontal_scale,
-                vertical_scale,
             );
-            glyph_offset += glyph_width + glyph_gap;
+            glyph_offset += COMPASS_GLYPH_WIDTH_PX + COMPASS_GLYPH_GAP_PX;
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_world_compass_glyph(
+fn draw_compass_billboard_glyph(
     frame: &mut GuiFramebuffer,
     area: Rect,
-    camera: PerspectiveCamera,
     glyph: u8,
-    anchor: [f32; 3],
-    tangent: [f32; 3],
+    anchor_x: f32,
+    anchor_y: f32,
+    tangent_x: f32,
+    tangent_y: f32,
+    up_x: f32,
+    up_y: f32,
     glyph_offset: f32,
-    horizontal_scale: f32,
-    vertical_scale: f32,
 ) {
-    for stroke in compass_glyph_strokes(glyph) {
-        let start = compass_glyph_world_point(
-            anchor,
-            tangent,
-            glyph_offset,
-            horizontal_scale,
-            vertical_scale,
-            stroke[0],
-            stroke[1],
-        );
-        let end = compass_glyph_world_point(
-            anchor,
-            tangent,
-            glyph_offset,
-            horizontal_scale,
-            vertical_scale,
-            stroke[2],
-            stroke[3],
-        );
-        let start_camera = world_to_camera(start, camera);
-        let end_camera = world_to_camera(end, camera);
+    let half = (COMPASS_STROKE_WIDTH as i32) / 2;
+    let min_x = 2 + half;
+    let max_x = area.w as i32 - 3 - half;
+    let min_y = 2 + half;
+    let max_y = area.h as i32 - 3 - half;
 
-        if let Some(line) = project_camera_solid_line(
-            area,
-            camera,
-            start_camera,
-            end_camera,
-            COMPASS_STROKE_WIDTH,
-        ) {
+    for stroke in compass_glyph_strokes(glyph) {
+        let start_horizontal =
+            glyph_offset + stroke[0] * (COMPASS_GLYPH_WIDTH_PX / 4.0);
+        let start_vertical = stroke[1] * (COMPASS_GLYPH_HEIGHT_PX / 7.0);
+        let end_horizontal =
+            glyph_offset + stroke[2] * (COMPASS_GLYPH_WIDTH_PX / 4.0);
+        let end_vertical = stroke[3] * (COMPASS_GLYPH_HEIGHT_PX / 7.0);
+
+        let start = (
+            round_f32(anchor_x + tangent_x * start_horizontal + up_x * start_vertical),
+            round_f32(anchor_y + tangent_y * start_horizontal + up_y * start_vertical),
+        );
+        let end = (
+            round_f32(anchor_x + tangent_x * end_horizontal + up_x * end_vertical),
+            round_f32(anchor_y + tangent_y * end_horizontal + up_y * end_vertical),
+        );
+
+        if let Some(((x0, y0), (x1, y1))) =
+            clip_line(start, end, min_x, max_x, min_y, max_y)
+        {
             draw_solid_line_pixels(
                 frame,
                 area,
-                line.0.0,
-                line.0.1,
-                line.1.0,
-                line.1.1,
+                x0,
+                y0,
+                x1,
+                y1,
                 common::white(),
                 COMPASS_STROKE_WIDTH,
             );
@@ -549,54 +568,6 @@ fn compass_glyph_strokes(glyph: u8) -> &'static [[f32; 4]] {
         b'W' => &GLYPH_W_STROKES,
         _ => &[],
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn compass_glyph_world_point(
-    anchor: [f32; 3],
-    tangent: [f32; 3],
-    glyph_offset: f32,
-    horizontal_scale: f32,
-    vertical_scale: f32,
-    glyph_x: f32,
-    glyph_y: f32,
-) -> [f32; 3] {
-    let horizontal = glyph_offset
-        + glyph_x * (COMPASS_GLYPH_WIDTH * horizontal_scale / 4.0);
-    [
-        anchor[0] + tangent[0] * horizontal,
-        anchor[1] + glyph_y * (COMPASS_GLYPH_HEIGHT * vertical_scale / 7.0),
-        anchor[2] + tangent[2] * horizontal,
-    ]
-}
-
-fn project_camera_solid_line(
-    area: Rect,
-    camera: PerspectiveCamera,
-    mut a: [f32; 3],
-    mut b: [f32; 3],
-    width: u32,
-) -> Option<ScreenLine> {
-    if a[2] <= PERSPECTIVE_NEAR_Z && b[2] <= PERSPECTIVE_NEAR_Z {
-        return None;
-    }
-    if a[2] <= PERSPECTIVE_NEAR_Z {
-        a = clip_camera_near(a, b);
-    } else if b[2] <= PERSPECTIVE_NEAR_Z {
-        b = clip_camera_near(b, a);
-    }
-
-    let start = project_camera_point(a, camera)?;
-    let end = project_camera_point(b, camera)?;
-    let half = (width as i32) / 2;
-    clip_line(
-        start,
-        end,
-        2 + half,
-        area.w as i32 - 3 - half,
-        2 + half,
-        area.h as i32 - 3 - half,
-    )
 }
 
 fn draw_solid_line_pixels(
