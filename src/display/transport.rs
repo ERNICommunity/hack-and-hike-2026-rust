@@ -31,7 +31,7 @@ const DISPLAY_SPI_MHZ: u32 = 40;
 // display. The 80 MHz experiment corrupted/interleaved pixel writes on hardware.
 // Retain the separate Camera hook so timing experiments remain isolated.
 const CAMERA_PIXEL_SPI_MHZ: u32 = DISPLAY_SPI_MHZ;
-pub(super) const RAW_BATCH_LINES: usize = 4;
+pub(super) const RAW_BATCH_LINES: usize = 7;
 const PIXEL_DMA_BYTES: usize = WIDTH * 2 * RAW_BATCH_LINES;
 const CONTROL_DMA_BYTES: usize = 256;
 
@@ -208,9 +208,9 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
     let (dma_bus, cs) = spi_device.release();
     let (spi, control_rx, control_tx) = dma_bus.split();
 
-    // Four full-width rows fit comfortably inside one DMA buffer while keeping
-    // each camera crop batch below a single 4095-byte GDMA descriptor. Normal UI
-    // rendering still queues one row at a time using the same larger buffers.
+    // Seven rows cut Camera pixel submissions from 60 to 35 per 240-row frame.
+    // The centered 276-pixel Camera region is 3,864 bytes per full batch, below
+    // a single 4 KiB GDMA payload; normal UI rendering still queues one row.
     let first =
         esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init pixel DMA buffer 1");
     let second =
