@@ -155,7 +155,11 @@ pub fn init(resources: Resources) -> Camera {
         .with_data6(d6)
         .with_data7(d7);
 
-    fn make_frame_buffer() -> DmaRxBuf {
+    // Expand the descriptor macro separately for each PSRAM buffer. Each macro
+    // expansion owns distinct static descriptor storage; sharing one expansion
+    // between both ping-pong buffers would make the second initialization reuse
+    // the first buffer's DMA descriptors.
+    let display_buffer = {
         let blocks = data_plane::leaked_filled_slice(
             DMA_BUFFER_BYTES / PSRAM_ALIGNMENT,
             AlignedBlock([0; PSRAM_ALIGNMENT]),
@@ -166,13 +170,27 @@ pub fn init(resources: Resources) -> Camera {
         let (rx_descriptors, _tx_descriptors) =
             esp_hal::dma_descriptors_chunk_size!(DMA_BUFFER_BYTES, DMA_CHUNK_BYTES);
         DmaRxBuf::new_with_config(rx_descriptors, bytes, ExternalBurstConfig::Size32)
-            .expect("Failed to construct camera PSRAM DMA buffer")
-    }
+            .expect("Failed to construct camera display DMA buffer")
+    };
+
+    let spare_buffer = {
+        let blocks = data_plane::leaked_filled_slice(
+            DMA_BUFFER_BYTES / PSRAM_ALIGNMENT,
+            AlignedBlock([0; PSRAM_ALIGNMENT]),
+        );
+        let bytes = unsafe {
+            core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), DMA_BUFFER_BYTES)
+        };
+        let (rx_descriptors, _tx_descriptors) =
+            esp_hal::dma_descriptors_chunk_size!(DMA_BUFFER_BYTES, DMA_CHUNK_BYTES);
+        DmaRxBuf::new_with_config(rx_descriptors, bytes, ExternalBurstConfig::Size32)
+            .expect("Failed to construct camera capture DMA buffer")
+    };
 
     Camera {
         driver: Some(driver),
-        display_buffer: Some(make_frame_buffer()),
-        spare_buffer: Some(make_frame_buffer()),
+        display_buffer: Some(display_buffer),
+        spare_buffer: Some(spare_buffer),
         in_flight: None,
         vsync,
         bad_frames: 0,
