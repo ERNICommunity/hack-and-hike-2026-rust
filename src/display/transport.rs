@@ -409,33 +409,6 @@ impl Transport {
         }
     }
 
-    /// Queue already encoded big-endian RGB565 bytes inside the active window.
-    /// The free ping-pong buffer is filled while the previous DMA transfer is
-    /// still in flight, preserving the same CPU/SPI overlap as `queue_line`.
-    pub(super) fn queue_bytes(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-        debug_assert!(bytes.len() <= PIXEL_DMA_BYTES);
-
-        let state = self.state.take().expect("LCD DMA pipeline state missing");
-        match state {
-            PipelineState::Idle {
-                spi,
-                mut first,
-                second,
-            } => {
-                let byte_len = Self::copy_bytes(&mut first, bytes);
-                self.start_pixel_transfer(spi, first, byte_len, second);
-            }
-            PipelineState::InFlight { transfer, mut free } => {
-                let byte_len = Self::copy_bytes(&mut free, bytes);
-                let (spi, completed) = transfer.wait();
-                self.start_pixel_transfer(spi, free, byte_len, completed);
-            }
-        }
-    }
-
     /// Camera-specialized byte queue. While the prior SPI-DMA transfer is still
     /// shifting pixels to the panel, call `pump` so CPU0 can drain the independent
     /// camera DMA ring into PSRAM instead of blocking inside `wait()`.
