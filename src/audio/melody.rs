@@ -13,13 +13,17 @@ const LOOP_TICKS: u32 = 3_072;
 const MIDI_MIN: i16 = 24;
 const MIDI_MAX: i16 = 60;
 const MIDI_OCTAVE_SHIFT: u32 = 2;
-// A pure sine keeps the melody spectrally clean across the pitch range. The
-// previous triangle oscillator produced strong odd harmonics; on the CoreS3 Lite
-// those harmonics made low notes sound like digital distortion even at low gain.
-// Keep a fixed absolute ceiling so tempo, pitch, and runtime state cannot boost
-// the melody level.
 const MELODY_OUTPUT_PEAK: i32 = 5_000;
 const SCORE_REFERENCE_VELOCITY: i32 = 50;
+
+// Hardware testing shows the synthesized tone becomes clean between D5
+// (~587 Hz) and E5 (~659 Hz). Do not feed a sustained fundamental below that
+// boundary to the tiny speaker/amplifier. Instead synthesize two adjacent
+// harmonics above it; their missing fundamental preserves the perceived note.
+const DIRECT_FUNDAMENTAL_MIN_HZ: u32 = 620;
+const DIRECT_FUNDAMENTAL_MIN_STEP: u32 = ((DIRECT_FUNDAMENTAL_MIN_HZ as u64
+    * (1u64 << 32))
+    / SAMPLE_RATE_HZ as u64) as u32;
 
 #[derive(Clone, Copy)]
 struct MidiNote {
@@ -108,7 +112,7 @@ impl MelodySynth {
         // Doubling oscillator frequency per octave keeps the pitch slider
         // relative to the source notes while moving the whole melody +24 st.
         let step = phase_step(midi) << MIDI_OCTAVE_SHIFT;
-        let wave = i32::from(sine_wave(self.phase));
+        let wave = i32::from(speaker_safe_wave(self.phase, step));
         self.phase = self.phase.wrapping_add(step);
 
         // The supplied score uses velocity 50. Treat that as the maximum normal
@@ -153,8 +157,66 @@ fn envelope_q15(position_q32: u64, duration_ticks: u32) -> i32 {
     attack.min(release).clamp(0, 32_767)
 }
 
+/// Generate a speaker-safe tone without changing the perceived MIDI pitch.
+///
+/// Above the empirically clean boundary, emit the fundamental directly. Below
+/// it, remove the problematic low fundamental and emit the lowest two adjacent
+/// harmonics that are both above the boundary. Adjacent harmonics retain the
+/// original period, so the ear reconstructs the missing fundamental while the
+/// physical output no longer contains the frequency range that distorts.
+fn speaker_safe_wave(phase: u32, fundamental_step: u32) -> i16 {
+    if fundamental_step >= DIRECT_FUNDAMENTAL_MIN_STEP {
+        return sine_wave(phase);
+    }
+
+    let step = u64::from(fundamental_step);
+    let threshold = u64::from(DIRECT_FUNDAMENTAL_MIN_STEP);
+    let first_harmonic = ((threshold + step - 1) / step) as u32;
+    // The current pitch range requires at most the 5th harmonic. Keep a hard
+    // bound in case the score range changes later.
+    let first_harmonic = first_harmonic.clamp(2, 6);
+
+    let first = i32::from(sine_wave(phase.wrapping_mul(first_harmonic)));
+    let second = i32::from(sine_wave(
+        phase.wrapping_mul(first_harmonic.saturating_add(1)),
+    ));
+
+    // A weighted average keeps the composite within Q15 without a limiter.
+    ((first * 3 + second * 2) / 5) as i16
+}
+
+/// Interpolated Q15 sine lookup.
+///
+/// The old lookup discarded 24 phase bits. Linear interpolation keeps the DDS
+/// phase resolution high enough that this synth does not add audible table-step
+/// artifacts while still avoiding floating-point work on CPU1.
 fn sine_wave(phase: u32) -> i16 {
-    SINE_256[(phase >> 24) as usize]
+    const QUARTER_TURN: u32 = 1 << 30;
+    const SEGMENT_SHIFT: u32 = 24;
+    const SEGMENT_MASK: u32 = (1 << SEGMENT_SHIFT) - 1;
+
+    let quadrant = phase >> 30;
+    let offset = phase & (QUARTER_TURN - 1);
+    let quarter_phase = match quadrant {
+        0 | 2 => offset,
+        _ => QUARTER_TURN - offset,
+    };
+
+    let magnitude = if quarter_phase == QUARTER_TURN {
+        32_767i32
+    } else {
+        let index = (quarter_phase >> SEGMENT_SHIFT) as usize;
+        let fraction = i64::from(quarter_phase & SEGMENT_MASK);
+        let a = i64::from(SINE_QUARTER_64[index]);
+        let b = i64::from(SINE_QUARTER_64[index + 1]);
+        (a + (((b - a) * fraction) >> SEGMENT_SHIFT)) as i32
+    };
+
+    if quadrant >= 2 {
+        (-magnitude) as i16
+    } else {
+        magnitude as i16
+    }
 }
 
 fn phase_step(midi: i16) -> u32 {
@@ -169,23 +231,14 @@ fn phase_step(midi: i16) -> u32 {
     STEPS[(midi.clamp(MIDI_MIN, MIDI_MAX) - MIDI_MIN) as usize]
 }
 
-// Flash-resident Q15 sine lookup. This table was used by the earlier melody
-// implementation and avoids introducing runtime floating-point work on CPU1.
-const SINE_256: [i16; 256] = [
-    0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179, 7962, 8739, 9512, 10278, 11039, 11793,
-    12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530, 18204, 18868, 19519, 20159, 20787, 21403, 22005, 22594,
-    23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790, 27245, 27683, 28105, 28510, 28898, 29268, 29621, 29956,
-    30273, 30571, 30852, 31113, 31356, 31580, 31785, 31971, 32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757,
-    32767, 32757, 32728, 32678, 32609, 32521, 32412, 32285, 32137, 31971, 31785, 31580, 31356, 31113, 30852, 30571,
-    30273, 29956, 29621, 29268, 28898, 28510, 28105, 27683, 27245, 26790, 26319, 25832, 25329, 24811, 24279, 23731,
-    23170, 22594, 22005, 21403, 20787, 20159, 19519, 18868, 18204, 17530, 16846, 16151, 15446, 14732, 14010, 13279,
-    12539, 11793, 11039, 10278, 9512, 8739, 7962, 7179, 6393, 5602, 4808, 4011, 3212, 2410, 1608, 804,
-    0, -804, -1608, -2410, -3212, -4011, -4808, -5602, -6393, -7179, -7962, -8739, -9512, -10278, -11039, -11793,
-    -12539, -13279, -14010, -14732, -15446, -16151, -16846, -17530, -18204, -18868, -19519, -20159, -20787, -21403, -22005, -22594,
-    -23170, -23731, -24279, -24811, -25329, -25832, -26319, -26790, -27245, -27683, -28105, -28510, -28898, -29268, -29621, -29956,
-    -30273, -30571, -30852, -31113, -31356, -31580, -31785, -31971, -32137, -32285, -32412, -32521, -32609, -32678, -32728, -32757,
-    -32767, -32757, -32728, -32678, -32609, -32521, -32412, -32285, -32137, -31971, -31785, -31580, -31356, -31113, -30852, -30571,
-    -30273, -29956, -29621, -29268, -28898, -28510, -28105, -27683, -27245, -26790, -26319, -25832, -25329, -24811, -24279, -23731,
-    -23170, -22594, -22005, -21403, -20787, -20159, -19519, -18868, -18204, -17530, -16846, -16151, -15446, -14732, -14010, -13279,
-    -12539, -11793, -11039, -10278, -9512, -8739, -7962, -7179, -6393, -5602, -4808, -4011, -3212, -2410, -1608, -804,
+// One quarter-wave is sufficient because sine is symmetric. The 64 segments
+// are linearly interpolated above, so this uses less flash and much less phase
+// quantization than indexing the old 256-entry full-wave table directly.
+const SINE_QUARTER_64: [i16; 65] = [
+    0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179, 7962, 8739, 9512,
+    10278, 11039, 11793, 12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530,
+    18204, 18868, 19519, 20159, 20787, 21403, 22005, 22594, 23170, 23731, 24279,
+    24811, 25329, 25832, 26319, 26790, 27245, 27683, 28105, 28510, 28898, 29268,
+    29621, 29956, 30273, 30571, 30852, 31113, 31356, 31580, 31785, 31971, 32137,
+    32285, 32412, 32521, 32609, 32678, 32728, 32757, 32767,
 ];
