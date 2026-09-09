@@ -270,23 +270,6 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::vline(frame, cx, cy - 5, 11, common::white());
     common::hline(frame, cx - 20, cy - 23, 40, common::white());
     common::hline(frame, cx - 12, cy + 22, 24, common::white());
-    common::draw_body(frame, "PITCH / ROLL / YAW", x0 + 5, y0 + 4, common::dark_blue());
-
-    let footer = if imu.read_errors > 0 || imu.mag_errors > 0 {
-        let mut errors = ArrayString::<32>::new();
-        let _ = write!(&mut errors, "I2C {}  MAG {}", imu.read_errors, imu.mag_errors);
-        draw_footer(frame, area, errors.as_str());
-        return;
-    } else {
-        match imu.mag_status {
-            sensor::MagStatus::Learning => "Rotate/tilt device - calibrating mag",
-            sensor::MagStatus::Disturbed => "Mag disturbed - gyro yaw active",
-            sensor::MagStatus::Missing => "Mag missing - gyro yaw active",
-            sensor::MagStatus::Ready if imu.gyro_bias_ready => "Mag heading - gyro bias ready",
-            sensor::MagStatus::Ready => "Mag heading - learning gyro bias",
-        }
-    };
-    draw_footer(frame, area, footer);
 }
 
 fn draw_perspective_grid(
@@ -465,8 +448,8 @@ fn draw_clipped_line(
 ) {
     let min_x = 2;
     let max_x = area.w as i32 - 3;
-    let min_y = 13;
-    let max_y = area.h as i32 - 19;
+    let min_y = 2;
+    let max_y = area.h as i32 - 3;
     if let Some(((x0, y0), (x1, y1))) = clip_line(start, end, min_x, max_x, min_y, max_y) {
         draw_line_pixels(frame, area, camera, x0, y0, x1, y1, sky);
     }
@@ -635,16 +618,6 @@ fn grid_pixel_color(
     } else {
         Rgb565::new(11, 23, 11)
     }
-}
-
-fn draw_footer(frame: &mut GuiFramebuffer, area: Rect, text: &str) {
-    common::draw_body(
-        frame,
-        text,
-        area.x + 5,
-        area.y + area.h as i32 - common::BODY_LINE_HEIGHT - 2,
-        common::white(),
-    );
 }
 
 fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
