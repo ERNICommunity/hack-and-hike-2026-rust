@@ -130,20 +130,22 @@ impl Views {
         self.microphone.render_waveform(display, frame);
     }
 
-    pub(crate) fn render_camera(&self, display: &mut Display, frame: &camera::Frame<'_>) {
+    pub(crate) fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
         // Fill the complete 276x240 content region at native vertical resolution.
         // QVGA is already 240 px tall, so no scaling is necessary: crop 22 px
         // from each horizontal edge and copy the remaining 276x240 pixels 1:1.
         //
-        // The CoreS3 Lite camera is mounted 180 degrees relative to the display.
-        // Reverse both scanline order and pixel order here, which produces a true
-        // 180-degree rotation without an intermediate framebuffer or allocation.
-        display.render_scanlines(design::CONTENT_REGION, |local_y, pixels| {
-            let source_y = camera::HEIGHT - 1 - local_y;
-            let source = frame.scanline(source_y);
+        // The GC0308 now applies the board's 180-degree mounting correction in
+        // hardware. Camera DMA therefore arrives in display order and each line
+        // can be handed straight to the LCD scanline pipeline as it is captured.
+        display.render_scanlines(design::CONTENT_REGION, |_local_y, pixels| {
+            let Some(source) = frame.next_scanline() else {
+                pixels.fill(theme::BLACK_RGB565);
+                return;
+            };
             let cropped = &source[CAMERA_SOURCE_START_BYTE..CAMERA_SOURCE_END_BYTE];
 
-            for (pixel, bytes) in pixels.iter_mut().zip(cropped.chunks_exact(2).rev()) {
+            for (pixel, bytes) in pixels.iter_mut().zip(cropped.chunks_exact(2)) {
                 *pixel = u16::from_be_bytes([bytes[0], bytes[1]]);
             }
         });

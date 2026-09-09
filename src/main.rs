@@ -39,6 +39,7 @@ use static_cell::StaticCell;
 
 const CPU1_STACK_SIZE: usize = 16 * 1024;
 const UI_IDLE_DELAY: Duration = Duration::from_millis(5);
+const CAMERA_IDLE_DELAY: Duration = Duration::from_millis(1);
 
 static CPU1_STACK: StaticCell<Stack<CPU1_STACK_SIZE>> = StaticCell::new();
 static CPU1_EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
@@ -291,9 +292,11 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         ui.render(&mut display);
 
-        if camera_ready && ui.presented_view() == models::ViewId::Camera {
-            if let Some(frame) = camera.capture() {
-                ui.render_camera(&mut display, &frame);
+        let camera_active = camera_ready && ui.presented_view() == models::ViewId::Camera;
+        if camera_active {
+            if let Some(mut frame) = camera.begin_frame() {
+                ui.render_camera(&mut display, &mut frame);
+                let _ = frame.finish();
             }
         }
 
@@ -303,6 +306,11 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         }
         heap_monitor.poll(now);
 
-        Timer::after(UI_IDLE_DELAY).await;
+        Timer::after(if camera_active {
+            CAMERA_IDLE_DELAY
+        } else {
+            UI_IDLE_DELAY
+        })
+        .await;
     }
 }
