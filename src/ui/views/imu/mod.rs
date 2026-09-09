@@ -304,7 +304,7 @@ fn draw_compass(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
 /// vector into the upright screen frame, then derive screen Euler angles.
 ///
 /// Working through gravity avoids the previous `sensor roll + 90` singularity:
-/// upright is roll=0/pitch=0, face-up is pitch=+90, and camera-below inverted
+/// upright is roll=0/pitch=0, face-up is pitch=-90, and camera-below inverted
 /// is roll=180/pitch=0 rather than a false +/-180-degree pitch.
 fn display_roll_pitch_f32(imu: &ImuDisplay) -> (f32, f32) {
     let sensor_roll = imu.roll_deg as f32 * DEG_TO_RAD;
@@ -322,10 +322,11 @@ fn display_roll_pitch_f32(imu: &ImuDisplay) -> (f32, f32) {
 
     // CoreS3 Lite screen-frame remap for portrait/upright viewing. The roll sign
     // preserves the already-confirmed behavior: rotating the device 90 degrees
-    // to the right reads -90 degrees.
+    // to the right reads -90 degrees. Pitch uses the opposite sign so forward
+    // and backward tilt match the user's screen-relative convention.
     let screen_roll = atan2_approx(-ax, -ay) * RAD_TO_DEG;
     let horizontal = sqrt_approx(ax * ax + ay * ay);
-    let screen_pitch = atan2_approx(az, horizontal) * RAD_TO_DEG;
+    let screen_pitch = -atan2_approx(az, horizontal) * RAD_TO_DEG;
     (screen_roll, screen_pitch)
 }
 
