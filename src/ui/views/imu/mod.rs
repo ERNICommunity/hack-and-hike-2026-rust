@@ -540,7 +540,7 @@ fn clip_line(
         } else if code & 4 != 0 {
             if dy == 0 { return None; }
             let y = min_y;
-            let x = a.0 + (dx * (y - a.0) as i64 / dy) as i32;
+            let x = a.0 + (dx * (y - a.1) as i64 / dy) as i32;
             (x, y)
         } else if code & 2 != 0 {
             if dx == 0 { return None; }
