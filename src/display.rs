@@ -171,4 +171,53 @@ impl Display {
         transport.finish();
         valid
     }
+
+    /// Camera-specialized raw renderer that uses LCD SPI-DMA wait time to make
+    /// progress on an independent context (the next camera frame in practice).
+    /// `context` is passed to both callbacks sequentially so callers can borrow a
+    /// single mutable camera-frame object without overlapping closure captures.
+    pub fn render_rgb565_be_scanlines_pumped<C>(
+        &mut self,
+        region: Region,
+        context: &mut C,
+        mut render_line: impl FnMut(&mut C, usize, &mut [u8]) -> bool,
+        mut pump: impl FnMut(&mut C),
+    ) -> bool {
+        if region.is_empty() {
+            return true;
+        }
+
+        let row_bytes = region.width * RGB565_BYTES_PER_PIXEL;
+        let transport = &mut self.transport;
+        let raw_batch_buffer = &mut self.raw_batch_buffer;
+        let mut valid = true;
+        let mut local_y = 0usize;
+
+        transport.begin_region(region.x..region.end_x(), region.y..region.end_y());
+
+        while local_y < region.height {
+            let lines = (region.height - local_y).min(transport::RAW_BATCH_LINES);
+            let batch_bytes = lines * row_bytes;
+            let batch = &mut raw_batch_buffer[..batch_bytes];
+
+            for line in 0..lines {
+                let start = line * row_bytes;
+                let end = start + row_bytes;
+                let row = &mut batch[start..end];
+
+                if valid {
+                    valid = render_line(context, local_y + line, row);
+                }
+                if !valid {
+                    row.fill(0);
+                }
+            }
+
+            transport.queue_bytes_pumped(batch, || pump(context));
+            local_y += lines;
+        }
+
+        transport.finish_pumped(|| pump(context));
+        valid
+    }
 }

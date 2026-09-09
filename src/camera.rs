@@ -1,10 +1,11 @@
 //! CPU0-owned CoreS3 Lite camera capture.
 //!
 //! The onboard GC0308 emits native QVGA RGB565 over its 8-bit DVP bus. LCD_CAM
-//! is a free-running source, so capture uses ESP-HAL's streaming RX buffer. Once
-//! synchronized to a hardware VSYNC boundary, the DMA stream stays active across
-//! displayed frames and the UI consumes one camera scanline at a time. This lets
-//! camera DMA overlap LCD SPI-DMA instead of staging every frame through PSRAM.
+//! stays free-running through ESP-HAL's streaming RX buffer. Two PSRAM frame
+//! buffers decouple sensor timing from LCD timing: one complete frame is rendered
+//! while CPU0 drains the next frame from the small internal DMA ring during SPI
+//! DMA wait time. This preserves hardware-VSYNC framing without pacing LCD writes
+//! directly from live camera scanlines.
 
 mod gc0308;
 
@@ -22,15 +23,18 @@ use esp_hal::{
     time::Rate,
 };
 
+use crate::data_plane;
+
 pub const WIDTH: usize = 320;
 pub const HEIGHT: usize = 240;
 const BYTES_PER_PIXEL: usize = 2;
 const SCANLINE_BYTES: usize = WIDTH * BYTES_PER_PIXEL;
+const FRAME_BYTES: usize = WIDTH * HEIGHT * BYTES_PER_PIXEL;
+const PSRAM_ALIGNMENT: usize = 32;
 
-// Streaming DMA is intentionally backed by internal RAM. Eight chunks of five
-// RGB565 scanlines are enough to bridge the short CPU0 bookkeeping gap between
-// displayed frames while descriptors are continuously recycled as scanlines are
-// consumed by the renderer.
+// Keep the exact small internal stream-ring geometry that was already proven on
+// hardware. The renderer now pumps this ring while each LCD DMA batch is in
+// flight, so it no longer needs to buffer most of a frame in scarce DRAM.
 const STREAM_CHUNK_BYTES: usize = SCANLINE_BYTES * 5;
 const STREAM_BUFFER_BYTES: usize = STREAM_CHUNK_BYTES * 8;
 const BAD_FRAME_LOG_INTERVAL: u32 = 32;
@@ -39,6 +43,11 @@ type InFlight = CameraTransfer<'static, DmaRxStreamBuf>;
 
 const _: () = assert!(STREAM_CHUNK_BYTES <= 4095);
 const _: () = assert!(STREAM_BUFFER_BYTES % STREAM_CHUNK_BYTES == 0);
+const _: () = assert!(FRAME_BYTES % PSRAM_ALIGNMENT == 0);
+
+#[repr(C, align(32))]
+#[derive(Clone, Copy)]
+struct AlignedBlock([u8; PSRAM_ALIGNMENT]);
 
 pub struct Resources {
     pub lcd_cam: LCD_CAM<'static>,
@@ -57,29 +66,44 @@ pub struct Resources {
 }
 
 pub struct Camera {
-    // When the Camera view is active, `in_flight` owns the LCD_CAM driver and
-    // stream buffer continuously across frames. If the view is left long enough
-    // for the small stream ring to fill, the stopped transfer is recovered and
-    // re-synchronized the next time `begin_frame` is called.
     driver: Option<CameraDriver<'static>>,
     stream_buffer: Option<DmaRxStreamBuf>,
     in_flight: Option<InFlight>,
-    line_buffer: [u8; SCANLINE_BYTES],
+    display_buffer: &'static mut [u8],
+    capture_buffer: &'static mut [u8],
+    display_ready: bool,
+    capture_bytes: usize,
+    capture_done: bool,
+    capture_valid: bool,
     bad_frames: u32,
 }
 
-/// One VSYNC-bounded streaming frame.
-///
-/// Scanlines are consumed in sensor order. The GC0308 is configured for the
-/// board's 180-degree mounting in hardware, so no framebuffer reversal is needed
-/// in the UI hot path.
+/// One frozen camera frame being presented while the following frame is captured.
 pub struct Frame<'a> {
     camera: &'a mut Camera,
-    transfer: Option<InFlight>,
-    line_index: usize,
-    frame_bytes: usize,
-    eof_seen: bool,
-    valid: bool,
+}
+
+impl Frame<'_> {
+    pub fn scanline(&self, y: usize) -> &[u8] {
+        debug_assert!(y < HEIGHT);
+        let start = y * SCANLINE_BYTES;
+        &self.camera.display_buffer[start..start + SCANLINE_BYTES]
+    }
+
+    /// Drain every camera byte currently available without blocking for new data.
+    /// The display transport calls this while SPI DMA is already transmitting the
+    /// previous LCD batch, turning what used to be CPU idle time into next-frame
+    /// capture work.
+    pub fn pump(&mut self) {
+        self.camera.pump_capture_available();
+    }
+
+    /// Finish receiving the following VSYNC-bounded frame, then atomically swap
+    /// the two PSRAM roles so the next loop iteration presents that completed
+    /// frame. Usually only the short tail after the LCD burst remains to wait for.
+    pub fn finish(self) -> bool {
+        self.camera.complete_capture_and_swap()
+    }
 }
 
 /// Program the GC0308 over a startup-only hardware SCCB/I2C owner.
@@ -96,6 +120,14 @@ where
 }
 
 pub const EXPECTED_SENSOR_PID: u8 = gc0308::EXPECTED_PID;
+
+fn alloc_frame_buffer() -> &'static mut [u8] {
+    let blocks = data_plane::leaked_filled_slice(
+        FRAME_BYTES / PSRAM_ALIGNMENT,
+        AlignedBlock([0; PSRAM_ALIGNMENT]),
+    );
+    unsafe { core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), FRAME_BYTES) }
+}
 
 pub fn init(resources: Resources) -> Camera {
     let Resources {
@@ -115,8 +147,9 @@ pub fn init(resources: Resources) -> Camera {
     } = resources;
 
     let lcd_cam = LcdCam::new(lcd_cam);
-    // Keep ESP-HAL's VSYNC EOF mode: DmaRxStreamBuf preserves EOF boundaries
-    // while DMA continues, so each sensor VSYNC cleanly separates frames.
+    // Keep ESP-HAL's VSYNC EOF mode. DmaRxStreamBuf preserves EOF boundaries
+    // while descriptors are recycled, unlike the unreliable one-shot PSRAM DMA
+    // framing experiments.
     let config = CameraConfig::default().with_frequency(Rate::from_mhz(20));
     let driver = CameraDriver::new(lcd_cam.cam, dma, config)
         .expect("Failed to configure LCD_CAM camera input")
@@ -134,9 +167,6 @@ pub fn init(resources: Resources) -> Camera {
         .with_data6(d6)
         .with_data7(d7);
 
-    // The stream buffer and descriptors are statically allocated in DMA-capable
-    // internal memory. Unlike the previous implementation, no full QVGA PSRAM
-    // framebuffer is needed: pixels move camera DMA -> one scanline -> LCD DMA.
     let stream_buffer =
         esp_hal::dma_rx_stream_buffer!(STREAM_BUFFER_BYTES, STREAM_CHUNK_BYTES);
 
@@ -144,7 +174,12 @@ pub fn init(resources: Resources) -> Camera {
         driver: Some(driver),
         stream_buffer: Some(stream_buffer),
         in_flight: None,
-        line_buffer: [0; SCANLINE_BYTES],
+        display_buffer: alloc_frame_buffer(),
+        capture_buffer: alloc_frame_buffer(),
+        display_ready: false,
+        capture_bytes: 0,
+        capture_done: false,
+        capture_valid: false,
         bad_frames: 0,
     }
 }
@@ -188,9 +223,9 @@ impl Camera {
         self.in_flight = None;
     }
 
-    /// Discard the partial frame that was already in progress when DMA starts.
-    /// Once the first VSYNC EOF is consumed, the next byte belongs to a complete
-    /// fresh camera frame.
+    /// Discard the partial sensor frame already in progress when DMA is started.
+    /// Once this hardware VSYNC EOF is consumed, the next unread byte is the
+    /// beginning of a complete fresh frame.
     fn discard_until_vsync(transfer: &mut InFlight) -> bool {
         loop {
             let (available, eof) = {
@@ -215,46 +250,90 @@ impl Camera {
         }
     }
 
-    /// Fill one native 320-pixel RGB565 scanline from the active stream.
-    /// Returns `(bytes_read, eof_consumed)`.
-    fn read_scanline_bytes(
-        transfer: &mut InFlight,
-        out: &mut [u8; SCANLINE_BYTES],
-    ) -> (usize, bool) {
-        let mut filled = 0usize;
+    fn reset_capture_state(&mut self) {
+        self.capture_bytes = 0;
+        self.capture_done = false;
+        self.capture_valid = false;
+    }
 
-        while filled < SCANLINE_BYTES {
-            let (available, take, eof) = {
-                let (chunk, eof) = transfer.peek_until_eof();
-                let available = chunk.len();
-                let take = available.min(SCANLINE_BYTES - filled);
-                if take != 0 {
-                    out[filled..filled + take].copy_from_slice(&chunk[..take]);
-                }
-                (available, take, eof)
-            };
+    fn restart_stream_aligned(&mut self) -> bool {
+        if let Some(transfer) = self.in_flight.take() {
+            self.recover_stopped(transfer);
+        }
 
-            if take != 0 {
-                transfer.consume(take);
-                filled += take;
-            }
+        let Some(mut transfer) = self.start_stream() else {
+            return false;
+        };
 
-            // `peek_until_eof` ends its returned slice at the EOF descriptor. We
-            // have consumed that boundary only when all bytes from the slice were
-            // consumed in this iteration.
-            if eof && take == available {
-                return (filled, true);
-            }
+        if !Self::discard_until_vsync(&mut transfer) {
+            self.recover_stopped(transfer);
+            return false;
+        }
 
-            if available == 0 {
-                if transfer.is_done() {
-                    return (filled, false);
-                }
-                core::hint::spin_loop();
+        self.in_flight = Some(transfer);
+        true
+    }
+
+    /// Copy all bytes that DMA has already delivered into the capture PSRAM
+    /// buffer, stopping at the next hardware VSYNC EOF. This method never waits
+    /// for more camera data; callers may invoke it repeatedly inside LCD DMA
+    /// polling loops.
+    fn pump_capture_available(&mut self) {
+        if self.capture_done {
+            return;
+        }
+
+        if self.in_flight.is_none() {
+            if self.capture_bytes != 0 || !self.restart_stream_aligned() {
+                self.capture_done = true;
+                self.capture_valid = false;
+                return;
             }
         }
 
-        (filled, false)
+        let mut transfer = self.in_flight.take().expect("Camera stream missing");
+
+        loop {
+            let (available, eof) = {
+                let (chunk, eof) = transfer.peek_until_eof();
+                let available = chunk.len();
+                let copy_start = self.capture_bytes.min(FRAME_BYTES);
+                let copy_len = available.min(FRAME_BYTES.saturating_sub(copy_start));
+
+                if copy_len != 0 {
+                    self.capture_buffer[copy_start..copy_start + copy_len]
+                        .copy_from_slice(&chunk[..copy_len]);
+                }
+
+                (available, eof)
+            };
+
+            if available != 0 {
+                self.capture_bytes = self.capture_bytes.saturating_add(available);
+                transfer.consume(available);
+            }
+
+            if eof {
+                self.capture_done = true;
+                self.capture_valid = self.capture_bytes == FRAME_BYTES;
+                break;
+            }
+
+            if available == 0 {
+                break;
+            }
+        }
+
+        if transfer.is_done() {
+            let stopped_before_eof = !self.capture_done;
+            self.recover_stopped(transfer);
+            if stopped_before_eof {
+                self.capture_done = true;
+                self.capture_valid = false;
+            }
+        } else {
+            self.in_flight = Some(transfer);
+        }
     }
 
     fn report_bad_frame(&mut self, received: usize) {
@@ -263,114 +342,71 @@ impl Camera {
             log::warn!(
                 "Camera VSYNC frame size mismatch: {} / {} bytes (total bad frames={})",
                 received,
-                WIDTH * HEIGHT * BYTES_PER_PIXEL,
+                FRAME_BYTES,
                 self.bad_frames
             );
         }
     }
 
-    /// Start consuming the next complete camera frame without stopping the
-    /// free-running DMA stream between successful frames.
-    pub fn begin_frame(&mut self) -> Option<Frame<'_>> {
-        let mut needs_sync = false;
-
-        let mut transfer = if let Some(transfer) = self.in_flight.take() {
-            if transfer.is_done() {
-                self.recover_stopped(transfer);
-                needs_sync = true;
-                self.start_stream()?
-            } else {
-                transfer
+    /// Wait only for the not-yet-arrived tail of the frame being captured during
+    /// LCD rendering, validate its VSYNC byte count, and swap PSRAM roles.
+    fn complete_capture_and_swap(&mut self) -> bool {
+        while !self.capture_done {
+            self.pump_capture_available();
+            if !self.capture_done {
+                if self.in_flight.is_none() {
+                    break;
+                }
+                core::hint::spin_loop();
             }
-        } else {
-            needs_sync = true;
-            self.start_stream()?
-        };
+        }
 
-        if needs_sync && !Self::discard_until_vsync(&mut transfer) {
-            self.recover_stopped(transfer);
+        if !self.capture_done || !self.capture_valid {
+            self.report_bad_frame(self.capture_bytes);
+            self.display_ready = false;
+            self.reset_capture_state();
+            return false;
+        }
+
+        core::mem::swap(&mut self.display_buffer, &mut self.capture_buffer);
+        self.display_ready = true;
+        self.reset_capture_state();
+        true
+    }
+
+    /// Prime the first frozen frame after boot, a camera-view re-entry, or a
+    /// stream fault. Steady-state frames do not use this blocking full-frame path;
+    /// they are captured concurrently while the prior frame is sent to the LCD.
+    fn prime_display_frame(&mut self) -> bool {
+        self.display_ready = false;
+        self.reset_capture_state();
+
+        if !self.restart_stream_aligned() {
             self.report_bad_frame(0);
-            return None;
+            return false;
         }
 
-        Some(Frame {
-            camera: self,
-            transfer: Some(transfer),
-            line_index: 0,
-            frame_bytes: 0,
-            eof_seen: false,
-            valid: true,
-        })
-    }
-}
-
-impl Frame<'_> {
-    /// Return the next native camera scanline.
-    ///
-    /// The slice is valid until the next call. A valid QVGA frame must deliver
-    /// exactly 240 complete 640-byte scanlines and expose VSYNC EOF on the final
-    /// one. Any other boundary is rejected and forces re-synchronization.
-    pub fn next_scanline(&mut self) -> Option<&[u8]> {
-        if !self.valid || self.line_index >= HEIGHT {
-            return None;
-        }
-
-        let transfer = self.transfer.as_mut()?;
-        let (read, eof) = Camera::read_scanline_bytes(transfer, &mut self.camera.line_buffer);
-        self.frame_bytes = self.frame_bytes.saturating_add(read);
-
-        if read != SCANLINE_BYTES {
-            self.valid = false;
-            return None;
-        }
-
-        self.line_index += 1;
-        if eof {
-            self.eof_seen = true;
-            if self.line_index != HEIGHT {
-                self.valid = false;
-                return None;
-            }
-        } else if self.line_index == HEIGHT {
-            self.valid = false;
-            return None;
-        }
-
-        Some(&self.camera.line_buffer)
+        self.complete_capture_and_swap()
     }
 
-    /// Complete the frame and hand the still-running stream back to `Camera`.
-    /// Successful frames preserve DMA continuity; invalid frames stop the stream
-    /// so the next call can synchronize from a known VSYNC boundary.
-    pub fn finish(mut self) -> bool {
-        let expected = WIDTH * HEIGHT * BYTES_PER_PIXEL;
-        let valid = self.valid
-            && self.line_index == HEIGHT
-            && self.eof_seen
-            && self.frame_bytes == expected;
-
-        let transfer = self.transfer.take().expect("Camera frame transfer missing");
-
-        if valid && !transfer.is_done() {
-            self.camera.in_flight = Some(transfer);
-        } else {
-            self.camera.recover_stopped(transfer);
-            if !valid {
-                self.camera.report_bad_frame(self.frame_bytes);
-            }
+    /// Stop any free-running camera DMA when Camera view is no longer presented.
+    /// Re-entry will prime from a fresh VSYNC boundary instead of consuming a
+    /// stale partial frame that accumulated while another screen was visible.
+    pub fn pause(&mut self) {
+        if let Some(transfer) = self.in_flight.take() {
+            self.recover_stopped(transfer);
         }
-
-        valid
+        self.display_ready = false;
+        self.reset_capture_state();
     }
-}
 
-impl Drop for Frame<'_> {
-    fn drop(&mut self) {
-        // `finish` clears this option after either preserving or recovering the
-        // transfer. If a caller abandons a frame early, recover ownership here so
-        // the Camera service cannot lose its LCD_CAM/DMA resources.
-        if let Some(transfer) = self.transfer.take() {
-            self.camera.recover_stopped(transfer);
+    /// Begin presenting the current frozen frame. The returned object also owns
+    /// the capture pump used by the LCD transport while SPI DMA is in flight.
+    pub fn begin_frame(&mut self) -> Option<Frame<'_>> {
+        if !self.display_ready && !self.prime_display_frame() {
+            return None;
         }
+
+        Some(Frame { camera: self })
     }
 }

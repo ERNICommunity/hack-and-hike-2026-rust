@@ -404,6 +404,40 @@ impl Transport {
         }
     }
 
+    /// Camera-specialized byte queue. While the prior SPI-DMA transfer is still
+    /// shifting pixels to the panel, call `pump` so CPU0 can drain the independent
+    /// camera DMA ring into PSRAM instead of blocking inside `wait()`.
+    pub(super) fn queue_bytes_pumped(&mut self, bytes: &[u8], mut pump: impl FnMut()) {
+        if bytes.is_empty() {
+            return;
+        }
+        debug_assert!(bytes.len() <= PIXEL_DMA_BYTES);
+
+        let state = self.state.take().expect("LCD DMA pipeline state missing");
+        match state {
+            PipelineState::Idle {
+                spi,
+                mut first,
+                second,
+            } => {
+                let byte_len = Self::copy_bytes(&mut first, bytes);
+                self.start_pixel_transfer(spi, first, byte_len, second);
+            }
+            PipelineState::InFlight { transfer, mut free } => {
+                let byte_len = Self::copy_bytes(&mut free, bytes);
+                while !transfer.is_done() {
+                    pump();
+                    core::hint::spin_loop();
+                }
+                // Drain anything that arrived during the last DMA polling window
+                // before starting the next LCD transfer.
+                pump();
+                let (spi, completed) = transfer.wait();
+                self.start_pixel_transfer(spi, free, byte_len, completed);
+            }
+        }
+    }
+
     pub(super) fn finish(&mut self) {
         let Some(state) = self.state.take() else {
             return;
@@ -412,6 +446,33 @@ impl Transport {
         match state {
             PipelineState::Idle { .. } => self.state = Some(state),
             PipelineState::InFlight { transfer, free } => {
+                let (spi, completed) = transfer.wait();
+                self.cs.set_high();
+                self.state = Some(PipelineState::Idle {
+                    spi,
+                    first: free,
+                    second: completed,
+                });
+            }
+        }
+    }
+
+    /// Finish the final camera LCD transfer while continuing to pump the next
+    /// camera frame. This keeps capture progress moving until the last SPI byte
+    /// of the current frozen frame has left the controller.
+    pub(super) fn finish_pumped(&mut self, mut pump: impl FnMut()) {
+        let Some(state) = self.state.take() else {
+            return;
+        };
+
+        match state {
+            PipelineState::Idle { .. } => self.state = Some(state),
+            PipelineState::InFlight { transfer, free } => {
+                while !transfer.is_done() {
+                    pump();
+                    core::hint::spin_loop();
+                }
+                pump();
                 let (spi, completed) = transfer.wait();
                 self.cs.set_high();
                 self.state = Some(PipelineState::Idle {
