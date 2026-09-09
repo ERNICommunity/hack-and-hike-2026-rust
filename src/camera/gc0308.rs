@@ -12,7 +12,10 @@ const PAGE_SELECT: u8 = 0xfe;
 const OUTPUT_FORMAT: u8 = 0x24;
 const RGB565_BE: u8 = 0xa6;
 const ORIENTATION: u8 = 0x14;
-const ORIENTATION_ROTATE_180_MASK: u8 = 0x03;
+const ORIENTATION_HORIZONTAL_MIRROR_MASK: u8 = 0x01;
+const ORIENTATION_VERTICAL_FLIP_MASK: u8 = 0x02;
+const ORIENTATION_MASK: u8 =
+    ORIENTATION_HORIZONTAL_MIRROR_MASK | ORIENTATION_VERTICAL_FLIP_MASK;
 
 // Espressif's GC0308 baseline register program, followed by the QVGA
 // subsampling changes below. The sensor has no XCLK pin on CoreS3 Lite; its
@@ -107,14 +110,16 @@ where
     write(i2c, 0x59, 0x00)?;
     write(i2c, PAGE_SELECT, 0x00)?;
 
-    // CoreS3 Lite mounts the sensor 180 degrees relative to the LCD. Let the
-    // GC0308 reverse both axes so CPU0 can stream scanlines forward without a
-    // framebuffer-wide row/pixel reversal in the rendering hot path.
+    // CoreS3 Lite mounts the sensor 180 degrees relative to the LCD. Keep the
+    // sensor-side vertical flip that corrects the physical upside-down mounting,
+    // but leave the horizontal axis reversed to present a familiar mirrored
+    // camera preview. Doing this in the GC0308 keeps the LCD/DMA hot path free of
+    // per-pixel framebuffer work.
     update_bits(
         i2c,
         ORIENTATION,
-        ORIENTATION_ROTATE_180_MASK,
-        ORIENTATION_ROTATE_180_MASK,
+        ORIENTATION_MASK,
+        ORIENTATION_VERTICAL_FLIP_MASK,
     )?;
 
     read(i2c, 0x00)
