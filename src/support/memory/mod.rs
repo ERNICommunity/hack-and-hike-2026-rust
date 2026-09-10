@@ -1,7 +1,7 @@
+pub(crate) mod data_plane;
 mod monitor;
 mod psram;
 mod stack;
-pub(crate) mod storage;
 
 pub(crate) use monitor::{HeapMonitor, report};
 pub(crate) use psram::enable as enable_psram;
