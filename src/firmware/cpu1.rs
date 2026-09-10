@@ -1,9 +1,9 @@
 //! CPU1 runtime composition.
 //!
 //! CPU1 owns the shared runtime I2C bus, radio, audio acquisition, and the
-//! service tasks that consume that bus. Keeping the stack/executor and spawn
-//! graph here makes second-core ownership explicit without changing service
-//! transport semantics.
+//! service tasks that consume that bus. Keeping the stack/executor, runtime
+//! ownership bundle, and spawn graph here makes second-core ownership explicit
+//! without changing service transport semantics.
 
 use esp_hal::system::Stack;
 use static_cell::StaticCell;
@@ -27,18 +27,49 @@ pub(crate) struct ServiceEndpoints {
     pub(crate) display: display::BrightnessRuntime,
 }
 
+/// Complete move-only ownership transferred into the second-core entry point.
+///
+/// Bootstrap constructs this only after the temporary board/camera I2C owners
+/// have been destroyed and the final 400 kHz system-I2C driver exists. Moving
+/// one value into the CPU1 closure makes it impossible for CPU0 composition to
+/// retain any of these runtime resources accidentally.
+pub(crate) struct RuntimeResources {
+    system_i2c: system_i2c::SystemI2cBlocking,
+    audio: audio::Resources,
+    network: network::Resources,
+    endpoints: ServiceEndpoints,
+}
+
+impl RuntimeResources {
+    pub(crate) fn new(
+        system_i2c: system_i2c::SystemI2cBlocking,
+        audio: audio::Resources,
+        network: network::Resources,
+        endpoints: ServiceEndpoints,
+    ) -> Self {
+        Self {
+            system_i2c,
+            audio,
+            network,
+            endpoints,
+        }
+    }
+}
+
 pub(crate) fn init_stack() -> &'static mut Stack<STACK_SIZE> {
     let stack = STACK.init(Stack::new());
     memory::register_cpu1_stack(&mut *stack);
     stack
 }
 
-pub(crate) fn run(
-    system_i2c: system_i2c::SystemI2cBlocking,
-    audio_resources: audio::Resources,
-    network_resources: network::Resources,
-    endpoints: ServiceEndpoints,
-) {
+pub(crate) fn run(resources: RuntimeResources) {
+    let RuntimeResources {
+        system_i2c,
+        audio: audio_resources,
+        network: network_resources,
+        endpoints,
+    } = resources;
+
     memory::init_cpu1_stack_watermark();
     let executor = EXECUTOR.init(esp_rtos::embassy::Executor::new());
     let ServiceEndpoints {
