@@ -143,11 +143,12 @@ fn present_framebuffer(display: &mut Display, framebuffer: &GuiFramebuffer) {
     let byte_count = pixel_count * core::mem::size_of::<Rgb565>();
     let data = &framebuffer.data;
 
-    // The EndianCorrectedBuffer stores every RGB565 pixel in LCD wire order and
-    // this transfer owns the framebuffer for the complete operation. The fixed
-    // dimensions prove the contiguous byte-slice length.
-    let bytes = unsafe {
-        core::slice::from_raw_parts(data.data_ptr().cast::<u8>(), byte_count)
-    };
+    // SAFETY: `EndianCorrectedBuffer` owns one contiguous array of exactly
+    // `CONTENT_WIDTH * CONTENT_HEIGHT` `Rgb565` values. The compile-time size
+    // assertion proves two bytes per pixel, `data_ptr()` remains valid for this
+    // borrowed framebuffer, and the transfer only reads the resulting byte view.
+    // The endian-correcting backend has already arranged those bytes in LCD wire
+    // order, so no typed mutation or aliasing is introduced by this slice.
+    let bytes = unsafe { core::slice::from_raw_parts(data.data_ptr().cast::<u8>(), byte_count) };
     display.render_rgb565_be_bytes(design::CONTENT_REGION, bytes);
 }
