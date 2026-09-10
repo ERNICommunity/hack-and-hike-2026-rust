@@ -186,7 +186,7 @@ pub(crate) struct View {
 
 impl View {
     pub(crate) fn new() -> Self {
-        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, VIEW_WIDTH as u16, VIEW_HEIGHT as u16)));
+        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, VIEW_WIDTH as u32, VIEW_HEIGHT as u32)));
         let app = generated::ImuApp::build(gui).expect("IMU KDL exceeds embedded-gui capacities");
         Self {
             geometry: Geometry {
