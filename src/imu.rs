@@ -578,7 +578,10 @@ impl Fusion {
         self.orientation.yaw_deg = if let Some(heading) = magnetic_heading {
             self.fuse_magnetic_yaw(predicted_yaw, heading, yaw_rate_dps, yaw_alpha)
         } else {
-            self.clear_pending_magnetic_candidate();
+            // Most 100 Hz fusion ticks have no new 30 Hz magnetic frame. Keep a
+            // partially accumulated lock/relock candidate across those gyro-only
+            // ticks; only a real fast-turn condition or explicit invalidation
+            // clears it.
             predicted_yaw
         };
 
