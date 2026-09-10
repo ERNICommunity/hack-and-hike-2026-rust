@@ -56,11 +56,23 @@ impl Ui {
         if self.presented_view == ViewId::Log && self.present_log_if_dirty(display) {
             return;
         }
+
+        let settings = if self.presented_view == ViewId::Settings {
+            self.model.take_settings_display()
+        } else {
+            None
+        };
+        let speaker = if self.presented_view == ViewId::Speaker {
+            self.model.take_speaker_display()
+        } else {
+            None
+        };
         self.views.present_shell(
             self.presented_view,
             &mut self.gui_surface,
             display,
-            None,
+            settings,
+            speaker,
         );
     }
 
@@ -106,16 +118,14 @@ impl Ui {
         if transition.to == ViewId::Log && self.present_log_if_dirty(display) {
             return;
         }
-        if transition.to == ViewId::Speaker {
-            if let Some(state) = self.model.take_speaker_display() {
-                self.views
-                    .present_speaker(&mut self.gui_surface, display, state);
-                return;
-            }
-        }
 
         let settings = if transition.to == ViewId::Settings {
             self.model.take_settings_display()
+        } else {
+            None
+        };
+        let speaker = if transition.to == ViewId::Speaker {
+            self.model.take_speaker_display()
         } else {
             None
         };
@@ -124,6 +134,7 @@ impl Ui {
             &mut self.gui_surface,
             display,
             settings,
+            speaker,
         );
     }
 

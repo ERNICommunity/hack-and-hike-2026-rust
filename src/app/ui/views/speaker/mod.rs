@@ -1,7 +1,8 @@
 //! Interactive speaker-output view.
 //!
-//! KDL owns page geometry. This module owns only Speaker interaction semantics
-//! and its touch-scale controls; `AppModel` remains authoritative state.
+//! KDL owns page geometry. `AppModel` owns persistent playback, tempo, and pitch
+//! state while this view owns only transient pointer interaction and custom
+//! touch-scale presentation inside the KDL control slots.
 
 use core::fmt::Write as _;
 
@@ -72,10 +73,7 @@ pub(super) enum Action {
 
 pub(super) struct View {
     gui: &'static mut Context,
-    tempo_widget: WidgetId,
-    pitch_widget: WidgetId,
     geometry: Geometry,
-    current: SpeakerDisplay,
     gesture: Option<Gesture>,
 }
 
@@ -95,75 +93,28 @@ impl View {
             pitch_slider: required_rect(gui, app.widgets.pitch_slider_slot, "speaker pitch slider"),
             hint: required_rect(gui, app.widgets.hint_slot, "speaker hint"),
         };
-        let tempo_widget = gui
-            .add_themed_slider(
-                geometry.tempo_slider,
-                f32::from(TempoBpm::DEFAULT.get()),
-                f32::from(TempoBpm::MIN.get()),
-                f32::from(TempoBpm::MAX.get()),
-            )
-            .expect("speaker tempo slider exceeds embedded-gui fixed capacities");
-        let pitch_widget = gui
-            .add_themed_slider(
-                geometry.pitch_slider,
-                f32::from(PitchSemitones::CENTER.get()),
-                f32::from(PitchSemitones::MIN.get()),
-                f32::from(PitchSemitones::MAX.get()),
-            )
-            .expect("speaker pitch slider exceeds embedded-gui fixed capacities");
-        drain_events(gui);
 
         Self {
             gui,
-            tempo_widget,
-            pitch_widget,
             geometry,
-            current: SpeakerDisplay::DEFAULT,
             gesture: None,
         }
     }
 
-    pub(super) fn sync(&mut self, state: SpeakerDisplay) {
-        self.current = state;
-        let tempo = f32::from(state.tempo.get());
-        if self.gui.slider_value(self.tempo_widget) != Some(tempo) {
-            self.gui
-                .set_slider_value(self.tempo_widget, tempo)
-                .expect("speaker tempo widget is not a slider");
-        }
-        let pitch = f32::from(state.pitch.get());
-        if self.gui.slider_value(self.pitch_widget) != Some(pitch) {
-            self.gui
-                .set_slider_value(self.pitch_widget, pitch)
-                .expect("speaker pitch widget is not a slider");
-        }
-        drain_events(self.gui);
-    }
-
-    pub(super) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(super) fn present(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+        state: SpeakerDisplay,
+    ) {
         let geometry = self.geometry;
-        let state = self.current;
         surface.present_with_overlay(display, self.gui, move |frame| {
             draw_speaker(frame, geometry, state);
         });
     }
 
     pub(super) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Action> {
-        let state = match pointer.phase {
-            PointerPhase::Pressed => PointerState::Pressed,
-            PointerPhase::Moved => PointerState::Moved,
-            PointerPhase::Released => PointerState::Released,
-        };
-        self.gui
-            .handle_input(InputEvent::Pointer {
-                x: pointer.x,
-                y: pointer.y,
-                state,
-                button: PointerButton::Primary,
-            })
-            .expect("speaker input event capacity exceeded");
-
-        let action = match pointer.phase {
+        match pointer.phase {
             PointerPhase::Pressed if hits_slider(self.geometry.tempo_slider, pointer) => {
                 self.gesture = Some(Gesture::Tempo);
                 Some(Action::SetTempo(self.tempo_at(pointer.x)))
@@ -205,35 +156,27 @@ impl View {
                 }
             }
             _ => None,
-        };
-        drain_events(self.gui);
-        action
+        }
     }
 
-    fn tempo_at(&mut self, x: i32) -> TempoBpm {
+    fn tempo_at(&self, x: i32) -> TempoBpm {
         let value = slider_value_at(
             self.geometry.tempo_slider,
             x,
             i32::from(TempoBpm::MIN.get()),
             i32::from(TempoBpm::MAX.get()),
         ) as u16;
-        let tempo = TempoBpm::new(value).expect("tempo slider mapping must stay in range");
-        self.current.tempo = tempo;
-        let _ = self.gui.set_slider_value(self.tempo_widget, f32::from(value));
-        tempo
+        TempoBpm::new(value).expect("tempo slider mapping must stay in range")
     }
 
-    fn pitch_at(&mut self, x: i32) -> PitchSemitones {
+    fn pitch_at(&self, x: i32) -> PitchSemitones {
         let value = slider_value_at(
             self.geometry.pitch_slider,
             x,
             i32::from(PitchSemitones::MIN.get()),
             i32::from(PitchSemitones::MAX.get()),
         ) as i8;
-        let pitch = PitchSemitones::new(value).expect("pitch slider mapping must stay in range");
-        self.current.pitch = pitch;
-        let _ = self.gui.set_slider_value(self.pitch_widget, f32::from(value));
-        pitch
+        PitchSemitones::new(value).expect("pitch slider mapping must stay in range")
     }
 }
 
@@ -393,8 +336,4 @@ fn contains(rect: Rect, pointer: ContentPointer) -> bool {
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
     gui.absolute_rect(id).unwrap_or_else(|| panic!("{name} layout missing"))
-}
-
-fn drain_events(gui: &mut Context) {
-    while gui.pop_event().is_some() {}
 }

@@ -1,10 +1,8 @@
 //! Interactive Settings view.
 //!
-//! KDL owns page geometry. This module owns the semantic brightness interaction
-//! and its view-specific visual control while `AppModel` remains authoritative
-//! state. The generic embedded-gui slider is retained for widget semantics; a
-//! larger high-contrast track/thumb is drawn over its KDL slot for this small
-//! touch display.
+//! KDL owns page geometry. `AppModel` owns the semantic brightness value while
+//! this view owns only transient pointer interaction and the custom touch-scale
+//! presentation inside the KDL slider slot.
 
 use core::fmt::Write as _;
 
@@ -53,18 +51,15 @@ struct Geometry {
 
 pub(super) struct View {
     gui: &'static mut Context,
-    brightness_widget: WidgetId,
     geometry: Geometry,
-    current: BrightnessPercent,
     dragging_brightness: bool,
 }
 
 impl View {
-    pub(super) fn new(brightness: BrightnessPercent) -> Self {
+    pub(super) fn new() -> Self {
         let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
-
         let geometry = Geometry {
             title: required_rect(gui, app.widgets.title_slot, "settings title"),
             value: required_rect(
@@ -78,56 +73,29 @@ impl View {
             hint: required_rect(gui, app.widgets.hint_slot, "settings hint"),
         };
 
-        let brightness_widget = gui
-            .add_themed_slider(
-                geometry.slider,
-                f32::from(brightness.get()),
-                f32::from(BrightnessPercent::MIN.get()),
-                f32::from(BrightnessPercent::FULL.get()),
-            )
-            .expect("settings brightness slider exceeds embedded-gui fixed capacities");
-
-        drain_events(gui);
         Self {
             gui,
-            brightness_widget,
             geometry,
-            current: brightness,
             dragging_brightness: false,
         }
     }
 
-    pub(super) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(super) fn present(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+        brightness: BrightnessPercent,
+    ) {
         let geometry = self.geometry;
-        let brightness = self.current;
         surface.present_with_overlay(display, self.gui, move |frame| {
             draw_settings(frame, geometry, brightness);
         });
     }
 
-    pub(super) fn sync_brightness(&mut self, brightness: BrightnessPercent) {
-        self.set_local_brightness(brightness);
-    }
-
     /// Handle one content-space pointer event and return the newest semantic
-    /// brightness action produced by the slider, if any.
+    /// brightness action. Persistent brightness state remains in `AppModel`.
     pub(super) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<BrightnessPercent> {
-        let state = match pointer.phase {
-            PointerPhase::Pressed => PointerState::Pressed,
-            PointerPhase::Moved => PointerState::Moved,
-            PointerPhase::Released => PointerState::Released,
-        };
-
-        self.gui
-            .handle_input(InputEvent::Pointer {
-                x: pointer.x,
-                y: pointer.y,
-                state,
-                button: PointerButton::Primary,
-            })
-            .expect("settings input event capacity exceeded");
-
-        let brightness = match pointer.phase {
+        match pointer.phase {
             PointerPhase::Pressed if self.pointer_hits_brightness(pointer) => {
                 self.dragging_brightness = true;
                 Some(self.brightness_at(pointer.x))
@@ -142,10 +110,7 @@ impl View {
                 None
             }
             _ => None,
-        };
-
-        drain_events(self.gui);
-        brightness
+        }
     }
 
     fn pointer_hits_brightness(&self, pointer: ContentPointer) -> bool {
@@ -157,28 +122,15 @@ impl View {
         pointer.x >= left && pointer.x < right && pointer.y >= top && pointer.y < bottom
     }
 
-    fn brightness_at(&mut self, pointer_x: i32) -> BrightnessPercent {
+    fn brightness_at(&self, pointer_x: i32) -> BrightnessPercent {
         let (left, right) = slider_track_bounds(self.geometry.slider);
         let span = (right - left).max(1);
         let x = pointer_x.clamp(left, right);
         let range = i32::from(BrightnessPercent::FULL.get() - BrightnessPercent::MIN.get());
         let offset = ((x - left) * range + span / 2) / span;
         let percent = BrightnessPercent::MIN.get() + offset as u8;
-        let brightness = BrightnessPercent::new(percent)
-            .expect("slider mapping must produce a visible brightness percentage");
-        self.set_local_brightness(brightness);
-        brightness
-    }
-
-    fn set_local_brightness(&mut self, brightness: BrightnessPercent) {
-        self.current = brightness;
-        let slider_value = f32::from(brightness.get());
-        if self.gui.slider_value(self.brightness_widget) != Some(slider_value) {
-            self.gui
-                .set_slider_value(self.brightness_widget, slider_value)
-                .expect("settings brightness widget is not a slider");
-        }
-        drain_events(self.gui);
+        BrightnessPercent::new(percent)
+            .expect("slider mapping must produce a visible brightness percentage")
     }
 }
 
@@ -218,8 +170,6 @@ fn draw_brightness_slider(
     rect: Rect,
     brightness: BrightnessPercent,
 ) {
-    // Hide the framework's deliberately compact default control, then draw a
-    // touch-scale visualization while retaining the framework widget state.
     common::fill_rect(frame, rect, common::white());
 
     let (left, right) = slider_track_bounds(rect);
@@ -277,8 +227,4 @@ fn slider_track_bounds(rect: Rect) -> (i32, i32) {
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
     gui.absolute_rect(id).unwrap_or_else(|| panic!("{name} layout missing"))
-}
-
-fn drain_events(gui: &mut Context) {
-    while gui.pop_event().is_some() {}
 }
