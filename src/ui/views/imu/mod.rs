@@ -70,10 +70,9 @@ const COMPASS_GLYPH_HEIGHT: f32 = 78.0;
 const COMPASS_GLYPH_GAP: f32 = 18.0;
 const COMPASS_STROKE_WIDTH: u32 = 3;
 const INV_SQRT_2: f32 = 0.70710677;
-// The world camera's geometric +Z axis is opposite the physical magnetic-north
-// direction established by the fused CoreS3 heading convention. Rotate only the
-// presentation landmarks by 180 degrees; do not bias the fused yaw or magnetic
-// innovation/recovery logic.
+// Presentation-only 180-degree alignment: the accepted fused magnetic-yaw
+// convention is intentionally left untouched. These world landmarks are the
+// only place where the visual compass frame is rotated to match physical north.
 const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
     ("N", 0.0, -1.0),
     ("NE", -INV_SQRT_2, -INV_SQRT_2),
