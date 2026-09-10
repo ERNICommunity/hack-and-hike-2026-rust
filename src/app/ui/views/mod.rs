@@ -16,8 +16,7 @@ mod speaker;
 use crate::{
     audio::{PitchSemitones, TempoBpm},
     camera,
-    display::Display,
-    display_control::BrightnessPercent,
+    display::{BrightnessPercent, Display},
     models::{ImuDisplay, SettingsDisplay, SpeakerDisplay, ViewId},
     network as network_service, theme,
     waveform::WaveformFrame,

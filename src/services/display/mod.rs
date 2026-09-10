@@ -1,11 +1,11 @@
-//! CPU0-owned physical display boundary.
+//! Display capability.
 //!
-//! This module knows how to initialize the LCD controller transport and move
-//! RGB565 pixels to it. Board-level power/reset sequencing happens in bootstrap
-//! before this module is initialized. The display boundary deliberately knows
-//! nothing about views, navigation, text, sensors, or presentation semantics.
+//! CPU0 exclusively owns the LCD pixel transport, while CPU1 applies semantic
+//! brightness commands over the shared runtime I2C bus. Those ownership paths
+//! remain separate internally but are exposed through one display capability.
+//! Board-level power/reset sequencing still happens in firmware bootstrap.
 
-pub(crate) mod brightness;
+mod brightness;
 mod transport;
 
 use esp_hal::{
@@ -14,6 +14,12 @@ use esp_hal::{
 };
 
 use crate::board;
+
+pub use brightness::{BrightnessControl, BrightnessPercent};
+pub(crate) use brightness::{
+    Endpoints as BrightnessEndpoints, Runtime as BrightnessRuntime,
+    init_endpoints as init_brightness_endpoints, task as brightness_task,
+};
 
 pub type Pixel = u16;
 

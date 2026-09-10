@@ -19,7 +19,7 @@ use app::{model as models, ui};
 use app::{model::microphone as waveform, ui::theme};
 use platform::{board, i2c as system_i2c};
 use services::{audio, camera, display, imu, network, touch};
-use services::{display::brightness as display_control, network::protocol};
+use services::network::protocol;
 use support::memory::data_plane;
 use support::{diagnostics, logging as logger, memory};
 
