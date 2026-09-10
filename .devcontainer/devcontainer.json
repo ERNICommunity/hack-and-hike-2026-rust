@@ -19,6 +19,8 @@
                 "editor.scrollBeyondLastLine": false,
                 // automatically save after 1 second
                 "editor.formatOnSave": true,
+                // automatically save files after 1 second
+                "files.autoSave": "afterDelay",
                 // scale the minimap to the window height
                 "editor.minimap.size": "fill",
                 // do not show the right sidebar because we need the screen space for a two column editor layout
