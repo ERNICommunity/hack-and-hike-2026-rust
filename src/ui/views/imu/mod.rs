@@ -70,15 +70,19 @@ const COMPASS_GLYPH_HEIGHT: f32 = 78.0;
 const COMPASS_GLYPH_GAP: f32 = 18.0;
 const COMPASS_STROKE_WIDTH: u32 = 3;
 const INV_SQRT_2: f32 = 0.70710677;
+// The world camera's geometric +Z axis is opposite the physical magnetic-north
+// direction established by the fused CoreS3 heading convention. Rotate only the
+// presentation landmarks by 180 degrees; do not bias the fused yaw or magnetic
+// innovation/recovery logic.
 const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
-    ("N", 0.0, 1.0),
-    ("NE", INV_SQRT_2, INV_SQRT_2),
-    ("E", 1.0, 0.0),
-    ("SE", INV_SQRT_2, -INV_SQRT_2),
-    ("S", 0.0, -1.0),
-    ("SW", -INV_SQRT_2, -INV_SQRT_2),
-    ("W", -1.0, 0.0),
-    ("NW", -INV_SQRT_2, INV_SQRT_2),
+    ("N", 0.0, -1.0),
+    ("NE", -INV_SQRT_2, -INV_SQRT_2),
+    ("E", -1.0, 0.0),
+    ("SE", -INV_SQRT_2, INV_SQRT_2),
+    ("S", 0.0, 1.0),
+    ("SW", INV_SQRT_2, INV_SQRT_2),
+    ("W", 1.0, 0.0),
+    ("NW", INV_SQRT_2, -INV_SQRT_2),
 ];
 const GLYPH_N_STROKES: [[f32; 4]; 3] = [
     [0.0, 0.0, 0.0, 7.0],
