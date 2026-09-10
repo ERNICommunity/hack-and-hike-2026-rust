@@ -232,13 +232,19 @@ pub(crate) fn bootstrap() -> Bootstrap {
         touch: touch_runtime,
         display: display_runtime,
     };
+    let cpu1_runtime = cpu1::RuntimeResources::new(
+        system_i2c,
+        audio_resources,
+        network_resources,
+        cpu1_endpoints,
+    );
 
     let cpu1_stack = cpu1::init_stack();
     esp_rtos::start_second_core(
         peripherals.CPU_CTRL,
         sw_interrupt.software_interrupt1,
         cpu1_stack,
-        move || cpu1::run(system_i2c, audio_resources, network_resources, cpu1_endpoints),
+        move || cpu1::run(cpu1_runtime),
     );
 
     Bootstrap {
