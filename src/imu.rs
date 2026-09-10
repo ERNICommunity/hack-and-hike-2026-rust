@@ -155,7 +155,7 @@ const GYR_DPS_PER_LSB: f32 = 2000.0 / 32768.0;
 const SENSOR_TIME_TICK_SECONDS: f32 = 1.0 / 25_600.0;
 const SENSOR_TIME_MASK: u32 = 0x00FF_FFFF;
 const MAX_FUSION_SAMPLE_GAP_TICKS: u32 = 1_280; // 50 ms
-const NOMINAL_FUSION_TICKS: u32 = 256; // 10 ms
+const NOMINAL_FUSION_TICKS: u32 = 25_600 / DEFAULT_SENSOR_HZ;
 
 const INIT_RETRY: Duration = Duration::from_secs(1);
 const MAG_RETRY: Duration = Duration::from_secs(5);
