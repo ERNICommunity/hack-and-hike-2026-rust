@@ -9,12 +9,12 @@
 use allocator_api2::{boxed::Box, vec::Vec};
 use esp_alloc::EspHeap;
 
-use super::psram_heap;
+use super::psram;
 
 pub(crate) type PsramVec<T> = Vec<T, &'static EspHeap>;
 
 pub(crate) fn vec_with_capacity<T>(capacity: usize) -> PsramVec<T> {
-    Vec::with_capacity_in(capacity, psram_heap())
+    Vec::with_capacity_in(capacity, psram::heap())
 }
 
 pub(crate) fn zeroed_bytes(len: usize) -> PsramVec<u8> {
@@ -45,7 +45,7 @@ pub(crate) fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &
 /// initializer is then written into that destination exactly once before the
 /// allocation is exposed as initialized `T`.
 pub(crate) fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
-    let mut storage = Box::<T, _>::new_uninit_in(psram_heap());
+    let mut storage = Box::<T, _>::new_uninit_in(psram::heap());
     unsafe {
         storage.as_mut_ptr().write(init());
         Box::leak(storage.assume_init())
