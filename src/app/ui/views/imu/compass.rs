@@ -6,8 +6,8 @@ use embedded_gui::prelude::Rect;
 use super::{
     common,
     projection::{
-        PERSPECTIVE_NEAR_Z, PerspectiveCamera, project_camera_point,
-        project_camera_solid_line, world_to_camera,
+        PERSPECTIVE_NEAR_Z, PerspectiveCamera, project_camera_point, project_camera_solid_line,
+        world_to_camera,
     },
 };
 use crate::app::ui::gui::GuiFramebuffer;
@@ -170,13 +170,9 @@ fn draw_world_compass_glyph(
         let start_camera = world_to_camera(start, camera);
         let end_camera = world_to_camera(end, camera);
 
-        if let Some(line) = project_camera_solid_line(
-            area,
-            camera,
-            start_camera,
-            end_camera,
-            COMPASS_STROKE_WIDTH,
-        ) {
+        if let Some(line) =
+            project_camera_solid_line(area, camera, start_camera, end_camera, COMPASS_STROKE_WIDTH)
+        {
             draw_solid_line_pixels(
                 frame,
                 area,
@@ -242,10 +238,7 @@ fn draw_solid_line_pixels(
         let pixel_y = area.y + y0 - half;
         for offset_y in 0..width_i32 {
             for offset_x in 0..width_i32 {
-                frame.set_color_at(
-                    Point::new(pixel_x + offset_x, pixel_y + offset_y),
-                    color,
-                );
+                frame.set_color_at(Point::new(pixel_x + offset_x, pixel_y + offset_y), color);
             }
         }
         if x0 == x1 && y0 == y1 {

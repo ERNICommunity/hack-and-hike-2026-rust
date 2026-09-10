@@ -2,11 +2,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use embassy_sync::{
-    blocking_mutex::raw::CriticalSectionRawMutex,
-    mutex::Mutex,
-    signal::Signal,
-};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex, signal::Signal};
 use static_cell::StaticCell;
 
 use super::{AudioBlockInfo, BLOCK_SAMPLES, PlaybackSettings};
@@ -56,12 +52,12 @@ pub(crate) struct Runtime {
 }
 
 /// CPU0 input endpoint for the newest complete stereo microphone block.
-pub struct Input {
+pub(crate) struct Input {
     service: &'static Service,
 }
 
 /// CPU0 command endpoint for the CPU1 audio-output service.
-pub struct PlaybackControl {
+pub(crate) struct PlaybackControl {
     service: &'static Service,
 }
 
@@ -81,7 +77,7 @@ pub(crate) fn init_endpoints() -> Endpoints {
 }
 
 impl Input {
-    pub fn copy_latest_interleaved(
+    pub(crate) fn copy_latest_interleaved(
         &mut self,
         out: &mut [i16; BLOCK_SAMPLES],
     ) -> Option<AudioBlockInfo> {
@@ -95,11 +91,11 @@ impl Input {
 }
 
 impl PlaybackControl {
-    pub fn set(&mut self, settings: PlaybackSettings) {
+    pub(crate) fn set(&mut self, settings: PlaybackSettings) {
         self.service.playback_settings.signal(settings);
     }
 
-    pub fn play_one_shot(&mut self) {
+    pub(crate) fn play_one_shot(&mut self) {
         self.service
             .one_shot_sequence
             .fetch_add(1, Ordering::Release);

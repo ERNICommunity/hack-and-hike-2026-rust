@@ -14,16 +14,16 @@ use esp_hal::{
         cam::{Camera as CameraDriver, CameraTransfer, Config as CameraConfig},
     },
     peripherals::{
-        DMA_CH2, GPIO15, GPIO16, GPIO38, GPIO39, GPIO40, GPIO41, GPIO42, GPIO45, GPIO46,
-        GPIO47, GPIO48, LCD_CAM,
+        DMA_CH2, GPIO15, GPIO16, GPIO38, GPIO39, GPIO40, GPIO41, GPIO42, GPIO45, GPIO46, GPIO47,
+        GPIO48, LCD_CAM,
     },
     time::Rate,
 };
 
-use crate::support::memory::data_plane;
+use crate::support::memory::storage;
 
-pub const WIDTH: usize = 320;
-pub const HEIGHT: usize = 240;
+pub(crate) const WIDTH: usize = 320;
+pub(crate) const HEIGHT: usize = 240;
 const BYTES_PER_PIXEL: usize = 2;
 const SCANLINE_BYTES: usize = WIDTH * BYTES_PER_PIXEL;
 const FRAME_BYTES: usize = WIDTH * HEIGHT * BYTES_PER_PIXEL;
@@ -46,20 +46,20 @@ const _: () = assert!(FRAME_BYTES % PSRAM_ALIGNMENT == 0);
 #[derive(Clone, Copy)]
 struct AlignedBlock([u8; PSRAM_ALIGNMENT]);
 
-pub struct Resources {
-    pub lcd_cam: LCD_CAM<'static>,
-    pub dma: DMA_CH2<'static>,
-    pub pclk: GPIO45<'static>,
-    pub vsync: GPIO46<'static>,
-    pub href: GPIO38<'static>,
-    pub d0: GPIO39<'static>,
-    pub d1: GPIO40<'static>,
-    pub d2: GPIO41<'static>,
-    pub d3: GPIO42<'static>,
-    pub d4: GPIO15<'static>,
-    pub d5: GPIO16<'static>,
-    pub d6: GPIO48<'static>,
-    pub d7: GPIO47<'static>,
+pub(crate) struct Resources {
+    pub(crate) lcd_cam: LCD_CAM<'static>,
+    pub(crate) dma: DMA_CH2<'static>,
+    pub(crate) pclk: GPIO45<'static>,
+    pub(crate) vsync: GPIO46<'static>,
+    pub(crate) href: GPIO38<'static>,
+    pub(crate) d0: GPIO39<'static>,
+    pub(crate) d1: GPIO40<'static>,
+    pub(crate) d2: GPIO41<'static>,
+    pub(crate) d3: GPIO42<'static>,
+    pub(crate) d4: GPIO15<'static>,
+    pub(crate) d5: GPIO16<'static>,
+    pub(crate) d6: GPIO48<'static>,
+    pub(crate) d7: GPIO47<'static>,
 }
 
 enum CaptureState {
@@ -70,7 +70,7 @@ enum CaptureState {
     Streaming(InFlight),
 }
 
-pub struct Camera {
+pub(crate) struct Camera {
     // `None` exists only transiently while a method moves the concrete state.
     // Between method calls, this always contains exactly one legal ownership state.
     state: Option<CaptureState>,
@@ -84,12 +84,12 @@ pub struct Camera {
 }
 
 /// One frozen camera frame being presented while the following frame is captured.
-pub struct Frame<'a> {
+pub(crate) struct Frame<'a> {
     camera: &'a mut Camera,
 }
 
 impl Frame<'_> {
-    pub fn scanline(&self, y: usize) -> &[u8] {
+    pub(crate) fn scanline(&self, y: usize) -> &[u8] {
         debug_assert!(y < HEIGHT);
         let start = y * SCANLINE_BYTES;
         &self.camera.display_buffer[start..start + SCANLINE_BYTES]
@@ -99,20 +99,20 @@ impl Frame<'_> {
     /// The display transport calls this while SPI DMA is already transmitting the
     /// previous LCD batch, turning what used to be CPU idle time into next-frame
     /// capture work.
-    pub fn pump(&mut self) {
+    pub(crate) fn pump(&mut self) {
         self.camera.pump_capture_available();
     }
 
     /// Finish receiving the following VSYNC-bounded frame and prepare the next
     /// presentation frame. Capture faults are handled internally and cause the
     /// next `begin_frame` call to re-prime from a fresh VSYNC boundary.
-    pub fn finish(self) {
+    pub(crate) fn finish(self) {
         let _ = self.camera.complete_capture_and_swap();
     }
 }
 
 fn alloc_frame_buffer() -> &'static mut [u8] {
-    let blocks = data_plane::leaked_filled_slice(
+    let blocks = storage::leaked_filled_slice(
         FRAME_BYTES / PSRAM_ALIGNMENT,
         AlignedBlock([0; PSRAM_ALIGNMENT]),
     );
@@ -123,7 +123,7 @@ fn alloc_frame_buffer() -> &'static mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), FRAME_BYTES) }
 }
 
-pub fn init(resources: Resources) -> Camera {
+pub(crate) fn init(resources: Resources) -> Camera {
     let Resources {
         lcd_cam,
         dma,
@@ -161,8 +161,7 @@ pub fn init(resources: Resources) -> Camera {
         .with_data6(d6)
         .with_data7(d7);
 
-    let stream_buffer =
-        esp_hal::dma_rx_stream_buffer!(STREAM_BUFFER_BYTES, STREAM_CHUNK_BYTES);
+    let stream_buffer = esp_hal::dma_rx_stream_buffer!(STREAM_BUFFER_BYTES, STREAM_CHUNK_BYTES);
 
     Camera {
         state: Some(CaptureState::Stopped {
@@ -420,7 +419,7 @@ impl Camera {
     /// Stop any free-running camera DMA when Camera view is no longer presented.
     /// Re-entry will prime from a fresh VSYNC boundary instead of consuming a
     /// stale partial frame that accumulated while another screen was visible.
-    pub fn pause(&mut self) {
+    pub(crate) fn pause(&mut self) {
         self.stop_stream();
         self.display_ready = false;
         self.reset_capture_state();
@@ -428,7 +427,7 @@ impl Camera {
 
     /// Begin presenting the current frozen frame. The returned object also owns
     /// the capture pump used by the LCD transport while SPI DMA is in flight.
-    pub fn begin_frame(&mut self) -> Option<Frame<'_>> {
+    pub(crate) fn begin_frame(&mut self) -> Option<Frame<'_>> {
         if !self.display_ready && !self.prime_display_frame() {
             return None;
         }

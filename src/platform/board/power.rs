@@ -70,13 +70,11 @@ where
 /// Display-controller configuration itself remains owned by `display`.
 pub(crate) fn enable_lcd_backlight(i2c: &mut impl embedded_hal::i2c::I2c) {
     // Preserve the existing best-effort startup behavior for the display rail.
-    let _ = i2c.write(AXP2101_ADDR, &[DLDO1_VOLTAGE_REGISTER, LCD_BACKLIGHT_MAX_CODE]);
-    let _ = update_register_bits(
-        i2c,
-        OUTPUT_ENABLE_REGISTER,
-        DLDO1_ENABLE,
-        DLDO1_ENABLE,
+    let _ = i2c.write(
+        AXP2101_ADDR,
+        &[DLDO1_VOLTAGE_REGISTER, LCD_BACKLIGHT_MAX_CODE],
     );
+    let _ = update_register_bits(i2c, OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, DLDO1_ENABLE);
 }
 
 /// Apply a semantic 1-100% LCD brightness request to the CoreS3 backlight rail.
@@ -96,13 +94,7 @@ where
 
     i2c.write(AXP2101_ADDR, &[DLDO1_VOLTAGE_REGISTER, code])
         .await?;
-    update_register_bits_async(
-        i2c,
-        OUTPUT_ENABLE_REGISTER,
-        DLDO1_ENABLE,
-        DLDO1_ENABLE,
-    )
-    .await
+    update_register_bits_async(i2c, OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, DLDO1_ENABLE).await
 }
 
 /// Enable the microphone rail (ALDO2) at 3.3 V.
@@ -116,12 +108,7 @@ where
         AXP2101_ADDR,
         &[ALDO2_VOLTAGE_REGISTER, MICROPHONE_ALDO2_3V3_CODE],
     )?;
-    update_register_bits(
-        i2c,
-        OUTPUT_ENABLE_REGISTER,
-        ALDO2_ENABLE,
-        ALDO2_ENABLE,
-    )
+    update_register_bits(i2c, OUTPUT_ENABLE_REGISTER, ALDO2_ENABLE, ALDO2_ENABLE)
 }
 
 /// Enable the onboard GC0308 camera power domain.
@@ -174,10 +161,5 @@ where
         AXP2101_ADDR,
         &[ALDO1_VOLTAGE_REGISTER, SPEAKER_ALDO1_1V8_CODE],
     )?;
-    update_register_bits(
-        i2c,
-        OUTPUT_ENABLE_REGISTER,
-        ALDO1_ENABLE,
-        ALDO1_ENABLE,
-    )
+    update_register_bits(i2c, OUTPUT_ENABLE_REGISTER, ALDO1_ENABLE, ALDO1_ENABLE)
 }

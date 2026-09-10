@@ -1,9 +1,7 @@
 //! CPU1-to-CPU0 touch event and point synchronization.
 
 use embassy_sync::{
-    blocking_mutex::raw::CriticalSectionRawMutex,
-    channel::Channel,
-    signal::Signal,
+    blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, signal::Signal,
 };
 use static_cell::StaticCell;
 
@@ -37,7 +35,7 @@ pub(crate) struct Runtime {
     service: &'static Service,
 }
 
-pub struct Input {
+pub(crate) struct Input {
     service: &'static Service,
 }
 
@@ -55,11 +53,11 @@ pub(crate) fn init_endpoints() -> Endpoints {
 }
 
 impl Input {
-    pub fn next_edge(&mut self) -> Option<TouchEdge> {
+    pub(crate) fn next_edge(&mut self) -> Option<TouchEdge> {
         self.service.edges.try_receive().ok()
     }
 
-    pub fn take_latest_point(&mut self) -> Option<TouchPoint> {
+    pub(crate) fn take_latest_point(&mut self) -> Option<TouchPoint> {
         self.service.latest_point.try_take()
     }
 }

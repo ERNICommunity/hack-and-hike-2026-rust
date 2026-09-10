@@ -1,7 +1,4 @@
-use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
-    mutex::Mutex,
-};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use esp_hal::{
     Async, Blocking,
     i2c::master::{Config as I2cConfig, I2c},

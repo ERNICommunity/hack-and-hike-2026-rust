@@ -164,7 +164,8 @@ impl Bmi270 {
         self.write_register(REG_ACC_CONF, ACC_CONF_100HZ).await?;
         self.write_register(REG_ACC_RANGE, ACC_RANGE_4G).await?;
         self.write_register(REG_GYR_CONF, GYR_CONF_400HZ).await?;
-        self.write_register(REG_GYR_RANGE, GYR_RANGE_2000DPS).await?;
+        self.write_register(REG_GYR_RANGE, GYR_RANGE_2000DPS)
+            .await?;
         self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR).await?;
         Timer::after(SENSOR_STARTUP).await;
 
@@ -188,7 +189,8 @@ impl Bmi270 {
     }
 
     async fn aux_read_register(&self, register: u8) -> Result<u8, Error> {
-        self.write_register(REG_AUX_IF_CONF, AUX_IF_MANUAL_MODE).await?;
+        self.write_register(REG_AUX_IF_CONF, AUX_IF_MANUAL_MODE)
+            .await?;
         self.write_register(REG_AUX_RD_ADDR, register).await?;
         self.wait_aux_idle().await?;
         self.read_register(REG_AUX_X_LSB).await
@@ -208,9 +210,12 @@ impl Bmi270 {
         self.write_register(REG_IF_CONF, 0x20).await?;
         self.write_register(REG_PWR_CONF, 0x00).await?;
         self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR).await?;
-        self.write_register(REG_AUX_IF_TRIM, AUX_IF_TRIM_2K_PULLUP).await?;
-        self.write_register(REG_AUX_IF_CONF, AUX_IF_MANUAL_MODE).await?;
-        self.write_register(REG_AUX_DEV_ID, bmm150::ADDRESS << 1).await?;
+        self.write_register(REG_AUX_IF_TRIM, AUX_IF_TRIM_2K_PULLUP)
+            .await?;
+        self.write_register(REG_AUX_IF_CONF, AUX_IF_MANUAL_MODE)
+            .await?;
+        self.write_register(REG_AUX_DEV_ID, bmm150::ADDRESS << 1)
+            .await?;
 
         self.aux_write_register(bmm150::REG_POWER_CONTROL, bmm150::SOFT_RESET_AND_POWER)
             .await?;
@@ -236,7 +241,8 @@ impl Bmi270 {
         self.write_register(REG_AUX_CONF, AUX_CONF_100HZ).await?;
         self.write_register(REG_AUX_IF_CONF, AUX_IF_DATA_MODE_8_BYTES)
             .await?;
-        self.write_register(REG_AUX_RD_ADDR, bmm150::REG_DATA_X_LSB).await?;
+        self.write_register(REG_AUX_RD_ADDR, bmm150::REG_DATA_X_LSB)
+            .await?;
         self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR_AUX)
             .await?;
         Timer::after(Duration::from_millis(10)).await;
@@ -273,9 +279,8 @@ impl Bmi270 {
             i16::from_le_bytes([bytes[16], bytes[17]]),
             i16::from_le_bytes([bytes[18], bytes[19]]),
         ];
-        let sensor_time = u32::from(bytes[20])
-            | (u32::from(bytes[21]) << 8)
-            | (u32::from(bytes[22]) << 16);
+        let sensor_time =
+            u32::from(bytes[20]) | (u32::from(bytes[21]) << 8) | (u32::from(bytes[22]) << 16);
 
         Ok(RawSample {
             accel_g: [

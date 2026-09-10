@@ -4,12 +4,7 @@ use esp_hal::{Async, i2s::master::I2sTx};
 
 use crate::support::diagnostics;
 
-use super::{
-    PlaybackSettings,
-    channels::Runtime,
-    chime::FlashChime,
-    melody::MelodySynth,
-};
+use super::{PlaybackSettings, channels::Runtime, chime::FlashChime, melody::MelodySynth};
 
 // Render speaker data into a small staging block and feed it through `push`,
 // whose esp-hal 1.1.x implementation correctly propagates TX-underrun errors.

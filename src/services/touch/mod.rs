@@ -7,8 +7,8 @@ mod channels;
 mod task;
 
 pub(crate) use channels::Input;
-pub(crate) use task::capture_task;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
+pub(crate) use task::capture_task;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TouchPoint {

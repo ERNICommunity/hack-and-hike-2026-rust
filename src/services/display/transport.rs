@@ -96,11 +96,7 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
         esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init pixel DMA buffer 2");
 
     Transport {
-        state: Some(PipelineState::Idle {
-            spi,
-            first,
-            second,
-        }),
+        state: Some(PipelineState::Idle { spi, first, second }),
         control_rx: Some(control_rx),
         control_tx: Some(control_tx),
         cs,
@@ -171,22 +167,13 @@ impl Transport {
         }
 
         let state = self.state.take().expect("LCD DMA pipeline state missing");
-        let PipelineState::Idle {
-            spi,
-            first,
-            second,
-        } = state
-        else {
+        let PipelineState::Idle { spi, first, second } = state else {
             self.state = Some(state);
             panic!("LCD region started while pixel DMA was still in flight");
         };
 
         let spi = self.set_window(spi, columns, pages);
-        self.state = Some(PipelineState::Idle {
-            spi,
-            first,
-            second,
-        });
+        self.state = Some(PipelineState::Idle { spi, first, second });
     }
 
     fn encode_pixels(buffer: &mut DmaTxBuf, pixels: &[Pixel]) -> usize {

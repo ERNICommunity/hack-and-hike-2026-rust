@@ -6,8 +6,8 @@
 
 use core::fmt;
 
-pub const PACKET_BYTES: usize = 32;
-pub const PROTOCOL_VERSION: u8 = 1;
+pub(super) const PACKET_BYTES: usize = 32;
+pub(super) const PROTOCOL_VERSION: u8 = 1;
 
 const MAGIC: [u8; 4] = *b"HNHN";
 const KIND_BEACON: u8 = 1;
@@ -18,10 +18,10 @@ const KIND_BEACON: u8 = 1;
 /// The inner bytes remain private so wire-format code is the only place that can
 /// depend on their layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DeviceId([u8; 6]);
+pub(crate) struct DeviceId([u8; 6]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InvalidDeviceId;
+pub(crate) struct InvalidDeviceId;
 
 impl TryFrom<[u8; 6]> for DeviceId {
     type Error = InvalidDeviceId;
@@ -51,15 +51,15 @@ impl fmt::Display for DeviceId {
 /// preserving the exact four-byte wire representation. Unknown bits are kept so
 /// newer peers remain forward-compatible with older firmware.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Capabilities(u32);
+pub(super) struct Capabilities(u32);
 
 impl Capabilities {
-    pub const IMU: Self = Self(1 << 0);
-    pub const AUDIO: Self = Self(1 << 1);
-    pub const DISPLAY: Self = Self(1 << 2);
-    pub const LOCAL: Self = Self(Self::IMU.0 | Self::AUDIO.0 | Self::DISPLAY.0);
+    pub(super) const IMU: Self = Self(1 << 0);
+    pub(super) const AUDIO: Self = Self(1 << 1);
+    pub(super) const DISPLAY: Self = Self(1 << 2);
+    pub(super) const LOCAL: Self = Self(Self::IMU.0 | Self::AUDIO.0 | Self::DISPLAY.0);
 
-    pub const fn bits(self) -> u32 {
+    pub(super) const fn bits(self) -> u32 {
         self.0
     }
 
@@ -75,22 +75,22 @@ impl fmt::UpperHex for Capabilities {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PacketKind {
+pub(super) enum PacketKind {
     Beacon,
 }
 
 /// Decoded semantic packet. Serialization is always explicit via `encode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Packet {
-    pub kind: PacketKind,
-    pub device_id: DeviceId,
-    pub sequence: u32,
-    pub uptime_ms: u32,
-    pub capabilities: Capabilities,
+pub(super) struct Packet {
+    pub(super) kind: PacketKind,
+    pub(super) device_id: DeviceId,
+    pub(super) sequence: u32,
+    pub(super) uptime_ms: u32,
+    pub(super) capabilities: Capabilities,
 }
 
 impl Packet {
-    pub const fn beacon(device_id: DeviceId, sequence: u32, uptime_ms: u32) -> Self {
+    pub(super) const fn beacon(device_id: DeviceId, sequence: u32, uptime_ms: u32) -> Self {
         Self {
             kind: PacketKind::Beacon,
             device_id,
@@ -100,7 +100,7 @@ impl Packet {
         }
     }
 
-    pub fn encode(self) -> [u8; PACKET_BYTES] {
+    pub(super) fn encode(self) -> [u8; PACKET_BYTES] {
         let mut out = [0u8; PACKET_BYTES];
         out[0..4].copy_from_slice(&MAGIC);
         out[4] = PROTOCOL_VERSION;
@@ -115,7 +115,7 @@ impl Packet {
         out
     }
 
-    pub fn decode(bytes: &[u8]) -> Option<Self> {
+    pub(super) fn decode(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != PACKET_BYTES || bytes[0..4] != MAGIC {
             return None;
         }

@@ -16,8 +16,7 @@ use crate::{
 use super::design;
 
 const ICON_X: usize = (design::UI.navigation.width - design::NAV_ICON_SIZE) / 2;
-const ICON_Y_IN_BUTTON: usize =
-    (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;
+const ICON_Y_IN_BUTTON: usize = (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PointerPhase {

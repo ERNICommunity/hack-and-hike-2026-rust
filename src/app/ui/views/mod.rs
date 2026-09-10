@@ -49,7 +49,11 @@ impl Views {
         }
     }
 
-    pub(super) fn present_network_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(super) fn present_network_shell(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+    ) {
         self.network.present_shell(surface, display);
     }
 

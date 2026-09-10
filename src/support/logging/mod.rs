@@ -4,7 +4,7 @@ use core::fmt::Write;
 use critical_section::Mutex;
 use log::{LevelFilter, Metadata, Record};
 
-use crate::support::memory::data_plane::PsramByteRing;
+use crate::support::memory::storage::PsramByteRing;
 
 /// Maximum number of rows retained by the on-device log model.
 pub(crate) const MAX_LOG_ROWS: usize = 64;
@@ -102,9 +102,7 @@ impl Input {
                     return 0;
                 }
 
-                store
-                    .history
-                    .copy_range_to(offset, &mut out[offset..end])
+                store.history.copy_range_to(offset, &mut out[offset..end])
             });
 
             if copied != end - offset {

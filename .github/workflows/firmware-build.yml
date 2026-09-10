@@ -18,8 +18,23 @@ env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
+  format:
+    name: rustfmt
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install rustfmt
+        run: rustup toolchain install 1.93.0 --profile minimal --component rustfmt
+
+      - name: Check formatting
+        run: cargo +1.93.0 fmt --all -- --check
+
   build:
     name: ESP32-S3 release build
+    needs: format
     runs-on: ubuntu-latest
 
     steps:

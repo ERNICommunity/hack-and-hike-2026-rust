@@ -19,7 +19,7 @@ use crate::{
         audio::{PitchSemitones, TempoBpm},
         display::Display,
     },
-    support::memory::data_plane,
+    support::memory::storage,
 };
 
 use super::super::{
@@ -79,7 +79,7 @@ pub(super) struct View {
 
 impl View {
     pub(super) fn new() -> Self {
-        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SpeakerApp::build(gui)
             .expect("speaker KDL exceeds embedded-gui fixed capacities");
         let geometry = Geometry {
@@ -257,7 +257,11 @@ fn draw_button(frame: &mut GuiFramebuffer, rect: Rect, label: &str, primary: boo
     } else {
         common::light_gray()
     };
-    let foreground = if primary { common::white() } else { common::black() };
+    let foreground = if primary {
+        common::white()
+    } else {
+        common::black()
+    };
     common::fill_rect(frame, rect, background);
     let label_rect = Rect::new(
         rect.x,
@@ -335,5 +339,6 @@ fn contains(rect: Rect, pointer: ContentPointer) -> bool {
 }
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
-    gui.absolute_rect(id).unwrap_or_else(|| panic!("{name} layout missing"))
+    gui.absolute_rect(id)
+        .unwrap_or_else(|| panic!("{name} layout missing"))
 }

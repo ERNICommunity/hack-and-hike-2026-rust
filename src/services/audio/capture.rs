@@ -7,12 +7,10 @@ use esp_hal::{
     time::Rate,
 };
 
-use crate::support::{diagnostics, memory::data_plane};
+use crate::support::{diagnostics, memory::storage};
 
 use super::{
-    BLOCK_FRAMES, BLOCK_SAMPLES, CHANNELS, Resources, SAMPLE_RATE_HZ,
-    channels::Runtime,
-    playback,
+    BLOCK_FRAMES, BLOCK_SAMPLES, CHANNELS, Resources, SAMPLE_RATE_HZ, channels::Runtime, playback,
 };
 
 const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
@@ -108,7 +106,7 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
         SAMPLE_RATE_HZ
     );
 
-    let mut dma_drain = data_plane::FixedPsramBuffer::filled(RX_DMA_BUFFER_BYTES, 0u8);
+    let mut dma_drain = storage::FixedPsramBuffer::filled(RX_DMA_BUFFER_BYTES, 0u8);
     let mut samples = [0i16; BLOCK_SAMPLES];
     let mut frame_index = 0usize;
     let mut peak_left = 0u16;
@@ -140,9 +138,7 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
                 frame_index += 1;
 
                 if frame_index == BLOCK_FRAMES {
-                    let sequence = runtime
-                        .publish_audio(&samples, peak_left, peak_right)
-                        .await;
+                    let sequence = runtime.publish_audio(&samples, peak_left, peak_right).await;
                     if first_block {
                         first_block = false;
                         ::log::info!(

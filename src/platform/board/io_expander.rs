@@ -89,12 +89,7 @@ where
     // camera clock to run before SCCB access.
     update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, 0)?;
     delay.delay_millis(20u32);
-    update_register_bits(
-        i2c,
-        PORT1_OUTPUT_REGISTER,
-        CAMERA_RESET,
-        CAMERA_RESET,
-    )?;
+    update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, CAMERA_RESET)?;
     delay.delay_millis(20u32);
     Ok(())
 }
@@ -139,12 +134,7 @@ where
     update_register_bits(i2c, PORT0_DIRECTION_REGISTER, SPEAKER_RESET, 0)?;
     delay.delay_millis(10u32);
 
-    update_register_bits(
-        i2c,
-        PORT0_OUTPUT_REGISTER,
-        SPEAKER_RESET,
-        SPEAKER_RESET,
-    )?;
+    update_register_bits(i2c, PORT0_OUTPUT_REGISTER, SPEAKER_RESET, SPEAKER_RESET)?;
     delay.delay_millis(50u32);
     Ok(())
 }

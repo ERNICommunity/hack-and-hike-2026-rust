@@ -111,8 +111,7 @@ pub(super) fn initialize(
     dc: Output<'static>,
     delay: &mut Delay,
 ) -> Initialized {
-    let spi_device =
-        OwnedSpiDevice::new(dma_bus, cs).expect("Failed to initialize LCD SPI device");
+    let spi_device = OwnedSpiDevice::new(dma_bus, cs).expect("Failed to initialize LCD SPI device");
     let di = display_interface_spi::SPIInterface::new(spi_device, dc);
 
     // The board is mounted 180 degrees, so logical top-to-bottom/left-to-right

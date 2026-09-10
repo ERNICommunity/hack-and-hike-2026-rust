@@ -18,10 +18,7 @@ use static_cell::StaticCell;
 use crate::support::diagnostics;
 
 use super::{
-    Config, MacAddress, Resources, RssiDbm,
-    channels::Runtime,
-    protocol,
-    state::NetworkState,
+    Config, MacAddress, Resources, RssiDbm, channels::Runtime, protocol, state::NetworkState,
 };
 
 static STATE: Mutex<RefCell<Option<NetworkState>>> = Mutex::new(RefCell::new(None));
@@ -93,8 +90,7 @@ pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, run
             .expect("Failed to allocate CPU1 ESP-NOW receive task"),
     );
     spawner.spawn(
-        beacon_task(sender, config, runtime)
-            .expect("Failed to allocate CPU1 ESP-NOW beacon task"),
+        beacon_task(sender, config, runtime).expect("Failed to allocate CPU1 ESP-NOW beacon task"),
     );
 
     ::log::info!(

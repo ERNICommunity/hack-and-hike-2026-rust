@@ -110,8 +110,7 @@ impl Ui {
             }
             ViewId::Imu => {
                 if let Some(imu) = self.model.take_imu_display() {
-                    self.views
-                        .present_imu(&mut self.gui_surface, display, &imu);
+                    self.views.present_imu(&mut self.gui_surface, display, &imu);
                 }
             }
             ViewId::Microphone => {
@@ -172,8 +171,7 @@ impl Ui {
             }
             ViewId::Log => {
                 if !self.present_log_if_dirty(display) {
-                    self.views
-                        .present_log_shell(&mut self.gui_surface, display);
+                    self.views.present_log_shell(&mut self.gui_surface, display);
                 }
             }
         }
