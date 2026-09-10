@@ -7,7 +7,7 @@
 //! instrument pixels through generic widget abstractions.
 
 use embedded_graphics::{
-    pixelcolor::{IntoStorage, Rgb565},
+    pixelcolor::Rgb565,
     prelude::DrawTarget as _,
     prelude::RgbColor as _,
 };
@@ -23,6 +23,8 @@ use super::design;
 pub(crate) type GuiFramebufferBackend = EndianCorrectedBuffer<'static, Rgb565>;
 pub(crate) type GuiFramebuffer = FrameBuf<Rgb565, GuiFramebufferBackend>;
 
+const _: () = assert!(core::mem::size_of::<Rgb565>() == 2);
+
 /// One reusable fixed-size content surface for every KDL-backed view.
 pub(crate) struct GuiSurface {
     framebuffer: Option<GuiFramebuffer>,
@@ -34,7 +36,10 @@ impl GuiSurface {
             design::CONTENT_WIDTH * design::CONTENT_HEIGHT,
             Rgb565::WHITE,
         );
-        let backend = EndianCorrectedBuffer::new(pixels, EndianCorrection::ToLittleEndian);
+        // The ILI9342C consumes RGB565 high byte first. Keeping the backing store
+        // in that same byte order means presentation can batch-copy raw bytes to
+        // DMA rather than decode every framebuffer pixel back into a host u16.
+        let backend = EndianCorrectedBuffer::new(pixels, EndianCorrection::ToBigEndian);
         Self {
             framebuffer: Some(FrameBuf::new(
                 backend,
@@ -56,14 +61,36 @@ impl GuiSurface {
         gui: &mut GuiContext<'static, NODES, TEXT, EVENTS>,
         overlay: impl FnOnce(&mut GuiFramebuffer),
     ) {
+        self.present_frame(display, |framebuffer| {
+            let _ = framebuffer.clear(Rgb565::WHITE);
+            gui.render(framebuffer)
+                .expect("embedded-gui render failed");
+            overlay(framebuffer);
+        });
+    }
+
+    /// Present a semantic renderer that deliberately covers every framebuffer
+    /// pixel itself. This skips both the generic full-surface clear and KDL draw
+    /// pass; views using it remain responsible for overwriting the complete
+    /// 276x240 content surface before the DMA transfer starts.
+    pub(crate) fn present_overlay_only(
+        &mut self,
+        display: &mut Display,
+        overlay: impl FnOnce(&mut GuiFramebuffer),
+    ) {
+        self.present_frame(display, overlay);
+    }
+
+    fn present_frame(
+        &mut self,
+        display: &mut Display,
+        draw: impl FnOnce(&mut GuiFramebuffer),
+    ) {
         let mut framebuffer = self
             .framebuffer
             .take()
             .expect("embedded-gui framebuffer missing");
-        let _ = framebuffer.clear(Rgb565::WHITE);
-        gui.render(&mut framebuffer)
-            .expect("embedded-gui render failed");
-        overlay(&mut framebuffer);
+        draw(&mut framebuffer);
 
         let mut backend = CoreS3DisplayBackend { display };
         let transfer = backend
@@ -113,16 +140,14 @@ impl DisplayBackend<{ design::CONTENT_WIDTH }, { design::CONTENT_HEIGHT }, GuiFr
 
 fn present_framebuffer(display: &mut Display, framebuffer: &GuiFramebuffer) {
     let pixel_count = design::CONTENT_WIDTH * design::CONTENT_HEIGHT;
+    let byte_count = pixel_count * core::mem::size_of::<Rgb565>();
     let data = &framebuffer.data;
 
-    // The framebuffer is owned by this transfer for the complete operation and
-    // its fixed dimensions prove the contiguous slice length.
-    let pixels = unsafe { core::slice::from_raw_parts(data.data_ptr(), pixel_count) };
-    display.render_scanlines(design::CONTENT_REGION, |local_y, destination| {
-        let start = local_y * design::CONTENT_WIDTH;
-        let source = &pixels[start..start + design::CONTENT_WIDTH];
-        for (dst, src) in destination.iter_mut().zip(source.iter().copied()) {
-            *dst = src.into_storage();
-        }
-    });
+    // The EndianCorrectedBuffer stores every RGB565 pixel in LCD wire order and
+    // this transfer owns the framebuffer for the complete operation. The fixed
+    // dimensions prove the contiguous byte-slice length.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(data.data_ptr().cast::<u8>(), byte_count)
+    };
+    display.render_rgb565_be_bytes(design::CONTENT_REGION, bytes);
 }
