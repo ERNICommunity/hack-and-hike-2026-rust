@@ -13,18 +13,17 @@ use embassy_time::{Duration, Instant, Timer};
 
 use crate::system_i2c::SystemI2cBus;
 
-/// Accelerometer/gyroscope acquisition target.
+/// Host-side accelerometer/gyroscope acquisition target.
 pub const DEFAULT_SENSOR_HZ: u32 = 100;
-/// Fusion runs once per acquired accelerometer/gyroscope sample.
+/// Fusion runs once per host acquisition.
 pub const DEFAULT_FUSION_HZ: u32 = 100;
+/// BMI270 gyroscope data registers run faster internally to reduce phase lag
+/// during quick turns while the host keeps the proven 100 Hz I2C cadence.
+const GYRO_SENSOR_ODR_HZ: u32 = 400;
 /// BMM150 is configured for its maximum 30 Hz normal-mode ODR.
 pub const DEFAULT_MAG_HZ: u32 = 30;
 
 /// Runtime-tunable fusion parameters.
-///
-/// Actual integration `dt` is measured from `Instant` on every sample rather
-/// than assumed from the nominal period, making heading less sensitive to
-/// shared-I²C/task scheduling jitter.
 #[derive(Clone, Copy)]
 pub struct Config {
     pub sample_period: Duration,
@@ -35,8 +34,8 @@ pub struct Config {
 pub const DEFAULT_CONFIG: Config = Config {
     sample_period: Duration::from_millis(10),
     roll_pitch_alpha: 0.98,
-    // Magnetic heading is a slow drift correction; gyro remains authoritative
-    // for real motion. Applied only on fresh 30 Hz magnetic samples.
+    // Magnetic heading is only a slow/quiet-state absolute reference. Gyro is
+    // authoritative during motion.
     yaw_alpha: 0.98,
 };
 
@@ -127,19 +126,19 @@ const CMD_SOFT_RESET: u8 = 0xB6;
 const CONFIG_LOAD_OK: u8 = 0x01;
 const AUX_BUSY: u8 = 1 << 2;
 
-// 100 Hz, performance filter, normal bandwidth/averaging. Use the BMI270's
-// widest filtered gyro range so quick hand turns cannot silently clip at the
-// previous +/-500 dps limit and permanently lose absolute yaw.
+// Acceleration stays at 100 Hz. Gyro runs at 400 Hz, performance filtering,
+// normal bandwidth: lower group delay and much higher bandwidth during fast yaw
+// without increasing host I2C traffic. Range remains +/-2000 dps.
 const ACC_CONF_100HZ: u8 = 0xA8;
-const GYR_CONF_100HZ: u8 = 0xA8;
+const GYR_CONF_400HZ: u8 = 0xAA;
 const ACC_RANGE_4G: u8 = 0x01;
 const GYR_RANGE_2000DPS: u8 = 0x00;
 const PWR_CTRL_ACC_GYR: u8 = 0x06;
 const PWR_CTRL_ACC_GYR_AUX: u8 = 0x0F;
 
-// BMI270 AUX configuration: 50 Hz sensor-hub polling, 8-byte automatic burst.
-// The BMM150 itself produces new data at 30 Hz.
-const AUX_CONF_50HZ: u8 = 0x47;
+// Poll the 30 Hz BMM150 at 100 Hz inside BMI270. This does not add host I2C
+// traffic, but halves worst-case AUX pickup latency compared with 50 Hz.
+const AUX_CONF_100HZ: u8 = 0x48;
 const AUX_IF_DATA_MODE_8_BYTES: u8 = 0x4F;
 const AUX_IF_MANUAL_MODE: u8 = 0x80;
 const AUX_IF_TRIM_2K_PULLUP: u8 = 0x03;
@@ -152,6 +151,12 @@ const BMM_REP_Z_REGULAR: u8 = 0x07;
 
 const ACC_G_PER_LSB: f32 = 4.0 / 32768.0;
 const GYR_DPS_PER_LSB: f32 = 2000.0 / 32768.0;
+// BMI270 sensor time is a free-running 24-bit counter at exactly 25.6 kHz.
+const SENSOR_TIME_TICK_SECONDS: f32 = 1.0 / 25_600.0;
+const SENSOR_TIME_MASK: u32 = 0x00FF_FFFF;
+const MAX_FUSION_SAMPLE_GAP_TICKS: u32 = 1_280; // 50 ms
+const NOMINAL_FUSION_TICKS: u32 = 256; // 10 ms
+
 const INIT_RETRY: Duration = Duration::from_secs(1);
 const MAG_RETRY: Duration = Duration::from_secs(5);
 const MAG_STALE: Duration = Duration::from_secs(1);
@@ -168,29 +173,29 @@ const MAG_LEARNING_MAX_UT: f32 = 4000.0;
 // disturbed. Short magnitude dips should not make the whole IMU status flap.
 const MAG_GOOD_SAMPLES_TO_READY: u8 = 8;
 const MAG_BAD_SAMPLES_TO_DISTURBED: u8 = 30;
-// A bad magnetic heading must never be able to erase a real turn. At 30 Hz this
-// permits at most about six degrees/second of magnetic drift correction.
+// Quiet-state magnetic correction remains deliberately slow for small drift.
 const MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG: f32 = 0.20;
-// Once north is locked, a magnetic observation that disagrees this far with the
-// gyro prediction is an outlier, not a correction.
-const MAX_MAG_YAW_INNOVATION_DEG: f32 = 60.0;
-// Do not fuse the 30 Hz magnetometer while the device is rotating quickly. The
-// magnetic sample is necessarily older than the 100 Hz gyro state, so using it
-// during a fast turn creates a deterministic lag error. Gyro carries the turn;
-// magnetic north resumes once angular rate has dropped.
-const MAG_FUSION_MAX_YAW_RATE_DPS: f32 = 180.0;
-// Before the first absolute north lock, compare magnetic heading against the
-// gyro-predicted yaw. Their difference should remain constant even while the
-// device turns. Requiring several consistent offsets prevents one bad vector
-// from defining north for the whole session.
-const MAG_INITIAL_LOCK_SAMPLES: u8 = 3;
-const MAX_MAG_INITIAL_OFFSET_JITTER_DEG: f32 = 8.0;
+// Magnetometer observations are not fused while the device is rotating faster
+// than this on any axis. The BMM150 is slower and delayed relative to gyro; it
+// is much more reliable as an absolute reference after motion settles.
+const MAG_FUSION_MAX_RATE_DPS: f32 = 45.0;
+// Require fresh low-motion MAG frames before using the compass after any turn.
+// At 30 Hz this provides roughly 100 ms for BMM150/AUX pipeline latency to clear.
+const MAG_QUIET_SAMPLES_BEFORE_FUSION: u8 = 3;
+// Initial/reacquired north must be consistent over multiple independent BMM150
+// frames. Compare heading-minus-gyro offsets so small residual motion cancels.
+const MAG_INITIAL_LOCK_SAMPLES: u8 = 5;
+const MAX_MAG_INITIAL_OFFSET_JITTER_DEG: f32 = 6.0;
+// A large but stable discrepancy while quiet is evidence that gyro integration
+// lost angle, not grounds for permanent magnetometer rejection. Reacquire only
+// after a longer consistency proof so a transient magnetic disturbance cannot
+// snap heading around.
+const MAG_RECOVERY_MIN_INNOVATION_DEG: f32 = 30.0;
+const MAG_RECOVERY_SAMPLES: u8 = 8;
+const MAX_MAG_RECOVERY_OFFSET_JITTER_DEG: f32 = 6.0;
 // If a trusted gyro integration is known to have become incomplete (near full
-// scale or a long scheduling gap), explicitly reacquire north after the turn.
-// At +/-2000 dps the threshold is deliberately close to full scale so normal
-// fast motion keeps continuous gyro integration and never causes a relock.
+// scale or a long sample gap), explicitly mark absolute yaw untrusted.
 const GYRO_NEAR_SATURATION_DPS: f32 = 1950.0;
-const MAX_FUSION_SAMPLE_GAP_MS: u64 = 50;
 // The horizontal magnetic component must be measurable, and the device heading
 // axis itself must have a meaningful horizontal projection. When the latter is
 // nearly vertical, compass heading is physically undefined; gyro yaw bridges
@@ -212,6 +217,7 @@ struct RawSample {
     accel_g: [f32; 3],
     gyro_dps: [f32; 3],
     mag_data: [u8; 8],
+    sensor_time: u32,
 }
 
 struct Bmi270 {
@@ -297,7 +303,7 @@ impl Bmi270 {
 
         self.write_register(REG_ACC_CONF, ACC_CONF_100HZ).await?;
         self.write_register(REG_ACC_RANGE, ACC_RANGE_4G).await?;
-        self.write_register(REG_GYR_CONF, GYR_CONF_100HZ).await?;
+        self.write_register(REG_GYR_CONF, GYR_CONF_400HZ).await?;
         self.write_register(REG_GYR_RANGE, GYR_RANGE_2000DPS).await?;
         self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR).await?;
         Timer::after(SENSOR_STARTUP).await;
@@ -367,7 +373,7 @@ impl Bmi270 {
         self.aux_write_register(BMM_REG_OP_MODE, BMM_NORMAL_30HZ)
             .await?;
 
-        self.write_register(REG_AUX_CONF, AUX_CONF_50HZ).await?;
+        self.write_register(REG_AUX_CONF, AUX_CONF_100HZ).await?;
         self.write_register(REG_AUX_IF_CONF, AUX_IF_DATA_MODE_8_BYTES)
             .await?;
         self.write_register(REG_AUX_RD_ADDR, BMM_REG_DATA_X_LSB).await?;
@@ -383,7 +389,11 @@ impl Bmi270 {
     }
 
     async fn read_sample(&self) -> Result<RawSample, Error> {
-        let mut bytes = [0u8; 20];
+        // DATA_0..DATA_19 followed by the three SENSORTIME bytes. Bosch defines
+        // sensor time as shadowed at the start of a burst that begins in the data
+        // registers, so this gives a coherent 25.6 kHz timestamp at no extra I2C
+        // transaction cost.
+        let mut bytes = [0u8; 23];
         let mut i2c = self.bus.lock().await;
         i2c.write_read_async(BMI270_ADDR, &[REG_AUX_X_LSB], &mut bytes)
             .await
@@ -403,6 +413,9 @@ impl Bmi270 {
             i16::from_le_bytes([bytes[16], bytes[17]]),
             i16::from_le_bytes([bytes[18], bytes[19]]),
         ];
+        let sensor_time = u32::from(bytes[20])
+            | (u32::from(bytes[21]) << 8)
+            | (u32::from(bytes[22]) << 16);
 
         Ok(RawSample {
             accel_g: [
@@ -416,6 +429,7 @@ impl Bmi270 {
                 f32::from(gyr[2]) * GYR_DPS_PER_LSB,
             ],
             mag_data,
+            sensor_time,
         })
     }
 }
@@ -468,9 +482,13 @@ impl GyroBias {
 struct Fusion {
     orientation: Orientation,
     gravity_body: [f32; 3],
+    previous_yaw_rate_dps: Option<f32>,
     magnetic_heading_locked: bool,
+    quiet_mag_samples: u8,
     pending_mag_offset: Option<f32>,
     pending_mag_samples: u8,
+    recovery_mag_offset: Option<f32>,
+    recovery_mag_samples: u8,
     initialized: bool,
 }
 
@@ -483,22 +501,42 @@ impl Fusion {
                 yaw_deg: 0.0,
             },
             gravity_body: [0.0, 0.0, 1.0],
+            previous_yaw_rate_dps: None,
             magnetic_heading_locked: false,
+            quiet_mag_samples: 0,
             pending_mag_offset: None,
             pending_mag_samples: 0,
+            recovery_mag_offset: None,
+            recovery_mag_samples: 0,
             initialized: false,
         }
     }
 
     fn invalidate_absolute_heading(&mut self) {
         self.magnetic_heading_locked = false;
-        self.pending_mag_offset = None;
-        self.pending_mag_samples = 0;
+        self.quiet_mag_samples = 0;
+        self.clear_pending_magnetic_candidate();
+        self.clear_recovery_candidate();
+    }
+
+    fn reset_rate_history(&mut self) {
+        self.previous_yaw_rate_dps = None;
     }
 
     fn clear_pending_magnetic_candidate(&mut self) {
         self.pending_mag_offset = None;
         self.pending_mag_samples = 0;
+    }
+
+    fn clear_recovery_candidate(&mut self) {
+        self.recovery_mag_offset = None;
+        self.recovery_mag_samples = 0;
+    }
+
+    fn note_motion(&mut self) {
+        self.quiet_mag_samples = 0;
+        self.clear_pending_magnetic_candidate();
+        self.clear_recovery_candidate();
     }
 
     fn update(
@@ -519,18 +557,7 @@ impl Fusion {
             let (roll, pitch) = attitude_from_gravity(self.gravity_body);
             self.orientation.roll_deg = roll;
             self.orientation.pitch_deg = pitch;
-
-            let screen_gravity = normalize3(screen_vector_from_body(self.gravity_body))
-                .unwrap_or([0.0, 0.0, 1.0]);
-            let initial_heading = magnetic_field_ut
-                .map(screen_vector_from_body)
-                .and_then(|field| gravity_compensated_heading(field, screen_gravity));
-            if let Some(heading) = initial_heading {
-                self.orientation.yaw_deg = heading;
-                self.magnetic_heading_locked = true;
-            } else {
-                self.orientation.yaw_deg = 0.0;
-            }
+            self.orientation.yaw_deg = 0.0;
             self.initialized = true;
             return self.orientation;
         }
@@ -566,56 +593,58 @@ impl Fusion {
         let screen_gyro = screen_vector_from_body(gyro_dps);
 
         // Yaw rate is the component of angular velocity around local gravity.
-        // This is orientation-independent and uses the same filtered gravity
-        // estimate that defines roll/pitch, preventing axis leakage.
         let yaw_rate_dps = dot3(screen_gyro, screen_gravity);
-        let predicted_yaw = wrap_degrees(self.orientation.yaw_deg + yaw_rate_dps * dt_seconds);
+        // Trapezoidal integration preserves substantially more turn angle during
+        // fast acceleration/deceleration than integrating only the newest rate.
+        let integrated_yaw_rate = self
+            .previous_yaw_rate_dps
+            .map(|previous| 0.5 * (previous + yaw_rate_dps))
+            .unwrap_or(yaw_rate_dps);
+        self.previous_yaw_rate_dps = Some(yaw_rate_dps);
+        let predicted_yaw = wrap_degrees(
+            self.orientation.yaw_deg + integrated_yaw_rate * dt_seconds,
+        );
+
+        let total_rate_dps = max_abs3(gyro_dps);
+        if total_rate_dps > MAG_FUSION_MAX_RATE_DPS {
+            // Never mix delayed 30 Hz magnetic observations into active motion.
+            self.note_motion();
+            self.orientation.yaw_deg = predicted_yaw;
+            return self.orientation;
+        }
 
         let magnetic_heading = magnetic_field_ut
             .map(screen_vector_from_body)
             .and_then(|field| gravity_compensated_heading(field, screen_gravity));
 
         self.orientation.yaw_deg = if let Some(heading) = magnetic_heading {
-            self.fuse_magnetic_yaw(predicted_yaw, heading, yaw_rate_dps, yaw_alpha)
+            self.fuse_magnetic_yaw(predicted_yaw, heading, yaw_alpha)
         } else {
-            // Most 100 Hz fusion ticks have no new 30 Hz magnetic frame. Keep a
-            // partially accumulated lock/relock candidate across those gyro-only
-            // ticks; only a real fast-turn condition or explicit invalidation
-            // clears it.
             predicted_yaw
         };
 
         self.orientation
     }
 
-    fn fuse_magnetic_yaw(
-        &mut self,
-        predicted_yaw: f32,
-        heading: f32,
-        yaw_rate_dps: f32,
-        yaw_alpha: f32,
-    ) -> f32 {
-        // BMM150 updates at only 30 Hz and reaches us through the BMI270 AUX
-        // path. During a fast turn it is temporally behind the 100 Hz gyro state,
-        // so do not let that delayed observation fight the gyro integration.
-        if abs_f32(yaw_rate_dps) > MAG_FUSION_MAX_YAW_RATE_DPS {
-            self.clear_pending_magnetic_candidate();
+    fn fuse_magnetic_yaw(&mut self, predicted_yaw: f32, heading: f32, yaw_alpha: f32) -> f32 {
+        self.quiet_mag_samples = self.quiet_mag_samples.saturating_add(1);
+        if self.quiet_mag_samples < MAG_QUIET_SAMPLES_BEFORE_FUSION {
             return predicted_yaw;
         }
 
+        let offset = wrap_degrees(heading - predicted_yaw);
+
         if !self.magnetic_heading_locked {
-            let offset = wrap_degrees(heading - predicted_yaw);
             let consistent = self
                 .pending_mag_offset
                 .map(|previous| {
-                    abs_f32(wrap_degrees(offset - previous)) <= MAX_MAG_INITIAL_OFFSET_JITTER_DEG
+                    abs_f32(wrap_degrees(offset - previous))
+                        <= MAX_MAG_INITIAL_OFFSET_JITTER_DEG
                 })
                 .unwrap_or(false);
 
             if consistent {
                 self.pending_mag_samples = self.pending_mag_samples.saturating_add(1);
-                // Track the circular offset slowly so quantization/noise does not
-                // make the final lock depend on the very first candidate sample.
                 let previous = self.pending_mag_offset.unwrap_or(offset);
                 self.pending_mag_offset = Some(wrap_degrees(
                     previous + 0.25 * wrap_degrees(offset - previous),
@@ -626,23 +655,50 @@ impl Fusion {
             }
 
             if self.pending_mag_samples >= MAG_INITIAL_LOCK_SAMPLES {
+                let acquired_offset = self.pending_mag_offset.unwrap_or(offset);
                 self.magnetic_heading_locked = true;
                 self.clear_pending_magnetic_candidate();
-                // The current yaw is explicitly marked untrusted only after a
-                // possible gyro overrange/timing loss, so a confirmed magnetic
-                // reference is allowed to restore absolute north immediately.
-                return heading;
+                self.clear_recovery_candidate();
+                return wrap_degrees(predicted_yaw + acquired_offset);
             }
 
             return predicted_yaw;
         }
 
-        let correction = wrap_degrees(heading - predicted_yaw);
-        if abs_f32(correction) > MAX_MAG_YAW_INNOVATION_DEG {
+        // Small innovations are ordinary gyro drift: correct them slowly. A
+        // large innovation is never ignored forever; while quiet it must first
+        // prove itself consistent over several independent magnetic frames.
+        if abs_f32(offset) >= MAG_RECOVERY_MIN_INNOVATION_DEG {
+            let consistent = self
+                .recovery_mag_offset
+                .map(|previous| {
+                    abs_f32(wrap_degrees(offset - previous))
+                        <= MAX_MAG_RECOVERY_OFFSET_JITTER_DEG
+                })
+                .unwrap_or(false);
+
+            if consistent {
+                self.recovery_mag_samples = self.recovery_mag_samples.saturating_add(1);
+                let previous = self.recovery_mag_offset.unwrap_or(offset);
+                self.recovery_mag_offset = Some(wrap_degrees(
+                    previous + 0.25 * wrap_degrees(offset - previous),
+                ));
+            } else {
+                self.recovery_mag_offset = Some(offset);
+                self.recovery_mag_samples = 1;
+            }
+
+            if self.recovery_mag_samples >= MAG_RECOVERY_SAMPLES {
+                let recovered_offset = self.recovery_mag_offset.unwrap_or(offset);
+                self.clear_recovery_candidate();
+                return wrap_degrees(predicted_yaw + recovered_offset);
+            }
+
             return predicted_yaw;
         }
 
-        let requested = (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * correction;
+        self.clear_recovery_candidate();
+        let requested = (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * offset;
         let applied = clamp_f32(
             requested,
             -MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG,
@@ -707,10 +763,10 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
         let mut mag_trim = match sensor.initialize_bmm150().await {
             Ok(trim) => {
                 ::log::info!(
-                    "BMI270+BMM150 IMU started: accel/gyro={} Hz, mag={} Hz, fusion={} Hz",
-                    DEFAULT_SENSOR_HZ,
-                    DEFAULT_MAG_HZ,
-                    DEFAULT_FUSION_HZ
+                    "BMI270+BMM150 IMU started: fusion={} Hz, gyro={} Hz, mag={} Hz",
+                    DEFAULT_FUSION_HZ,
+                    GYRO_SENSOR_ODR_HZ,
+                    DEFAULT_MAG_HZ
                 );
                 Some(trim)
             }
@@ -734,7 +790,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
         let mut last_mag_frame: Option<[u8; 8]> = None;
         let mut last_mag_update = Instant::now();
         let mut last_mag_retry = Instant::now();
-        let mut last_sample_time = Instant::now();
+        let mut last_sensor_time: Option<u32> = None;
         let mut consecutive_errors = 0u8;
         let mut mag_good_samples = 0u8;
         let mut mag_bad_samples = 0u8;
@@ -765,20 +821,27 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
             match sensor.read_sample().await {
                 Ok(sample) => {
                     consecutive_errors = 0;
-                    let elapsed_ms_raw = (now - last_sample_time).as_millis();
-                    let timing_gap = elapsed_ms_raw > MAX_FUSION_SAMPLE_GAP_MS;
-                    let elapsed_ms = elapsed_ms_raw.clamp(2, MAX_FUSION_SAMPLE_GAP_MS);
-                    last_sample_time = now;
-                    let dt_seconds = elapsed_ms as f32 * 0.001;
 
-                    // With the +/-2000 dps range, reaching this threshold means
-                    // there is a real possibility that angle was clipped. A long
-                    // scheduling gap can lose angle for the same reason. Keep
-                    // integrating the best available gyro value, but explicitly
-                    // mark absolute yaw untrusted so magnetic north is reacquired
-                    // after motion settles instead of being rejected forever.
+                    let delta_ticks = last_sensor_time
+                        .map(|previous| sample.sensor_time.wrapping_sub(previous) & SENSOR_TIME_MASK)
+                        .unwrap_or(NOMINAL_FUSION_TICKS);
+                    last_sensor_time = Some(sample.sensor_time);
+                    let timing_gap = delta_ticks == 0 || delta_ticks > MAX_FUSION_SAMPLE_GAP_TICKS;
+                    let integration_ticks = if timing_gap {
+                        NOMINAL_FUSION_TICKS
+                    } else {
+                        delta_ticks
+                    };
+                    let dt_seconds = integration_ticks as f32 * SENSOR_TIME_TICK_SECONDS;
+
+                    // Saturation or a timing discontinuity can lose turn angle.
+                    // Mark absolute yaw untrusted, but retain the best gyro path;
+                    // quiet-state MAG recovery below will establish north again.
                     if timing_gap || max_abs3(sample.gyro_dps) >= GYRO_NEAR_SATURATION_DPS {
                         fusion.invalidate_absolute_heading();
+                    }
+                    if timing_gap {
+                        fusion.reset_rate_history();
                     }
 
                     let corrected_gyro = gyro_bias.correct(sample.accel_g, sample.gyro_dps);
@@ -1052,13 +1115,9 @@ fn attitude_from_gravity(gravity: [f32; 3]) -> (f32, f32) {
 
 /// Compute magnetic heading without inventing a leveling rotation.
 ///
-/// The previous shortest-arc quaternion forced gravity onto +Z. That operation
-/// is not unique: its implicit twist about gravity changes with combined
-/// pitch/roll, which can create a false heading drift approaching 180 degrees.
-/// Instead, project both magnetic north and the fixed screen +X heading axis
-/// onto the plane perpendicular to gravity, then measure their signed angle
-/// around gravity. This is invariant to tilt wherever heading is physically
-/// defined and exactly matches the previous convention when upright.
+/// Project both magnetic north and the fixed screen +X heading axis onto the
+/// plane perpendicular to gravity, then measure their signed angle around
+/// gravity. This is tilt-invariant wherever heading is physically defined.
 fn gravity_compensated_heading(field: [f32; 3], gravity: [f32; 3]) -> Option<f32> {
     let field_along_gravity = dot3(field, gravity);
     let horizontal_field = [
@@ -1071,9 +1130,6 @@ fn gravity_compensated_heading(field: [f32; 3], gravity: [f32; 3]) -> Option<f32
         return None;
     }
 
-    // Project screen +X into the same horizontal plane. If +X is nearly
-    // parallel to gravity, its compass heading is undefined; skipping magnetic
-    // correction here lets gyro yaw carry smoothly through the singular pose.
     let forward_along_gravity = gravity[0];
     let horizontal_forward = [
         1.0 - gravity[0] * forward_along_gravity,
@@ -1084,9 +1140,6 @@ fn gravity_compensated_heading(field: [f32; 3], gravity: [f32; 3]) -> Option<f32
         return None;
     }
 
-    // Normalizing is unnecessary: both atan2 arguments contain the same product
-    // of the two horizontal vector magnitudes. Keep the existing yaw sign by
-    // measuring clockwise from screen +X when gravity is +Z.
     let sine = -dot3(gravity, cross3(horizontal_forward, horizontal_field));
     let cosine = dot3(horizontal_forward, horizontal_field);
     Some(wrap_degrees(radians_to_degrees(atan2_approx(sine, cosine))))
