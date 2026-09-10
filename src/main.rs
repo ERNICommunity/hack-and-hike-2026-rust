@@ -79,7 +79,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         if camera_active {
             if let Some(mut frame) = camera.begin_frame() {
                 ui.render_camera(&mut display, &mut frame);
-                let _ = frame.finish();
+                frame.finish();
             }
         }
 

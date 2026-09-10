@@ -62,10 +62,18 @@ pub struct Resources {
     pub d7: GPIO47<'static>,
 }
 
+enum CaptureState {
+    Stopped {
+        driver: CameraDriver<'static>,
+        stream_buffer: DmaRxStreamBuf,
+    },
+    Streaming(InFlight),
+}
+
 pub struct Camera {
-    driver: Option<CameraDriver<'static>>,
-    stream_buffer: Option<DmaRxStreamBuf>,
-    in_flight: Option<InFlight>,
+    // `None` exists only transiently while a method moves the concrete state.
+    // Between method calls, this always contains exactly one legal ownership state.
+    state: Option<CaptureState>,
     display_buffer: &'static mut [u8],
     capture_buffer: &'static mut [u8],
     display_ready: bool,
@@ -95,11 +103,11 @@ impl Frame<'_> {
         self.camera.pump_capture_available();
     }
 
-    /// Finish receiving the following VSYNC-bounded frame, then atomically swap
-    /// the two PSRAM roles so the next loop iteration presents that completed
-    /// frame. Usually only the short tail after the LCD burst remains to wait for.
-    pub fn finish(self) -> bool {
-        self.camera.complete_capture_and_swap()
+    /// Finish receiving the following VSYNC-bounded frame and prepare the next
+    /// presentation frame. Capture faults are handled internally and cause the
+    /// next `begin_frame` call to re-prime from a fresh VSYNC boundary.
+    pub fn finish(self) {
+        let _ = self.camera.complete_capture_and_swap();
     }
 }
 
@@ -153,9 +161,10 @@ pub fn init(resources: Resources) -> Camera {
         esp_hal::dma_rx_stream_buffer!(STREAM_BUFFER_BYTES, STREAM_CHUNK_BYTES);
 
     Camera {
-        driver: Some(driver),
-        stream_buffer: Some(stream_buffer),
-        in_flight: None,
+        state: Some(CaptureState::Stopped {
+            driver,
+            stream_buffer,
+        }),
         display_buffer: alloc_frame_buffer(),
         capture_buffer: alloc_frame_buffer(),
         display_ready: false,
@@ -167,8 +176,11 @@ pub fn init(resources: Resources) -> Camera {
 }
 
 impl Camera {
+    fn take_state(&mut self) -> CaptureState {
+        self.state.take().expect("Camera capture state missing")
+    }
+
     fn receive(
-        &mut self,
         driver: CameraDriver<'static>,
         buffer: DmaRxStreamBuf,
     ) -> Result<InFlight, (CameraDriver<'static>, DmaRxStreamBuf)> {
@@ -181,28 +193,44 @@ impl Camera {
         }
     }
 
-    fn start_stream(&mut self) -> Option<InFlight> {
-        let driver = self.driver.take().expect("Camera driver missing");
-        let stream_buffer = self
-            .stream_buffer
-            .take()
-            .expect("Camera stream DMA buffer missing");
+    fn start_stream(&mut self) -> bool {
+        let state = self.take_state();
+        let CaptureState::Stopped {
+            driver,
+            stream_buffer,
+        } = state
+        else {
+            self.state = Some(state);
+            panic!("Camera stream started while capture was already running");
+        };
 
-        match self.receive(driver, stream_buffer) {
-            Ok(transfer) => Some(transfer),
+        match Self::receive(driver, stream_buffer) {
+            Ok(transfer) => {
+                self.state = Some(CaptureState::Streaming(transfer));
+                true
+            }
             Err((driver, stream_buffer)) => {
-                self.driver = Some(driver);
-                self.stream_buffer = Some(stream_buffer);
-                None
+                self.state = Some(CaptureState::Stopped {
+                    driver,
+                    stream_buffer,
+                });
+                false
             }
         }
     }
 
-    fn recover_stopped(&mut self, transfer: InFlight) {
-        let (driver, stream_buffer) = transfer.stop();
-        self.driver = Some(driver);
-        self.stream_buffer = Some(stream_buffer);
-        self.in_flight = None;
+    fn stop_stream(&mut self) {
+        let state = self.take_state();
+        self.state = Some(match state {
+            CaptureState::Stopped { .. } => state,
+            CaptureState::Streaming(transfer) => {
+                let (driver, stream_buffer) = transfer.stop();
+                CaptureState::Stopped {
+                    driver,
+                    stream_buffer,
+                }
+            }
+        });
     }
 
     /// Discard the partial sensor frame already in progress when DMA is started.
@@ -239,20 +267,27 @@ impl Camera {
     }
 
     fn restart_stream_aligned(&mut self) -> bool {
-        if let Some(transfer) = self.in_flight.take() {
-            self.recover_stopped(transfer);
+        self.stop_stream();
+        if !self.start_stream() {
+            return false;
         }
 
-        let Some(mut transfer) = self.start_stream() else {
-            return false;
+        let state = self.take_state();
+        let CaptureState::Streaming(mut transfer) = state else {
+            self.state = Some(state);
+            panic!("Camera capture state did not enter streaming mode");
         };
 
         if !Self::discard_until_vsync(&mut transfer) {
-            self.recover_stopped(transfer);
+            let (driver, stream_buffer) = transfer.stop();
+            self.state = Some(CaptureState::Stopped {
+                driver,
+                stream_buffer,
+            });
             return false;
         }
 
-        self.in_flight = Some(transfer);
+        self.state = Some(CaptureState::Streaming(transfer));
         true
     }
 
@@ -265,15 +300,18 @@ impl Camera {
             return;
         }
 
-        if self.in_flight.is_none() {
-            if self.capture_bytes != 0 || !self.restart_stream_aligned() {
-                self.capture_done = true;
-                self.capture_valid = false;
-                return;
-            }
+        let stream_stopped = matches!(self.state, Some(CaptureState::Stopped { .. }));
+        if stream_stopped && (self.capture_bytes != 0 || !self.restart_stream_aligned()) {
+            self.capture_done = true;
+            self.capture_valid = false;
+            return;
         }
 
-        let mut transfer = self.in_flight.take().expect("Camera stream missing");
+        let state = self.take_state();
+        let CaptureState::Streaming(mut transfer) = state else {
+            self.state = Some(state);
+            panic!("Camera capture pump requires a running stream");
+        };
 
         loop {
             let (available, eof) = {
@@ -308,13 +346,17 @@ impl Camera {
 
         if transfer.is_done() {
             let stopped_before_eof = !self.capture_done;
-            self.recover_stopped(transfer);
+            let (driver, stream_buffer) = transfer.stop();
+            self.state = Some(CaptureState::Stopped {
+                driver,
+                stream_buffer,
+            });
             if stopped_before_eof {
                 self.capture_done = true;
                 self.capture_valid = false;
             }
         } else {
-            self.in_flight = Some(transfer);
+            self.state = Some(CaptureState::Streaming(transfer));
         }
     }
 
@@ -336,7 +378,7 @@ impl Camera {
         while !self.capture_done {
             self.pump_capture_available();
             if !self.capture_done {
-                if self.in_flight.is_none() {
+                if matches!(self.state, Some(CaptureState::Stopped { .. })) {
                     break;
                 }
                 core::hint::spin_loop();
@@ -375,9 +417,7 @@ impl Camera {
     /// Re-entry will prime from a fresh VSYNC boundary instead of consuming a
     /// stale partial frame that accumulated while another screen was visible.
     pub fn pause(&mut self) {
-        if let Some(transfer) = self.in_flight.take() {
-            self.recover_stopped(transfer);
-        }
+        self.stop_stream();
         self.display_ready = false;
         self.reset_capture_state();
     }
