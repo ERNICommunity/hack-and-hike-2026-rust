@@ -70,15 +70,18 @@ const COMPASS_GLYPH_HEIGHT: f32 = 78.0;
 const COMPASS_GLYPH_GAP: f32 = 18.0;
 const COMPASS_STROKE_WIDTH: u32 = 3;
 const INV_SQRT_2: f32 = 0.70710677;
+// Presentation-only 180-degree alignment: the accepted fused magnetic-yaw
+// convention is intentionally left untouched. These world landmarks are the
+// only place where the visual compass frame is rotated to match physical north.
 const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
-    ("N", 0.0, 1.0),
-    ("NE", INV_SQRT_2, INV_SQRT_2),
-    ("E", 1.0, 0.0),
-    ("SE", INV_SQRT_2, -INV_SQRT_2),
-    ("S", 0.0, -1.0),
-    ("SW", -INV_SQRT_2, -INV_SQRT_2),
-    ("W", -1.0, 0.0),
-    ("NW", -INV_SQRT_2, INV_SQRT_2),
+    ("N", 0.0, -1.0),
+    ("NE", -INV_SQRT_2, -INV_SQRT_2),
+    ("E", -1.0, 0.0),
+    ("SE", -INV_SQRT_2, INV_SQRT_2),
+    ("S", 0.0, 1.0),
+    ("SW", INV_SQRT_2, INV_SQRT_2),
+    ("W", 1.0, 0.0),
+    ("NW", INV_SQRT_2, -INV_SQRT_2),
 ];
 const GLYPH_N_STROKES: [[f32; 4]; 3] = [
     [0.0, 0.0, 0.0, 7.0],
