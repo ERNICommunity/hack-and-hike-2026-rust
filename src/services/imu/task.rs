@@ -29,16 +29,20 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
     let sensor = Bmi270::new(bus);
     let mut revision = 0u32;
     let mut last_orientation = Orientation::default();
+    // Calibration describes the physical sensor/enclosure, not one transport
+    // session. Keep it alive across BMI270/AUX recovery for the whole boot.
+    let mut magnetic = MagneticState::new(Instant::now());
 
     loop {
+        magnetic.rebind(None, Instant::now());
         channels::publish(
             runtime,
             &mut revision,
             Status::Starting,
             last_orientation,
-            MagStatus::Missing,
-            0.0,
-            0,
+            magnetic.status(),
+            magnetic.field_ut(),
+            magnetic.calibration_percent(),
         );
 
         match sensor.initialize().await {
@@ -50,9 +54,9 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                     &mut revision,
                     Status::Fault,
                     last_orientation,
-                    MagStatus::Missing,
-                    0.0,
-                    0,
+                    magnetic.status(),
+                    magnetic.field_ut(),
+                    magnetic.calibration_percent(),
                 );
                 Timer::after(INIT_RETRY).await;
                 continue;
@@ -81,7 +85,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
         let mut fusion = Fusion::new();
         let mut gyro_bias = GyroBias::new();
         let now = Instant::now();
-        let mut magnetic = MagneticState::new(initial_mag_trim, now);
+        magnetic.rebind(initial_mag_trim, now);
         let mut last_sensor_time: Option<u32> = None;
         let mut consecutive_errors = 0u8;
 

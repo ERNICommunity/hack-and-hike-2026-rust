@@ -22,20 +22,22 @@ pub(crate) const GOOD_FIELD_MIN_UT: f32 = 25.0;
 pub(crate) const GOOD_FIELD_MAX_UT: f32 = 80.0;
 
 const CALIBRATION_TARGET_SPAN_UT: f32 = 35.0;
-const ORIGIN_WARMUP_SAMPLES: u32 = 60;
+// The evolving-extrema coverage origin corrects an imperfect early midpoint, so
+// a full two seconds of warm-up is unnecessary. The independent span condition
+// still prevents choosing an origin before the device has moved in 3-D.
+const ORIGIN_WARMUP_SAMPLES: u32 = 36;
 const ORIGIN_MIN_SPAN_UT: f32 = 20.0;
 
 // Divide the sphere into six dominant-axis faces, each split into four
 // quadrants. Twelve well-distributed sectors plus all six +/-axis faces are
-// enough to condition a nine-parameter ellipsoid; demanding 18/24 sectors made
-// calibration unnecessarily hard to complete on real hardware. A fresh-sample
-// validation phase still has to accept every provisional fit before it can be
-// used for heading.
+// enough to condition a nine-parameter ellipsoid. A fresh-sample validation
+// phase still has to accept every provisional fit before it can be used for
+// heading.
 const DIRECTION_BIN_COUNT: usize = 24;
 const MIN_DIRECTION_BINS: u32 = 12;
 const MIN_DIRECTION_FACES: u32 = 6;
 const MAX_SAMPLES_PER_DIRECTION_BIN: u8 = 32;
-const REFIT_INTERVAL_SAMPLES: u16 = 24;
+const REFIT_INTERVAL_SAMPLES: u16 = 16;
 const MAX_FAILED_FITS_BEFORE_RESTART: u8 = 6;
 
 /// Allocation-free online full-ellipsoid magnetometer calibration.
@@ -90,10 +92,11 @@ impl Calibration {
     /// 2. collect a balanced set of samples across the 3-D sphere and fit,
     /// 3. validate the provisional correction on fresh measurements.
     ///
-    /// A repeatedly invalid history is discarded automatically instead of
-    /// remaining indefinitely at 99%. Once a validated model is accepted it is
-    /// frozen so external magnetic disturbances cannot be learned as enclosure
-    /// hard/soft iron.
+    /// A repeatedly invalid history is eventually discarded rather than
+    /// remaining indefinitely near completion, but every retry must first learn
+    /// a meaningful batch of genuinely new samples. Once a validated model is
+    /// accepted it is frozen so external magnetic disturbances cannot be learned
+    /// as enclosure hard/soft iron.
     pub(crate) fn observe(&mut self, field_ut: [f32; 3]) {
         if self.model.is_some() || !raw_sample_is_plausible(field_ut) {
             return;
@@ -260,10 +263,11 @@ impl Calibration {
         if self.failed_fits >= MAX_FAILED_FITS_BEFORE_RESTART {
             self.restart_learning();
         } else {
-            // Any samples gathered while a candidate was being checked have
-            // improved the training history. Permit a prompt refit rather than
-            // waiting for another full interval.
-            self.samples_since_fit = REFIT_INTERVAL_SAMPLES;
+            // A rejected candidate means the existing fit needs materially more
+            // information. The old code forced another fit on the very next
+            // sample, so six near-identical failures could erase the complete
+            // learning history almost instantly. Require a fresh batch instead.
+            self.samples_since_fit = 0;
         }
     }
 
