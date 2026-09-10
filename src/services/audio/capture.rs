@@ -7,7 +7,7 @@ use esp_hal::{
     time::Rate,
 };
 
-use crate::{data_plane, diagnostics};
+use crate::support::{diagnostics, memory::data_plane};
 
 use super::{
     BLOCK_FRAMES, BLOCK_SAMPLES, CHANNELS, Resources, SAMPLE_RATE_HZ,
@@ -54,7 +54,7 @@ async fn yield_to_executor() {
 /// RX forever. TX is the physical BCLK/WS master; RX follows the same signals
 /// through the peripheral's internal signal-loopback path.
 #[embassy_executor::task]
-pub async fn capture_task(resources: Resources, spawner: Spawner, runtime: Runtime) {
+pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime: Runtime) {
     let Resources {
         i2s0,
         dma,

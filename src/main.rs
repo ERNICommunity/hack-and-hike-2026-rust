@@ -15,14 +15,6 @@ mod support;
 
 extern crate alloc;
 
-use app::{model as models, ui};
-use app::{model::microphone as waveform, ui::theme};
-use platform::{board, i2c as system_i2c};
-use services::{audio, camera, display, imu, network, touch};
-use services::network::protocol;
-use support::memory::data_plane;
-use support::{diagnostics, logging as logger, memory};
-
 use ::log::info;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
@@ -50,8 +42,8 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         network: network_input,
         log: log_input,
     } = inputs;
-    let model = models::AppModel::new(
-        models::AppModelInputs {
+    let model = app::model::AppModel::new(
+        app::model::AppModelInputs {
             network: network_input,
             imu: imu_input,
             audio: audio_input,
@@ -60,10 +52,10 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         brightness,
         playback,
     );
-    let mut ui = ui::Ui::new(model, touch);
+    let mut ui = app::ui::Ui::new(model, touch);
 
     let now = Instant::now();
-    let mut heap_monitor = memory::HeapMonitor::new(now);
+    let mut heap_monitor = support::memory::HeapMonitor::new(now);
     heap_monitor.checkpoint("after model + UI construction");
 
     ui.render_initial(&mut display);
@@ -75,7 +67,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         if let Some(transition) = transition {
             heap_monitor.begin_activity(transition.to.name());
-            if transition.from == models::ViewId::Camera {
+            if transition.from == app::model::ViewId::Camera {
                 camera.pause();
             }
             ui.apply_navigation(transition, &mut display);
@@ -83,7 +75,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         ui.render(&mut display);
 
-        let camera_active = camera_ready && ui.presented_view() == models::ViewId::Camera;
+        let camera_active = camera_ready && ui.presented_view() == app::model::ViewId::Camera;
         if camera_active {
             if let Some(mut frame) = camera.begin_frame() {
                 ui.render_camera(&mut display, &mut frame);
@@ -101,7 +93,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         // paced by fresh 100 Hz fusion snapshots plus the proven 40 MHz LCD path.
         // Do not insert an arbitrary CPU0 sleep for either high-rate view; other
         // screens retain the small idle delay to avoid unnecessary busy looping.
-        let imu_active = ui.presented_view() == models::ViewId::Imu;
+        let imu_active = ui.presented_view() == app::model::ViewId::Imu;
         if !camera_active && !imu_active {
             Timer::after(UI_IDLE_DELAY).await;
         }

@@ -7,7 +7,11 @@
 
 use embedded_gui::prelude::*;
 
-use crate::{data_plane, display::Display, waveform::WaveformFrame};
+use crate::{
+    app::model::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame},
+    services::display::Display,
+    support::memory::data_plane,
+};
 
 use super::super::gui::GuiSurface;
 use super::common;
@@ -26,14 +30,14 @@ const EVENT_CAPACITY: usize = 4;
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Canvas {
-    pub x: usize,
-    pub y: usize,
-    pub width: usize,
-    pub height: usize,
+struct Canvas {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
 }
 
-pub(crate) struct View {
+pub(super) struct View {
     gui: &'static mut Context,
     left_label: Rect,
     right_label: Rect,
@@ -42,7 +46,7 @@ pub(crate) struct View {
 }
 
 impl View {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::MicrophoneApp::build(gui)
             .expect("microphone KDL exceeds embedded-gui fixed capacities");
@@ -71,7 +75,7 @@ impl View {
         }
     }
 
-    pub(crate) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(super) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
         let left_label = self.left_label;
         let right_label = self.right_label;
         surface.present_with_overlay(display, self.gui, move |frame| {
@@ -92,7 +96,7 @@ impl View {
         });
     }
 
-    pub(crate) fn render_waveform(&self, display: &mut Display, frame: &WaveformFrame) {
+    pub(super) fn render_waveform(&self, display: &mut Display, frame: &WaveformFrame) {
         waveform::render(display, self.left, self.right, frame);
     }
 }
@@ -114,6 +118,6 @@ fn assert_canvas(canvas: Canvas) {
     assert!(canvas.width > 0 && canvas.height > 0);
     assert!(canvas.x + canvas.width <= 276);
     assert!(canvas.y + canvas.height <= 240);
-    assert_eq!(canvas.width % crate::waveform::POINTS, 0);
-    assert!(crate::waveform::MAX_AMPLITUDE_PIXELS < canvas.height as i32 / 2);
+    assert_eq!(canvas.width % POINTS, 0);
+    assert!(MAX_AMPLITUDE_PIXELS < canvas.height as i32 / 2);
 }

@@ -7,16 +7,14 @@
 mod design;
 mod gui;
 mod navigation;
-pub(crate) mod theme;
+mod theme;
 mod views;
 
 use embassy_time::Instant;
 
 use crate::{
-    camera,
-    display::Display,
-    models::{AppModel, ViewId},
-    touch,
+    app::model::{AppModel, ViewId},
+    services::{camera, display::Display, touch},
 };
 
 use gui::GuiSurface;
@@ -24,12 +22,12 @@ use navigation::NavigationInput;
 use views::{Interaction, Views};
 
 #[derive(Clone, Copy, Debug)]
-pub struct ViewTransition {
-    pub from: ViewId,
-    pub to: ViewId,
+pub(crate) struct ViewTransition {
+    pub(crate) from: ViewId,
+    pub(crate) to: ViewId,
 }
 
-pub struct Ui {
+pub(crate) struct Ui {
     model: AppModel,
     navigation: NavigationInput,
     views: Views,
@@ -38,7 +36,7 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(model: AppModel, touch: touch::Input) -> Self {
+    pub(crate) fn new(model: AppModel, touch: touch::Input) -> Self {
         let presented_view = model.active_view();
         Self {
             model,
@@ -49,11 +47,11 @@ impl Ui {
         }
     }
 
-    pub fn presented_view(&self) -> ViewId {
+    pub(crate) fn presented_view(&self) -> ViewId {
         self.presented_view
     }
 
-    pub fn render_initial(&mut self, display: &mut Display) {
+    pub(crate) fn render_initial(&mut self, display: &mut Display) {
         navigation::render(display, self.presented_view);
         if self.presented_view == ViewId::Log && self.present_log_if_dirty(display) {
             return;
@@ -66,7 +64,7 @@ impl Ui {
         );
     }
 
-    pub fn prepare_frame(&mut self, now: Instant) -> Option<ViewTransition> {
+    pub(crate) fn prepare_frame(&mut self, now: Instant) -> Option<ViewTransition> {
         let active_view = self.model.active_view();
         let mut interaction = None;
         let selected = {
@@ -100,7 +98,7 @@ impl Ui {
         })
     }
 
-    pub fn apply_navigation(&mut self, transition: ViewTransition, display: &mut Display) {
+    pub(crate) fn apply_navigation(&mut self, transition: ViewTransition, display: &mut Display) {
         debug_assert_eq!(transition.from, self.presented_view);
         self.presented_view = transition.to;
         navigation::render(display, transition.to);
@@ -129,7 +127,7 @@ impl Ui {
         );
     }
 
-    pub fn render(&mut self, display: &mut Display) {
+    pub(crate) fn render(&mut self, display: &mut Display) {
         match self.presented_view {
             ViewId::Network => {
                 if let Some(snapshot) = self.model.take_network_display() {
@@ -167,7 +165,7 @@ impl Ui {
         }
     }
 
-    pub fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
+    pub(crate) fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
         if self.presented_view == ViewId::Camera {
             self.views.render_camera(display, frame);
         }

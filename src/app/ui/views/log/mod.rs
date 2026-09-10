@@ -5,7 +5,7 @@
 
 use embedded_gui::prelude::*;
 
-use crate::{data_plane, display::Display};
+use crate::{services::display::Display, support::memory::data_plane};
 
 use super::super::gui::GuiSurface;
 use super::common;
@@ -27,13 +27,13 @@ struct Geometry {
     body: Rect,
 }
 
-pub(crate) struct View {
+pub(super) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
 }
 
 impl View {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::LogApp::build(gui).expect("log KDL exceeds embedded-gui capacities");
         Self {
@@ -45,14 +45,14 @@ impl View {
         }
     }
 
-    pub(crate) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(super) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
         let geometry = self.geometry;
         surface.present_with_overlay(display, self.gui, move |frame| {
             draw_title(frame, geometry);
         });
     }
 
-    pub(crate) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display, text: &str) {
+    pub(super) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display, text: &str) {
         let geometry = self.geometry;
         surface.present_with_overlay(display, self.gui, move |frame| {
             draw_title(frame, geometry);

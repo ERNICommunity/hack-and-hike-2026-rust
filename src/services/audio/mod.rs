@@ -14,26 +14,26 @@ mod playback;
 
 use esp_hal::peripherals::{DMA_CH0, GPIO0, GPIO13, GPIO14, GPIO33, GPIO34, I2S0};
 
-pub use channels::{Input, PlaybackControl};
-pub use codecs::{init_aw88298, init_es7210};
-pub use capture::capture_task;
+pub(crate) use channels::{Input, PlaybackControl};
+pub(crate) use codecs::{init_aw88298, init_es7210};
+pub(crate) use capture::capture_task;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 
-pub const SAMPLE_RATE_HZ: u32 = 16_000;
-pub const BLOCK_FRAMES: usize = 512;
-pub const CHANNELS: usize = 2;
-pub const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
+pub(crate) const SAMPLE_RATE_HZ: u32 = 16_000;
+pub(crate) const BLOCK_FRAMES: usize = 512;
+pub(crate) const CHANNELS: usize = 2;
+pub(crate) const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 
 /// Valid melody tempo in quarter-note beats per minute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TempoBpm(u16);
+pub(crate) struct TempoBpm(u16);
 
 impl TempoBpm {
-    pub const MIN: Self = Self(60);
-    pub const DEFAULT: Self = Self(120);
-    pub const MAX: Self = Self(180);
+    pub(crate) const MIN: Self = Self(60);
+    pub(crate) const DEFAULT: Self = Self(120);
+    pub(crate) const MAX: Self = Self(180);
 
-    pub const fn new(value: u16) -> Option<Self> {
+    pub(crate) const fn new(value: u16) -> Option<Self> {
         if value >= Self::MIN.0 && value <= Self::MAX.0 {
             Some(Self(value))
         } else {
@@ -41,21 +41,21 @@ impl TempoBpm {
         }
     }
 
-    pub const fn get(self) -> u16 {
+    pub(crate) const fn get(self) -> u16 {
         self.0
     }
 }
 
 /// Chromatic pitch transposition applied to the synthesized MIDI loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PitchSemitones(i8);
+pub(crate) struct PitchSemitones(i8);
 
 impl PitchSemitones {
-    pub const MIN: Self = Self(-12);
-    pub const CENTER: Self = Self(0);
-    pub const MAX: Self = Self(12);
+    pub(crate) const MIN: Self = Self(-12);
+    pub(crate) const CENTER: Self = Self(0);
+    pub(crate) const MAX: Self = Self(12);
 
-    pub const fn new(value: i8) -> Option<Self> {
+    pub(crate) const fn new(value: i8) -> Option<Self> {
         if value >= Self::MIN.0 && value <= Self::MAX.0 {
             Some(Self(value))
         } else {
@@ -63,21 +63,21 @@ impl PitchSemitones {
         }
     }
 
-    pub const fn get(self) -> i8 {
+    pub(crate) const fn get(self) -> i8 {
         self.0
     }
 }
 
 /// Complete continuous playback intent published by CPU0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PlaybackSettings {
-    pub melody_playing: bool,
-    pub tempo: TempoBpm,
-    pub pitch: PitchSemitones,
+pub(crate) struct PlaybackSettings {
+    pub(crate) melody_playing: bool,
+    pub(crate) tempo: TempoBpm,
+    pub(crate) pitch: PitchSemitones,
 }
 
 impl PlaybackSettings {
-    pub const DEFAULT: Self = Self {
+    pub(crate) const DEFAULT: Self = Self {
         melody_playing: false,
         tempo: TempoBpm::DEFAULT,
         pitch: PitchSemitones::CENTER,
@@ -85,19 +85,19 @@ impl PlaybackSettings {
 }
 
 /// CPU1-owned physical resources required by the shared audio service.
-pub struct Resources {
-    pub i2s0: I2S0<'static>,
-    pub dma: DMA_CH0<'static>,
-    pub mclk: GPIO0<'static>,
-    pub bclk: GPIO34<'static>,
-    pub word_select: GPIO33<'static>,
-    pub data_in: GPIO14<'static>,
-    pub data_out: GPIO13<'static>,
+pub(crate) struct Resources {
+    pub(crate) i2s0: I2S0<'static>,
+    pub(crate) dma: DMA_CH0<'static>,
+    pub(crate) mclk: GPIO0<'static>,
+    pub(crate) bclk: GPIO34<'static>,
+    pub(crate) word_select: GPIO33<'static>,
+    pub(crate) data_in: GPIO14<'static>,
+    pub(crate) data_out: GPIO13<'static>,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct AudioBlockInfo {
-    pub sequence: u32,
-    pub peak_left: u16,
-    pub peak_right: u16,
+pub(crate) struct AudioBlockInfo {
+    pub(crate) sequence: u32,
+    pub(crate) peak_left: u16,
+    pub(crate) peak_right: u16,
 }

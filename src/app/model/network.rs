@@ -2,7 +2,7 @@
 
 use embassy_time::{Duration, Instant};
 
-use crate::network;
+use crate::services::network;
 
 const NETWORK_UPDATE: Duration = Duration::from_millis(200);
 

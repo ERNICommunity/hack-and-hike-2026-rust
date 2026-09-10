@@ -15,17 +15,18 @@ mod settings;
 mod speaker;
 
 use crate::{
-    audio::{PitchSemitones, TempoBpm},
-    camera as camera_service,
-    display::{BrightnessPercent, Display},
-    models::{ImuDisplay, SettingsDisplay, SpeakerDisplay, ViewId},
-    network as network_service,
-    waveform::WaveformFrame,
+    app::model::{ImuDisplay, SettingsDisplay, SpeakerDisplay, ViewId, WaveformFrame},
+    services::{
+        audio::{PitchSemitones, TempoBpm},
+        camera as camera_service,
+        display::{BrightnessPercent, Display},
+        network as network_service,
+    },
 };
 
 use super::{gui::GuiSurface, navigation::ContentPointer};
 
-pub(crate) enum Interaction {
+pub(super) enum Interaction {
     SetBrightness(BrightnessPercent),
     ToggleSpeakerPlayback,
     PlaySpeakerOneShot,
@@ -33,7 +34,7 @@ pub(crate) enum Interaction {
     SetSpeakerPitch(PitchSemitones),
 }
 
-pub(crate) struct Views {
+pub(super) struct Views {
     network: network::View,
     imu: imu::View,
     microphone: microphone::View,
@@ -44,7 +45,7 @@ pub(crate) struct Views {
 }
 
 impl Views {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             network: network::View::new(),
             imu: imu::View::new(),
@@ -56,7 +57,7 @@ impl Views {
         }
     }
 
-    pub(crate) fn present_shell(
+    pub(super) fn present_shell(
         &mut self,
         view: ViewId,
         surface: &mut GuiSurface,
@@ -79,7 +80,7 @@ impl Views {
         }
     }
 
-    pub(crate) fn handle_pointer(
+    pub(super) fn handle_pointer(
         &mut self,
         view: ViewId,
         pointer: ContentPointer,
@@ -99,7 +100,7 @@ impl Views {
         }
     }
 
-    pub(crate) fn present_network(
+    pub(super) fn present_network(
         &mut self,
         surface: &mut GuiSurface,
         display: &mut Display,
@@ -108,7 +109,7 @@ impl Views {
         self.network.present(surface, display, snapshot);
     }
 
-    pub(crate) fn present_imu(
+    pub(super) fn present_imu(
         &mut self,
         surface: &mut GuiSurface,
         display: &mut Display,
@@ -117,11 +118,11 @@ impl Views {
         self.imu.present(surface, display, state);
     }
 
-    pub(crate) fn render_microphone(&self, display: &mut Display, frame: &WaveformFrame) {
+    pub(super) fn render_microphone(&self, display: &mut Display, frame: &WaveformFrame) {
         self.microphone.render_waveform(display, frame);
     }
 
-    pub(crate) fn render_camera(
+    pub(super) fn render_camera(
         &self,
         display: &mut Display,
         frame: &mut camera_service::Frame<'_>,
@@ -129,7 +130,7 @@ impl Views {
         self.camera.render(display, frame);
     }
 
-    pub(crate) fn present_speaker(
+    pub(super) fn present_speaker(
         &mut self,
         surface: &mut GuiSurface,
         display: &mut Display,
@@ -139,7 +140,7 @@ impl Views {
         self.speaker.present(surface, display);
     }
 
-    pub(crate) fn present_settings(
+    pub(super) fn present_settings(
         &mut self,
         surface: &mut GuiSurface,
         display: &mut Display,
@@ -149,7 +150,7 @@ impl Views {
         self.settings.present(surface, display);
     }
 
-    pub(crate) fn present_log(
+    pub(super) fn present_log(
         &mut self,
         surface: &mut GuiSurface,
         display: &mut Display,

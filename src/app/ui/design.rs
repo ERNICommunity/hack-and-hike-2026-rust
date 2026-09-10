@@ -4,11 +4,9 @@
 //! content/navigation partition, typed content-to-screen conversion used by
 //! specialized direct renderers, and navigation-rail styling/order.
 
-use crate::{
-    display::{self, Region},
-    models::ViewId,
-    theme,
-};
+use crate::{app::model::ViewId, services::display::{self, Region}};
+
+use super::theme;
 
 const NAV_WIDTH: usize = 44;
 pub(crate) const NAV_ICON_SIZE: usize = 16;

@@ -2,7 +2,7 @@
 
 use embassy_time::Instant;
 
-use crate::diagnostics;
+use crate::support::diagnostics;
 
 use super::{Config, MAX_PEERS, PeerSnapshot, RssiDbm, Snapshot, Status, protocol};
 

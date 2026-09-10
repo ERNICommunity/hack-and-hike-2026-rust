@@ -1,7 +1,7 @@
 //! Application navigation state.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewId {
+pub(crate) enum ViewId {
     Network,
     Imu,
     Microphone,
@@ -12,7 +12,7 @@ pub enum ViewId {
 }
 
 impl ViewId {
-    pub const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Network => "Network",
             Self::Imu => "Imu",

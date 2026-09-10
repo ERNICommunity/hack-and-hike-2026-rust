@@ -14,7 +14,7 @@ use esp_hal::{
     system::Stack,
 };
 
-use crate::diagnostics;
+use crate::support::diagnostics;
 
 const PERIODIC_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const INTERNAL_WARN_FREE_BYTES: usize = 32 * 1024;

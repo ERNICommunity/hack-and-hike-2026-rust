@@ -1,16 +1,16 @@
 //! Speaker presentation and playback-control model.
 
-use crate::audio;
+use crate::services::audio;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SpeakerDisplay {
-    pub melody_playing: bool,
-    pub tempo: audio::TempoBpm,
-    pub pitch: audio::PitchSemitones,
+pub(crate) struct SpeakerDisplay {
+    pub(crate) melody_playing: bool,
+    pub(crate) tempo: audio::TempoBpm,
+    pub(crate) pitch: audio::PitchSemitones,
 }
 
 impl SpeakerDisplay {
-    pub const DEFAULT: Self = Self {
+    pub(crate) const DEFAULT: Self = Self {
         melody_playing: false,
         tempo: audio::TempoBpm::DEFAULT,
         pitch: audio::PitchSemitones::CENTER,

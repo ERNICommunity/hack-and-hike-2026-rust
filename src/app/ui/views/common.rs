@@ -13,9 +13,7 @@ use embedded_graphics::{
 };
 use embedded_gui::Rect;
 
-use crate::theme;
-
-use super::super::gui::GuiFramebuffer;
+use super::super::{gui::GuiFramebuffer, theme};
 
 pub(super) const BODY_LINE_HEIGHT: i32 = 13;
 pub(super) const DENSE_LINE_HEIGHT: i32 = 12;

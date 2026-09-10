@@ -5,7 +5,7 @@
 
 use embedded_gui::prelude::Rect;
 
-use crate::models::ImuDisplay;
+use crate::app::model::ImuDisplay;
 
 pub(super) const TAN_SCALE: i32 = 1024;
 const TAN_STEP_DEG: i32 = 5;

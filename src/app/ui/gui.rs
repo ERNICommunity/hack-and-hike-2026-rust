@@ -16,7 +16,7 @@ use embedded_gui::{
     EndianCorrection, FrameBuf, GuiContext, TransferError,
 };
 
-use crate::{data_plane, display::Display};
+use crate::{services::display::Display, support::memory::data_plane};
 
 use super::design;
 

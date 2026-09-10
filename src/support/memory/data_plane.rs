@@ -9,15 +9,15 @@
 use allocator_api2::{boxed::Box, vec::Vec};
 use esp_alloc::EspHeap;
 
-use crate::memory;
+use super::psram_heap;
 
-pub type PsramVec<T> = Vec<T, &'static EspHeap>;
+pub(crate) type PsramVec<T> = Vec<T, &'static EspHeap>;
 
-pub fn vec_with_capacity<T>(capacity: usize) -> PsramVec<T> {
-    Vec::with_capacity_in(capacity, memory::psram_heap())
+pub(crate) fn vec_with_capacity<T>(capacity: usize) -> PsramVec<T> {
+    Vec::with_capacity_in(capacity, psram_heap())
 }
 
-pub fn zeroed_bytes(len: usize) -> PsramVec<u8> {
+pub(crate) fn zeroed_bytes(len: usize) -> PsramVec<u8> {
     let mut bytes = vec_with_capacity(len);
     bytes.resize(len, 0);
     bytes
@@ -28,7 +28,7 @@ pub fn zeroed_bytes(len: usize) -> PsramVec<u8> {
 /// This is for APIs such as framebuffer/DMA abstractions that require a static
 /// backing slice. The allocation happens once during bootstrap and is never
 /// replaced or resized afterwards.
-pub fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
+pub(crate) fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
     let mut storage = vec_with_capacity(len);
     storage.resize(len, value);
     storage.leak()
@@ -44,8 +44,8 @@ pub fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static
 /// `new_uninit_in` establishes the final aligned PSRAM destination first. The
 /// initializer is then written into that destination exactly once before the
 /// allocation is exposed as initialized `T`.
-pub fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
-    let mut storage = Box::<T, _>::new_uninit_in(memory::psram_heap());
+pub(crate) fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
+    let mut storage = Box::<T, _>::new_uninit_in(psram_heap());
     unsafe {
         storage.as_mut_ptr().write(init());
         Box::leak(storage.assume_init())
@@ -54,12 +54,12 @@ pub fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T
 
 /// Fixed-size PSRAM-backed storage. Capacity is established once and never
 /// changes afterwards.
-pub struct FixedPsramBuffer<T> {
+pub(crate) struct FixedPsramBuffer<T> {
     storage: PsramVec<T>,
 }
 
 impl<T: Clone> FixedPsramBuffer<T> {
-    pub fn filled(len: usize, value: T) -> Self {
+    pub(crate) fn filled(len: usize, value: T) -> Self {
         let mut storage = vec_with_capacity(len);
         storage.resize(len, value);
         Self { storage }
@@ -67,24 +67,24 @@ impl<T: Clone> FixedPsramBuffer<T> {
 }
 
 impl<T> FixedPsramBuffer<T> {
-    pub fn as_slice(&self) -> &[T] {
+    pub(crate) fn as_slice(&self) -> &[T] {
         &self.storage
     }
 
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.storage
     }
 }
 
 /// Fixed-capacity byte ring whose backing bytes live in PSRAM.
-pub struct PsramByteRing {
+pub(crate) struct PsramByteRing {
     storage: PsramVec<u8>,
     start: usize,
     len: usize,
 }
 
 impl PsramByteRing {
-    pub fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         assert!(capacity > 0);
         Self {
             storage: zeroed_bytes(capacity),
@@ -93,11 +93,11 @@ impl PsramByteRing {
         }
     }
 
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.storage.len()
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.len
     }
 
@@ -125,7 +125,7 @@ impl PsramByteRing {
         }
     }
 
-    pub fn push_line(&mut self, bytes: &[u8]) -> bool {
+    pub(crate) fn push_line(&mut self, bytes: &[u8]) -> bool {
         if bytes.is_empty() || bytes.len() > self.capacity() {
             return false;
         }
@@ -148,7 +148,7 @@ impl PsramByteRing {
         true
     }
 
-    pub fn copy_range_to(&self, logical_offset: usize, out: &mut [u8]) -> usize {
+    pub(crate) fn copy_range_to(&self, logical_offset: usize, out: &mut [u8]) -> usize {
         if logical_offset >= self.len || out.is_empty() {
             return 0;
         }

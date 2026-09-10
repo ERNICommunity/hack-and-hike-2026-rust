@@ -22,7 +22,7 @@ use mipidsi::options::{
     HorizontalRefreshOrder, Orientation, RefreshOrder, Rotation, VerticalRefreshOrder,
 };
 
-use crate::board;
+use crate::platform::board;
 
 use super::{Pixel, Resources, WIDTH};
 

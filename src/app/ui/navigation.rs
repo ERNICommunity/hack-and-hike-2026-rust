@@ -6,9 +6,11 @@
 //! content gestures are translated into the 276x240 content coordinate space.
 
 use crate::{
-    display::Display,
-    models::ViewId,
-    touch::{Input as TouchInput, TouchEdge, TouchPoint},
+    app::model::ViewId,
+    services::{
+        display::Display,
+        touch::{Input as TouchInput, TouchEdge, TouchPoint},
+    },
 };
 
 use super::design;

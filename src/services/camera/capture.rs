@@ -20,7 +20,7 @@ use esp_hal::{
     time::Rate,
 };
 
-use crate::data_plane;
+use crate::support::memory::data_plane;
 
 pub const WIDTH: usize = 320;
 pub const HEIGHT: usize = 240;

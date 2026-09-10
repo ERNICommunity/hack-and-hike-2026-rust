@@ -15,7 +15,10 @@ use embedded_graphics::{
 };
 use embedded_gui::prelude::*;
 
-use crate::{data_plane, display::{BrightnessPercent, Display}};
+use crate::{
+    services::display::{BrightnessPercent, Display},
+    support::memory::data_plane,
+};
 
 use super::super::{
     gui::{GuiFramebuffer, GuiSurface},
@@ -48,7 +51,7 @@ struct Geometry {
     hint: Rect,
 }
 
-pub(crate) struct View {
+pub(super) struct View {
     gui: &'static mut Context,
     brightness_widget: WidgetId,
     geometry: Geometry,
@@ -57,7 +60,7 @@ pub(crate) struct View {
 }
 
 impl View {
-    pub(crate) fn new(brightness: BrightnessPercent) -> Self {
+    pub(super) fn new(brightness: BrightnessPercent) -> Self {
         let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
@@ -94,7 +97,7 @@ impl View {
         }
     }
 
-    pub(crate) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(super) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display) {
         let geometry = self.geometry;
         let brightness = self.current;
         surface.present_with_overlay(display, self.gui, move |frame| {
@@ -102,13 +105,13 @@ impl View {
         });
     }
 
-    pub(crate) fn sync_brightness(&mut self, brightness: BrightnessPercent) {
+    pub(super) fn sync_brightness(&mut self, brightness: BrightnessPercent) {
         self.set_local_brightness(brightness);
     }
 
     /// Handle one content-space pointer event and return the newest semantic
     /// brightness action produced by the slider, if any.
-    pub(crate) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<BrightnessPercent> {
+    pub(super) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<BrightnessPercent> {
         let state = match pointer.phase {
             PointerPhase::Pressed => PointerState::Pressed,
             PointerPhase::Moved => PointerState::Moved,

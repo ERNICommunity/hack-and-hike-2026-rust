@@ -4,7 +4,7 @@ mod config;
 
 use embassy_time::{Duration, Timer};
 
-use crate::system_i2c::SystemI2cBus;
+use crate::platform::i2c::SystemI2cBus;
 
 use super::bmm150;
 

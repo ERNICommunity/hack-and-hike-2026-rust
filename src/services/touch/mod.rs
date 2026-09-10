@@ -6,18 +6,18 @@
 mod channels;
 mod task;
 
-pub use channels::Input;
-pub use task::capture_task;
+pub(crate) use channels::Input;
+pub(crate) use task::capture_task;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TouchPoint {
-    pub x: u16,
-    pub y: u16,
+pub(crate) struct TouchPoint {
+    pub(crate) x: u16,
+    pub(crate) y: u16,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum TouchEdge {
+pub(crate) enum TouchEdge {
     Pressed(TouchPoint),
     Released(TouchPoint),
 }
