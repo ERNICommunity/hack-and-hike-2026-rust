@@ -19,7 +19,7 @@ use crate::{
 
 use gui::GuiSurface;
 use navigation::NavigationInput;
-use views::{Interaction, Views};
+use views::{SpeakerAction, Views};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ViewTransition {
@@ -53,49 +53,32 @@ impl Ui {
 
     pub(crate) fn render_initial(&mut self, display: &mut Display) {
         navigation::render(display, self.presented_view);
-        if self.presented_view == ViewId::Log && self.present_log_if_dirty(display) {
-            return;
-        }
-
-        let settings = if self.presented_view == ViewId::Settings {
-            self.model.take_settings_display()
-        } else {
-            None
-        };
-        let speaker = if self.presented_view == ViewId::Speaker {
-            self.model.take_speaker_display()
-        } else {
-            None
-        };
-        self.views.present_shell(
-            self.presented_view,
-            &mut self.gui_surface,
-            display,
-            settings,
-            speaker,
-        );
+        self.present_current_view(display);
     }
 
     pub(crate) fn prepare_frame(&mut self, now: Instant) -> Option<ViewTransition> {
         let active_view = self.model.active_view();
-        let mut interaction = None;
+        let mut settings_action = None;
+        let mut speaker_action = None;
         let selected = {
             let navigation = &mut self.navigation;
             let views = &mut self.views;
-            navigation.poll(|pointer| {
-                if let Some(next) = views.handle_pointer(active_view, pointer) {
-                    interaction = Some(next);
-                }
+            navigation.poll(|pointer| match active_view {
+                ViewId::Settings => settings_action = views.handle_settings_pointer(pointer),
+                ViewId::Speaker => speaker_action = views.handle_speaker_pointer(pointer),
+                _ => {}
             })
         };
 
-        if let Some(interaction) = interaction {
-            match interaction {
-                Interaction::SetBrightness(brightness) => self.model.set_brightness(brightness),
-                Interaction::ToggleSpeakerPlayback => self.model.toggle_speaker_playback(),
-                Interaction::PlaySpeakerOneShot => self.model.play_speaker_one_shot(),
-                Interaction::SetSpeakerTempo(tempo) => self.model.set_speaker_tempo(tempo),
-                Interaction::SetSpeakerPitch(pitch) => self.model.set_speaker_pitch(pitch),
+        if let Some(brightness) = settings_action {
+            self.model.set_brightness(brightness);
+        }
+        if let Some(action) = speaker_action {
+            match action {
+                SpeakerAction::TogglePlayback => self.model.toggle_speaker_playback(),
+                SpeakerAction::PlayOneShot => self.model.play_speaker_one_shot(),
+                SpeakerAction::SetTempo(tempo) => self.model.set_speaker_tempo(tempo),
+                SpeakerAction::SetPitch(pitch) => self.model.set_speaker_pitch(pitch),
             }
         }
         if let Some(view) = selected {
@@ -114,28 +97,7 @@ impl Ui {
         debug_assert_eq!(transition.from, self.presented_view);
         self.presented_view = transition.to;
         navigation::render(display, transition.to);
-
-        if transition.to == ViewId::Log && self.present_log_if_dirty(display) {
-            return;
-        }
-
-        let settings = if transition.to == ViewId::Settings {
-            self.model.take_settings_display()
-        } else {
-            None
-        };
-        let speaker = if transition.to == ViewId::Speaker {
-            self.model.take_speaker_display()
-        } else {
-            None
-        };
-        self.views.present_shell(
-            transition.to,
-            &mut self.gui_surface,
-            display,
-            settings,
-            speaker,
-        );
+        self.present_current_view(display);
     }
 
     pub(crate) fn render(&mut self, display: &mut Display) {
@@ -179,6 +141,41 @@ impl Ui {
     pub(crate) fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
         if self.presented_view == ViewId::Camera {
             self.views.render_camera(display, frame);
+        }
+    }
+
+    fn present_current_view(&mut self, display: &mut Display) {
+        match self.presented_view {
+            ViewId::Network => self
+                .views
+                .present_network_shell(&mut self.gui_surface, display),
+            ViewId::Imu => self.views.present_imu_shell(&mut self.gui_surface, display),
+            ViewId::Microphone => self
+                .views
+                .present_microphone_shell(&mut self.gui_surface, display),
+            ViewId::Speaker => {
+                let state = self
+                    .model
+                    .take_speaker_display()
+                    .expect("speaker state must be dirty when entering Speaker");
+                self.views
+                    .present_speaker(&mut self.gui_surface, display, state);
+            }
+            ViewId::Camera => self.views.present_camera_shell(display),
+            ViewId::Settings => {
+                let state = self
+                    .model
+                    .take_settings_display()
+                    .expect("settings state must be dirty when entering Settings");
+                self.views
+                    .present_settings(&mut self.gui_surface, display, state);
+            }
+            ViewId::Log => {
+                if !self.present_log_if_dirty(display) {
+                    self.views
+                        .present_log_shell(&mut self.gui_surface, display);
+                }
+            }
         }
     }
 

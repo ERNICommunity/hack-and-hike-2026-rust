@@ -64,7 +64,7 @@ enum Gesture {
     Pitch,
 }
 
-pub(super) enum Action {
+pub(in crate::app::ui) enum Action {
     TogglePlayback,
     PlayOneShot,
     SetTempo(TempoBpm),
