@@ -35,7 +35,7 @@ fn with_state<R>(f: impl FnOnce(&mut NetworkState) -> R) -> Option<R> {
 }
 
 fn publish_snapshot(runtime: Runtime, now: Instant) {
-    if let Some(snapshot) = with_state(|state| state.snapshot(now)) {
+    if let Some(snapshot) = with_state(|state| state.snapshot(now.as_millis())) {
         runtime.publish(snapshot);
     }
 }
@@ -54,7 +54,11 @@ fn physical_device_id() -> protocol::DeviceId {
 pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, runtime: Runtime) {
     let local_id = physical_device_id();
     critical_section::with(|cs| {
-        *STATE.borrow(cs).borrow_mut() = Some(NetworkState::new(local_id, config));
+        *STATE.borrow(cs).borrow_mut() = Some(NetworkState::new(
+            local_id,
+            config.channel,
+            config.peer_timeout.as_millis(),
+        ));
     });
     publish_snapshot(runtime, Instant::now());
 
@@ -107,7 +111,7 @@ async fn beacon_task(mut sender: EspNowSender<'static>, config: Config, runtime:
 
     loop {
         let now = Instant::now();
-        let Some(packet) = with_state(|state| state.next_beacon(now)) else {
+        let Some(packet) = with_state(|state| state.next_beacon(now.as_millis())) else {
             ticker.next().await;
             continue;
         };
@@ -154,7 +158,11 @@ async fn receive_task(
         let now = Instant::now();
         let mac = MacAddress::new(received.info.src_address);
         let rssi = RssiDbm::from_radio_raw(received.info.rx_control.rssi as u8);
-        let is_new = with_state(|state| state.record_receive(packet, rssi, now)).unwrap_or(false);
+        let outcome = with_state(|state| state.record_receive(packet, rssi, now.as_millis()));
+        let is_new = outcome.is_some_and(|outcome| outcome.is_new);
+        if outcome.is_some_and(|outcome| outcome.evicted) {
+            diagnostics::record_network_peer_eviction();
+        }
 
         if received.info.dst_address == BROADCAST_ADDRESS
             && !manager.peer_exists(&received.info.src_address)
