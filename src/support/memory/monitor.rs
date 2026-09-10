@@ -1,263 +1,40 @@
-//! Physical memory policy and heap instrumentation.
-//!
-//! The global allocator is internal-RAM only. PSRAM is a dedicated allocator
-//! for explicit data-plane and framebuffer storage. Heap usage is monitored
-//! continuously so internal SRAM remains an explicit runtime budget.
+//! Heap snapshots, pressure policy, and runtime memory diagnostics.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-use embassy_time::{Duration, Instant, Timer};
-use esp_alloc::{EspHeap, HEAP, HeapRegion, MemoryCapability};
-use esp_hal::{
-    peripherals::PSRAM,
-    psram::{Psram, PsramConfig, PsramMode},
-    system::Stack,
-};
+use embassy_time::{Duration, Instant};
+use esp_alloc::HEAP;
 
 use crate::support::diagnostics;
+
+use super::{psram, stack};
 
 const PERIODIC_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const INTERNAL_WARN_FREE_BYTES: usize = 32 * 1024;
 const INTERNAL_CRITICAL_FREE_BYTES: usize = 16 * 1024;
 
-const STACK_WATERMARK_PATTERN: u32 = 0xA5A5_A5A5;
-// ESP-RTOS currently places its guard near the bottom of each main-task stack.
-// Reserve substantially more than that implementation detail so painting never
-// touches the guard/control area.
-const STACK_WATERMARK_RESERVED_BYTES: usize = 256;
-// Never paint right up to the live SP; leave room for this function and its
-// caller to return without touching freshly painted memory.
-const STACK_WATERMARK_SAFETY_BYTES: usize = 256;
-const STACK_WORD_BYTES: usize = core::mem::size_of::<u32>();
-
-static PSRAM_HEAP: EspHeap = EspHeap::empty();
-
-static CPU0_WATERMARK_START: AtomicUsize = AtomicUsize::new(0);
-static CPU0_WATERMARK_END: AtomicUsize = AtomicUsize::new(0);
-static CPU0_MIN_HEADROOM: AtomicUsize = AtomicUsize::new(0);
-
-static CPU1_STACK_BOTTOM: AtomicUsize = AtomicUsize::new(0);
-static CPU1_STACK_TOP: AtomicUsize = AtomicUsize::new(0);
-static CPU1_WATERMARK_START: AtomicUsize = AtomicUsize::new(0);
-static CPU1_WATERMARK_END: AtomicUsize = AtomicUsize::new(0);
-static CPU1_MIN_HEADROOM: AtomicUsize = AtomicUsize::new(0);
-
-pub fn enable_psram(psram_peripheral: PSRAM<'static>) {
-    let config = PsramConfig {
-        mode: PsramMode::QuadSpi,
-        ..PsramConfig::default()
-    };
-
-    let psram = Psram::new(psram_peripheral, config);
-    let (start, size) = psram.raw_parts();
-
-    unsafe {
-        PSRAM_HEAP.add_region(HeapRegion::new(
-            start,
-            size,
-            MemoryCapability::External.into(),
-        ));
-    }
-}
-
-pub fn psram_heap() -> &'static EspHeap {
-    &PSRAM_HEAP
-}
-
-fn cpu0_stack_bounds() -> (usize, usize) {
-    unsafe extern "C" {
-        static _stack_end_cpu0: u32;
-        static _stack_start_cpu0: u32;
-    }
-
-    (
-        (&raw const _stack_end_cpu0) as usize,
-        (&raw const _stack_start_cpu0) as usize,
-    )
-}
-
-fn align_up(value: usize, alignment: usize) -> usize {
-    (value + alignment - 1) & !(alignment - 1)
-}
-
-fn align_down(value: usize, alignment: usize) -> usize {
-    value & !(alignment - 1)
-}
-
-unsafe fn paint_stack_range(start: usize, end: usize) {
-    let mut address = start;
-    while address + STACK_WORD_BYTES <= end {
-        unsafe {
-            (address as *mut u32).write_volatile(STACK_WATERMARK_PATTERN);
-        }
-        address += STACK_WORD_BYTES;
-    }
-}
-
-fn scan_stack_watermark(bottom: usize, start: usize, end: usize) -> Option<usize> {
-    if start == 0 || end <= start {
-        return None;
-    }
-
-    let mut address = start;
-    while address + STACK_WORD_BYTES <= end {
-        let value = unsafe { (address as *const u32).read_volatile() };
-        if value != STACK_WATERMARK_PATTERN {
-            return Some(address.saturating_sub(bottom));
-        }
-        address += STACK_WORD_BYTES;
-    }
-
-    Some(end.saturating_sub(bottom))
-}
-
-fn paint_live_stack(
-    bottom: usize,
-    top: usize,
-    watermark_start: &AtomicUsize,
-    watermark_end: &AtomicUsize,
-    min_headroom: &AtomicUsize,
-) {
-    let sp = esp_hal::xtensa_lx::get_stack_pointer() as usize;
-    let start = align_up(
-        bottom.saturating_add(STACK_WATERMARK_RESERVED_BYTES),
-        STACK_WORD_BYTES,
-    );
-    let end = align_down(
-        sp.saturating_sub(STACK_WATERMARK_SAFETY_BYTES).min(top),
-        STACK_WORD_BYTES,
-    );
-
-    if end <= start {
-        return;
-    }
-
-    unsafe {
-        paint_stack_range(start, end);
-    }
-
-    watermark_start.store(start, Ordering::Release);
-    watermark_end.store(end, Ordering::Release);
-    min_headroom.store(end.saturating_sub(bottom), Ordering::Release);
-}
-
-/// Paint the currently-unused part of the CPU0 main stack once during startup.
-///
-/// Later scans recover the deepest stack use even if the stack has already
-/// unwound by the time diagnostics run.
-pub fn init_cpu0_stack_watermark() {
-    let (bottom, top) = cpu0_stack_bounds();
-    paint_live_stack(
-        bottom,
-        top,
-        &CPU0_WATERMARK_START,
-        &CPU0_WATERMARK_END,
-        &CPU0_MIN_HEADROOM,
-    );
-}
-
-/// Record the address range of the statically allocated CPU1 stack before it is
-/// handed to ESP-RTOS. Painting happens from CPU1 after its scheduler is live.
-pub fn register_cpu1_stack<const SIZE: usize>(stack: &mut Stack<SIZE>) {
-    CPU1_STACK_BOTTOM.store(stack.bottom() as usize, Ordering::Release);
-    CPU1_STACK_TOP.store(stack.top() as usize, Ordering::Release);
-}
-
-/// Paint CPU1's currently-unused stack. Call this from the CPU1 entry closure.
-pub fn init_cpu1_stack_watermark() {
-    let bottom = CPU1_STACK_BOTTOM.load(Ordering::Acquire);
-    let top = CPU1_STACK_TOP.load(Ordering::Acquire);
-    if bottom == 0 || top <= bottom {
-        return;
-    }
-
-    paint_live_stack(
-        bottom,
-        top,
-        &CPU1_WATERMARK_START,
-        &CPU1_WATERMARK_END,
-        &CPU1_MIN_HEADROOM,
-    );
-}
-
-fn update_cpu0_stack_watermark() {
-    let (bottom, _) = cpu0_stack_bounds();
-    if let Some(headroom) = scan_stack_watermark(
-        bottom,
-        CPU0_WATERMARK_START.load(Ordering::Acquire),
-        CPU0_WATERMARK_END.load(Ordering::Acquire),
-    ) {
-        CPU0_MIN_HEADROOM.store(headroom, Ordering::Release);
-    }
-}
-
-fn update_cpu1_stack_watermark() {
-    let bottom = CPU1_STACK_BOTTOM.load(Ordering::Acquire);
-    if let Some(headroom) = scan_stack_watermark(
-        bottom,
-        CPU1_WATERMARK_START.load(Ordering::Acquire),
-        CPU1_WATERMARK_END.load(Ordering::Acquire),
-    ) {
-        CPU1_MIN_HEADROOM.store(headroom, Ordering::Release);
-    }
-}
-
-/// CPU1 performs its own watermark scan so CPU0 never reads memory while CPU1
-/// may be actively using that stack.
-#[embassy_executor::task]
-pub async fn cpu1_stack_monitor_task() {
-    loop {
-        update_cpu1_stack_watermark();
-        Timer::after(PERIODIC_REPORT_INTERVAL).await;
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
-pub struct StackSnapshot {
-    /// Linker-defined usable CPU0 stack span, from the guard word to stack top.
-    pub size: usize,
-    /// Current distance from SP to the bottom of the linker-defined stack.
-    pub headroom: usize,
-}
-
-/// Sample CPU0's current stack pointer. This is useful for live context, while
-/// the painted watermark records the true deepest use since startup.
-pub fn cpu0_stack_snapshot() -> StackSnapshot {
-    let sp = esp_hal::xtensa_lx::get_stack_pointer() as usize;
-    let (bottom, top) = cpu0_stack_bounds();
-
-    StackSnapshot {
-        size: top.saturating_sub(bottom),
-        headroom: sp.saturating_sub(bottom),
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct HeapSnapshot {
-    pub internal_size: usize,
-    pub internal_used: usize,
-    pub internal_free: usize,
-    pub internal_peak_used: usize,
-    pub internal_total_allocated: u64,
-    pub internal_total_freed: u64,
-    pub psram_size: usize,
-    pub psram_used: usize,
-    pub psram_free: usize,
-    pub psram_peak_used: usize,
-    pub cpu0_stack_size: usize,
-    pub cpu0_stack_headroom: usize,
-    pub cpu0_stack_min_headroom: usize,
-    pub cpu1_stack_size: usize,
-    pub cpu1_stack_min_headroom: usize,
+struct HeapSnapshot {
+    internal_size: usize,
+    internal_used: usize,
+    internal_free: usize,
+    internal_peak_used: usize,
+    internal_total_allocated: u64,
+    internal_total_freed: u64,
+    psram_size: usize,
+    psram_used: usize,
+    psram_free: usize,
+    psram_peak_used: usize,
+    cpu0_stack_size: usize,
+    cpu0_stack_headroom: usize,
+    cpu0_stack_min_headroom: usize,
+    cpu1_stack_size: usize,
+    cpu1_stack_min_headroom: usize,
 }
 
 impl HeapSnapshot {
-    pub fn capture() -> Self {
+    fn capture() -> Self {
         let internal = HEAP.stats();
-        let psram = PSRAM_HEAP.stats();
-        let stack = cpu0_stack_snapshot();
-        let cpu1_bottom = CPU1_STACK_BOTTOM.load(Ordering::Acquire);
-        let cpu1_top = CPU1_STACK_TOP.load(Ordering::Acquire);
+        let external = psram::heap().stats();
+        let cpu0 = stack::cpu0_snapshot();
 
         Self {
             internal_size: internal.size,
@@ -266,21 +43,21 @@ impl HeapSnapshot {
             internal_peak_used: internal.max_usage,
             internal_total_allocated: internal.total_allocated,
             internal_total_freed: internal.total_freed,
-            psram_size: psram.size,
-            psram_used: psram.current_usage,
-            psram_free: psram.size.saturating_sub(psram.current_usage),
-            psram_peak_used: psram.max_usage,
-            cpu0_stack_size: stack.size,
-            cpu0_stack_headroom: stack.headroom,
-            cpu0_stack_min_headroom: CPU0_MIN_HEADROOM.load(Ordering::Acquire),
-            cpu1_stack_size: cpu1_top.saturating_sub(cpu1_bottom),
-            cpu1_stack_min_headroom: CPU1_MIN_HEADROOM.load(Ordering::Acquire),
+            psram_size: external.size,
+            psram_used: external.current_usage,
+            psram_free: external.size.saturating_sub(external.current_usage),
+            psram_peak_used: external.max_usage,
+            cpu0_stack_size: cpu0.size,
+            cpu0_stack_headroom: cpu0.headroom,
+            cpu0_stack_min_headroom: stack::cpu0_min_headroom(),
+            cpu1_stack_size: stack::cpu1_size(),
+            cpu1_stack_min_headroom: stack::cpu1_min_headroom(),
         }
     }
 }
 
-pub fn report(label: &str) {
-    update_cpu0_stack_watermark();
+pub(crate) fn report(label: &str) {
+    stack::update_cpu0_stack_watermark();
     let s = HeapSnapshot::capture();
     ::log::info!(
         "MEM [{}] int={}/{} KiB free={} KiB peak={} KiB | psram={}/{} KiB free={} KiB peak={} KiB | cpu0-stack={} KiB current={} KiB min={} KiB | cpu1-stack={} KiB min={} KiB",
@@ -301,12 +78,7 @@ pub fn report(label: &str) {
     );
 }
 
-/// Snapshot window used to detect allocator activity overlapping a named CPU0
-/// operation.
-///
-/// The global allocator is shared with runtime/radio work, so a delta proves
-/// overlap, not causality. This type intentionally has no presentation-specific
-/// fields.
+/// Snapshot window used to detect allocator activity overlapping a named CPU0 operation.
 #[derive(Clone, Copy, Debug)]
 struct HeapActivityProbe {
     label: &'static str,
@@ -314,12 +86,7 @@ struct HeapActivityProbe {
 }
 
 /// Long-lived internal-memory monitor.
-///
-/// It tracks the lowest observed free SRAM, periodically emits current/peak
-/// usage, warns on pressure, and can report allocator activity that overlaps a
-/// short named CPU0 operation. Activity probes are diagnostic correlation only:
-/// another core may allocate during the same window.
-pub struct HeapMonitor {
+pub(crate) struct HeapMonitor {
     min_internal_free: usize,
     last_periodic_report: Instant,
     last_periodic_allocated: u64,
@@ -336,8 +103,8 @@ enum HeapPressure {
 }
 
 impl HeapMonitor {
-    pub fn new(now: Instant) -> Self {
-        update_cpu0_stack_watermark();
+    pub(crate) fn new(now: Instant) -> Self {
+        stack::update_cpu0_stack_watermark();
         let snapshot = HeapSnapshot::capture();
         Self {
             min_internal_free: snapshot.internal_free,
@@ -349,8 +116,8 @@ impl HeapMonitor {
         }
     }
 
-    pub fn checkpoint(&mut self, label: &str) {
-        update_cpu0_stack_watermark();
+    pub(crate) fn checkpoint(&mut self, label: &str) {
+        stack::update_cpu0_stack_watermark();
         let snapshot = HeapSnapshot::capture();
         self.observe(snapshot);
         self.last_periodic_allocated = snapshot.internal_total_allocated;
@@ -358,21 +125,19 @@ impl HeapMonitor {
         report(label);
     }
 
-    /// Begin a short correlation window for a statically named CPU0 operation.
-    pub fn begin_activity(&mut self, label: &'static str) {
+    pub(crate) fn begin_activity(&mut self, label: &'static str) {
         self.pending_activity = Some(HeapActivityProbe {
             label,
             before: HeapSnapshot::capture(),
         });
     }
 
-    /// End the current correlation window and report any global heap activity.
-    pub fn end_activity(&mut self) {
+    pub(crate) fn end_activity(&mut self) {
         let Some(probe) = self.pending_activity.take() else {
             return;
         };
 
-        update_cpu0_stack_watermark();
+        stack::update_cpu0_stack_watermark();
         let after = HeapSnapshot::capture();
         self.observe(after);
 
@@ -395,10 +160,10 @@ impl HeapMonitor {
         }
     }
 
-    pub fn poll(&mut self, now: Instant) {
+    pub(crate) fn poll(&mut self, now: Instant) {
         let periodic_report = now - self.last_periodic_report >= PERIODIC_REPORT_INTERVAL;
         if periodic_report {
-            update_cpu0_stack_watermark();
+            stack::update_cpu0_stack_watermark();
         }
 
         let snapshot = HeapSnapshot::capture();
