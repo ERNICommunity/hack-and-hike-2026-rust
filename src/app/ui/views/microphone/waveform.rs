@@ -5,8 +5,8 @@ use crate::{
     services::display::Display,
 };
 
-use super::Canvas;
 use super::super::super::{design::ContentRect, theme};
+use super::Canvas;
 
 pub(super) fn render(display: &mut Display, left: Canvas, right: Canvas, frame: &WaveformFrame) {
     render_channel(display, left, &frame.left);

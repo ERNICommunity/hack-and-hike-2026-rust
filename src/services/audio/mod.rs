@@ -5,19 +5,19 @@
 //! CPU0 sees separate microphone-input and speaker-control endpoints; DMA,
 //! synchronization, codec registers, and synthesis remain private here.
 
+mod capture;
 mod channels;
 mod chime;
 mod codecs;
-mod capture;
 mod melody;
 mod playback;
 
 use esp_hal::peripherals::{DMA_CH0, GPIO0, GPIO13, GPIO14, GPIO33, GPIO34, I2S0};
 
-pub(crate) use channels::{Input, PlaybackControl};
-pub(crate) use codecs::{init_aw88298, init_es7210};
 pub(crate) use capture::capture_task;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
+pub(crate) use channels::{Input, PlaybackControl};
+pub(crate) use codecs::{init_aw88298, init_es7210};
 
 pub(crate) const SAMPLE_RATE_HZ: u32 = 16_000;
 pub(crate) const BLOCK_FRAMES: usize = 512;

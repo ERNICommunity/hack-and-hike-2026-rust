@@ -6,17 +6,13 @@
 //! boundary. This keeps layout declarative without forcing dense telemetry or
 //! instrument pixels through generic widget abstractions.
 
-use embedded_graphics::{
-    pixelcolor::Rgb565,
-    prelude::DrawTarget as _,
-    prelude::RgbColor as _,
-};
+use embedded_graphics::{pixelcolor::Rgb565, prelude::DrawTarget as _, prelude::RgbColor as _};
 use embedded_gui::{
     DMACapableFrameBufferBackend, DisplayBackend, DmaTransfer, EndianCorrectedBuffer,
     EndianCorrection, FrameBuf, GuiContext, TransferError,
 };
 
-use crate::{services::display::Display, support::memory::data_plane};
+use crate::{services::display::Display, support::memory::storage};
 
 use super::design;
 
@@ -32,7 +28,7 @@ pub(crate) struct GuiSurface {
 
 impl GuiSurface {
     pub(crate) fn new() -> Self {
-        let pixels = data_plane::leaked_filled_slice(
+        let pixels = storage::leaked_filled_slice(
             design::CONTENT_WIDTH * design::CONTENT_HEIGHT,
             Rgb565::WHITE,
         );
@@ -63,8 +59,7 @@ impl GuiSurface {
     ) {
         self.present_frame(display, |framebuffer| {
             let _ = framebuffer.clear(Rgb565::WHITE);
-            gui.render(framebuffer)
-                .expect("embedded-gui render failed");
+            gui.render(framebuffer).expect("embedded-gui render failed");
             overlay(framebuffer);
         });
     }
@@ -81,11 +76,7 @@ impl GuiSurface {
         self.present_frame(display, overlay);
     }
 
-    fn present_frame(
-        &mut self,
-        display: &mut Display,
-        draw: impl FnOnce(&mut GuiFramebuffer),
-    ) {
+    fn present_frame(&mut self, display: &mut Display, draw: impl FnOnce(&mut GuiFramebuffer)) {
         let mut framebuffer = self
             .framebuffer
             .take()

@@ -9,7 +9,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use log::warn;
 use static_cell::StaticCell;
 
-use crate::{platform::{board, i2c::SystemI2cBus}};
+use crate::platform::{board, i2c::SystemI2cBus};
 
 /// Valid user-facing LCD brightness percentage.
 ///

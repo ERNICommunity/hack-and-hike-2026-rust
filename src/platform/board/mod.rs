@@ -19,10 +19,7 @@ pub(crate) const DISPLAY_ROTATED_180: bool = true;
 /// logical display coordinates consumed by presentation code.
 pub(crate) const fn logical_display_point(x: u16, y: u16) -> (u16, u16) {
     if DISPLAY_ROTATED_180 {
-        (
-            DISPLAY_WIDTH as u16 - 1 - x,
-            DISPLAY_HEIGHT as u16 - 1 - y,
-        )
+        (DISPLAY_WIDTH as u16 - 1 - x, DISPLAY_HEIGHT as u16 - 1 - y)
     } else {
         (x, y)
     }

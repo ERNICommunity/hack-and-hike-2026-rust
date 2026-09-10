@@ -13,8 +13,8 @@ mod task;
 use embassy_time::Duration;
 
 pub(crate) use channels::Input;
-pub(crate) use task::capture_task;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
+pub(crate) use task::capture_task;
 
 /// Host-side accelerometer/gyroscope acquisition target.
 pub(crate) const DEFAULT_SENSOR_HZ: u32 = 100;

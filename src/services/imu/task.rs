@@ -25,7 +25,7 @@ const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
 const GYRO_NEAR_SATURATION_DPS: f32 = 1950.0;
 
 #[embassy_executor::task]
-pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
+pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
     let sensor = Bmi270::new(bus);
     let mut revision = 0u32;
     let mut last_orientation = Orientation::default();
@@ -95,7 +95,9 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
                     consecutive_errors = 0;
 
                     let delta_ticks = last_sensor_time
-                        .map(|previous| sample.sensor_time.wrapping_sub(previous) & SENSOR_TIME_MASK)
+                        .map(|previous| {
+                            sample.sensor_time.wrapping_sub(previous) & SENSOR_TIME_MASK
+                        })
                         .unwrap_or(NOMINAL_FUSION_TICKS);
                     last_sensor_time = Some(sample.sensor_time);
                     let timing_gap = delta_ticks == 0 || delta_ticks > MAX_FUSION_SAMPLE_GAP_TICKS;

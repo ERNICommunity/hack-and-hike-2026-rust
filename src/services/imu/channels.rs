@@ -26,7 +26,7 @@ pub(crate) struct Runtime {
     service: &'static Service,
 }
 
-pub struct Input {
+pub(crate) struct Input {
     service: &'static Service,
 }
 
@@ -46,7 +46,7 @@ pub(crate) fn init_endpoints() -> Endpoints {
 impl Input {
     /// Take the newest orientation/status snapshot, if CPU1 published one since
     /// the previous take. Multiple CPU1 updates collapse to one latest value.
-    pub fn take_latest(&mut self) -> Option<Snapshot> {
+    pub(crate) fn take_latest(&mut self) -> Option<Snapshot> {
         self.service.latest.try_take()
     }
 }

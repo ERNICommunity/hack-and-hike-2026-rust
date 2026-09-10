@@ -15,9 +15,9 @@ use embassy_time::Duration;
 use esp_hal::peripherals::WIFI;
 
 pub(crate) use channels::Input;
+pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 pub(crate) use protocol::DeviceId;
 pub(crate) use radio::start;
-pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 
 pub(crate) const MAX_PEERS: usize = 10;
 const _: () = assert!(MAX_PEERS > 0);

@@ -15,7 +15,7 @@ use embedded_gui::prelude::*;
 
 use crate::{
     services::display::{BrightnessPercent, Display},
-    support::memory::data_plane,
+    support::memory::storage,
 };
 
 use super::super::{
@@ -57,7 +57,7 @@ pub(super) struct View {
 
 impl View {
     pub(super) fn new() -> Self {
-        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
         let geometry = Geometry {
@@ -67,7 +67,11 @@ impl View {
                 app.widgets.brightness_value_slot,
                 "settings brightness value",
             ),
-            slider: required_rect(gui, app.widgets.brightness_slot, "settings brightness slider"),
+            slider: required_rect(
+                gui,
+                app.widgets.brightness_slot,
+                "settings brightness slider",
+            ),
             minimum: required_rect(gui, app.widgets.minimum_slot, "settings minimum"),
             maximum: required_rect(gui, app.widgets.maximum_slot, "settings maximum"),
             hint: required_rect(gui, app.widgets.hint_slot, "settings hint"),
@@ -165,11 +169,7 @@ fn draw_settings(frame: &mut GuiFramebuffer, geometry: Geometry, brightness: Bri
     );
 }
 
-fn draw_brightness_slider(
-    frame: &mut GuiFramebuffer,
-    rect: Rect,
-    brightness: BrightnessPercent,
-) {
+fn draw_brightness_slider(frame: &mut GuiFramebuffer, rect: Rect, brightness: BrightnessPercent) {
     common::fill_rect(frame, rect, common::white());
 
     let (left, right) = slider_track_bounds(rect);
@@ -208,10 +208,7 @@ fn draw_brightness_slider(
         .draw(frame);
     let inner_diameter = 12i32;
     let inner = Circle::new(
-        Point::new(
-            thumb_x - inner_diameter / 2,
-            center_y - inner_diameter / 2,
-        ),
+        Point::new(thumb_x - inner_diameter / 2, center_y - inner_diameter / 2),
         inner_diameter as u32,
     );
     let _ = inner
@@ -226,5 +223,6 @@ fn slider_track_bounds(rect: Rect) -> (i32, i32) {
 }
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
-    gui.absolute_rect(id).unwrap_or_else(|| panic!("{name} layout missing"))
+    gui.absolute_rect(id)
+        .unwrap_or_else(|| panic!("{name} layout missing"))
 }

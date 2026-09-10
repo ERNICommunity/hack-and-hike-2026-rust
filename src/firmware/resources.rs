@@ -1,38 +1,24 @@
-//! Runtime hardware ownership expressed through concrete resource bundles.
+//! Runtime hardware ownership expressed through concrete CPU resource bundles.
 //!
-//! `RuntimeResources` describes only raw-peripheral ownership. CPU1→CPU0 reader
-//! handles live separately as service-owned endpoints because peripheral
-//! ownership and access to static cross-core data contracts are different
-//! architectural concerns.
-//!
-//! Bootstrap moves each raw peripheral exactly once to the service that owns it:
-//! CPU0 owns display/camera I/O; CPU1 owns runtime I2C, audio acquisition, and
-//! radio. Touch and IMU intentionally do not have independent raw-I2C handles
-//! because both consume the shared CPU1-local `SystemI2cBus`.
+//! Bootstrap moves each raw peripheral exactly once to the CPU-side bundle that
+//! owns it: CPU0 keeps display/camera I/O; CPU1 receives runtime I2C, audio
+//! acquisition, and radio. Touch and IMU intentionally do not have independent
+//! raw-I2C handles because both consume the shared CPU1-local `SystemI2cBus`.
 
 use crate::{
     platform::i2c as system_i2c,
     services::{audio, camera, display, network},
 };
 
-/// Complete raw-hardware ownership split created during bootstrap.
-pub(crate) struct RuntimeResources {
-    pub(crate) cpu0: Cpu0Resources,
-    pub(crate) cpu1: Cpu1Resources,
-}
-
 /// Raw peripherals that stay on CPU0.
-pub(crate) struct Cpu0Resources {
-    pub(crate) display: display::Resources,
-    pub(crate) camera: camera::Resources,
+pub(super) struct Cpu0Resources {
+    pub(super) display: display::Resources,
+    pub(super) camera: camera::Resources,
 }
 
 /// Raw peripherals moved into the CPU1 service executor.
-///
-/// Destructuring this value in bootstrap makes the ownership transfer explicit:
-/// the display/camera side cannot retain the Wi-Fi/I2S/runtime-I2C peripherals.
-pub(crate) struct Cpu1Resources {
-    pub(crate) system_i2c: system_i2c::Resources<'static>,
-    pub(crate) audio: audio::Resources,
-    pub(crate) network: network::Resources,
+pub(super) struct Cpu1Resources {
+    pub(super) system_i2c: system_i2c::Resources<'static>,
+    pub(super) audio: audio::Resources,
+    pub(super) network: network::Resources,
 }

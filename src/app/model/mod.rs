@@ -18,8 +18,7 @@ use crate::{
     services::{
         audio,
         display::{BrightnessControl, BrightnessPercent},
-        imu as imu_service,
-        network as network_service,
+        imu as imu_service, network as network_service,
     },
     support::logging,
 };

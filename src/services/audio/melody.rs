@@ -6,7 +6,7 @@
 //! note-on (or the loop boundary) so each note is as long as possible without
 //! overlapping the following note. Playback is transposed up two octaves.
 
-use super::{PitchSemitones, TempoBpm, SAMPLE_RATE_HZ};
+use super::{PitchSemitones, SAMPLE_RATE_HZ, TempoBpm};
 
 const TICKS_PER_BEAT: u32 = 384;
 const LOOP_TICKS: u32 = 3_072;
@@ -21,9 +21,8 @@ const SCORE_REFERENCE_VELOCITY: i32 = 50;
 // boundary to the tiny speaker/amplifier. Instead synthesize two adjacent
 // harmonics above it; their missing fundamental preserves the perceived note.
 const DIRECT_FUNDAMENTAL_MIN_HZ: u32 = 620;
-const DIRECT_FUNDAMENTAL_MIN_STEP: u32 = ((DIRECT_FUNDAMENTAL_MIN_HZ as u64
-    * (1u64 << 32))
-    / SAMPLE_RATE_HZ as u64) as u32;
+const DIRECT_FUNDAMENTAL_MIN_STEP: u32 =
+    ((DIRECT_FUNDAMENTAL_MIN_HZ as u64 * (1u64 << 32)) / SAMPLE_RATE_HZ as u64) as u32;
 
 #[derive(Clone, Copy)]
 struct MidiNote {
@@ -33,14 +32,46 @@ struct MidiNote {
 }
 
 const NOTES: [MidiNote; 8] = [
-    MidiNote { start_tick: 0, midi: 36, velocity: 50 },
-    MidiNote { start_tick: 384, midi: 38, velocity: 50 },
-    MidiNote { start_tick: 768, midi: 40, velocity: 50 },
-    MidiNote { start_tick: 1152, midi: 41, velocity: 50 },
-    MidiNote { start_tick: 1536, midi: 43, velocity: 50 },
-    MidiNote { start_tick: 1920, midi: 45, velocity: 50 },
-    MidiNote { start_tick: 2304, midi: 47, velocity: 50 },
-    MidiNote { start_tick: 2688, midi: 48, velocity: 50 },
+    MidiNote {
+        start_tick: 0,
+        midi: 36,
+        velocity: 50,
+    },
+    MidiNote {
+        start_tick: 384,
+        midi: 38,
+        velocity: 50,
+    },
+    MidiNote {
+        start_tick: 768,
+        midi: 40,
+        velocity: 50,
+    },
+    MidiNote {
+        start_tick: 1152,
+        midi: 41,
+        velocity: 50,
+    },
+    MidiNote {
+        start_tick: 1536,
+        midi: 43,
+        velocity: 50,
+    },
+    MidiNote {
+        start_tick: 1920,
+        midi: 45,
+        velocity: 50,
+    },
+    MidiNote {
+        start_tick: 2304,
+        midi: 47,
+        velocity: 50,
+    },
+    MidiNote {
+        start_tick: 2688,
+        midi: 48,
+        velocity: 50,
+    },
 ];
 
 pub(super) struct MelodySynth {
@@ -64,11 +95,7 @@ impl MelodySynth {
         self.note_index = 0;
     }
 
-    pub(super) fn next_sample(
-        &mut self,
-        tempo: TempoBpm,
-        pitch: PitchSemitones,
-    ) -> i16 {
+    pub(super) fn next_sample(&mut self, tempo: TempoBpm, pitch: PitchSemitones) -> i16 {
         let loop_q32 = u64::from(LOOP_TICKS) << 32;
         if self.tick_q32 >= loop_q32 {
             self.tick_q32 %= loop_q32;
@@ -135,8 +162,7 @@ fn note_end_tick(index: usize) -> u32 {
 }
 
 fn tick_step_q32(tempo: TempoBpm) -> u64 {
-    let numerator =
-        u64::from(tempo.get()) * u64::from(TICKS_PER_BEAT) * (1u64 << 32);
+    let numerator = u64::from(tempo.get()) * u64::from(TICKS_PER_BEAT) * (1u64 << 32);
     let denominator = 60 * u64::from(SAMPLE_RATE_HZ);
     (numerator / denominator).max(1)
 }
@@ -221,12 +247,11 @@ fn sine_wave(phase: u32) -> i16 {
 
 fn phase_step(midi: i16) -> u32 {
     const STEPS: [u32; 37] = [
-        8778697, 9300706, 9853754, 10439689, 11060465, 11718155, 12414953,
-        13153184, 13935313, 14763950, 15641860, 16571974, 17557394, 18601411,
-        19707509, 20879378, 22120931, 23436310, 24829905, 26306368, 27870626,
-        29527900, 31283720, 33143947, 35114789, 37202823, 39415018, 41758757,
-        44241862, 46872620, 49659811, 52612737, 55741253, 59055800, 62567441,
-        66287895, 70229578,
+        8778697, 9300706, 9853754, 10439689, 11060465, 11718155, 12414953, 13153184, 13935313,
+        14763950, 15641860, 16571974, 17557394, 18601411, 19707509, 20879378, 22120931, 23436310,
+        24829905, 26306368, 27870626, 29527900, 31283720, 33143947, 35114789, 37202823, 39415018,
+        41758757, 44241862, 46872620, 49659811, 52612737, 55741253, 59055800, 62567441, 66287895,
+        70229578,
     ];
     STEPS[(midi.clamp(MIDI_MIN, MIDI_MAX) - MIDI_MIN) as usize]
 }
@@ -235,10 +260,9 @@ fn phase_step(midi: i16) -> u32 {
 // are linearly interpolated above, so this uses less flash and much less phase
 // quantization than indexing the old 256-entry full-wave table directly.
 const SINE_QUARTER_64: [i16; 65] = [
-    0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179, 7962, 8739, 9512,
-    10278, 11039, 11793, 12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530,
-    18204, 18868, 19519, 20159, 20787, 21403, 22005, 22594, 23170, 23731, 24279,
-    24811, 25329, 25832, 26319, 26790, 27245, 27683, 28105, 28510, 28898, 29268,
-    29621, 29956, 30273, 30571, 30852, 31113, 31356, 31580, 31785, 31971, 32137,
-    32285, 32412, 32521, 32609, 32678, 32728, 32757, 32767,
+    0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179, 7962, 8739, 9512, 10278, 11039, 11793,
+    12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530, 18204, 18868, 19519, 20159, 20787,
+    21403, 22005, 22594, 23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790, 27245, 27683,
+    28105, 28510, 28898, 29268, 29621, 29956, 30273, 30571, 30852, 31113, 31356, 31580, 31785,
+    31971, 32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757, 32767,
 ];

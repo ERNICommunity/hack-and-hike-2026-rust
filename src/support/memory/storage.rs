@@ -162,8 +162,7 @@ impl PsramByteRing {
         let physical_start = (self.start + logical_offset) % capacity;
         let first_len = count.min(capacity - physical_start);
 
-        out[..first_len]
-            .copy_from_slice(&self.storage[physical_start..physical_start + first_len]);
+        out[..first_len].copy_from_slice(&self.storage[physical_start..physical_start + first_len]);
 
         let remaining = count - first_len;
         if remaining != 0 {

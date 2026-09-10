@@ -5,8 +5,11 @@
 //! predictable no_std cost while keeping dense telemetry bounded.
 
 use embedded_graphics::{
-    mono_font::{ascii::{FONT_6X12, FONT_7X13, FONT_8X13_BOLD}, MonoTextStyle},
-    pixelcolor::{raw::RawU16, Rgb565},
+    mono_font::{
+        MonoTextStyle,
+        ascii::{FONT_6X12, FONT_7X13, FONT_8X13_BOLD},
+    },
+    pixelcolor::{Rgb565, raw::RawU16},
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
     text::{Baseline, Text},
@@ -66,55 +69,25 @@ pub(super) fn fill_box(
         .draw(frame);
 }
 
-pub(super) fn hline(
-    frame: &mut GuiFramebuffer,
-    x: i32,
-    y: i32,
-    width: u32,
-    color: Rgb565,
-) {
+pub(super) fn hline(frame: &mut GuiFramebuffer, x: i32, y: i32, width: u32, color: Rgb565) {
     fill_box(frame, x, y, width, 1, color);
 }
 
-pub(super) fn vline(
-    frame: &mut GuiFramebuffer,
-    x: i32,
-    y: i32,
-    height: u32,
-    color: Rgb565,
-) {
+pub(super) fn vline(frame: &mut GuiFramebuffer, x: i32, y: i32, height: u32, color: Rgb565) {
     fill_box(frame, x, y, 1, height, color);
 }
 
-pub(super) fn draw_title(
-    frame: &mut GuiFramebuffer,
-    text: &str,
-    x: i32,
-    y: i32,
-    color: Rgb565,
-) {
+pub(super) fn draw_title(frame: &mut GuiFramebuffer, text: &str, x: i32, y: i32, color: Rgb565) {
     let style = MonoTextStyle::new(&FONT_8X13_BOLD, color);
     let _ = Text::with_baseline(text, Point::new(x, y), style, Baseline::Top).draw(frame);
 }
 
-pub(super) fn draw_body(
-    frame: &mut GuiFramebuffer,
-    text: &str,
-    x: i32,
-    y: i32,
-    color: Rgb565,
-) {
+pub(super) fn draw_body(frame: &mut GuiFramebuffer, text: &str, x: i32, y: i32, color: Rgb565) {
     let style = MonoTextStyle::new(&FONT_7X13, color);
     let _ = Text::with_baseline(text, Point::new(x, y), style, Baseline::Top).draw(frame);
 }
 
-pub(super) fn draw_dense(
-    frame: &mut GuiFramebuffer,
-    text: &str,
-    x: i32,
-    y: i32,
-    color: Rgb565,
-) {
+pub(super) fn draw_dense(frame: &mut GuiFramebuffer, text: &str, x: i32, y: i32, color: Rgb565) {
     let style = MonoTextStyle::new(&FONT_6X12, color);
     let _ = Text::with_baseline(text, Point::new(x, y), style, Baseline::Top).draw(frame);
 }

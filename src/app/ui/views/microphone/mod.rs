@@ -10,7 +10,7 @@ use embedded_gui::prelude::*;
 use crate::{
     app::model::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame},
     services::display::Display,
-    support::memory::data_plane,
+    support::memory::storage,
 };
 
 use super::super::gui::GuiSurface;
@@ -47,12 +47,13 @@ pub(super) struct View {
 
 impl View {
     pub(super) fn new() -> Self {
-        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::MicrophoneApp::build(gui)
             .expect("microphone KDL exceeds embedded-gui fixed capacities");
 
         let left_label = required_rect(gui, app.widgets.left_label_slot, "microphone left label");
-        let right_label = required_rect(gui, app.widgets.right_label_slot, "microphone right label");
+        let right_label =
+            required_rect(gui, app.widgets.right_label_slot, "microphone right label");
         let left = canvas_from_rect(required_rect(
             gui,
             app.widgets.left_waveform,
@@ -79,13 +80,7 @@ impl View {
         let left_label = self.left_label;
         let right_label = self.right_label;
         surface.present_with_overlay(display, self.gui, move |frame| {
-            common::draw_title(
-                frame,
-                "MIC L",
-                left_label.x,
-                left_label.y,
-                common::black(),
-            );
+            common::draw_title(frame, "MIC L", left_label.x, left_label.y, common::black());
             common::draw_title(
                 frame,
                 "MIC R",
@@ -102,7 +97,8 @@ impl View {
 }
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
-    gui.absolute_rect(id).unwrap_or_else(|| panic!("{name} layout missing"))
+    gui.absolute_rect(id)
+        .unwrap_or_else(|| panic!("{name} layout missing"))
 }
 
 fn canvas_from_rect(rect: Rect) -> Canvas {

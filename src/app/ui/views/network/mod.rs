@@ -11,7 +11,7 @@ use embedded_gui::prelude::*;
 
 use crate::{
     services::{display::Display, network},
-    support::memory::data_plane,
+    support::memory::storage,
 };
 
 use super::super::gui::GuiSurface;
@@ -42,7 +42,7 @@ pub(super) struct View {
 
 impl View {
     pub(super) fn new() -> Self {
-        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::NetworkApp::build(gui)
             .expect("network KDL exceeds embedded-gui fixed capacities");
         Self {
@@ -192,5 +192,6 @@ fn draw_network(
 }
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
-    gui.absolute_rect(id).unwrap_or_else(|| panic!("{name} layout missing"))
+    gui.absolute_rect(id)
+        .unwrap_or_else(|| panic!("{name} layout missing"))
 }

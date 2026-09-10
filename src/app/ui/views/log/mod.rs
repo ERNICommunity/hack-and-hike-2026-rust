@@ -5,7 +5,7 @@
 
 use embedded_gui::prelude::*;
 
-use crate::{services::display::Display, support::memory::data_plane};
+use crate::{services::display::Display, support::memory::storage};
 
 use super::super::gui::GuiSurface;
 use super::common;
@@ -34,7 +34,7 @@ pub(super) struct View {
 
 impl View {
     pub(super) fn new() -> Self {
-        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::LogApp::build(gui).expect("log KDL exceeds embedded-gui capacities");
         Self {
             geometry: Geometry {
@@ -101,5 +101,6 @@ fn trailing_lines(text: &str, line_count: usize) -> &str {
 }
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
-    gui.absolute_rect(id).unwrap_or_else(|| panic!("{name} layout missing"))
+    gui.absolute_rect(id)
+        .unwrap_or_else(|| panic!("{name} layout missing"))
 }

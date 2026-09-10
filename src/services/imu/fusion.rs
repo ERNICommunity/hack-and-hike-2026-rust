@@ -47,9 +47,8 @@ impl GyroBias {
     }
 
     pub(super) fn correct(&mut self, accel_g: [f32; 3], gyro_dps: [f32; 3]) -> [f32; 3] {
-        let accel_norm_sq = accel_g[0] * accel_g[0]
-            + accel_g[1] * accel_g[1]
-            + accel_g[2] * accel_g[2];
+        let accel_norm_sq =
+            accel_g[0] * accel_g[0] + accel_g[1] * accel_g[1] + accel_g[2] * accel_g[2];
         let gyro_max = max_abs3(gyro_dps);
         let stationary = (0.90 * 0.90..=1.10 * 1.10).contains(&accel_norm_sq) && gyro_max < 3.0;
 
@@ -188,8 +187,8 @@ impl Fusion {
         self.orientation.roll_deg = roll;
         self.orientation.pitch_deg = pitch;
 
-        let screen_gravity = normalize3(screen_vector_from_body(self.gravity_body))
-            .unwrap_or([0.0, 0.0, 1.0]);
+        let screen_gravity =
+            normalize3(screen_vector_from_body(self.gravity_body)).unwrap_or([0.0, 0.0, 1.0]);
         let screen_gyro = screen_vector_from_body(gyro_dps);
 
         // Yaw rate is the component of angular velocity around local gravity.
@@ -201,9 +200,8 @@ impl Fusion {
             .map(|previous| 0.5 * (previous + yaw_rate_dps))
             .unwrap_or(yaw_rate_dps);
         self.previous_yaw_rate_dps = Some(yaw_rate_dps);
-        let predicted_yaw = wrap_degrees(
-            self.orientation.yaw_deg + integrated_yaw_rate * dt_seconds,
-        );
+        let predicted_yaw =
+            wrap_degrees(self.orientation.yaw_deg + integrated_yaw_rate * dt_seconds);
 
         let total_rate_dps = max_abs3(gyro_dps);
         if total_rate_dps > MAG_FUSION_MAX_RATE_DPS {
@@ -238,8 +236,7 @@ impl Fusion {
             let consistent = self
                 .pending_mag_offset
                 .map(|previous| {
-                    abs_f32(wrap_degrees(offset - previous))
-                        <= MAX_MAG_INITIAL_OFFSET_JITTER_DEG
+                    abs_f32(wrap_degrees(offset - previous)) <= MAX_MAG_INITIAL_OFFSET_JITTER_DEG
                 })
                 .unwrap_or(false);
 
@@ -278,8 +275,7 @@ impl Fusion {
             let consistent = self
                 .recovery_mag_offset
                 .map(|previous| {
-                    abs_f32(wrap_degrees(offset - previous))
-                        <= MAX_MAG_RECOVERY_OFFSET_JITTER_DEG
+                    abs_f32(wrap_degrees(offset - previous)) <= MAX_MAG_RECOVERY_OFFSET_JITTER_DEG
                 })
                 .unwrap_or(false);
 

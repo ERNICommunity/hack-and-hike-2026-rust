@@ -8,7 +8,7 @@
 
 mod calibration;
 
-pub use calibration::{Calibration, GOOD_FIELD_MAX_UT, GOOD_FIELD_MIN_UT, vector_length};
+pub(super) use calibration::{Calibration, GOOD_FIELD_MAX_UT, GOOD_FIELD_MIN_UT, vector_length};
 
 pub(super) const ADDRESS: u8 = 0x10;
 pub(super) const CHIP_ID: u8 = 0x32;
@@ -31,7 +31,7 @@ const OVERFLOW_XY: i16 = -4096;
 const OVERFLOW_Z: i16 = -16384;
 
 #[derive(Clone, Copy, Debug)]
-pub struct Trim {
+pub(super) struct Trim {
     dig_x1: i8,
     dig_y1: i8,
     dig_x2: i8,
@@ -48,7 +48,7 @@ pub struct Trim {
 impl Trim {
     /// Construct factory trim from the three register blocks Bosch documents:
     /// 0x5D..0x5E, 0x62..0x65, and 0x68..0x71.
-    pub fn from_registers(x1_y1: [u8; 2], z4_x2_y2: [u8; 4], z2_to_xy1: [u8; 10]) -> Self {
+    pub(super) fn from_registers(x1_y1: [u8; 2], z4_x2_y2: [u8; 4], z2_to_xy1: [u8; 10]) -> Self {
         Self {
             dig_x1: x1_y1[0] as i8,
             dig_y1: x1_y1[1] as i8,
@@ -66,15 +66,15 @@ impl Trim {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Sample {
-    pub field_ut: [f32; 3],
-    pub field_strength_ut: f32,
-    pub data_ready: bool,
+pub(super) struct Sample {
+    pub(super) field_ut: [f32; 3],
+    pub(super) field_strength_ut: f32,
+    pub(super) data_ready: bool,
 }
 
 /// Decode and apply Bosch factory compensation to the BMM150's 8-byte data
 /// frame (X, Y, Z and RHALL). Returns `None` for overflow/invalid trim data.
-pub fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
+pub(super) fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
     let raw_x = i16::from_le_bytes([data[0], data[1]]) >> 3;
     let raw_y = i16::from_le_bytes([data[2], data[3]]) >> 3;
     let raw_z = i16::from_le_bytes([data[4], data[5]]) >> 1;
@@ -119,11 +119,7 @@ fn compensate_xy(raw: i16, rhall: u16, dig_1: i8, dig_2: i8, trim: Trim) -> Opti
 }
 
 fn compensate_z(raw: i16, rhall: u16, trim: Trim) -> Option<f32> {
-    if raw == OVERFLOW_Z
-        || trim.dig_z2 == 0
-        || trim.dig_z1 == 0
-        || trim.dig_xyz1 == 0
-        || rhall == 0
+    if raw == OVERFLOW_Z || trim.dig_z2 == 0 || trim.dig_z1 == 0 || trim.dig_xyz1 == 0 || rhall == 0
     {
         return None;
     }

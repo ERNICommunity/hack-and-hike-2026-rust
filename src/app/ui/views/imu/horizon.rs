@@ -8,7 +8,7 @@ use crate::app::ui::gui::GuiFramebuffer;
 use super::{
     common, compass,
     projection::{
-        PERSPECTIVE_NEAR_Z, TAN_SCALE, DisplayAttitude, PerspectiveCamera, abs_f32,
+        DisplayAttitude, PERSPECTIVE_NEAR_Z, PerspectiveCamera, TAN_SCALE, abs_f32,
         clip_camera_near, clip_line, perspective_camera, project_camera_point, round_f32,
         world_to_camera,
     },
@@ -31,45 +31,125 @@ const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 // horizon. A lookup avoids the old 10-deep threshold chain for every grid pixel.
 const GRID_FADE_LAST: usize = 56;
 const SKY_GRID_FADE: [Rgb565; 57] = [
-    Rgb565::new(0, 40, 26), Rgb565::new(0, 40, 26), Rgb565::new(0, 39, 26), Rgb565::new(0, 39, 26),
-    Rgb565::new(0, 37, 25), Rgb565::new(0, 37, 25), Rgb565::new(0, 37, 25), Rgb565::new(0, 34, 24),
-    Rgb565::new(0, 34, 24), Rgb565::new(0, 34, 24), Rgb565::new(0, 34, 24), Rgb565::new(0, 31, 23),
-    Rgb565::new(0, 31, 23), Rgb565::new(0, 31, 23), Rgb565::new(0, 31, 23), Rgb565::new(0, 31, 23),
-    Rgb565::new(0, 28, 21), Rgb565::new(0, 28, 21), Rgb565::new(0, 28, 21), Rgb565::new(0, 28, 21),
-    Rgb565::new(0, 28, 21), Rgb565::new(0, 28, 21), Rgb565::new(0, 25, 20), Rgb565::new(0, 25, 20),
-    Rgb565::new(0, 25, 20), Rgb565::new(0, 25, 20), Rgb565::new(0, 25, 20), Rgb565::new(0, 25, 20),
-    Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19),
-    Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19),
-    Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17),
-    Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17),
-    Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16),
-    Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16),
-    Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 40, 26),
+    Rgb565::new(0, 40, 26),
+    Rgb565::new(0, 39, 26),
+    Rgb565::new(0, 39, 26),
+    Rgb565::new(0, 37, 25),
+    Rgb565::new(0, 37, 25),
+    Rgb565::new(0, 37, 25),
+    Rgb565::new(0, 34, 24),
+    Rgb565::new(0, 34, 24),
+    Rgb565::new(0, 34, 24),
+    Rgb565::new(0, 34, 24),
+    Rgb565::new(0, 31, 23),
+    Rgb565::new(0, 31, 23),
+    Rgb565::new(0, 31, 23),
+    Rgb565::new(0, 31, 23),
+    Rgb565::new(0, 31, 23),
+    Rgb565::new(0, 28, 21),
+    Rgb565::new(0, 28, 21),
+    Rgb565::new(0, 28, 21),
+    Rgb565::new(0, 28, 21),
+    Rgb565::new(0, 28, 21),
+    Rgb565::new(0, 28, 21),
+    Rgb565::new(0, 25, 20),
+    Rgb565::new(0, 25, 20),
+    Rgb565::new(0, 25, 20),
+    Rgb565::new(0, 25, 20),
+    Rgb565::new(0, 25, 20),
+    Rgb565::new(0, 25, 20),
+    Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16),
     Rgb565::new(0, 13, 15),
 ];
 const GROUND_GRID_FADE: [Rgb565; 57] = [
-    Rgb565::new(11, 23, 11), Rgb565::new(11, 23, 11), Rgb565::new(12, 24, 12), Rgb565::new(12, 24, 12),
-    Rgb565::new(13, 25, 13), Rgb565::new(13, 25, 13), Rgb565::new(13, 25, 13), Rgb565::new(14, 27, 14),
-    Rgb565::new(14, 27, 14), Rgb565::new(14, 27, 14), Rgb565::new(14, 27, 14), Rgb565::new(15, 29, 15),
-    Rgb565::new(15, 29, 15), Rgb565::new(15, 29, 15), Rgb565::new(15, 29, 15), Rgb565::new(15, 29, 15),
-    Rgb565::new(16, 31, 16), Rgb565::new(16, 31, 16), Rgb565::new(16, 31, 16), Rgb565::new(16, 31, 16),
-    Rgb565::new(16, 31, 16), Rgb565::new(16, 31, 16), Rgb565::new(17, 33, 17), Rgb565::new(17, 33, 17),
-    Rgb565::new(17, 33, 17), Rgb565::new(17, 33, 17), Rgb565::new(17, 33, 17), Rgb565::new(17, 33, 17),
-    Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18),
-    Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18),
-    Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20),
-    Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20),
-    Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21),
-    Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21),
-    Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21),
+    Rgb565::new(11, 23, 11),
+    Rgb565::new(11, 23, 11),
+    Rgb565::new(12, 24, 12),
+    Rgb565::new(12, 24, 12),
+    Rgb565::new(13, 25, 13),
+    Rgb565::new(13, 25, 13),
+    Rgb565::new(13, 25, 13),
+    Rgb565::new(14, 27, 14),
+    Rgb565::new(14, 27, 14),
+    Rgb565::new(14, 27, 14),
+    Rgb565::new(14, 27, 14),
+    Rgb565::new(15, 29, 15),
+    Rgb565::new(15, 29, 15),
+    Rgb565::new(15, 29, 15),
+    Rgb565::new(15, 29, 15),
+    Rgb565::new(15, 29, 15),
+    Rgb565::new(16, 31, 16),
+    Rgb565::new(16, 31, 16),
+    Rgb565::new(16, 31, 16),
+    Rgb565::new(16, 31, 16),
+    Rgb565::new(16, 31, 16),
+    Rgb565::new(16, 31, 16),
+    Rgb565::new(17, 33, 17),
+    Rgb565::new(17, 33, 17),
+    Rgb565::new(17, 33, 17),
+    Rgb565::new(17, 33, 17),
+    Rgb565::new(17, 33, 17),
+    Rgb565::new(17, 33, 17),
+    Rgb565::new(18, 35, 18),
+    Rgb565::new(18, 35, 18),
+    Rgb565::new(18, 35, 18),
+    Rgb565::new(18, 35, 18),
+    Rgb565::new(18, 35, 18),
+    Rgb565::new(18, 35, 18),
+    Rgb565::new(18, 35, 18),
+    Rgb565::new(18, 35, 18),
+    Rgb565::new(20, 38, 20),
+    Rgb565::new(20, 38, 20),
+    Rgb565::new(20, 38, 20),
+    Rgb565::new(20, 38, 20),
+    Rgb565::new(20, 38, 20),
+    Rgb565::new(20, 38, 20),
+    Rgb565::new(20, 38, 20),
+    Rgb565::new(20, 38, 20),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21),
     Rgb565::new(22, 44, 22),
 ];
 
-pub(super) fn draw_attitude(
-    frame: &mut GuiFramebuffer,
-    area: Rect,
-    attitude: DisplayAttitude,
-) {
+pub(super) fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, attitude: DisplayAttitude) {
     let x0 = area.x;
     let y0 = area.y;
     let width = area.w as i32;
@@ -103,28 +183,15 @@ pub(super) fn draw_attitude(
                     );
                 }
             } else if horizon > 0 {
-                common::vline(
-                    frame,
-                    x0 + local_x,
-                    y0,
-                    horizon as u32,
-                    common::dark_gray(),
-                );
+                common::vline(frame, x0 + local_x, y0, horizon as u32, common::dark_gray());
             }
         }
     } else {
         for local_x in 0..width {
             let x_delta = local_x - center_x;
-            let ground_side =
-                -camera.sin_roll * x_delta as f32 - camera.pitch_offset as f32 >= 0.0;
+            let ground_side = -camera.sin_roll * x_delta as f32 - camera.pitch_offset as f32 >= 0.0;
             if ground_side {
-                common::vline(
-                    frame,
-                    x0 + local_x,
-                    y0,
-                    height as u32,
-                    common::dark_gray(),
-                );
+                common::vline(frame, x0 + local_x, y0, height as u32, common::dark_gray());
             }
         }
     }
@@ -141,11 +208,7 @@ pub(super) fn draw_attitude(
     common::hline(frame, cx - 12, cy + 22, 24, common::white());
 }
 
-fn draw_perspective_world(
-    frame: &mut GuiFramebuffer,
-    area: Rect,
-    camera: PerspectiveCamera,
-) {
+fn draw_perspective_world(frame: &mut GuiFramebuffer, area: Rect, camera: PerspectiveCamera) {
     draw_world_grid_plane(frame, area, camera, PERSPECTIVE_PLANE_HEIGHT, true);
     draw_world_grid_plane(frame, area, camera, -PERSPECTIVE_PLANE_HEIGHT, false);
     compass::draw_world_compass_labels(frame, area, camera, -PERSPECTIVE_PLANE_HEIGHT);
@@ -273,9 +336,8 @@ fn draw_line_pixels(
 
     // Screen-clipped coordinates keep this comfortably inside i32 even at the
     // +/-80 degree pitch limit; no 64-bit arithmetic is needed in the hot loop.
-    let mut signed_q10 = camera.horizon_a_q10 * x0
-        + camera.horizon_b_q10 * y0
-        + camera.horizon_c_q10;
+    let mut signed_q10 =
+        camera.horizon_a_q10 * x0 + camera.horizon_b_q10 * y0 + camera.horizon_c_q10;
     let step_x_q10 = camera.horizon_a_q10 * sx;
     let step_y_q10 = camera.horizon_b_q10 * sy;
 

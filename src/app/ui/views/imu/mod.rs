@@ -17,7 +17,7 @@ use embedded_gui::prelude::*;
 use crate::{
     app::model::ImuDisplay,
     services::{display::Display, imu as sensor},
-    support::memory::data_plane,
+    support::memory::storage,
 };
 
 use super::super::gui::{GuiFramebuffer, GuiSurface};
@@ -49,7 +49,7 @@ pub(super) struct View {
 
 impl View {
     pub(super) fn new() -> Self {
-        let gui = data_plane::leaked_value_with(|| {
+        let gui = storage::leaked_value_with(|| {
             Context::new(Rect::new(0, 0, VIEW_WIDTH as u32, VIEW_HEIGHT as u32))
         });
         let app = generated::ImuApp::build(gui).expect("IMU KDL exceeds embedded-gui capacities");
@@ -147,14 +147,7 @@ fn draw_view_gutters(frame: &mut GuiFramebuffer, geometry: Geometry) {
     );
 }
 
-fn fill_band(
-    frame: &mut GuiFramebuffer,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    color: Rgb565,
-) {
+fn fill_band(frame: &mut GuiFramebuffer, x: i32, y: i32, width: i32, height: i32, color: Rgb565) {
     if width > 0 && height > 0 {
         common::fill_box(frame, x, y, width as u32, height as u32, color);
     }

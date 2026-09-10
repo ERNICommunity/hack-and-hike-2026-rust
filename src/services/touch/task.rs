@@ -2,7 +2,10 @@
 
 use embassy_time::{Duration, Timer};
 
-use crate::{platform::{board, i2c::SystemI2cBus}, support::diagnostics};
+use crate::{
+    platform::{board, i2c::SystemI2cBus},
+    support::diagnostics,
+};
 
 use super::{TouchEdge, TouchPoint, channels::Runtime};
 
@@ -48,7 +51,7 @@ async fn read_sample(bus: SystemI2cBus) -> TouchSample {
 /// CPU1 touch acquisition. This task never owns presentation state and never
 /// waits for CPU0 to consume movement samples.
 #[embassy_executor::task]
-pub async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
+pub(crate) async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
     let mut pressed = false;
     let mut last_point = TouchPoint { x: 0, y: 0 };
 

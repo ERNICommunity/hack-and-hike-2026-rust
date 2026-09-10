@@ -11,8 +11,7 @@ pub(super) const TAN_SCALE: i32 = 1024;
 const TAN_STEP_DEG: i32 = 5;
 const TAN_MAX_DEG: i32 = 80;
 const TAN_Q10: [i32; 17] = [
-    0, 90, 181, 274, 373, 477, 591, 717, 859, 1024, 1220, 1462, 1774, 2196, 2814,
-    3822, 5807,
+    0, 90, 181, 274, 373, 477, 591, 717, 859, 1024, 1220, 1462, 1774, 2196, 2814, 3822, 5807,
 ];
 
 const PI: f32 = 3.14159265358979323846;
@@ -108,9 +107,7 @@ pub(super) fn perspective_camera(
     let horizon_a_q10 = round_f32(-sin_roll * TAN_SCALE as f32);
     let horizon_b_q10 = round_f32(cos_roll * TAN_SCALE as f32);
     let horizon_c_q10 = round_f32(
-        (sin_roll * center_x as f32
-            - cos_roll * center_y as f32
-            - pitch_offset as f32)
+        (sin_roll * center_x as f32 - cos_roll * center_y as f32 - pitch_offset as f32)
             * TAN_SCALE as f32,
     );
 
@@ -169,14 +166,10 @@ pub(super) fn project_camera_point(
     let unrolled_y = -camera.focal_y * point[1] / point[2];
     Some((
         round_f32(
-            camera.center_x as f32
-                + camera.cos_roll * unrolled_x
-                - camera.sin_roll * unrolled_y,
+            camera.center_x as f32 + camera.cos_roll * unrolled_x - camera.sin_roll * unrolled_y,
         ),
         round_f32(
-            camera.center_y as f32
-                + camera.sin_roll * unrolled_x
-                + camera.cos_roll * unrolled_y,
+            camera.center_y as f32 + camera.sin_roll * unrolled_x + camera.cos_roll * unrolled_y,
         ),
     ))
 }

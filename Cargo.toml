@@ -1,6 +1,7 @@
 [package]
 edition = "2024"
 name = "hack-and-hike"
+rust-version = "1.93"
 version = "0.1.0"
 
 [[bin]]
