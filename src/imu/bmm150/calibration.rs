@@ -1,8 +1,11 @@
 //! Runtime hard/soft-iron calibration for the BMM150 magnetic field.
 //!
 //! This submodule is deliberately independent from the BMM150 transport/factory
-//! compensation logic. It fits the compensated body-frame samples to a general
-//! ellipsoid and converts that fit into a symmetric 3x3 correction matrix.
+//! compensation logic. It fits Bosch-compensated body-frame samples to a
+//! general ellipsoid and converts that fit into a symmetric 3x3 correction
+//! matrix. Learning is coverage-balanced so repeatedly waving the device through
+//! the same few orientations cannot dominate the fit, and every provisional fit
+//! must predict fresh samples before it is accepted.
 //!
 //! The fitted quadric is
 //!
@@ -24,17 +27,40 @@ const AUGMENTED: usize = PARAMS + 1;
 const LEARNING_FIELD_MIN_UT: f32 = 5.0;
 const LEARNING_FIELD_MAX_UT: f32 = 4000.0;
 
-/// Post-calibration field magnitude window used by the yaw fusion health gate.
-/// The fitted ellipsoid is normalized toward 50 uT.
-pub const GOOD_FIELD_MIN_UT: f32 = 5.0;
-pub const GOOD_FIELD_MAX_UT: f32 = 150.0;
+/// Post-calibration magnitude gate. The calibration intentionally normalizes
+/// the accepted ellipsoid to 50 uT, so a much wider 5..150 uT window hid bad
+/// fits. This still leaves generous room for noise and transient disturbances.
+pub const GOOD_FIELD_MIN_UT: f32 = 25.0;
+pub const GOOD_FIELD_MAX_UT: f32 = 80.0;
 
 const CALIBRATED_FIELD_RADIUS_UT: f32 = 50.0;
 const CALIBRATION_TARGET_SPAN_UT: f32 = 35.0;
 const ORIGIN_WARMUP_SAMPLES: u32 = 60;
 const ORIGIN_MIN_SPAN_UT: f32 = 20.0;
-const CALIBRATION_MIN_FIT_SAMPLES: u32 = 300;
-const REFIT_INTERVAL_SAMPLES: u16 = 30;
+
+// Divide the sphere into six dominant-axis faces, each split into four
+// quadrants. Requiring many of these 24 sectors is substantially stronger than
+// checking only independent X/Y/Z extrema, while remaining tiny and allocation
+// free. Samples in a saturated sector are ignored by the least-squares history
+// so lingering in one pose cannot overwhelm rarer orientations.
+const DIRECTION_BIN_COUNT: usize = 24;
+const MIN_DIRECTION_BINS: u32 = 18;
+const MIN_DIRECTION_FACES: u32 = 6;
+const MAX_SAMPLES_PER_DIRECTION_BIN: u8 = 32;
+const CALIBRATION_MIN_FIT_SAMPLES: u32 = 180;
+const REFIT_INTERVAL_SAMPLES: u16 = 24;
+const MAX_FAILED_FITS_BEFORE_RESTART: u8 = 6;
+
+// A provisional fit must generalize to fresh measurements before becoming
+// Ready. This geometric radial validation is much more meaningful than the
+// algebraic fitting residual alone and prevents a numerically valid but poorly
+// covered ellipsoid from freezing permanently.
+const CANDIDATE_VALIDATION_MIN_SAMPLES: u16 = 48;
+const CANDIDATE_VALIDATION_MIN_BINS: u32 = 8;
+const CANDIDATE_VALIDATION_MAX_SAMPLES: u16 = 120;
+const MAX_CANDIDATE_RMS_RELATIVE_ERROR: f32 = 0.15;
+const MAX_CANDIDATE_SINGLE_RELATIVE_ERROR: f32 = 0.35;
+const MAX_CANDIDATE_BAD_SAMPLES: u8 = 6;
 
 // Fitting the quadratic directly around the device's ~1-2 mT hard-iron offset
 // makes the f32 normal equations badly conditioned. First estimate a fixed local
@@ -45,17 +71,11 @@ const FIT_INPUT_SCALE_UT: f32 = 1024.0;
 const SOLVER_RELATIVE_PIVOT_EPSILON: f32 = 1.0e-6;
 const QUADRIC_SCALE_EPSILON: f32 = 1.0e-6;
 const SHAPE_EIGEN_EPSILON: f32 = 1.0e-6;
-const MAX_SHAPE_EIGEN_RATIO: f32 = 2500.0;
-const MAX_ELLIPSOID_RADIUS_UT: f32 = 5000.0;
-const MIN_ELLIPSOID_RADIUS_UT: f32 = 5.0;
-const MAX_ALGEBRAIC_RMS: f32 = 0.20;
+const MAX_SHAPE_EIGEN_RATIO: f32 = 400.0;
+const MAX_ELLIPSOID_RADIUS_UT: f32 = 300.0;
+const MIN_ELLIPSOID_RADIUS_UT: f32 = 10.0;
+const MAX_ALGEBRAIC_RMS: f32 = 0.15;
 const JACOBI_ROTATIONS: usize = 18;
-
-// If a valid ellipsoid has not emerged after a long calibration session,
-// renormalize the accumulated normal equations so f32 sums stay bounded without
-// changing the least-squares solution.
-const MAX_HISTORY_WEIGHT: f32 = 4096.0;
-const HISTORY_RENORMALIZE_FACTOR: f32 = 0.5;
 
 #[derive(Clone, Copy)]
 struct Model {
@@ -74,11 +94,33 @@ impl Model {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Candidate {
+    model: Model,
+    samples: u16,
+    direction_bins: u32,
+    relative_error_squared_sum: f32,
+    bad_samples: u8,
+}
+
+impl Candidate {
+    const fn new(model: Model) -> Self {
+        Self {
+            model,
+            samples: 0,
+            direction_bins: 0,
+            relative_error_squared_sum: 0.0,
+            bad_samples: 0,
+        }
+    }
+}
+
 /// Allocation-free online full-ellipsoid magnetometer calibration.
 ///
-/// Rather than storing sample history, the fitter accumulates the 9x9 normal
-/// equations for the general quadratic terms `x^2, y^2, z^2, 2xy, 2xz, 2yz,
-/// x, y, z`. This captures hard iron, axis scale, cross-axis coupling and skew.
+/// The fitter accumulates 9x9 normal equations for the general quadratic terms
+/// `x^2, y^2, z^2, 2xy, 2xz, 2yz, x, y, z`, but only up to a bounded number of
+/// samples per 3-D direction sector. A candidate model is then checked against
+/// fresh, directionally diverse samples before it is frozen.
 pub struct Calibration {
     normal: [[f32; PARAMS]; PARAMS],
     rhs: [f32; PARAMS],
@@ -89,6 +131,11 @@ pub struct Calibration {
     fit_samples: u32,
     weight_sum: f32,
     samples_since_fit: u16,
+    direction_bins: u32,
+    direction_faces: u8,
+    direction_bin_samples: [u8; DIRECTION_BIN_COUNT],
+    failed_fits: u8,
+    candidate: Option<Candidate>,
     model: Option<Model>,
 }
 
@@ -104,18 +151,26 @@ impl Calibration {
             fit_samples: 0,
             weight_sum: 0.0,
             samples_since_fit: 0,
+            direction_bins: 0,
+            direction_faces: 0,
+            direction_bin_samples: [0; DIRECTION_BIN_COUNT],
+            failed_fits: 0,
+            candidate: None,
             model: None,
         }
     }
 
     /// Learn one Bosch-compensated body-frame vector while calibration is not
-    /// ready. A short warm-up first chooses a fixed local origin near the
-    /// ellipsoid center; the 9-parameter fit then runs in that local coordinate
-    /// frame for much better f32 conditioning than fitting around zero.
+    /// ready. Calibration deliberately has three phases:
     ///
-    /// Once a numerically valid full ellipsoid is accepted, the model is frozen:
-    /// external magnetic disturbances must not be learned as device hard/soft-
-    /// iron calibration.
+    /// 1. establish a numerically safe local origin,
+    /// 2. collect a balanced set of samples across the 3-D sphere and fit,
+    /// 3. validate the provisional correction on fresh measurements.
+    ///
+    /// A repeatedly invalid history is discarded automatically instead of
+    /// remaining indefinitely at 99%. Once a validated model is accepted it is
+    /// frozen so external magnetic disturbances cannot be learned as enclosure
+    /// hard/soft iron.
     pub fn observe(&mut self, field_ut: [f32; 3]) {
         if self.model.is_some() || !raw_sample_is_plausible(field_ut) {
             return;
@@ -138,18 +193,34 @@ impl Calibration {
             return;
         }
 
-        self.accumulate(field_ut);
-        self.fit_samples = self.fit_samples.saturating_add(1);
-        self.samples_since_fit = self.samples_since_fit.saturating_add(1);
+        let origin = self.fit_origin_ut.unwrap_or([0.0; 3]);
+        let direction_bin = direction_bin(field_ut, origin);
 
-        if self.weight_sum >= MAX_HISTORY_WEIGHT {
-            self.renormalize_history();
+        if self.candidate.is_some() {
+            self.validate_candidate(field_ut, direction_bin);
+            if self.model.is_some() || self.fit_origin_ut.is_none() {
+                return;
+            }
         }
 
-        if self.has_minimum_coverage() && self.samples_since_fit >= REFIT_INTERVAL_SAMPLES {
+        self.direction_bins |= 1u32 << direction_bin;
+        self.direction_faces |= 1u8 << (direction_bin / 4);
+
+        if self.direction_bin_samples[direction_bin] < MAX_SAMPLES_PER_DIRECTION_BIN {
+            self.direction_bin_samples[direction_bin] += 1;
+            self.accumulate(field_ut);
+            self.fit_samples = self.fit_samples.saturating_add(1);
+            self.samples_since_fit = self.samples_since_fit.saturating_add(1);
+        }
+
+        if self.candidate.is_none()
+            && self.has_minimum_coverage()
+            && self.samples_since_fit >= REFIT_INTERVAL_SAMPLES
+        {
             self.samples_since_fit = 0;
-            if let Some(model) = self.fit_model() {
-                self.model = Some(model);
+            match self.fit_model() {
+                Some(model) => self.candidate = Some(Candidate::new(model)),
+                None => self.record_failed_fit(),
             }
         }
     }
@@ -158,6 +229,15 @@ impl Calibration {
         self.model.is_some()
     }
 
+    /// Report meaningful phase progress rather than sample-count optimism.
+    ///
+    /// 0..20: origin warm-up
+    /// 20..85: balanced 3-D fitting coverage
+    /// 85..99: fresh-sample candidate validation
+    /// 100: validated and frozen
+    ///
+    /// A rejected fit returns to the coverage phase (or restarts from zero after
+    /// repeated failures), so 99% can no longer mean "stuck indefinitely".
     pub fn progress_percent(&self) -> u8 {
         if self.model.is_some() {
             return 100;
@@ -166,24 +246,63 @@ impl Calibration {
             return 0;
         }
 
+        if self.fit_origin_ut.is_none() {
+            let sample_progress = clamp_f32(
+                self.samples as f32 / ORIGIN_WARMUP_SAMPLES as f32,
+                0.0,
+                1.0,
+            );
+            let span_progress = clamp_f32(
+                self.minimum_span() / ORIGIN_MIN_SPAN_UT,
+                0.0,
+                1.0,
+            );
+            return (20.0 * min_f32(sample_progress, span_progress)) as u8;
+        }
+
+        let sample_progress = clamp_f32(
+            self.fit_samples as f32 / CALIBRATION_MIN_FIT_SAMPLES as f32,
+            0.0,
+            1.0,
+        );
         let span_progress = clamp_f32(
             self.minimum_span() / CALIBRATION_TARGET_SPAN_UT,
             0.0,
             1.0,
         );
-        let staged_samples = if self.fit_origin_ut.is_some() {
-            ORIGIN_WARMUP_SAMPLES + self.fit_samples
-        } else {
-            self.samples.min(ORIGIN_WARMUP_SAMPLES)
-        };
-        let sample_progress = clamp_f32(
-            staged_samples as f32
-                / (ORIGIN_WARMUP_SAMPLES + CALIBRATION_MIN_FIT_SAMPLES) as f32,
+        let direction_progress = clamp_f32(
+            bit_count_u32(self.direction_bins) as f32 / MIN_DIRECTION_BINS as f32,
             0.0,
             1.0,
         );
-        let progress = (100.0 * min_f32(span_progress, sample_progress)) as u8;
-        progress.min(99)
+        let face_progress = clamp_f32(
+            bit_count_u8(self.direction_faces) as f32 / MIN_DIRECTION_FACES as f32,
+            0.0,
+            1.0,
+        );
+        let coverage_progress = min_f32(
+            min_f32(sample_progress, span_progress),
+            min_f32(direction_progress, face_progress),
+        );
+        let coverage_percent = 20.0 + 65.0 * coverage_progress;
+
+        if let Some(candidate) = self.candidate {
+            let validation_samples = clamp_f32(
+                candidate.samples as f32 / CANDIDATE_VALIDATION_MIN_SAMPLES as f32,
+                0.0,
+                1.0,
+            );
+            let validation_bins = clamp_f32(
+                bit_count_u32(candidate.direction_bins) as f32
+                    / CANDIDATE_VALIDATION_MIN_BINS as f32,
+                0.0,
+                1.0,
+            );
+            let validation_progress = min_f32(validation_samples, validation_bins);
+            return (85.0 + 14.0 * validation_progress) as u8;
+        }
+
+        (coverage_percent as u8).min(85)
     }
 
     pub fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
@@ -196,6 +315,8 @@ impl Calibration {
         self.fit_origin_ut.is_some()
             && self.fit_samples >= CALIBRATION_MIN_FIT_SAMPLES
             && self.minimum_span() >= CALIBRATION_TARGET_SPAN_UT
+            && bit_count_u32(self.direction_bins) >= MIN_DIRECTION_BINS
+            && bit_count_u8(self.direction_faces) >= MIN_DIRECTION_FACES
     }
 
     fn minimum_span(&self) -> f32 {
@@ -206,6 +327,71 @@ impl Calibration {
             self.max[0] - self.min[0],
             min_f32(self.max[1] - self.min[1], self.max[2] - self.min[2]),
         )
+    }
+
+    fn validate_candidate(&mut self, field_ut: [f32; 3], direction_bin: usize) {
+        let Some(mut candidate) = self.candidate else {
+            return;
+        };
+
+        candidate.samples = candidate.samples.saturating_add(1);
+        candidate.direction_bins |= 1u32 << direction_bin;
+
+        let corrected_strength = vector_length(candidate.model.apply(field_ut));
+        let relative_error =
+            abs_f32(corrected_strength - CALIBRATED_FIELD_RADIUS_UT) / CALIBRATED_FIELD_RADIUS_UT;
+        candidate.relative_error_squared_sum += relative_error * relative_error;
+        if !relative_error.is_finite() || relative_error > MAX_CANDIDATE_SINGLE_RELATIVE_ERROR {
+            candidate.bad_samples = candidate.bad_samples.saturating_add(1);
+        }
+
+        let enough_samples = candidate.samples >= CANDIDATE_VALIDATION_MIN_SAMPLES;
+        let enough_directions =
+            bit_count_u32(candidate.direction_bins) >= CANDIDATE_VALIDATION_MIN_BINS;
+
+        if enough_samples && enough_directions {
+            let rms = sqrt_approx(
+                candidate.relative_error_squared_sum / candidate.samples.max(1) as f32,
+            );
+            if rms.is_finite()
+                && rms <= MAX_CANDIDATE_RMS_RELATIVE_ERROR
+                && candidate.bad_samples <= MAX_CANDIDATE_BAD_SAMPLES
+            {
+                self.model = Some(candidate.model);
+                self.candidate = None;
+                return;
+            }
+
+            self.candidate = None;
+            self.record_failed_fit();
+            return;
+        }
+
+        if candidate.samples >= CANDIDATE_VALIDATION_MAX_SAMPLES
+            || candidate.bad_samples > MAX_CANDIDATE_BAD_SAMPLES
+        {
+            self.candidate = None;
+            self.record_failed_fit();
+            return;
+        }
+
+        self.candidate = Some(candidate);
+    }
+
+    fn record_failed_fit(&mut self) {
+        self.failed_fits = self.failed_fits.saturating_add(1);
+        if self.failed_fits >= MAX_FAILED_FITS_BEFORE_RESTART {
+            self.restart_learning();
+        } else {
+            // Any samples gathered while a candidate was being checked have
+            // improved the training history. Permit a prompt refit rather than
+            // waiting for another full interval.
+            self.samples_since_fit = REFIT_INTERVAL_SAMPLES;
+        }
+    }
+
+    fn restart_learning(&mut self) {
+        *self = Self::new();
     }
 
     fn accumulate(&mut self, field_ut: [f32; 3]) {
@@ -234,18 +420,8 @@ impl Calibration {
         self.weight_sum += 1.0;
     }
 
-    fn renormalize_history(&mut self) {
-        for row in 0..PARAMS {
-            self.rhs[row] *= HISTORY_RENORMALIZE_FACTOR;
-            for col in 0..PARAMS {
-                self.normal[row][col] *= HISTORY_RENORMALIZE_FACTOR;
-            }
-        }
-        self.weight_sum *= HISTORY_RENORMALIZE_FACTOR;
-    }
-
     fn fit_model(&self) -> Option<Model> {
-        if self.weight_sum < CALIBRATION_MIN_FIT_SAMPLES as f32 * 0.5 {
+        if self.weight_sum < CALIBRATION_MIN_FIT_SAMPLES as f32 * 0.75 {
             return None;
         }
 
@@ -323,7 +499,7 @@ impl Calibration {
 
         // Symmetric square root: V * sqrt(D) * V^T. Multiplying by the target
         // radius and undoing input normalization gives a direct raw-uT -> uT
-        // correction matrix.
+        // correction matrix without an arbitrary coordinate rotation.
         let mut correction = [[0.0; 3]; 3];
         let output_scale = CALIBRATED_FIELD_RADIUS_UT / FIT_INPUT_SCALE_UT;
         for row in 0..3 {
@@ -359,6 +535,43 @@ impl Calibration {
         }
         true
     }
+}
+
+fn direction_bin(field_ut: [f32; 3], origin_ut: [f32; 3]) -> usize {
+    let x = field_ut[0] - origin_ut[0];
+    let y = field_ut[1] - origin_ut[1];
+    let z = field_ut[2] - origin_ut[2];
+    let ax = abs_f32(x);
+    let ay = abs_f32(y);
+    let az = abs_f32(z);
+
+    let (face, first, second) = if ax >= ay && ax >= az {
+        (if x >= 0.0 { 0 } else { 1 }, y, z)
+    } else if ay >= az {
+        (if y >= 0.0 { 2 } else { 3 }, x, z)
+    } else {
+        (if z >= 0.0 { 4 } else { 5 }, x, y)
+    };
+    let quadrant = (if first >= 0.0 { 2 } else { 0 }) | (if second >= 0.0 { 1 } else { 0 });
+    face * 4 + quadrant
+}
+
+fn bit_count_u32(mut value: u32) -> u32 {
+    let mut count = 0;
+    while value != 0 {
+        value &= value - 1;
+        count += 1;
+    }
+    count
+}
+
+fn bit_count_u8(mut value: u8) -> u32 {
+    let mut count = 0;
+    while value != 0 {
+        value &= value - 1;
+        count += 1;
+    }
+    count
 }
 
 fn raw_sample_is_plausible(field_ut: [f32; 3]) -> bool {
