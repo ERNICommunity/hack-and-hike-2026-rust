@@ -774,7 +774,8 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
         let mut mag_trim = match sensor.initialize_bmm150().await {
             Ok(trim) => {
                 ::log::info!(
-                    "BMI270+BMM150 IMU started: fusion={} Hz, gyro={} Hz, mag={} Hz",
+                    "BMI270+BMM150 IMU started: host={} Hz, fusion={} Hz, gyro={} Hz, mag={} Hz",
+                    DEFAULT_SENSOR_HZ,
                     DEFAULT_FUSION_HZ,
                     GYRO_SENSOR_ODR_HZ,
                     DEFAULT_MAG_HZ
