@@ -308,10 +308,12 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         }
         heap_monitor.poll(now);
 
-        // Camera capture itself is frame-paced by the sensor. Do not add an
-        // extra idle delay here: every millisecond spent idle consumes stream
-        // ring headroom while LCD_CAM continues receiving the next frame.
-        if !camera_active {
+        // Camera capture is frame-paced by the sensor, while the IMU view is
+        // paced by fresh 100 Hz fusion snapshots plus the proven 40 MHz LCD path.
+        // Do not insert an arbitrary CPU0 sleep for either high-rate view; other
+        // screens retain the small idle delay to avoid unnecessary busy looping.
+        let imu_active = ui.presented_view() == models::ViewId::Imu;
+        if !camera_active && !imu_active {
             Timer::after(UI_IDLE_DELAY).await;
         }
     }
