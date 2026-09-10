@@ -37,7 +37,7 @@ struct Canvas {
     height: usize,
 }
 
-pub(super) struct View {
+pub(in crate::app::ui) struct View {
     gui: &'static mut Context,
     left_label: Rect,
     right_label: Rect,
@@ -46,7 +46,7 @@ pub(super) struct View {
 }
 
 impl View {
-    pub(super) fn new() -> Self {
+    pub(in crate::app::ui) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::MicrophoneApp::build(gui)
             .expect("microphone KDL exceeds embedded-gui fixed capacities");
@@ -76,7 +76,11 @@ impl View {
         }
     }
 
-    pub(super) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(in crate::app::ui) fn present_shell(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+    ) {
         let left_label = self.left_label;
         let right_label = self.right_label;
         surface.present_with_overlay(display, self.gui, move |frame| {
@@ -91,7 +95,7 @@ impl View {
         });
     }
 
-    pub(super) fn render_waveform(&self, display: &mut Display, frame: &WaveformFrame) {
+    pub(in crate::app::ui) fn render_waveform(&self, display: &mut Display, frame: &WaveformFrame) {
         waveform::render(display, self.left, self.right, frame);
     }
 }

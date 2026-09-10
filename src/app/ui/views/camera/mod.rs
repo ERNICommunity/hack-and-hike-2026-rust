@@ -20,20 +20,20 @@ const _: () = assert!(CAMERA_CROP_PIXELS % 2 == 0);
 const _: () =
     assert!(CAMERA_SOURCE_END_BYTE - CAMERA_SOURCE_START_BYTE == design::CONTENT_WIDTH * 2);
 
-pub(super) struct View;
+pub(in crate::app::ui) struct View;
 
 impl View {
-    pub(super) const fn new() -> Self {
+    pub(in crate::app::ui) const fn new() -> Self {
         Self
     }
 
-    pub(super) fn present_shell(&self, display: &mut Display) {
+    pub(in crate::app::ui) fn present_shell(&self, display: &mut Display) {
         display.render_scanlines(design::CONTENT_REGION, |_local_y, pixels| {
             pixels.fill(theme::BLACK_RGB565);
         });
     }
 
-    pub(super) fn render(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
+    pub(in crate::app::ui) fn render(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
         // Display the frozen QVGA frame at the original full 276x240 content size
         // while using SPI-DMA wait time to drain the following sensor frame into
         // the second PSRAM buffer. The LCD therefore receives a compact burst

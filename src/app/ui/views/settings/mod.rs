@@ -49,14 +49,14 @@ struct Geometry {
     hint: Rect,
 }
 
-pub(super) struct View {
+pub(in crate::app::ui) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
     dragging_brightness: bool,
 }
 
 impl View {
-    pub(super) fn new() -> Self {
+    pub(in crate::app::ui) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
@@ -84,7 +84,7 @@ impl View {
         }
     }
 
-    pub(super) fn present(
+    pub(in crate::app::ui) fn present(
         &mut self,
         surface: &mut GuiSurface,
         display: &mut Display,
@@ -98,7 +98,10 @@ impl View {
 
     /// Handle one content-space pointer event and return the newest semantic
     /// brightness action. Persistent brightness state remains in `AppModel`.
-    pub(super) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<BrightnessPercent> {
+    pub(in crate::app::ui) fn handle_pointer(
+        &mut self,
+        pointer: ContentPointer,
+    ) -> Option<BrightnessPercent> {
         match pointer.phase {
             PointerPhase::Pressed if self.pointer_hits_brightness(pointer) => {
                 self.dragging_brightness = true;

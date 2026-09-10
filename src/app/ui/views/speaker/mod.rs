@@ -71,14 +71,14 @@ pub(in crate::app::ui) enum Action {
     SetPitch(PitchSemitones),
 }
 
-pub(super) struct View {
+pub(in crate::app::ui) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
     gesture: Option<Gesture>,
 }
 
 impl View {
-    pub(super) fn new() -> Self {
+    pub(in crate::app::ui) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SpeakerApp::build(gui)
             .expect("speaker KDL exceeds embedded-gui fixed capacities");
@@ -101,7 +101,7 @@ impl View {
         }
     }
 
-    pub(super) fn present(
+    pub(in crate::app::ui) fn present(
         &mut self,
         surface: &mut GuiSurface,
         display: &mut Display,
@@ -113,7 +113,7 @@ impl View {
         });
     }
 
-    pub(super) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Action> {
+    pub(in crate::app::ui) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Action> {
         match pointer.phase {
             PointerPhase::Pressed if hits_slider(self.geometry.tempo_slider, pointer) => {
                 self.gesture = Some(Gesture::Tempo);

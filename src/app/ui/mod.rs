@@ -64,8 +64,8 @@ impl Ui {
             let navigation = &mut self.navigation;
             let views = &mut self.views;
             navigation.poll(|pointer| match active_view {
-                ViewId::Settings => settings_action = views.handle_settings_pointer(pointer),
-                ViewId::Speaker => speaker_action = views.handle_speaker_pointer(pointer),
+                ViewId::Settings => settings_action = views.settings.handle_pointer(pointer),
+                ViewId::Speaker => speaker_action = views.speaker.handle_pointer(pointer),
                 _ => {}
             })
         };
@@ -105,30 +105,35 @@ impl Ui {
             ViewId::Network => {
                 if let Some(snapshot) = self.model.take_network_display() {
                     self.views
-                        .present_network(&mut self.gui_surface, display, &snapshot);
+                        .network
+                        .present(&mut self.gui_surface, display, &snapshot);
                 }
             }
             ViewId::Imu => {
                 if let Some(imu) = self.model.take_imu_display() {
-                    self.views.present_imu(&mut self.gui_surface, display, &imu);
+                    self.views.imu.present(&mut self.gui_surface, display, &imu);
                 }
             }
             ViewId::Microphone => {
                 if let Some(frame) = self.model.take_waveform_frame() {
-                    self.views.render_microphone(display, &frame);
+                    self.views.microphone.render_waveform(display, &frame);
                 }
             }
             ViewId::Speaker => {
                 if let Some(state) = self.model.take_speaker_display() {
                     self.views
-                        .present_speaker(&mut self.gui_surface, display, state);
+                        .speaker
+                        .present(&mut self.gui_surface, display, state);
                 }
             }
             ViewId::Camera => {}
             ViewId::Settings => {
                 if let Some(settings) = self.model.take_settings_display() {
-                    self.views
-                        .present_settings(&mut self.gui_surface, display, settings);
+                    self.views.settings.present(
+                        &mut self.gui_surface,
+                        display,
+                        settings.brightness,
+                    );
                 }
             }
             ViewId::Log => {
@@ -139,7 +144,7 @@ impl Ui {
 
     pub(crate) fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
         if self.presented_view == ViewId::Camera {
-            self.views.render_camera(display, frame);
+            self.views.camera.render(display, frame);
         }
     }
 
@@ -147,31 +152,35 @@ impl Ui {
         match self.presented_view {
             ViewId::Network => self
                 .views
-                .present_network_shell(&mut self.gui_surface, display),
-            ViewId::Imu => self.views.present_imu_shell(&mut self.gui_surface, display),
+                .network
+                .present_shell(&mut self.gui_surface, display),
+            ViewId::Imu => self.views.imu.present_shell(&mut self.gui_surface, display),
             ViewId::Microphone => self
                 .views
-                .present_microphone_shell(&mut self.gui_surface, display),
+                .microphone
+                .present_shell(&mut self.gui_surface, display),
             ViewId::Speaker => {
                 let state = self
                     .model
                     .take_speaker_display()
                     .expect("speaker state must be dirty when entering Speaker");
                 self.views
-                    .present_speaker(&mut self.gui_surface, display, state);
+                    .speaker
+                    .present(&mut self.gui_surface, display, state);
             }
-            ViewId::Camera => self.views.present_camera_shell(display),
+            ViewId::Camera => self.views.camera.present_shell(display),
             ViewId::Settings => {
                 let state = self
                     .model
                     .take_settings_display()
                     .expect("settings state must be dirty when entering Settings");
                 self.views
-                    .present_settings(&mut self.gui_surface, display, state);
+                    .settings
+                    .present(&mut self.gui_surface, display, state.brightness);
             }
             ViewId::Log => {
                 if !self.present_log_if_dirty(display) {
-                    self.views.present_log_shell(&mut self.gui_surface, display);
+                    self.views.log.present_shell(&mut self.gui_surface, display);
                 }
             }
         }
@@ -179,10 +188,10 @@ impl Ui {
 
     fn present_log_if_dirty(&mut self, display: &mut Display) -> bool {
         let model = &mut self.model;
-        let views = &mut self.views;
+        let log = &mut self.views.log;
         let surface = &mut self.gui_surface;
         model
-            .with_log_text(|text| views.present_log(surface, display, text))
+            .with_log_text(|text| log.present(surface, display, text))
             .is_some()
     }
 }

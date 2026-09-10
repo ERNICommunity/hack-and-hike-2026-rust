@@ -45,13 +45,13 @@ struct Geometry {
     attitude: Rect,
 }
 
-pub(super) struct View {
+pub(in crate::app::ui) struct View {
     geometry: Geometry,
     attitude: AttitudeTracker,
 }
 
 impl View {
-    pub(super) fn new() -> Self {
+    pub(in crate::app::ui) fn new() -> Self {
         let gui = storage::leaked_value_with(|| {
             Context::new(Rect::new(0, 0, VIEW_WIDTH as u32, VIEW_HEIGHT as u32))
         });
@@ -65,7 +65,11 @@ impl View {
         }
     }
 
-    pub(super) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(in crate::app::ui) fn present_shell(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+    ) {
         let geometry = self.geometry;
         surface.present_overlay_only(display, move |frame| {
             draw_view_gutters(frame, geometry);
@@ -73,7 +77,7 @@ impl View {
         });
     }
 
-    pub(super) fn present(
+    pub(in crate::app::ui) fn present(
         &mut self,
         surface: &mut GuiSurface,
         display: &mut Display,

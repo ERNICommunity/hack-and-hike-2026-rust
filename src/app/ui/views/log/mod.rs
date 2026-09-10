@@ -27,13 +27,13 @@ struct Geometry {
     body: Rect,
 }
 
-pub(super) struct View {
+pub(in crate::app::ui) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
 }
 
 impl View {
-    pub(super) fn new() -> Self {
+    pub(in crate::app::ui) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::LogApp::build(gui).expect("log KDL exceeds embedded-gui capacities");
         Self {
@@ -45,14 +45,23 @@ impl View {
         }
     }
 
-    pub(super) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(in crate::app::ui) fn present_shell(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+    ) {
         let geometry = self.geometry;
         surface.present_with_overlay(display, self.gui, move |frame| {
             draw_title(frame, geometry);
         });
     }
 
-    pub(super) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display, text: &str) {
+    pub(in crate::app::ui) fn present(
+        &mut self,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+        text: &str,
+    ) {
         let geometry = self.geometry;
         surface.present_with_overlay(display, self.gui, move |frame| {
             draw_title(frame, geometry);
