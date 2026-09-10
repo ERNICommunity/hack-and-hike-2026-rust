@@ -24,7 +24,7 @@ use crate::{
 use super::super::gui::{GuiFramebuffer, GuiSurface};
 use super::common;
 use attitude::Tracker as AttitudeTracker;
-use projection::{DisplayAttitude, round_degrees};
+use projection::{DisplayAttitude, display_attitude, round_degrees};
 
 mod generated {
     use embedded_gui::prelude::*;
@@ -70,6 +70,11 @@ impl View {
         surface: &mut GuiSurface,
         display: &mut Display,
     ) {
+        // No renderer sample was observed while this view was hidden. Always
+        // seed the next frame from its own attitude instead of carrying a pole
+        // branch decision across navigation.
+        self.attitude.reset();
+
         let geometry = self.geometry;
         surface.present_overlay_only(display, move |frame| {
             draw_view_gutters(frame, geometry);
@@ -84,7 +89,13 @@ impl View {
         imu: &ImuDisplay,
     ) {
         let geometry = self.geometry;
-        let attitude = self.attitude.update(imu);
+        let mut attitude = display_attitude(imu);
+        attitude.yaw_deg = self.attitude.update(
+            imu.sample_revision,
+            attitude.roll_deg,
+            attitude.pitch_deg,
+            attitude.yaw_deg,
+        );
         surface.present_overlay_only(display, move |frame| {
             draw_view_gutters(frame, geometry);
             draw_header(frame, geometry.header, imu, attitude);
@@ -237,7 +248,7 @@ fn draw_header(
     draw_header_value(
         frame,
         "YAW",
-        attitude.yaw_deg,
+        round_degrees(attitude.yaw_deg),
         first_x + column_width * 2,
         area.y,
     );

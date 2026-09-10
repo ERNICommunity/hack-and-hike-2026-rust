@@ -31,7 +31,7 @@ type ScreenLine = ((i32, i32), (i32, i32));
 pub(super) struct DisplayAttitude {
     pub(super) roll_deg: f32,
     pub(super) pitch_deg: f32,
-    pub(super) yaw_deg: i32,
+    pub(super) yaw_deg: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -56,8 +56,8 @@ pub(super) struct PerspectiveCamera {
 }
 
 pub(super) fn display_attitude(imu: &ImuDisplay) -> DisplayAttitude {
-    let sensor_roll = imu.roll_deg as f32 * DEG_TO_RAD;
-    let sensor_pitch = imu.pitch_deg as f32 * DEG_TO_RAD;
+    let sensor_roll = imu.roll_deg * DEG_TO_RAD;
+    let sensor_pitch = imu.pitch_deg * DEG_TO_RAD;
     let sin_sensor_roll = sin_approx(sensor_roll);
     let cos_sensor_roll = cos_approx(sensor_roll);
     let sin_sensor_pitch = sin_approx(sensor_pitch);
@@ -80,7 +80,7 @@ pub(super) fn display_attitude(imu: &ImuDisplay) -> DisplayAttitude {
 /// The fused yaw convention is opposite to the physical left/right direction
 /// desired by the screen instruments. Flip it only at the presentation boundary
 /// so fusion math and magnetic correction keep a single internal convention.
-fn display_yaw(imu: &ImuDisplay) -> i32 {
+fn display_yaw(imu: &ImuDisplay) -> f32 {
     -imu.yaw_deg
 }
 
@@ -89,7 +89,7 @@ pub(super) fn perspective_camera(
     center_x: i32,
     center_y: i32,
 ) -> PerspectiveCamera {
-    let yaw = attitude.yaw_deg as f32 * DEG_TO_RAD;
+    let yaw = attitude.yaw_deg * DEG_TO_RAD;
     let pitch = attitude.pitch_deg * DEG_TO_RAD;
     let roll = attitude.roll_deg * DEG_TO_RAD;
     let sin_yaw = sin_approx(yaw);

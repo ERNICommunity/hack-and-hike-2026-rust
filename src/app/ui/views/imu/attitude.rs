@@ -2,25 +2,25 @@
 //!
 //! Fusion deliberately keeps magnetic yaw independent from the gravity-vector
 //! roll/pitch representation. That is a good sensor boundary, but the renderer
-//! cannot convert those values to a fresh Euler triple on every frame: at
-//! displayed pitch +/-90 degrees, Euler roll and yaw describe the same remaining
-//! degree of freedom. The gravity-derived roll can therefore jump while the real
-//! world orientation is continuous.
-
-use crate::app::model::ImuDisplay;
-
-use super::projection::{DisplayAttitude, display_attitude};
+//! cannot treat every observed Euler triple as contiguous: at displayed pitch
+//! +/-90 degrees, Euler roll and yaw describe the same remaining degree of
+//! freedom. The gravity-derived roll can therefore jump while the real world
+//! orientation is continuous.
 
 // Only couple roll/yaw where the Euler representation is genuinely close to its
 // pole. Normal roll behavior outside this band remains exactly as before.
 const POLE_LOCK_MIN_PITCH_DEG: f32 = 80.0;
+// CPU1 publishes fusion at 100 Hz. Renderer-side replacement may legitimately
+// skip a few revisions, but a gap larger than 80 ms is no longer treated as an
+// observed pole crossing. Reseed instead of inventing motion that was not seen.
+const MAX_CONTIGUOUS_REVISION_GAP: u32 = 8;
 // Fusion can later reacquire the absolute magnetic-heading branch after a pole
 // crossing. A genuine branch catch-up is a half-turn in both the fused yaw and
-// the presentation offset; keep some tolerance for the approximate trig/rounding
-// used by the embedded renderer.
+// the presentation offset; keep some tolerance for approximate embedded math.
 const HALF_TURN_MATCH_TOLERANCE_DEG: f32 = 20.0;
 
 pub(super) struct Tracker {
+    previous_revision: Option<u32>,
     previous_roll_deg: Option<f32>,
     previous_pitch_deg: Option<f32>,
     previous_base_yaw_deg: Option<f32>,
@@ -30,6 +30,7 @@ pub(super) struct Tracker {
 impl Tracker {
     pub(super) const fn new() -> Self {
         Self {
+            previous_revision: None,
             previous_roll_deg: None,
             previous_pitch_deg: None,
             previous_base_yaw_deg: None,
@@ -37,18 +38,60 @@ impl Tracker {
         }
     }
 
-    pub(super) fn update(&mut self, imu: &ImuDisplay) -> DisplayAttitude {
-        let mut attitude = display_attitude(imu);
-        let base_yaw_deg = attitude.yaw_deg as f32;
+    /// Forget renderer-only continuity state. The IMU view calls this whenever
+    /// it is entered so a hidden interval can never be interpreted as an
+    /// observed pole transition.
+    pub(super) fn reset(&mut self) {
+        self.previous_revision = None;
+        self.previous_roll_deg = None;
+        self.previous_pitch_deg = None;
+        self.previous_base_yaw_deg = None;
+        self.yaw_offset_deg = 0.0;
+    }
+
+    /// Return the presentation yaw corresponding to one already-projected
+    /// roll/pitch sample. `sample_revision` is the CPU1 publication revision.
+    pub(super) fn update(
+        &mut self,
+        sample_revision: u32,
+        roll_deg: f32,
+        pitch_deg: f32,
+        base_yaw_deg: f32,
+    ) -> f32 {
+        let base_yaw_deg = wrap_degrees(base_yaw_deg);
+
+        if !self.is_continuous(sample_revision) {
+            self.reseed(sample_revision, roll_deg, pitch_deg, base_yaw_deg);
+            return base_yaw_deg;
+        }
 
         self.absorb_fused_half_turn(base_yaw_deg);
-        self.compensate_euler_pole(attitude.roll_deg, attitude.pitch_deg);
+        self.compensate_euler_pole(roll_deg, pitch_deg);
+        self.remember(sample_revision, roll_deg, pitch_deg, base_yaw_deg);
 
-        self.previous_roll_deg = Some(attitude.roll_deg);
-        self.previous_pitch_deg = Some(attitude.pitch_deg);
+        wrap_degrees(base_yaw_deg + self.yaw_offset_deg)
+    }
+
+    fn is_continuous(&self, sample_revision: u32) -> bool {
+        let Some(previous_revision) = self.previous_revision else {
+            return false;
+        };
+
+        // A repeated revision is a harmless redraw of the same semantic sample.
+        // Wrapping subtraction also keeps u32 revision rollover continuous.
+        sample_revision.wrapping_sub(previous_revision) <= MAX_CONTIGUOUS_REVISION_GAP
+    }
+
+    fn reseed(&mut self, sample_revision: u32, roll_deg: f32, pitch_deg: f32, base_yaw_deg: f32) {
+        self.reset();
+        self.remember(sample_revision, roll_deg, pitch_deg, base_yaw_deg);
+    }
+
+    fn remember(&mut self, sample_revision: u32, roll_deg: f32, pitch_deg: f32, base_yaw_deg: f32) {
+        self.previous_revision = Some(sample_revision);
+        self.previous_roll_deg = Some(roll_deg);
+        self.previous_pitch_deg = Some(pitch_deg);
         self.previous_base_yaw_deg = Some(base_yaw_deg);
-        attitude.yaw_deg = round_f32(wrap_degrees(base_yaw_deg + self.yaw_offset_deg));
-        attitude
     }
 
     fn compensate_euler_pole(&mut self, roll_deg: f32, pitch_deg: f32) {
@@ -113,14 +156,6 @@ fn wrap_degrees(mut value: f32) -> f32 {
         value += 360.0;
     }
     value
-}
-
-fn round_f32(value: f32) -> i32 {
-    if value >= 0.0 {
-        (value + 0.5) as i32
-    } else {
-        (value - 0.5) as i32
-    }
 }
 
 fn abs_f32(value: f32) -> f32 {

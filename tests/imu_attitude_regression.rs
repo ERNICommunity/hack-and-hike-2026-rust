@@ -1,0 +1,176 @@
+#[path = "../src/app/ui/views/imu/attitude.rs"]
+mod attitude;
+
+use attitude::Tracker;
+
+const ANGLE_EPSILON_DEG: f32 = 0.01;
+
+fn wrap_degrees(mut value: f32) -> f32 {
+    while value > 180.0 {
+        value -= 360.0;
+    }
+    while value < -180.0 {
+        value += 360.0;
+    }
+    value
+}
+
+fn angular_distance(a: f32, b: f32) -> f32 {
+    wrap_degrees(a - b).abs()
+}
+
+fn assert_angle_eq(actual: f32, expected: f32) {
+    assert!(
+        angular_distance(actual, expected) <= ANGLE_EPSILON_DEG,
+        "expected {expected} deg, got {actual} deg"
+    );
+}
+
+fn positive_pole_observable(roll_deg: f32, yaw_deg: f32) -> f32 {
+    wrap_degrees(roll_deg - yaw_deg)
+}
+
+fn negative_pole_observable(roll_deg: f32, yaw_deg: f32) -> f32 {
+    wrap_degrees(roll_deg + yaw_deg)
+}
+
+#[test]
+fn positive_physical_pitch_sweep_0_through_180_keeps_world_continuous() {
+    let mut tracker = Tracker::new();
+
+    // Presentation-space representatives for physical pitch 0, +45, +90,
+    // +135, +179 and the +180 pole approached from the far side. The final
+    // Euler branch flip must move the compass to the opposite symbol while the
+    // pole-observable world orientation stays unchanged.
+    let _ = tracker.update(1, 0.0, -90.0, 0.0);
+    let _ = tracker.update(2, 90.0, -45.0, 0.0);
+    let _ = tracker.update(3, 90.0, 0.0, 0.0);
+    let _ = tracker.update(4, 90.0, 45.0, 0.0);
+    let before_yaw = tracker.update(5, 90.0, 89.0, 0.0);
+    let after_yaw = tracker.update(6, -90.0, 90.0, 0.0);
+
+    assert_angle_eq(after_yaw, 180.0);
+    assert_angle_eq(
+        positive_pole_observable(90.0, before_yaw),
+        positive_pole_observable(-90.0, after_yaw),
+    );
+}
+
+#[test]
+fn negative_physical_pitch_sweep_0_through_minus_180_keeps_world_continuous() {
+    let mut tracker = Tracker::new();
+
+    // Mirror of the positive sweep: physical pitch 0, -45, -90, -135, -179
+    // and the -180 pole. The far-side compass branch must again be opposite.
+    let _ = tracker.update(1, 0.0, -90.0, 0.0);
+    let _ = tracker.update(2, -90.0, -45.0, 0.0);
+    let _ = tracker.update(3, -90.0, 0.0, 0.0);
+    let _ = tracker.update(4, -90.0, 45.0, 0.0);
+    let before_yaw = tracker.update(5, -90.0, 89.0, 0.0);
+    let after_yaw = tracker.update(6, 90.0, 90.0, 0.0);
+
+    assert_angle_eq(after_yaw, 180.0);
+    assert_angle_eq(
+        positive_pole_observable(-90.0, before_yaw),
+        positive_pole_observable(90.0, after_yaw),
+    );
+}
+
+#[test]
+fn negative_camera_pole_crossing_is_continuous_in_both_directions() {
+    let mut forward = Tracker::new();
+    let before_forward = forward.update(1, -90.0, -89.0, 0.0);
+    let after_forward = forward.update(2, 90.0, -89.0, 0.0);
+    assert_angle_eq(after_forward, 180.0);
+    assert_angle_eq(
+        negative_pole_observable(-90.0, before_forward),
+        negative_pole_observable(90.0, after_forward),
+    );
+
+    let mut reverse = Tracker::new();
+    let before_reverse = reverse.update(1, 90.0, -89.0, 0.0);
+    let after_reverse = reverse.update(2, -90.0, -89.0, 0.0);
+    assert_angle_eq(after_reverse, 180.0);
+    assert_angle_eq(
+        negative_pole_observable(90.0, before_reverse),
+        negative_pole_observable(-90.0, after_reverse),
+    );
+}
+
+#[test]
+fn positive_camera_pole_crossing_is_continuous_in_both_directions() {
+    let mut forward = Tracker::new();
+    let before_forward = forward.update(1, 90.0, 89.0, 0.0);
+    let after_forward = forward.update(2, -90.0, 89.0, 0.0);
+    assert_angle_eq(after_forward, 180.0);
+    assert_angle_eq(
+        positive_pole_observable(90.0, before_forward),
+        positive_pole_observable(-90.0, after_forward),
+    );
+
+    let mut reverse = Tracker::new();
+    let before_reverse = reverse.update(1, -90.0, 89.0, 0.0);
+    let after_reverse = reverse.update(2, 90.0, 89.0, 0.0);
+    assert_angle_eq(after_reverse, 180.0);
+    assert_angle_eq(
+        positive_pole_observable(-90.0, before_reverse),
+        positive_pole_observable(90.0, after_reverse),
+    );
+}
+
+#[test]
+fn magnetic_half_turn_reacquisition_does_not_apply_the_branch_twice() {
+    let mut tracker = Tracker::new();
+    let _ = tracker.update(1, 90.0, 89.0, 0.0);
+    let crossed_yaw = tracker.update(2, -90.0, 89.0, 0.0);
+
+    // Fusion catches up by the same half-turn already carried by the renderer.
+    let reacquired_yaw = tracker.update(3, -90.0, 85.0, 180.0);
+    assert_angle_eq(crossed_yaw, reacquired_yaw);
+}
+
+#[test]
+fn ordinary_roll_away_from_poles_does_not_modify_or_round_yaw() {
+    let mut tracker = Tracker::new();
+    let first = tracker.update(1, 10.0, 15.0, 12.375);
+    let second = tracker.update(2, 75.0, 20.0, 13.625);
+
+    assert_angle_eq(first, 12.375);
+    assert_angle_eq(second, 13.625);
+}
+
+#[test]
+fn leaving_and_reentering_the_imu_view_reseeds_continuity() {
+    let mut tracker = Tracker::new();
+    let _ = tracker.update(1, 90.0, 89.0, 0.0);
+    let _ = tracker.update(2, -90.0, 89.0, 0.0);
+
+    tracker.reset();
+
+    // The device may have moved anywhere while this renderer was hidden. The
+    // first returned frame is authoritative and must not inherit the old offset.
+    let returned_yaw = tracker.update(3, 130.0, 88.0, 47.25);
+    assert_angle_eq(returned_yaw, 47.25);
+}
+
+#[test]
+fn long_sample_discontinuity_near_pole_reseeds_instead_of_inferring_crossing() {
+    let mut tracker = Tracker::new();
+    let _ = tracker.update(10, 90.0, 89.0, 0.0);
+
+    // Nineteen 100 Hz publications were not observed. A roll branch change in
+    // that interval is not evidence that this renderer watched a pole crossing.
+    let returned_yaw = tracker.update(29, -90.0, 89.0, 37.5);
+    assert_angle_eq(returned_yaw, 37.5);
+}
+
+#[test]
+fn small_replace_latest_revision_skips_remain_continuous() {
+    let mut tracker = Tracker::new();
+    let _ = tracker.update(100, 90.0, 89.0, 0.0);
+
+    // A few collapsed 100 Hz samples are expected during normal rendering and
+    // still carry enough temporal locality to preserve pole compensation.
+    let yaw = tracker.update(104, -90.0, 89.0, 0.0);
+    assert_angle_eq(yaw, 180.0);
+}

@@ -11,9 +11,11 @@ const IMU_UPDATE: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ImuDisplay {
-    pub(crate) roll_deg: i32,
-    pub(crate) pitch_deg: i32,
-    pub(crate) yaw_deg: i32,
+    /// CPU1 publication revision for detecting renderer-side sample gaps.
+    pub(crate) sample_revision: u32,
+    pub(crate) roll_deg: f32,
+    pub(crate) pitch_deg: f32,
+    pub(crate) yaw_deg: f32,
     pub(crate) status: imu::Status,
     pub(crate) mag_status: imu::MagStatus,
     pub(crate) mag_field_ut: i32,
@@ -33,9 +35,10 @@ impl Model {
         Self {
             input,
             display: ImuDisplay {
-                roll_deg: 0,
-                pitch_deg: 0,
-                yaw_deg: 0,
+                sample_revision: 0,
+                roll_deg: 0.0,
+                pitch_deg: 0.0,
+                yaw_deg: 0.0,
                 status: imu::Status::Starting,
                 mag_status: imu::MagStatus::Missing,
                 mag_field_ut: 0,
@@ -64,9 +67,10 @@ impl Model {
         }
         self.last_revision = snapshot.revision;
         self.display = ImuDisplay {
-            roll_deg: round_units(snapshot.orientation.roll_deg),
-            pitch_deg: round_units(snapshot.orientation.pitch_deg),
-            yaw_deg: round_units(snapshot.orientation.yaw_deg),
+            sample_revision: snapshot.revision,
+            roll_deg: snapshot.orientation.roll_deg,
+            pitch_deg: snapshot.orientation.pitch_deg,
+            yaw_deg: snapshot.orientation.yaw_deg,
             status: snapshot.status,
             mag_status: snapshot.mag_status,
             mag_field_ut: round_units(snapshot.mag_field_ut),
