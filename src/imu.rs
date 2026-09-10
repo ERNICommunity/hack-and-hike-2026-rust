@@ -127,11 +127,13 @@ const CMD_SOFT_RESET: u8 = 0xB6;
 const CONFIG_LOAD_OK: u8 = 0x01;
 const AUX_BUSY: u8 = 1 << 2;
 
-// 100 Hz, performance filter, normal bandwidth/averaging.
+// 100 Hz, performance filter, normal bandwidth/averaging. Use the BMI270's
+// widest filtered gyro range so quick hand turns cannot silently clip at the
+// previous +/-500 dps limit and permanently lose absolute yaw.
 const ACC_CONF_100HZ: u8 = 0xA8;
 const GYR_CONF_100HZ: u8 = 0xA8;
 const ACC_RANGE_4G: u8 = 0x01;
-const GYR_RANGE_500DPS: u8 = 0x02;
+const GYR_RANGE_2000DPS: u8 = 0x00;
 const PWR_CTRL_ACC_GYR: u8 = 0x06;
 const PWR_CTRL_ACC_GYR_AUX: u8 = 0x0F;
 
@@ -149,7 +151,7 @@ const BMM_REP_XY_REGULAR: u8 = 0x04;
 const BMM_REP_Z_REGULAR: u8 = 0x07;
 
 const ACC_G_PER_LSB: f32 = 4.0 / 32768.0;
-const GYR_DPS_PER_LSB: f32 = 500.0 / 32768.0;
+const GYR_DPS_PER_LSB: f32 = 2000.0 / 32768.0;
 const INIT_RETRY: Duration = Duration::from_secs(1);
 const MAG_RETRY: Duration = Duration::from_secs(5);
 const MAG_STALE: Duration = Duration::from_secs(1);
@@ -170,15 +172,25 @@ const MAG_BAD_SAMPLES_TO_DISTURBED: u8 = 30;
 // permits at most about six degrees/second of magnetic drift correction.
 const MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG: f32 = 0.20;
 // Once north is locked, a magnetic observation that disagrees this far with the
-// gyro prediction is an outlier, not a correction. This blocks 90/180-degree
-// flips while leaving ample room for normal gyro drift to be removed gradually.
+// gyro prediction is an outlier, not a correction.
 const MAX_MAG_YAW_INNOVATION_DEG: f32 = 60.0;
+// Do not fuse the 30 Hz magnetometer while the device is rotating quickly. The
+// magnetic sample is necessarily older than the 100 Hz gyro state, so using it
+// during a fast turn creates a deterministic lag error. Gyro carries the turn;
+// magnetic north resumes once angular rate has dropped.
+const MAG_FUSION_MAX_YAW_RATE_DPS: f32 = 180.0;
 // Before the first absolute north lock, compare magnetic heading against the
 // gyro-predicted yaw. Their difference should remain constant even while the
 // device turns. Requiring several consistent offsets prevents one bad vector
 // from defining north for the whole session.
 const MAG_INITIAL_LOCK_SAMPLES: u8 = 3;
 const MAX_MAG_INITIAL_OFFSET_JITTER_DEG: f32 = 8.0;
+// If a trusted gyro integration is known to have become incomplete (near full
+// scale or a long scheduling gap), explicitly reacquire north after the turn.
+// At +/-2000 dps the threshold is deliberately close to full scale so normal
+// fast motion keeps continuous gyro integration and never causes a relock.
+const GYRO_NEAR_SATURATION_DPS: f32 = 1950.0;
+const MAX_FUSION_SAMPLE_GAP_MS: u64 = 50;
 // The horizontal magnetic component must be measurable, and the device heading
 // axis itself must have a meaningful horizontal projection. When the latter is
 // nearly vertical, compass heading is physically undefined; gyro yaw bridges
@@ -286,7 +298,7 @@ impl Bmi270 {
         self.write_register(REG_ACC_CONF, ACC_CONF_100HZ).await?;
         self.write_register(REG_ACC_RANGE, ACC_RANGE_4G).await?;
         self.write_register(REG_GYR_CONF, GYR_CONF_100HZ).await?;
-        self.write_register(REG_GYR_RANGE, GYR_RANGE_500DPS).await?;
+        self.write_register(REG_GYR_RANGE, GYR_RANGE_2000DPS).await?;
         self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR).await?;
         Timer::after(SENSOR_STARTUP).await;
 
@@ -478,6 +490,17 @@ impl Fusion {
         }
     }
 
+    fn invalidate_absolute_heading(&mut self) {
+        self.magnetic_heading_locked = false;
+        self.pending_mag_offset = None;
+        self.pending_mag_samples = 0;
+    }
+
+    fn clear_pending_magnetic_candidate(&mut self) {
+        self.pending_mag_offset = None;
+        self.pending_mag_samples = 0;
+    }
+
     fn update(
         &mut self,
         accel_g: [f32; 3],
@@ -553,15 +576,30 @@ impl Fusion {
             .and_then(|field| gravity_compensated_heading(field, screen_gravity));
 
         self.orientation.yaw_deg = if let Some(heading) = magnetic_heading {
-            self.fuse_magnetic_yaw(predicted_yaw, heading, yaw_alpha)
+            self.fuse_magnetic_yaw(predicted_yaw, heading, yaw_rate_dps, yaw_alpha)
         } else {
+            self.clear_pending_magnetic_candidate();
             predicted_yaw
         };
 
         self.orientation
     }
 
-    fn fuse_magnetic_yaw(&mut self, predicted_yaw: f32, heading: f32, yaw_alpha: f32) -> f32 {
+    fn fuse_magnetic_yaw(
+        &mut self,
+        predicted_yaw: f32,
+        heading: f32,
+        yaw_rate_dps: f32,
+        yaw_alpha: f32,
+    ) -> f32 {
+        // BMM150 updates at only 30 Hz and reaches us through the BMI270 AUX
+        // path. During a fast turn it is temporally behind the 100 Hz gyro state,
+        // so do not let that delayed observation fight the gyro integration.
+        if abs_f32(yaw_rate_dps) > MAG_FUSION_MAX_YAW_RATE_DPS {
+            self.clear_pending_magnetic_candidate();
+            return predicted_yaw;
+        }
+
         if !self.magnetic_heading_locked {
             let offset = wrap_degrees(heading - predicted_yaw);
             let consistent = self
@@ -586,11 +624,10 @@ impl Fusion {
 
             if self.pending_mag_samples >= MAG_INITIAL_LOCK_SAMPLES {
                 self.magnetic_heading_locked = true;
-                self.pending_mag_offset = None;
-                self.pending_mag_samples = 0;
-                // Before this point yaw is gyro-relative, not north-referenced,
-                // so establishing absolute magnetic north is intentionally an
-                // immediate reference acquisition rather than a 30-second slew.
+                self.clear_pending_magnetic_candidate();
+                // The current yaw is explicitly marked untrusted only after a
+                // possible gyro overrange/timing loss, so a confirmed magnetic
+                // reference is allowed to restore absolute north immediately.
                 return heading;
             }
 
@@ -725,9 +762,21 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
             match sensor.read_sample().await {
                 Ok(sample) => {
                     consecutive_errors = 0;
-                    let elapsed_ms = (now - last_sample_time).as_millis().clamp(2, 50);
+                    let elapsed_ms_raw = (now - last_sample_time).as_millis();
+                    let timing_gap = elapsed_ms_raw > MAX_FUSION_SAMPLE_GAP_MS;
+                    let elapsed_ms = elapsed_ms_raw.clamp(2, MAX_FUSION_SAMPLE_GAP_MS);
                     last_sample_time = now;
                     let dt_seconds = elapsed_ms as f32 * 0.001;
+
+                    // With the +/-2000 dps range, reaching this threshold means
+                    // there is a real possibility that angle was clipped. A long
+                    // scheduling gap can lose angle for the same reason. Keep
+                    // integrating the best available gyro value, but explicitly
+                    // mark absolute yaw untrusted so magnetic north is reacquired
+                    // after motion settles instead of being rejected forever.
+                    if timing_gap || max_abs3(sample.gyro_dps) >= GYRO_NEAR_SATURATION_DPS {
+                        fusion.invalidate_absolute_heading();
+                    }
 
                     let corrected_gyro = gyro_bias.correct(sample.accel_g, sample.gyro_dps);
                     let mut magnetic_for_fusion: Option<[f32; 3]> = None;
