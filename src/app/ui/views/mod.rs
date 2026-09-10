@@ -52,7 +52,7 @@ impl Views {
             microphone: microphone::View::new(),
             speaker: speaker::View::new(),
             camera: camera::View::new(),
-            settings: settings::View::new(BrightnessPercent::FULL),
+            settings: settings::View::new(),
             log: log::View::new(),
         }
     }
@@ -63,19 +63,23 @@ impl Views {
         surface: &mut GuiSurface,
         display: &mut Display,
         settings_display: Option<SettingsDisplay>,
+        speaker_display: Option<SpeakerDisplay>,
     ) {
         match view {
             ViewId::Network => self.network.present_shell(surface, display),
             ViewId::Imu => self.imu.present_shell(surface, display),
             ViewId::Microphone => self.microphone.present_shell(surface, display),
-            ViewId::Speaker => self.speaker.present(surface, display),
+            ViewId::Speaker => self.speaker.present(
+                surface,
+                display,
+                speaker_display.expect("speaker state must be available when presenting Speaker"),
+            ),
             ViewId::Camera => self.camera.present_shell(display),
-            ViewId::Settings => {
-                if let Some(state) = settings_display {
-                    self.settings.sync_brightness(state.brightness);
-                }
-                self.settings.present(surface, display);
-            }
+            ViewId::Settings => self.settings.present(
+                surface,
+                display,
+                settings_display.expect("settings state must be available when presenting Settings"),
+            ),
             ViewId::Log => self.log.present_shell(surface, display),
         }
     }
@@ -136,8 +140,7 @@ impl Views {
         display: &mut Display,
         state: SpeakerDisplay,
     ) {
-        self.speaker.sync(state);
-        self.speaker.present(surface, display);
+        self.speaker.present(surface, display, state);
     }
 
     pub(super) fn present_settings(
@@ -146,8 +149,7 @@ impl Views {
         display: &mut Display,
         state: SettingsDisplay,
     ) {
-        self.settings.sync_brightness(state.brightness);
-        self.settings.present(surface, display);
+        self.settings.present(surface, display, state.brightness);
     }
 
     pub(super) fn present_log(
