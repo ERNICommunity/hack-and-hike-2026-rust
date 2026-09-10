@@ -60,21 +60,22 @@ impl View {
         let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
+        let geometry = Geometry {
+            title: required_rect(gui, app.widgets.title_slot, "settings title"),
+            value: required_rect(
+                gui,
+                app.widgets.brightness_value_slot,
+                "settings brightness value",
+            ),
+            slider: required_rect(gui, app.widgets.brightness_slot, "settings brightness slider"),
+            minimum: required_rect(gui, app.widgets.minimum_slot, "settings minimum"),
+            maximum: required_rect(gui, app.widgets.maximum_slot, "settings maximum"),
+            hint: required_rect(gui, app.widgets.hint_slot, "settings hint"),
+        };
 
         Self {
             gui,
-            geometry: Geometry {
-                title: required_rect(gui, app.widgets.title_slot, "settings title"),
-                value: required_rect(
-                    gui,
-                    app.widgets.brightness_value_slot,
-                    "settings brightness value",
-                ),
-                slider: required_rect(gui, app.widgets.brightness_slot, "settings brightness slider"),
-                minimum: required_rect(gui, app.widgets.minimum_slot, "settings minimum"),
-                maximum: required_rect(gui, app.widgets.maximum_slot, "settings maximum"),
-                hint: required_rect(gui, app.widgets.hint_slot, "settings hint"),
-            },
+            geometry,
             dragging_brightness: false,
         }
     }
