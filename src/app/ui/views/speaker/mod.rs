@@ -82,20 +82,21 @@ impl View {
         let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SpeakerApp::build(gui)
             .expect("speaker KDL exceeds embedded-gui fixed capacities");
+        let geometry = Geometry {
+            title: required_rect(gui, app.widgets.title_slot, "speaker title"),
+            status: required_rect(gui, app.widgets.status_slot, "speaker status"),
+            play_button: required_rect(gui, app.widgets.play_button_slot, "speaker play button"),
+            chime_button: required_rect(gui, app.widgets.chime_button_slot, "speaker chime button"),
+            tempo_value: required_rect(gui, app.widgets.tempo_value_slot, "speaker tempo value"),
+            tempo_slider: required_rect(gui, app.widgets.tempo_slider_slot, "speaker tempo slider"),
+            pitch_value: required_rect(gui, app.widgets.pitch_value_slot, "speaker pitch value"),
+            pitch_slider: required_rect(gui, app.widgets.pitch_slider_slot, "speaker pitch slider"),
+            hint: required_rect(gui, app.widgets.hint_slot, "speaker hint"),
+        };
 
         Self {
             gui,
-            geometry: Geometry {
-                title: required_rect(gui, app.widgets.title_slot, "speaker title"),
-                status: required_rect(gui, app.widgets.status_slot, "speaker status"),
-                play_button: required_rect(gui, app.widgets.play_button_slot, "speaker play button"),
-                chime_button: required_rect(gui, app.widgets.chime_button_slot, "speaker chime button"),
-                tempo_value: required_rect(gui, app.widgets.tempo_value_slot, "speaker tempo value"),
-                tempo_slider: required_rect(gui, app.widgets.tempo_slider_slot, "speaker tempo slider"),
-                pitch_value: required_rect(gui, app.widgets.pitch_value_slot, "speaker pitch value"),
-                pitch_slider: required_rect(gui, app.widgets.pitch_slider_slot, "speaker pitch slider"),
-                hint: required_rect(gui, app.widgets.hint_slot, "speaker hint"),
-            },
+            geometry,
             gesture: None,
         }
     }
