@@ -34,15 +34,11 @@ pub(super) struct MagneticState {
 }
 
 impl MagneticState {
-    pub(super) fn new(trim: Option<bmm150::Trim>, now: Instant) -> Self {
+    pub(super) fn new(now: Instant) -> Self {
         Self {
-            trim,
+            trim: None,
             calibration: bmm150::Calibration::new(),
-            status: if trim.is_some() {
-                MagStatus::Learning
-            } else {
-                MagStatus::Missing
-            },
+            status: MagStatus::Missing,
             field_ut: 0.0,
             last_frame: None,
             last_update: now,
@@ -50,6 +46,29 @@ impl MagneticState {
             good_samples: 0,
             bad_samples: 0,
         }
+    }
+
+    /// Attach the currently initialized BMM150 transport state without throwing
+    /// away a calibration model learned earlier in this boot. BMI270/AUX can be
+    /// reinitialized after transient bus/read failures; enclosure hard/soft-iron
+    /// calibration is still valid for the same physical magnetometer.
+    pub(super) fn rebind(&mut self, trim: Option<bmm150::Trim>, now: Instant) {
+        self.trim = trim;
+        self.status = if trim.is_some() {
+            if self.calibration.is_ready() {
+                MagStatus::Ready
+            } else {
+                MagStatus::Learning
+            }
+        } else {
+            MagStatus::Missing
+        };
+        self.field_ut = 0.0;
+        self.last_frame = None;
+        self.last_update = now;
+        self.last_retry = now;
+        self.good_samples = 0;
+        self.bad_samples = 0;
     }
 
     /// Retry a missing BMM150 without disturbing the running 6-axis IMU path.
@@ -62,13 +81,7 @@ impl MagneticState {
         match sensor.initialize_bmm150().await {
             Ok(trim) => {
                 ::log::info!("BMM150 recovered; 9-axis heading fusion enabled");
-                self.trim = Some(trim);
-                self.calibration = bmm150::Calibration::new();
-                self.status = MagStatus::Learning;
-                self.good_samples = 0;
-                self.bad_samples = 0;
-                self.last_frame = None;
-                self.last_update = now;
+                self.rebind(Some(trim), now);
             }
             Err(_) => sensor.disable_aux().await,
         }
@@ -148,8 +161,9 @@ impl MagneticState {
         if field_good {
             self.good_samples = self.good_samples.saturating_add(1);
             self.bad_samples = 0;
-            // A newly calibrated or recovered magnetometer must prove several
-            // consecutive good vectors before it may define magnetic north.
+            // A newly calibrated magnetometer must prove several consecutive
+            // good vectors before it may define north. A transport rebind keeps
+            // the already-validated calibration and can resume immediately.
             if self.status == MagStatus::Ready || self.good_samples >= MAG_GOOD_SAMPLES_TO_READY {
                 self.status = MagStatus::Ready;
                 *magnetic_for_fusion = Some(corrected_field);

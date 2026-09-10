@@ -5,11 +5,17 @@ use super::math::{
     solve_linear_3, solve_linear_9, sqrt_approx, symmetric_eigen_3,
 };
 
-pub(super) const CALIBRATION_MIN_FIT_SAMPLES: u32 = 144;
+// Ninety-six balanced samples still provide more than ten observations per
+// fitted quadratic parameter while the independent span/sector/face gates keep
+// the geometry well conditioned. The previous 144-sample floor made calibration
+// noticeably slow on a 30 Hz magnetometer without adding a separate quality test.
+pub(super) const CALIBRATION_MIN_FIT_SAMPLES: u32 = 96;
 
-const CANDIDATE_VALIDATION_MIN_SAMPLES: u16 = 48;
-const CANDIDATE_VALIDATION_MIN_BINS: u32 = 8;
-const CANDIDATE_VALIDATION_MAX_SAMPLES: u16 = 120;
+// Candidate validation remains independent and direction-aware, but it does not
+// need another 48-sample collection after an already balanced full-ellipsoid fit.
+const CANDIDATE_VALIDATION_MIN_SAMPLES: u16 = 24;
+const CANDIDATE_VALIDATION_MIN_BINS: u32 = 6;
+const CANDIDATE_VALIDATION_MAX_SAMPLES: u16 = 72;
 const MAX_CANDIDATE_RMS_RELATIVE_ERROR: f32 = 0.15;
 const MAX_CANDIDATE_SINGLE_RELATIVE_ERROR: f32 = 0.35;
 const MAX_CANDIDATE_BAD_SAMPLES: u8 = 6;
