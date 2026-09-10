@@ -2,22 +2,22 @@
 
 use embassy_time::{Duration, Instant};
 
-use crate::audio;
+use crate::services::audio;
 
-pub const POINTS: usize = 128;
-pub const MAX_AMPLITUDE_PIXELS: i32 = 42;
+pub(crate) const POINTS: usize = 128;
+pub(crate) const MAX_AMPLITUDE_PIXELS: i32 = 42;
 
 const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
 
 #[derive(Clone, Copy)]
-pub struct WaveformFrame {
-    pub left: [i8; POINTS],
-    pub right: [i8; POINTS],
+pub(crate) struct WaveformFrame {
+    pub(crate) left: [i8; POINTS],
+    pub(crate) right: [i8; POINTS],
 }
 
 impl WaveformFrame {
-    pub const fn silent() -> Self {
+    pub(crate) const fn silent() -> Self {
         Self {
             left: [0; POINTS],
             right: [0; POINTS],

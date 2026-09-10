@@ -68,7 +68,7 @@ where
 /// Enable the LCD backlight rail (DLDO1) at 3.3 V.
 ///
 /// Display-controller configuration itself remains owned by `display`.
-pub fn enable_lcd_backlight(i2c: &mut impl embedded_hal::i2c::I2c) {
+pub(crate) fn enable_lcd_backlight(i2c: &mut impl embedded_hal::i2c::I2c) {
     // Preserve the existing best-effort startup behavior for the display rail.
     let _ = i2c.write(AXP2101_ADDR, &[DLDO1_VOLTAGE_REGISTER, LCD_BACKLIGHT_MAX_CODE]);
     let _ = update_register_bits(
@@ -84,7 +84,7 @@ pub fn enable_lcd_backlight(i2c: &mut impl embedded_hal::i2c::I2c) {
 /// The hardware has eight effective voltage steps in its supported backlight
 /// range. Runtime dimming never disables DLDO1: 1% maps to 2.6 V and 100% to
 /// 3.3 V. Turning display power off is deliberately not a slider operation.
-pub async fn set_lcd_backlight<I2C>(i2c: &mut I2C, percent: u8) -> Result<(), I2C::Error>
+pub(crate) async fn set_lcd_backlight<I2C>(i2c: &mut I2C, percent: u8) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal_async::i2c::I2c,
 {
@@ -108,7 +108,7 @@ where
 /// Enable the microphone rail (ALDO2) at 3.3 V.
 ///
 /// ES7210 register configuration itself remains owned by `audio`.
-pub fn enable_microphone<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
+pub(crate) fn enable_microphone<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
@@ -130,7 +130,7 @@ where
 /// BLDO2 to be enabled together. Espressif's CoreS3 BSP uses the same 0x34 mask
 /// in register 0x90 for BSP_FEATURE_CAMERA, while ALDO3 register 0x94 is set to
 /// 3.3 V. The AW9523 owns the separate camera reset line.
-pub fn enable_camera<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
+pub(crate) fn enable_camera<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
@@ -152,7 +152,7 @@ where
 /// voltage code 0x1c in register 0x94 (3.3 V). On the normal CoreS3 bootstrap
 /// state this typically changes 0x8f to 0xbf. This does not measure the physical
 /// rails, but it distinguishes PMIC-programming failures from downstream faults.
-pub fn camera_power_registers<I2C>(i2c: &mut I2C) -> Result<(u8, u8), I2C::Error>
+pub(crate) fn camera_power_registers<I2C>(i2c: &mut I2C) -> Result<(u8, u8), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
@@ -166,7 +166,7 @@ where
 ///
 /// This is the PMIC half of CoreS3 speaker bring-up. AW9523 owns the separate
 /// speaker-enable gate, and `audio` owns the AW88298 device registers.
-pub fn enable_speaker_amplifier<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
+pub(crate) fn enable_speaker_amplifier<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {

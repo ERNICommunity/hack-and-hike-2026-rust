@@ -2,7 +2,7 @@
 
 use embassy_time::{Duration, Instant};
 
-use crate::imu;
+use crate::services::imu;
 
 // Match the 100 Hz fusion publisher instead of imposing a separate 25 Hz UI
 // ceiling. The replace-latest input still collapses samples whenever rendering
@@ -10,14 +10,14 @@ use crate::imu;
 const IMU_UPDATE: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug)]
-pub struct ImuDisplay {
-    pub roll_deg: i32,
-    pub pitch_deg: i32,
-    pub yaw_deg: i32,
-    pub status: imu::Status,
-    pub mag_status: imu::MagStatus,
-    pub mag_field_ut: i32,
-    pub mag_calibration: u8,
+pub(crate) struct ImuDisplay {
+    pub(crate) roll_deg: i32,
+    pub(crate) pitch_deg: i32,
+    pub(crate) yaw_deg: i32,
+    pub(crate) status: imu::Status,
+    pub(crate) mag_status: imu::MagStatus,
+    pub(crate) mag_field_ut: i32,
+    pub(crate) mag_calibration: u8,
 }
 
 pub(super) struct Model {

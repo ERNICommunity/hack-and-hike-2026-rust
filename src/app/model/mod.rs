@@ -6,7 +6,7 @@
 
 mod imu;
 mod log;
-pub(crate) mod microphone;
+mod microphone;
 mod navigation;
 mod network;
 mod settings;
@@ -15,26 +15,29 @@ mod speaker;
 use embassy_time::Instant;
 
 use crate::{
-    audio,
-    display::{BrightnessControl, BrightnessPercent},
-    imu as imu_service, logger,
-    network as network_service,
+    services::{
+        audio,
+        display::{BrightnessControl, BrightnessPercent},
+        imu as imu_service,
+        network as network_service,
+    },
+    support::logging,
 };
 
 pub(crate) use imu::ImuDisplay;
-pub(crate) use microphone::WaveformFrame;
+pub(crate) use microphone::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame};
 pub(crate) use navigation::ViewId;
 pub(crate) use settings::SettingsDisplay;
 pub(crate) use speaker::SpeakerDisplay;
 
-pub struct AppModelInputs {
-    pub network: network_service::Input,
-    pub imu: imu_service::Input,
-    pub audio: audio::Input,
-    pub log: logger::Input,
+pub(crate) struct AppModelInputs {
+    pub(crate) network: network_service::Input,
+    pub(crate) imu: imu_service::Input,
+    pub(crate) audio: audio::Input,
+    pub(crate) log: logging::Input,
 }
 
-pub struct AppModel {
+pub(crate) struct AppModel {
     navigation: navigation::Model,
     network: network::Model,
     imu: imu::Model,
@@ -45,7 +48,7 @@ pub struct AppModel {
 }
 
 impl AppModel {
-    pub fn new(
+    pub(crate) fn new(
         inputs: AppModelInputs,
         brightness: BrightnessControl,
         playback: audio::PlaybackControl,
@@ -70,11 +73,11 @@ impl AppModel {
         }
     }
 
-    pub fn active_view(&self) -> ViewId {
+    pub(crate) fn active_view(&self) -> ViewId {
         self.navigation.active_view()
     }
 
-    pub fn request_view(&mut self, view: ViewId) {
+    pub(crate) fn request_view(&mut self, view: ViewId) {
         if !self.navigation.request_view(view) {
             return;
         }
@@ -90,7 +93,7 @@ impl AppModel {
         }
     }
 
-    pub fn update(&mut self, now: Instant) {
+    pub(crate) fn update(&mut self, now: Instant) {
         match self.navigation.active_view() {
             ViewId::Network => self.network.update_if_due(now),
             ViewId::Imu => self.imu.update_if_due(now),
@@ -100,72 +103,72 @@ impl AppModel {
         }
     }
 
-    pub fn set_brightness(&mut self, brightness: BrightnessPercent) {
+    pub(crate) fn set_brightness(&mut self, brightness: BrightnessPercent) {
         if self.navigation.active_view() == ViewId::Settings {
             self.settings.set_brightness(brightness);
         }
     }
 
-    pub fn toggle_speaker_playback(&mut self) {
+    pub(crate) fn toggle_speaker_playback(&mut self) {
         if self.navigation.active_view() == ViewId::Speaker {
             self.speaker.toggle_playback();
         }
     }
 
-    pub fn play_speaker_one_shot(&mut self) {
+    pub(crate) fn play_speaker_one_shot(&mut self) {
         if self.navigation.active_view() == ViewId::Speaker {
             self.speaker.play_one_shot();
         }
     }
 
-    pub fn set_speaker_tempo(&mut self, tempo: audio::TempoBpm) {
+    pub(crate) fn set_speaker_tempo(&mut self, tempo: audio::TempoBpm) {
         if self.navigation.active_view() == ViewId::Speaker {
             self.speaker.set_tempo(tempo);
         }
     }
 
-    pub fn set_speaker_pitch(&mut self, pitch: audio::PitchSemitones) {
+    pub(crate) fn set_speaker_pitch(&mut self, pitch: audio::PitchSemitones) {
         if self.navigation.active_view() == ViewId::Speaker {
             self.speaker.set_pitch(pitch);
         }
     }
 
-    pub fn take_speaker_display(&mut self) -> Option<SpeakerDisplay> {
+    pub(crate) fn take_speaker_display(&mut self) -> Option<SpeakerDisplay> {
         if self.navigation.active_view() != ViewId::Speaker {
             return None;
         }
         self.speaker.take_display()
     }
 
-    pub fn take_settings_display(&mut self) -> Option<SettingsDisplay> {
+    pub(crate) fn take_settings_display(&mut self) -> Option<SettingsDisplay> {
         if self.navigation.active_view() != ViewId::Settings {
             return None;
         }
         self.settings.take_display()
     }
 
-    pub fn take_network_display(&mut self) -> Option<network_service::Snapshot> {
+    pub(crate) fn take_network_display(&mut self) -> Option<network_service::Snapshot> {
         if self.navigation.active_view() != ViewId::Network {
             return None;
         }
         self.network.take_display()
     }
 
-    pub fn with_log_text<R>(&mut self, render: impl FnOnce(&str) -> R) -> Option<R> {
+    pub(crate) fn with_log_text<R>(&mut self, render: impl FnOnce(&str) -> R) -> Option<R> {
         if self.navigation.active_view() != ViewId::Log {
             return None;
         }
         self.log.with_text(render)
     }
 
-    pub fn take_imu_display(&mut self) -> Option<ImuDisplay> {
+    pub(crate) fn take_imu_display(&mut self) -> Option<ImuDisplay> {
         if self.navigation.active_view() != ViewId::Imu {
             return None;
         }
         self.imu.take_display()
     }
 
-    pub fn take_waveform_frame(&mut self) -> Option<WaveformFrame> {
+    pub(crate) fn take_waveform_frame(&mut self) -> Option<WaveformFrame> {
         if self.navigation.active_view() != ViewId::Microphone {
             return None;
         }

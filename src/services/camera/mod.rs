@@ -9,7 +9,7 @@ mod gc0308;
 
 use esp_hal::delay::Delay;
 
-pub use capture::{Camera, Frame, HEIGHT, Resources, WIDTH, init};
+pub(crate) use capture::{Camera, Frame, HEIGHT, Resources, WIDTH, init};
 
 /// Program the GC0308 over a startup-only hardware SCCB/I2C owner.
 ///
@@ -17,11 +17,11 @@ pub use capture::{Camera, Frame, HEIGHT, Resources, WIDTH, init};
 /// deliberately drops its temporary board-I2C driver, creates a fresh 100 kHz
 /// hardware owner for this call, then drops it again before constructing the
 /// persistent 400 kHz runtime bus. This mirrors M5Stack's CoreS3 camera bring-up.
-pub fn init_sensor<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<u8, I2C::Error>
+pub(crate) fn init_sensor<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<u8, I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
     gc0308::init(i2c, delay)
 }
 
-pub const EXPECTED_SENSOR_PID: u8 = gc0308::EXPECTED_PID;
+pub(crate) const EXPECTED_SENSOR_PID: u8 = gc0308::EXPECTED_PID;

@@ -9,20 +9,20 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use log::warn;
 use static_cell::StaticCell;
 
-use crate::{board, system_i2c::SystemI2cBus};
+use crate::{platform::{board, i2c::SystemI2cBus}};
 
 /// Valid user-facing LCD brightness percentage.
 ///
 /// Runtime brightness intentionally has no OFF state. The lowest setting keeps
 /// the panel visibly powered; display power policy is separate from dimming.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BrightnessPercent(u8);
+pub(crate) struct BrightnessPercent(u8);
 
 impl BrightnessPercent {
-    pub const MIN: Self = Self(1);
-    pub const FULL: Self = Self(100);
+    pub(crate) const MIN: Self = Self(1);
+    pub(crate) const FULL: Self = Self(100);
 
-    pub const fn new(value: u8) -> Option<Self> {
+    pub(crate) const fn new(value: u8) -> Option<Self> {
         if value >= Self::MIN.0 && value <= Self::FULL.0 {
             Some(Self(value))
         } else {
@@ -30,7 +30,7 @@ impl BrightnessPercent {
         }
     }
 
-    pub const fn get(self) -> u8 {
+    pub(crate) const fn get(self) -> u8 {
         self.0
     }
 }
@@ -57,7 +57,7 @@ pub(crate) struct Runtime {
 }
 
 /// Move-only CPU0 command handle for LCD brightness.
-pub struct BrightnessControl {
+pub(crate) struct BrightnessControl {
     service: &'static Service,
 }
 
@@ -76,14 +76,14 @@ pub(crate) fn init_endpoints() -> Endpoints {
 
 impl BrightnessControl {
     /// Replace any pending brightness request with the newest slider value.
-    pub fn set(&mut self, brightness: BrightnessPercent) {
+    pub(crate) fn set(&mut self, brightness: BrightnessPercent) {
         self.service.request.signal(brightness);
     }
 }
 
 /// CPU1 runtime owner that applies brightness commands over the shared system bus.
 #[embassy_executor::task]
-pub async fn task(bus: SystemI2cBus, runtime: Runtime) {
+pub(crate) async fn task(bus: SystemI2cBus, runtime: Runtime) {
     loop {
         let brightness = runtime.service.request.wait().await;
         let result = {

@@ -14,7 +14,11 @@ use arrayvec::ArrayString;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_gui::prelude::*;
 
-use crate::{data_plane, display::Display, imu as sensor, models::ImuDisplay};
+use crate::{
+    app::model::ImuDisplay,
+    services::{display::Display, imu as sensor},
+    support::memory::data_plane,
+};
 
 use super::super::gui::{GuiFramebuffer, GuiSurface};
 use super::common;
@@ -39,12 +43,12 @@ struct Geometry {
     attitude: Rect,
 }
 
-pub(crate) struct View {
+pub(super) struct View {
     geometry: Geometry,
 }
 
 impl View {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         let gui = data_plane::leaked_value_with(|| {
             Context::new(Rect::new(0, 0, VIEW_WIDTH as u32, VIEW_HEIGHT as u32))
         });
@@ -57,7 +61,7 @@ impl View {
         }
     }
 
-    pub(crate) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(super) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
         let geometry = self.geometry;
         surface.present_overlay_only(display, move |frame| {
             draw_view_gutters(frame, geometry);
@@ -65,7 +69,7 @@ impl View {
         });
     }
 
-    pub(crate) fn present(
+    pub(super) fn present(
         &mut self,
         surface: &mut GuiSurface,
         display: &mut Display,
@@ -245,7 +249,7 @@ fn draw_header_value(frame: &mut GuiFramebuffer, label: &str, degrees: i32, x: i
     common::draw_title(frame, value.as_str(), x, y + 22, common::white());
 }
 
-pub(super) fn draw_border(frame: &mut GuiFramebuffer, area: Rect) {
+fn draw_border(frame: &mut GuiFramebuffer, area: Rect) {
     let width = area.w as u32;
     let height = area.h as u32;
     common::hline(frame, area.x, area.y, width, common::light_gray());

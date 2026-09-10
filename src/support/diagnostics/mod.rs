@@ -18,68 +18,68 @@ static NETWORK_RX_INVALID: AtomicU32 = AtomicU32::new(0);
 static NETWORK_PEER_EVICTIONS: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct RuntimeCounters {
-    pub touch_read_errors: u32,
-    pub touch_edge_drops: u32,
-    pub audio_capture_errors: u32,
-    pub audio_playback_errors: u32,
+pub(crate) struct RuntimeCounters {
+    pub(crate) touch_read_errors: u32,
+    pub(crate) touch_edge_drops: u32,
+    pub(crate) audio_capture_errors: u32,
+    pub(crate) audio_playback_errors: u32,
     /// Number of times one DMA pop drained the complete circular buffer.
     ///
     /// This is a saturation warning, not proof that hardware overran.
-    pub audio_full_drains: u32,
-    pub network_init_errors: u32,
-    pub network_tx_packets: u32,
-    pub network_rx_packets: u32,
-    pub network_tx_errors: u32,
-    pub network_rx_invalid: u32,
-    pub network_peer_evictions: u32,
+    pub(crate) audio_full_drains: u32,
+    pub(crate) network_init_errors: u32,
+    pub(crate) network_tx_packets: u32,
+    pub(crate) network_rx_packets: u32,
+    pub(crate) network_tx_errors: u32,
+    pub(crate) network_rx_invalid: u32,
+    pub(crate) network_peer_evictions: u32,
 }
 
-pub fn record_touch_read_error() {
+pub(crate) fn record_touch_read_error() {
     TOUCH_READ_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_touch_edge_drop() {
+pub(crate) fn record_touch_edge_drop() {
     TOUCH_EDGE_DROPS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_audio_capture_error() {
+pub(crate) fn record_audio_capture_error() {
     AUDIO_CAPTURE_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_audio_playback_error() {
+pub(crate) fn record_audio_playback_error() {
     AUDIO_PLAYBACK_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_audio_full_drain() {
+pub(crate) fn record_audio_full_drain() {
     AUDIO_FULL_DRAINS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_network_init_error() {
+pub(crate) fn record_network_init_error() {
     NETWORK_INIT_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_network_tx_packet() {
+pub(crate) fn record_network_tx_packet() {
     NETWORK_TX_PACKETS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_network_rx_packet() {
+pub(crate) fn record_network_rx_packet() {
     NETWORK_RX_PACKETS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_network_tx_error() {
+pub(crate) fn record_network_tx_error() {
     NETWORK_TX_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_network_rx_invalid() {
+pub(crate) fn record_network_rx_invalid() {
     NETWORK_RX_INVALID.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_network_peer_eviction() {
+pub(crate) fn record_network_peer_eviction() {
     NETWORK_PEER_EVICTIONS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn snapshot() -> RuntimeCounters {
+pub(crate) fn snapshot() -> RuntimeCounters {
     RuntimeCounters {
         touch_read_errors: TOUCH_READ_ERRORS.load(Ordering::Relaxed),
         touch_edge_drops: TOUCH_EDGE_DROPS.load(Ordering::Relaxed),

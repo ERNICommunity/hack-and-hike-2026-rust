@@ -6,18 +6,18 @@
 //! device setup in `imu`.
 
 /// Native LCD/touch coordinate space of the CoreS3 Lite panel.
-pub const DISPLAY_WIDTH: usize = 320;
-pub const DISPLAY_HEIGHT: usize = 240;
+pub(crate) const DISPLAY_WIDTH: usize = 320;
+pub(crate) const DISPLAY_HEIGHT: usize = 240;
 
 /// Physical mounting orientation used by both LCD setup and touch coordinates.
 ///
 /// Keeping this board fact shared prevents the rendered content and FT6336 touch
 /// positions from drifting into different coordinate systems.
-pub const DISPLAY_ROTATED_180: bool = true;
+pub(crate) const DISPLAY_ROTATED_180: bool = true;
 
 /// Convert a point from the touch controller's native panel coordinates into the
 /// logical display coordinates consumed by presentation code.
-pub const fn logical_display_point(x: u16, y: u16) -> (u16, u16) {
+pub(crate) const fn logical_display_point(x: u16, y: u16) -> (u16, u16) {
     if DISPLAY_ROTATED_180 {
         (
             DISPLAY_WIDTH as u16 - 1 - x,
@@ -28,5 +28,5 @@ pub const fn logical_display_point(x: u16, y: u16) -> (u16, u16) {
     }
 }
 
-pub mod io_expander;
-pub mod power;
+pub(crate) mod io_expander;
+pub(crate) mod power;

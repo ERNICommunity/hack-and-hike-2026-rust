@@ -2,7 +2,7 @@
 
 use embassy_time::{Duration, Instant, Timer};
 
-use crate::system_i2c::SystemI2cBus;
+use crate::platform::i2c::SystemI2cBus;
 
 use super::{
     Config, DEFAULT_FUSION_HZ, DEFAULT_MAG_HZ, DEFAULT_SENSOR_HZ, MagStatus, Orientation, Status,

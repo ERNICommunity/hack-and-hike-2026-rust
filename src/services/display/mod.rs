@@ -13,18 +13,18 @@ use esp_hal::{
     peripherals::{DMA_CH1, GPIO3, GPIO35, GPIO36, GPIO37, SPI2},
 };
 
-use crate::board;
+use crate::platform::board;
 
-pub use brightness::{BrightnessControl, BrightnessPercent};
+pub(crate) use brightness::{BrightnessControl, BrightnessPercent};
 pub(crate) use brightness::{
     Endpoints as BrightnessEndpoints, Runtime as BrightnessRuntime,
     init_endpoints as init_brightness_endpoints, task as brightness_task,
 };
 
-pub type Pixel = u16;
+pub(crate) type Pixel = u16;
 
-pub const WIDTH: usize = board::DISPLAY_WIDTH;
-pub const HEIGHT: usize = board::DISPLAY_HEIGHT;
+pub(crate) const WIDTH: usize = board::DISPLAY_WIDTH;
+pub(crate) const HEIGHT: usize = board::DISPLAY_HEIGHT;
 const RGB565_BYTES_PER_PIXEL: usize = 2;
 const RAW_BATCH_BYTES: usize = WIDTH * RGB565_BYTES_PER_PIXEL * transport::RAW_BATCH_LINES;
 
@@ -34,7 +34,7 @@ const RAW_BATCH_BYTES: usize = WIDTH * RGB565_BYTES_PER_PIXEL * transport::RAW_B
 /// value is safe to submit to `Display`. Constant UI regions therefore fail at
 /// compile time if an edited design extends outside the physical panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Region {
+pub(crate) struct Region {
     x: usize,
     y: usize,
     width: usize,
@@ -42,7 +42,7 @@ pub struct Region {
 }
 
 impl Region {
-    pub const fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
+    pub(crate) const fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
         assert!(x <= WIDTH && width <= WIDTH - x);
         assert!(y <= HEIGHT && height <= HEIGHT - y);
         Self {
@@ -70,23 +70,23 @@ impl Region {
 ///
 /// Moving this bundle into `Display` transfers exclusive ownership of SPI2,
 /// DMA_CH1, and the LCD GPIOs to the display service.
-pub struct Resources {
-    pub spi2: SPI2<'static>,
-    pub dma: DMA_CH1<'static>,
-    pub sck: GPIO36<'static>,
-    pub mosi: GPIO37<'static>,
-    pub dc: GPIO35<'static>,
-    pub cs: GPIO3<'static>,
+pub(crate) struct Resources {
+    pub(crate) spi2: SPI2<'static>,
+    pub(crate) dma: DMA_CH1<'static>,
+    pub(crate) sck: GPIO36<'static>,
+    pub(crate) mosi: GPIO37<'static>,
+    pub(crate) dc: GPIO35<'static>,
+    pub(crate) cs: GPIO3<'static>,
 }
 
 /// Exclusive CPU0 owner of the LCD transport and reusable scanline scratch.
-pub struct Display {
+pub(crate) struct Display {
     transport: transport::Transport,
     line_buffer: [Pixel; WIDTH],
     raw_batch_buffer: [u8; RAW_BATCH_BYTES],
 }
 
-pub fn init(resources: Resources, delay: &mut Delay) -> Display {
+pub(crate) fn init(resources: Resources, delay: &mut Delay) -> Display {
     Display {
         transport: transport::init(resources, delay),
         line_buffer: [0; WIDTH],
@@ -101,7 +101,7 @@ impl Display {
     /// lines are then streamed consecutively through the existing ping-pong DMA
     /// buffers, allowing CPU rendering of the next line to overlap the previous
     /// SPI transfer without repeating controller commands for every scanline.
-    pub fn render_scanlines(
+    pub(crate) fn render_scanlines(
         &mut self,
         region: Region,
         mut render_line: impl FnMut(usize, &mut [Pixel]),
@@ -132,7 +132,7 @@ impl Display {
     /// bytes directly removes the old per-frame RGB565 decode/re-encode pass and
     /// reduces a 240-row content frame from 240 DMA submissions to 35 seven-row
     /// batches without changing the proven 40 MHz LCD clock.
-    pub fn render_rgb565_be_bytes(&mut self, region: Region, bytes: &[u8]) {
+    pub(crate) fn render_rgb565_be_bytes(&mut self, region: Region, bytes: &[u8]) {
         if region.is_empty() {
             return;
         }
@@ -156,7 +156,7 @@ impl Display {
     /// controller commands and all non-camera rendering stay at the proven clock.
     /// `context` is passed to both callbacks sequentially so callers can borrow a
     /// single mutable camera-frame object without overlapping closure captures.
-    pub fn render_rgb565_be_scanlines_pumped<C>(
+    pub(crate) fn render_rgb565_be_scanlines_pumped<C>(
         &mut self,
         region: Region,
         context: &mut C,

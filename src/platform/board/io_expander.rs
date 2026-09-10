@@ -60,7 +60,7 @@ where
 /// historically treated expander setup as best-effort, so keep that behavior
 /// while putting the expander into the same GPIO/push-pull mode used by the
 /// board reference implementation. The speaker reset line remains asserted.
-pub fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
+pub(crate) fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
     let _ = i2c.write(AW9523_ADDR, &[PORT0_OUTPUT_REGISTER, PORT0_BOOT_OUTPUTS]);
     let _ = i2c.write(AW9523_ADDR, &[PORT1_OUTPUT_REGISTER, PORT1_BOOT_OUTPUTS]);
     let _ = i2c.write(AW9523_ADDR, &[PORT0_DIRECTION_REGISTER, PORT0_DIRECTIONS]);
@@ -80,7 +80,7 @@ pub fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mu
 }
 
 /// Pulse the onboard GC0308 reset line on AW9523 P1_0.
-pub fn reset_camera<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Error>
+pub(crate) fn reset_camera<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
@@ -103,7 +103,7 @@ where
 ///
 /// For P1_0 to release GC0308 RESETB, output bit 0 should be high, direction
 /// bit 0 should be 0 (output), and mode bit 0 should be 1 (GPIO mode).
-pub fn camera_reset_registers<I2C>(i2c: &mut I2C) -> Result<(u8, u8, u8), I2C::Error>
+pub(crate) fn camera_reset_registers<I2C>(i2c: &mut I2C) -> Result<(u8, u8, u8), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
@@ -120,7 +120,7 @@ where
 /// supplies the amplifier at 1.8 V, then AW9523 P0_2 is pulsed low -> high.
 /// M5Stack's CoreS3 implementation holds reset low for 10 ms and waits 50 ms
 /// after release before accessing AW88298 over I2C.
-pub fn release_audio_amplifier<I2C>(
+pub(crate) fn release_audio_amplifier<I2C>(
     i2c: &mut I2C,
     delay: &mut Delay,
 ) -> Result<(), I2C::Error>

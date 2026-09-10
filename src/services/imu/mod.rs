@@ -11,26 +11,26 @@ mod task;
 
 use embassy_time::Duration;
 
-pub use channels::Input;
-pub use task::capture_task;
+pub(crate) use channels::Input;
+pub(crate) use task::capture_task;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 
 /// Host-side accelerometer/gyroscope acquisition target.
-pub const DEFAULT_SENSOR_HZ: u32 = 100;
+pub(crate) const DEFAULT_SENSOR_HZ: u32 = 100;
 /// Fusion runs once per host acquisition.
-pub const DEFAULT_FUSION_HZ: u32 = 100;
+pub(crate) const DEFAULT_FUSION_HZ: u32 = 100;
 /// BMM150 is configured for its maximum 30 Hz normal-mode ODR.
-pub const DEFAULT_MAG_HZ: u32 = 30;
+pub(crate) const DEFAULT_MAG_HZ: u32 = 30;
 
 /// Runtime-tunable fusion parameters.
 #[derive(Clone, Copy)]
-pub struct Config {
-    pub sample_period: Duration,
-    pub roll_pitch_alpha: f32,
-    pub yaw_alpha: f32,
+pub(crate) struct Config {
+    pub(crate) sample_period: Duration,
+    pub(crate) roll_pitch_alpha: f32,
+    pub(crate) yaw_alpha: f32,
 }
 
-pub const DEFAULT_CONFIG: Config = Config {
+pub(crate) const DEFAULT_CONFIG: Config = Config {
     sample_period: Duration::from_millis(10),
     roll_pitch_alpha: 0.98,
     // Magnetic heading is only a slow/quiet-state absolute reference. Gyro is
@@ -40,7 +40,7 @@ pub const DEFAULT_CONFIG: Config = Config {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
-pub enum Status {
+pub(crate) enum Status {
     Starting = 0,
     Running = 1,
     Degraded = 2,
@@ -49,7 +49,7 @@ pub enum Status {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
-pub enum MagStatus {
+pub(crate) enum MagStatus {
     Missing = 0,
     Learning = 1,
     Ready = 2,
@@ -57,20 +57,20 @@ pub enum MagStatus {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Orientation {
-    pub roll_deg: f32,
-    pub pitch_deg: f32,
+pub(crate) struct Orientation {
+    pub(crate) roll_deg: f32,
+    pub(crate) pitch_deg: f32,
     /// Magnetometer-corrected magnetic heading when BMM150 data is healthy.
     /// No magnetic-declination correction is applied, so this is magnetic yaw.
-    pub yaw_deg: f32,
+    pub(crate) yaw_deg: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Snapshot {
-    pub revision: u32,
-    pub status: Status,
-    pub orientation: Orientation,
-    pub mag_status: MagStatus,
-    pub mag_field_ut: f32,
-    pub mag_calibration_percent: u8,
+pub(crate) struct Snapshot {
+    pub(crate) revision: u32,
+    pub(crate) status: Status,
+    pub(crate) orientation: Orientation,
+    pub(crate) mag_status: MagStatus,
+    pub(crate) mag_field_ut: f32,
+    pub(crate) mag_calibration_percent: u8,
 }

@@ -15,7 +15,7 @@ use esp_radio::{
 };
 use static_cell::StaticCell;
 
-use crate::diagnostics;
+use crate::support::diagnostics;
 
 use super::{
     Config, MacAddress, Resources, RssiDbm,
@@ -51,7 +51,7 @@ fn physical_device_id() -> protocol::DeviceId {
 ///
 /// Initialization failure is reported as a network fault instead of panicking
 /// the rest of the firmware, so audio/IMU/UI can keep running for diagnostics.
-pub fn start(spawner: &Spawner, resources: Resources, config: Config, runtime: Runtime) {
+pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, runtime: Runtime) {
     let local_id = physical_device_id();
     critical_section::with(|cs| {
         *STATE.borrow(cs).borrow_mut() = Some(NetworkState::new(local_id, config));

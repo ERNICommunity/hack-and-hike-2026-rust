@@ -2,7 +2,7 @@
 
 use esp_hal::{Async, i2s::master::I2sTx};
 
-use crate::diagnostics;
+use crate::support::diagnostics;
 
 use super::{
     PlaybackSettings,

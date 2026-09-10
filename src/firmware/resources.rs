@@ -10,26 +10,29 @@
 //! radio. Touch and IMU intentionally do not have independent raw-I2C handles
 //! because both consume the shared CPU1-local `SystemI2cBus`.
 
-use crate::{audio, camera, display, network, system_i2c};
+use crate::{
+    platform::i2c as system_i2c,
+    services::{audio, camera, display, network},
+};
 
 /// Complete raw-hardware ownership split created during bootstrap.
-pub struct RuntimeResources {
-    pub cpu0: Cpu0Resources,
-    pub cpu1: Cpu1Resources,
+pub(crate) struct RuntimeResources {
+    pub(crate) cpu0: Cpu0Resources,
+    pub(crate) cpu1: Cpu1Resources,
 }
 
 /// Raw peripherals that stay on CPU0.
-pub struct Cpu0Resources {
-    pub display: display::Resources,
-    pub camera: camera::Resources,
+pub(crate) struct Cpu0Resources {
+    pub(crate) display: display::Resources,
+    pub(crate) camera: camera::Resources,
 }
 
 /// Raw peripherals moved into the CPU1 service executor.
 ///
 /// Destructuring this value in bootstrap makes the ownership transfer explicit:
 /// the display/camera side cannot retain the Wi-Fi/I2S/runtime-I2C peripherals.
-pub struct Cpu1Resources {
-    pub system_i2c: system_i2c::Resources<'static>,
-    pub audio: audio::Resources,
-    pub network: network::Resources,
+pub(crate) struct Cpu1Resources {
+    pub(crate) system_i2c: system_i2c::Resources<'static>,
+    pub(crate) audio: audio::Resources,
+    pub(crate) network: network::Resources,
 }

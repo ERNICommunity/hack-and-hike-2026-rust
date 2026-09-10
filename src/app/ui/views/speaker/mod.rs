@@ -13,10 +13,12 @@ use embedded_graphics::{
 use embedded_gui::prelude::*;
 
 use crate::{
-    audio::{PitchSemitones, TempoBpm},
-    data_plane,
-    display::Display,
-    models::SpeakerDisplay,
+    app::model::SpeakerDisplay,
+    services::{
+        audio::{PitchSemitones, TempoBpm},
+        display::Display,
+    },
+    support::memory::data_plane,
 };
 
 use super::super::{
@@ -68,7 +70,7 @@ pub(super) enum Action {
     SetPitch(PitchSemitones),
 }
 
-pub(crate) struct View {
+pub(super) struct View {
     gui: &'static mut Context,
     tempo_widget: WidgetId,
     pitch_widget: WidgetId,
@@ -78,7 +80,7 @@ pub(crate) struct View {
 }
 
 impl View {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SpeakerApp::build(gui)
             .expect("speaker KDL exceeds embedded-gui fixed capacities");
@@ -121,7 +123,7 @@ impl View {
         }
     }
 
-    pub(crate) fn sync(&mut self, state: SpeakerDisplay) {
+    pub(super) fn sync(&mut self, state: SpeakerDisplay) {
         self.current = state;
         let tempo = f32::from(state.tempo.get());
         if self.gui.slider_value(self.tempo_widget) != Some(tempo) {
@@ -138,7 +140,7 @@ impl View {
         drain_events(self.gui);
     }
 
-    pub(crate) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+    pub(super) fn present(&mut self, surface: &mut GuiSurface, display: &mut Display) {
         let geometry = self.geometry;
         let state = self.current;
         surface.present_with_overlay(display, self.gui, move |frame| {
@@ -146,7 +148,7 @@ impl View {
         });
     }
 
-    pub(crate) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Action> {
+    pub(super) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Action> {
         let state = match pointer.phase {
             PointerPhase::Pressed => PointerState::Pressed,
             PointerPhase::Moved => PointerState::Moved,

@@ -2,7 +2,7 @@
 
 use embassy_time::{Duration, Timer};
 
-use crate::{board, diagnostics, system_i2c::SystemI2cBus};
+use crate::{platform::{board, i2c::SystemI2cBus}, support::diagnostics};
 
 use super::{TouchEdge, TouchPoint, channels::Runtime};
 

@@ -2,12 +2,12 @@
 
 use embassy_time::{Duration, Instant};
 
-use crate::{data_plane, logger};
+use crate::support::{logging, memory::data_plane};
 
 const LOG_REFRESH: Duration = Duration::from_millis(100);
 
 pub(super) struct Model {
-    input: logger::Input,
+    input: logging::Input,
     bytes: data_plane::FixedPsramBuffer<u8>,
     len: usize,
     revision: u32,
@@ -16,10 +16,10 @@ pub(super) struct Model {
 }
 
 impl Model {
-    pub(super) fn new(input: logger::Input) -> Self {
+    pub(super) fn new(input: logging::Input) -> Self {
         Self {
             input,
-            bytes: data_plane::FixedPsramBuffer::filled(logger::HISTORY_BYTES, 0),
+            bytes: data_plane::FixedPsramBuffer::filled(logging::HISTORY_BYTES, 0),
             len: 0,
             revision: u32::MAX,
             last_check: Instant::now(),

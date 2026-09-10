@@ -4,10 +4,10 @@ use core::fmt::Write;
 use critical_section::Mutex;
 use log::{LevelFilter, Metadata, Record};
 
-use crate::data_plane::PsramByteRing;
+use crate::support::memory::data_plane::PsramByteRing;
 
 /// Maximum number of rows retained by the on-device log model.
-pub const MAX_LOG_ROWS: usize = 64;
+pub(crate) const MAX_LOG_ROWS: usize = 64;
 
 /// Fixed stack budget for formatting one log record.
 ///
@@ -20,7 +20,7 @@ const LOG_RECORD_BYTES: usize = 512;
 /// this; this constant only sizes the byte ring from the row-count policy.
 const LOG_BYTES_PER_ROW_BUDGET: usize = 256;
 
-pub const HISTORY_BYTES: usize = MAX_LOG_ROWS * LOG_BYTES_PER_ROW_BUDGET;
+pub(crate) const HISTORY_BYTES: usize = MAX_LOG_ROWS * LOG_BYTES_PER_ROW_BUDGET;
 const SNAPSHOT_CHUNK_BYTES: usize = 512;
 const TRUNCATION_SUFFIX: &str = "...\n";
 
@@ -63,12 +63,12 @@ impl Service {
 
 static SERVICE: Service = Service::new();
 
-pub struct Input {
+pub(crate) struct Input {
     service: &'static Service,
 }
 
 impl Input {
-    pub fn revision(&self) -> u32 {
+    pub(crate) fn revision(&self) -> u32 {
         critical_section::with(|cs| {
             self.service
                 .store
@@ -82,7 +82,7 @@ impl Input {
     /// Copy one consistent log-history revision into `out` using short critical
     /// sections. If a writer changes the ring while the snapshot is in progress,
     /// return `None` and let the UI retry on its next refresh tick.
-    pub fn snapshot<'a>(&mut self, out: &'a mut [u8]) -> Option<(&'a str, u32)> {
+    pub(crate) fn snapshot<'a>(&mut self, out: &'a mut [u8]) -> Option<(&'a str, u32)> {
         let (len, revision) = critical_section::with(|cs| {
             let store = self.service.store.borrow(cs).borrow();
             let store = store.as_ref()?;
@@ -123,7 +123,7 @@ impl Input {
     }
 }
 
-pub struct Logger;
+struct Logger;
 
 impl log::Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
@@ -166,13 +166,13 @@ impl log::Log for Logger {
 
 static LOGGER: Logger = Logger;
 
-pub fn init(level: LevelFilter) {
+pub(crate) fn init(level: LevelFilter) {
     log::set_logger(&LOGGER)
         .map(|()| log::set_max_level(level))
         .expect("Failed to initialize logger");
 }
 
-pub fn enable_psram_history() -> Input {
+pub(crate) fn enable_psram_history() -> Input {
     let store = LogStore::new();
 
     critical_section::with(|cs| {
