@@ -12,7 +12,7 @@ use super::common;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/ui/views/log/log.kdl");
+    embedded_gui::include_gui!("src/app/ui/views/log/log.kdl");
 }
 
 const NODE_CAPACITY: usize = 6;

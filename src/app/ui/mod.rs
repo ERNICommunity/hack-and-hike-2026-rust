@@ -7,6 +7,7 @@
 mod design;
 mod gui;
 mod navigation;
+pub(crate) mod theme;
 mod views;
 
 use embassy_time::Instant;

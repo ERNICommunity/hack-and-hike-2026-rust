@@ -5,6 +5,7 @@
 //! before this module is initialized. The display boundary deliberately knows
 //! nothing about views, navigation, text, sensors, or presentation semantics.
 
+pub(crate) mod brightness;
 mod transport;
 
 use esp_hal::{

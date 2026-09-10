@@ -18,7 +18,7 @@ use super::common;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/ui/views/imu/imu.kdl");
+    embedded_gui::include_gui!("src/app/ui/views/imu/imu.kdl");
 }
 
 const NODE_CAPACITY: usize = 8;
