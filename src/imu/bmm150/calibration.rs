@@ -39,15 +39,16 @@ const ORIGIN_WARMUP_SAMPLES: u32 = 60;
 const ORIGIN_MIN_SPAN_UT: f32 = 20.0;
 
 // Divide the sphere into six dominant-axis faces, each split into four
-// quadrants. Requiring many of these 24 sectors is substantially stronger than
-// checking only independent X/Y/Z extrema, while remaining tiny and allocation
-// free. Samples in a saturated sector are ignored by the least-squares history
-// so lingering in one pose cannot overwhelm rarer orientations.
+// quadrants. Twelve well-distributed sectors plus all six +/-axis faces are
+// enough to condition a nine-parameter ellipsoid; demanding 18/24 sectors made
+// calibration unnecessarily hard to complete on real hardware. A fresh-sample
+// validation phase still has to accept every provisional fit before it can be
+// used for heading.
 const DIRECTION_BIN_COUNT: usize = 24;
-const MIN_DIRECTION_BINS: u32 = 18;
+const MIN_DIRECTION_BINS: u32 = 12;
 const MIN_DIRECTION_FACES: u32 = 6;
 const MAX_SAMPLES_PER_DIRECTION_BIN: u8 = 32;
-const CALIBRATION_MIN_FIT_SAMPLES: u32 = 180;
+const CALIBRATION_MIN_FIT_SAMPLES: u32 = 144;
 const REFIT_INTERVAL_SAMPLES: u16 = 24;
 const MAX_FAILED_FITS_BEFORE_RESTART: u8 = 6;
 
@@ -193,11 +194,15 @@ impl Calibration {
             return;
         }
 
-        let origin = self.fit_origin_ut.unwrap_or([0.0; 3]);
-        let direction_bin = direction_bin(field_ut, origin);
+        // The fit origin stays fixed for numerical conditioning, but coverage
+        // classification follows the evolving extrema midpoint. The early
+        // warm-up midpoint can be biased if the user has not yet explored the
+        // opposite side of the field sphere; freezing that midpoint for sector
+        // classification was the main reason real devices could park near 70%.
+        let direction_bin = direction_bin(field_ut, self.coverage_origin());
 
         if self.candidate.is_some() {
-            self.validate_candidate(field_ut, direction_bin);
+            self.validate_candidate(field_ut);
             if self.model.is_some() || self.fit_origin_ut.is_none() {
                 return;
             }
@@ -319,6 +324,14 @@ impl Calibration {
             && bit_count_u8(self.direction_faces) >= MIN_DIRECTION_FACES
     }
 
+    fn coverage_origin(&self) -> [f32; 3] {
+        [
+            0.5 * (self.min[0] + self.max[0]),
+            0.5 * (self.min[1] + self.max[1]),
+            0.5 * (self.min[2] + self.max[2]),
+        ]
+    }
+
     fn minimum_span(&self) -> f32 {
         if self.samples == 0 {
             return 0.0;
@@ -329,11 +342,15 @@ impl Calibration {
         )
     }
 
-    fn validate_candidate(&mut self, field_ut: [f32; 3], direction_bin: usize) {
+    fn validate_candidate(&mut self, field_ut: [f32; 3]) {
         let Some(mut candidate) = self.candidate else {
             return;
         };
 
+        // Validation diversity is measured around the fitted hard-iron center,
+        // which is a better physical reference than either the warm-up or the
+        // evolving extrema midpoint.
+        let direction_bin = direction_bin(field_ut, candidate.model.center_ut);
         candidate.samples = candidate.samples.saturating_add(1);
         candidate.direction_bins |= 1u32 << direction_bin;
 
