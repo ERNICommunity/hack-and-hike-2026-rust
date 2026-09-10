@@ -1,10 +1,6 @@
-//! ESP-NOW-independent peer tracking and network state transitions.
+//! Runtime-independent peer tracking and network state transitions.
 
-use embassy_time::Instant;
-
-use crate::support::diagnostics;
-
-use super::{Config, MAX_PEERS, PeerSnapshot, RssiDbm, Snapshot, Status, protocol};
+use super::{Channel, MAX_PEERS, PeerSnapshot, RssiDbm, Snapshot, Status, protocol};
 
 #[derive(Clone, Copy)]
 struct PeerState {
@@ -14,11 +10,17 @@ struct PeerState {
     rx_packets: u32,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ReceiveOutcome {
+    pub(super) is_new: bool,
+    pub(super) evicted: bool,
+}
+
 pub(super) struct NetworkState {
     revision: u32,
     status: Status,
     local_id: protocol::DeviceId,
-    channel: super::Channel,
+    channel: Channel,
     peer_timeout_ms: u64,
     next_sequence: u32,
     peers: [Option<PeerState>; MAX_PEERS],
@@ -30,13 +32,17 @@ pub(super) struct NetworkState {
 }
 
 impl NetworkState {
-    pub(super) fn new(local_id: protocol::DeviceId, config: Config) -> Self {
+    pub(super) fn new(
+        local_id: protocol::DeviceId,
+        channel: Channel,
+        peer_timeout_ms: u64,
+    ) -> Self {
         Self {
             revision: 0,
             status: Status::Starting,
             local_id,
-            channel: config.channel,
-            peer_timeout_ms: config.peer_timeout.as_millis(),
+            channel,
+            peer_timeout_ms,
             next_sequence: 1,
             peers: [None; MAX_PEERS],
             tx_packets: 0,
@@ -61,10 +67,10 @@ impl NetworkState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    pub(super) fn next_beacon(&mut self, now: Instant) -> protocol::Packet {
+    pub(super) fn next_beacon(&mut self, now_ms: u64) -> protocol::Packet {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
-        protocol::Packet::beacon(self.local_id, sequence, now.as_millis() as u32)
+        protocol::Packet::beacon(self.local_id, sequence, now_ms as u32)
     }
 
     pub(super) fn record_send_ok(&mut self) {
@@ -86,10 +92,9 @@ impl NetworkState {
         &mut self,
         packet: protocol::Packet,
         rssi_dbm: RssiDbm,
-        now: Instant,
-    ) -> bool {
+        now_ms: u64,
+    ) -> ReceiveOutcome {
         self.rx_packets = self.rx_packets.wrapping_add(1);
-        let now_ms = now.as_millis();
 
         if let Some(peer) = self
             .peers
@@ -101,10 +106,13 @@ impl NetworkState {
             peer.last_seen_ms = now_ms;
             peer.rx_packets = peer.rx_packets.wrapping_add(1);
             self.bump_revision();
-            return false;
+            return ReceiveOutcome {
+                is_new: false,
+                evicted: false,
+            };
         }
 
-        let index = self.slot_for_new_peer();
+        let (index, evicted) = self.slot_for_new_peer();
         self.peers[index] = Some(PeerState {
             device_id: packet.device_id,
             rssi_dbm,
@@ -112,16 +120,19 @@ impl NetworkState {
             rx_packets: 1,
         });
         self.bump_revision();
-        true
+        ReceiveOutcome {
+            is_new: true,
+            evicted,
+        }
     }
 
-    fn slot_for_new_peer(&mut self) -> usize {
+    fn slot_for_new_peer(&mut self) -> (usize, bool) {
         let mut oldest_index = 0usize;
         let mut oldest_seen = u64::MAX;
 
         for (index, peer) in self.peers.iter().enumerate() {
             let Some(peer) = peer else {
-                return index;
+                return (index, false);
             };
             if peer.last_seen_ms < oldest_seen {
                 oldest_seen = peer.last_seen_ms;
@@ -130,12 +141,10 @@ impl NetworkState {
         }
 
         self.peer_evictions = self.peer_evictions.wrapping_add(1);
-        diagnostics::record_network_peer_eviction();
-        oldest_index
+        (oldest_index, true)
     }
 
-    fn expire_peers(&mut self, now: Instant) {
-        let now_ms = now.as_millis();
+    fn expire_peers(&mut self, now_ms: u64) {
         let mut changed = false;
         for peer in &mut self.peers {
             if peer
@@ -151,9 +160,8 @@ impl NetworkState {
         }
     }
 
-    pub(super) fn snapshot(&mut self, now: Instant) -> Snapshot {
-        self.expire_peers(now);
-        let now_ms = now.as_millis();
+    pub(super) fn snapshot(&mut self, now_ms: u64) -> Snapshot {
+        self.expire_peers(now_ms);
         let peer_count = self.peers.iter().flatten().count();
         let mut peers = [None; MAX_PEERS];
 
