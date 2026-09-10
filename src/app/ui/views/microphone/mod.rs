@@ -16,7 +16,7 @@ mod waveform;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/ui/views/microphone/microphone.kdl");
+    embedded_gui::include_gui!("src/app/ui/views/microphone/microphone.kdl");
 }
 
 const NODE_CAPACITY: usize = 12;

@@ -7,28 +7,22 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-mod audio;
-mod board;
-mod camera;
-mod data_plane;
-mod diagnostics;
-mod display;
-mod display_control;
-mod imu;
-mod logger;
-mod memory;
-mod models;
-mod network;
-mod protocol;
-mod resources;
-mod service_inputs;
-mod system_i2c;
-mod theme;
-mod touch;
-mod ui;
-mod waveform;
+mod app;
+mod firmware;
+mod platform;
+mod services;
+mod support;
 
 extern crate alloc;
+
+use app::{model as models, ui};
+use app::{model::waveform, ui::theme};
+use firmware::{resources, service_inputs};
+use platform::{board, i2c as system_i2c};
+use services::{audio, camera, display, imu, network, touch};
+use services::{display::brightness as display_control, network::protocol};
+use support::memory::data_plane;
+use support::{diagnostics, logging as logger, memory};
 
 use ::log::{info, warn};
 use embassy_executor::Spawner;

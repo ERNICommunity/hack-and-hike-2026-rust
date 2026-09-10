@@ -27,7 +27,7 @@ use super::common;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/ui/views/speaker/speaker.kdl");
+    embedded_gui::include_gui!("src/app/ui/views/speaker/speaker.kdl");
 }
 
 const NODE_CAPACITY: usize = 16;

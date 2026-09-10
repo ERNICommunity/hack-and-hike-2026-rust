@@ -16,7 +16,7 @@ use super::common;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/ui/views/network/network.kdl");
+    embedded_gui::include_gui!("src/app/ui/views/network/network.kdl");
 }
 
 const NODE_CAPACITY: usize = 8;

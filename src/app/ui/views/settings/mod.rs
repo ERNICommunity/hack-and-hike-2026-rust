@@ -25,7 +25,7 @@ use super::common;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/ui/views/settings/settings.kdl");
+    embedded_gui::include_gui!("src/app/ui/views/settings/settings.kdl");
 }
 
 const NODE_CAPACITY: usize = 16;
