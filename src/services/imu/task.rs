@@ -7,9 +7,9 @@ use crate::platform::i2c::SystemI2cBus;
 use super::{
     Config, DEFAULT_FUSION_HZ, DEFAULT_MAG_HZ, DEFAULT_SENSOR_HZ, MagStatus, Orientation, Status,
     bmi270::{Bmi270, Error, GYRO_SENSOR_ODR_HZ},
-    bmm150,
     channels::{self, Runtime},
     fusion::{Fusion, GyroBias, max_abs3},
+    magnetic::MagneticState,
 };
 
 // BMI270 sensor time is a free-running 24-bit counter at exactly 25.6 kHz.
@@ -19,20 +19,7 @@ const MAX_FUSION_SAMPLE_GAP_TICKS: u32 = 1_280; // 50 ms
 const NOMINAL_FUSION_TICKS: u32 = 25_600 / DEFAULT_SENSOR_HZ; // 10 ms
 
 const INIT_RETRY: Duration = Duration::from_secs(1);
-const MAG_RETRY: Duration = Duration::from_secs(5);
-const MAG_STALE: Duration = Duration::from_secs(1);
 const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
-// Hard-iron offsets inside the CoreS3 enclosure can approach the BMM150's own
-// measurement limits. The sensor is specified around +/-1300 uT on X/Y and
-// +/-2500 uT on Z, so a valid 3-D vector can exceed 2000 uT in magnitude. Learn
-// those raw offsets first; only the calibrated vector is judged as geomagnetic.
-const MAG_LEARNING_MIN_UT: f32 = 5.0;
-const MAG_LEARNING_MAX_UT: f32 = 4000.0;
-// Recover quickly after good magnetic data returns, but require roughly one
-// second of consecutive bad 30 Hz samples before declaring the magnetometer
-// disturbed. Short magnitude dips should not make the whole IMU status flap.
-const MAG_GOOD_SAMPLES_TO_READY: u8 = 8;
-const MAG_BAD_SAMPLES_TO_DISTURBED: u8 = 30;
 // If a trusted gyro integration is known to have become incomplete (near full
 // scale or a long sample gap), explicitly mark absolute yaw untrusted.
 const GYRO_NEAR_SATURATION_DPS: f32 = 1950.0;
@@ -72,7 +59,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
             }
         }
 
-        let mut mag_trim = match sensor.initialize_bmm150().await {
+        let initial_mag_trim = match sensor.initialize_bmm150().await {
             Ok(trim) => {
                 ::log::info!(
                     "BMI270+BMM150 IMU started: host={} Hz, fusion={} Hz, gyro={} Hz, mag={} Hz",
@@ -93,43 +80,15 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
 
         let mut fusion = Fusion::new();
         let mut gyro_bias = GyroBias::new();
-        let mut mag_calibration = bmm150::Calibration::new();
-        let mut mag_status = if mag_trim.is_some() {
-            MagStatus::Learning
-        } else {
-            MagStatus::Missing
-        };
-        let mut mag_field_ut = 0.0f32;
-        let mut last_mag_frame: Option<[u8; 8]> = None;
-        let mut last_mag_update = Instant::now();
-        let mut last_mag_retry = Instant::now();
+        let now = Instant::now();
+        let mut magnetic = MagneticState::new(initial_mag_trim, now);
         let mut last_sensor_time: Option<u32> = None;
         let mut consecutive_errors = 0u8;
-        let mut mag_good_samples = 0u8;
-        let mut mag_bad_samples = 0u8;
 
         loop {
             Timer::after(config.sample_period).await;
             let now = Instant::now();
-
-            if mag_trim.is_none() && now - last_mag_retry >= MAG_RETRY {
-                last_mag_retry = now;
-                match sensor.initialize_bmm150().await {
-                    Ok(trim) => {
-                        ::log::info!("BMM150 recovered; 9-axis heading fusion enabled");
-                        mag_trim = Some(trim);
-                        mag_calibration = bmm150::Calibration::new();
-                        mag_status = MagStatus::Learning;
-                        mag_good_samples = 0;
-                        mag_bad_samples = 0;
-                        last_mag_frame = None;
-                        last_mag_update = now;
-                    }
-                    Err(_) => {
-                        sensor.disable_aux().await;
-                    }
-                }
-            }
+            magnetic.maintain(&sensor, now).await;
 
             match sensor.read_sample().await {
                 Ok(sample) => {
@@ -158,100 +117,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
                     }
 
                     let corrected_gyro = gyro_bias.correct(sample.accel_g, sample.gyro_dps);
-                    let mut magnetic_for_fusion: Option<[f32; 3]> = None;
-
-                    if let Some(trim) = mag_trim {
-                        let is_new_frame = last_mag_frame != Some(sample.mag_data);
-                        if is_new_frame {
-                            last_mag_frame = Some(sample.mag_data);
-                            if let Some(mag) = bmm150::compensate(sample.mag_data, trim) {
-                                if mag.data_ready {
-                                    last_mag_update = now;
-
-                                    let body_field = [
-                                        mag.field_ut[0],
-                                        -mag.field_ut[1],
-                                        -mag.field_ut[2],
-                                    ];
-                                    let raw_learnable = (MAG_LEARNING_MIN_UT..=MAG_LEARNING_MAX_UT)
-                                        .contains(&mag.field_strength_ut);
-
-                                    // Once calibration is accepted, freeze its model.
-                                    // The calibrator itself balances 3-D coverage and
-                                    // validates a candidate on fresh measurements.
-                                    let calibration_ready_before = mag_calibration.is_ready();
-                                    if !calibration_ready_before && raw_learnable {
-                                        mag_calibration.observe(body_field);
-                                    }
-
-                                    let calibration_ready = mag_calibration.is_ready();
-                                    let corrected_field = mag_calibration.apply(body_field);
-                                    mag_field_ut = if calibration_ready {
-                                        bmm150::vector_length(corrected_field)
-                                    } else {
-                                        mag.field_strength_ut
-                                    };
-
-                                    if !calibration_ready {
-                                        magnetic_for_fusion = None;
-                                        mag_good_samples = 0;
-                                        if raw_learnable {
-                                            mag_bad_samples = 0;
-                                            mag_status = MagStatus::Learning;
-                                        } else {
-                                            mag_bad_samples = mag_bad_samples.saturating_add(1);
-                                            if mag_bad_samples >= MAG_BAD_SAMPLES_TO_DISTURBED {
-                                                mag_status = MagStatus::Disturbed;
-                                            }
-                                        }
-                                    } else {
-                                        let field_good = (bmm150::GOOD_FIELD_MIN_UT
-                                            ..=bmm150::GOOD_FIELD_MAX_UT)
-                                            .contains(&mag_field_ut);
-
-                                        if field_good {
-                                            mag_good_samples = mag_good_samples.saturating_add(1);
-                                            mag_bad_samples = 0;
-                                            // A newly calibrated or recovered magnetometer
-                                            // must prove several consecutive good vectors
-                                            // before it is allowed to define magnetic north.
-                                            if mag_status == MagStatus::Ready
-                                                || mag_good_samples >= MAG_GOOD_SAMPLES_TO_READY
-                                            {
-                                                mag_status = MagStatus::Ready;
-                                                magnetic_for_fusion = Some(corrected_field);
-                                            }
-                                        } else {
-                                            // Reject the individual bad vector immediately
-                                            // from yaw fusion, but do not flap the whole IMU
-                                            // to DEGRADED unless the mismatch persists.
-                                            mag_bad_samples = mag_bad_samples.saturating_add(1);
-                                            mag_good_samples = 0;
-                                            if mag_bad_samples >= MAG_BAD_SAMPLES_TO_DISTURBED {
-                                                mag_status = MagStatus::Disturbed;
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                mag_bad_samples = mag_bad_samples.saturating_add(1);
-                                mag_good_samples = 0;
-                                if mag_bad_samples >= MAG_BAD_SAMPLES_TO_DISTURBED {
-                                    mag_status = MagStatus::Disturbed;
-                                }
-                            }
-                        }
-
-                        if now - last_mag_update >= MAG_STALE {
-                            mag_status = MagStatus::Missing;
-                            mag_good_samples = 0;
-                            mag_bad_samples = 0;
-                            magnetic_for_fusion = None;
-                        }
-                    } else {
-                        mag_status = MagStatus::Missing;
-                        magnetic_for_fusion = None;
-                    }
+                    let magnetic_for_fusion = magnetic.observe(sample.mag_data, now);
 
                     last_orientation = fusion.update(
                         sample.accel_g,
@@ -262,7 +128,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
                         config.yaw_alpha,
                     );
 
-                    let status = match mag_status {
+                    let status = match magnetic.status() {
                         MagStatus::Missing | MagStatus::Disturbed => Status::Degraded,
                         MagStatus::Learning | MagStatus::Ready => Status::Running,
                     };
@@ -271,9 +137,9 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
                         &mut revision,
                         status,
                         last_orientation,
-                        mag_status,
-                        mag_field_ut,
-                        mag_calibration.progress_percent(),
+                        magnetic.status(),
+                        magnetic.field_ut(),
+                        magnetic.calibration_percent(),
                     );
                 }
                 Err(_) => {
@@ -283,9 +149,9 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
                         &mut revision,
                         Status::Degraded,
                         last_orientation,
-                        mag_status,
-                        mag_field_ut,
-                        mag_calibration.progress_percent(),
+                        magnetic.status(),
+                        magnetic.field_ut(),
+                        magnetic.calibration_percent(),
                     );
 
                     if consecutive_errors >= MAX_CONSECUTIVE_READ_ERRORS {
@@ -298,9 +164,9 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
                             &mut revision,
                             Status::Fault,
                             last_orientation,
-                            mag_status,
-                            mag_field_ut,
-                            mag_calibration.progress_percent(),
+                            magnetic.status(),
+                            magnetic.field_ut(),
+                            magnetic.calibration_percent(),
                         );
                         Timer::after(Duration::from_millis(250)).await;
                         break;

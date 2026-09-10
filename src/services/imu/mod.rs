@@ -7,6 +7,7 @@ mod bmi270;
 mod bmm150;
 mod channels;
 mod fusion;
+mod magnetic;
 mod task;
 
 use embassy_time::Duration;
