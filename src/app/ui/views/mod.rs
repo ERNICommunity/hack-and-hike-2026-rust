@@ -1,9 +1,8 @@
-//! Semantic view ownership and dispatch.
+//! Semantic view ownership.
 //!
 //! Every screen owns a KDL-backed fixed-capacity context in its matching module.
-//! KDL is the single source of normal page geometry. View-specific overlays stay
-//! private to their semantic view; only genuinely reusable drawing primitives
-//! live in `common`.
+//! `Ui` decides which semantic view is active; this module only owns the concrete
+//! view objects and exposes view-specific operations.
 
 mod camera;
 mod common;
@@ -15,9 +14,8 @@ mod settings;
 mod speaker;
 
 use crate::{
-    app::model::{ImuDisplay, SettingsDisplay, SpeakerDisplay, ViewId, WaveformFrame},
+    app::model::{ImuDisplay, SettingsDisplay, SpeakerDisplay, WaveformFrame},
     services::{
-        audio::{PitchSemitones, TempoBpm},
         camera as camera_service,
         display::{BrightnessPercent, Display},
         network as network_service,
@@ -26,13 +24,7 @@ use crate::{
 
 use super::{gui::GuiSurface, navigation::ContentPointer};
 
-pub(super) enum Interaction {
-    SetBrightness(BrightnessPercent),
-    ToggleSpeakerPlayback,
-    PlaySpeakerOneShot,
-    SetSpeakerTempo(TempoBpm),
-    SetSpeakerPitch(PitchSemitones),
-}
+pub(super) use speaker::Action as SpeakerAction;
 
 pub(super) struct Views {
     network: network::View,
@@ -57,53 +49,42 @@ impl Views {
         }
     }
 
-    pub(super) fn present_shell(
-        &mut self,
-        view: ViewId,
-        surface: &mut GuiSurface,
-        display: &mut Display,
-        settings_display: Option<SettingsDisplay>,
-        speaker_display: Option<SpeakerDisplay>,
-    ) {
-        match view {
-            ViewId::Network => self.network.present_shell(surface, display),
-            ViewId::Imu => self.imu.present_shell(surface, display),
-            ViewId::Microphone => self.microphone.present_shell(surface, display),
-            ViewId::Speaker => self.speaker.present(
-                surface,
-                display,
-                speaker_display.expect("speaker state must be available when presenting Speaker"),
-            ),
-            ViewId::Camera => self.camera.present_shell(display),
-            ViewId::Settings => self.settings.present(
-                surface,
-                display,
-                settings_display
-                    .expect("settings state must be available when presenting Settings")
-                    .brightness,
-            ),
-            ViewId::Log => self.log.present_shell(surface, display),
-        }
+    pub(super) fn present_network_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+        self.network.present_shell(surface, display);
     }
 
-    pub(super) fn handle_pointer(
+    pub(super) fn present_imu_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+        self.imu.present_shell(surface, display);
+    }
+
+    pub(super) fn present_microphone_shell(
         &mut self,
-        view: ViewId,
+        surface: &mut GuiSurface,
+        display: &mut Display,
+    ) {
+        self.microphone.present_shell(surface, display);
+    }
+
+    pub(super) fn present_camera_shell(&self, display: &mut Display) {
+        self.camera.present_shell(display);
+    }
+
+    pub(super) fn present_log_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
+        self.log.present_shell(surface, display);
+    }
+
+    pub(super) fn handle_settings_pointer(
+        &mut self,
         pointer: ContentPointer,
-    ) -> Option<Interaction> {
-        match view {
-            ViewId::Settings => self
-                .settings
-                .handle_pointer(pointer)
-                .map(Interaction::SetBrightness),
-            ViewId::Speaker => self.speaker.handle_pointer(pointer).map(|action| match action {
-                speaker::Action::TogglePlayback => Interaction::ToggleSpeakerPlayback,
-                speaker::Action::PlayOneShot => Interaction::PlaySpeakerOneShot,
-                speaker::Action::SetTempo(tempo) => Interaction::SetSpeakerTempo(tempo),
-                speaker::Action::SetPitch(pitch) => Interaction::SetSpeakerPitch(pitch),
-            }),
-            _ => None,
-        }
+    ) -> Option<BrightnessPercent> {
+        self.settings.handle_pointer(pointer)
+    }
+
+    pub(super) fn handle_speaker_pointer(
+        &mut self,
+        pointer: ContentPointer,
+    ) -> Option<SpeakerAction> {
+        self.speaker.handle_pointer(pointer)
     }
 
     pub(super) fn present_network(
