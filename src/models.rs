@@ -17,7 +17,10 @@ use crate::{
 
 const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
-const IMU_UPDATE: Duration = Duration::from_millis(40);
+// Match the 100 Hz fusion publisher instead of imposing a separate 25 Hz UI
+// ceiling. The replace-latest input still collapses samples whenever rendering
+// is slower than acquisition, so CPU0 always consumes the freshest attitude.
+const IMU_UPDATE: Duration = Duration::from_millis(10);
 const NETWORK_UPDATE: Duration = Duration::from_millis(200);
 const LOG_REFRESH: Duration = Duration::from_millis(100);
 

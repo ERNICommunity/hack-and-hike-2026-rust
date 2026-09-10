@@ -53,4 +53,4 @@ opt-level = "s"
 codegen-units = 1
 debug = false
 lto = 'fat'
-opt-level = 'z'
+opt-level = 3

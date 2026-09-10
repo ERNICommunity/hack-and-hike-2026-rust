@@ -8,6 +8,7 @@
 use core::fmt::Write as _;
 
 use arrayvec::ArrayString;
+use embedded_graphics::{pixelcolor::Rgb565, prelude::Point};
 use embedded_gui::prelude::*;
 
 use crate::{data_plane, display::Display, imu as sensor, models::ImuDisplay};
@@ -23,6 +24,8 @@ mod generated {
 const NODE_CAPACITY: usize = 8;
 const TEXT_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 2;
+const VIEW_WIDTH: i32 = 276;
+const VIEW_HEIGHT: i32 = 240;
 
 const TAN_SCALE: i32 = 1024;
 const TAN_STEP_DEG: i32 = 5;
@@ -47,6 +50,12 @@ const GRID_FAR_EXTENT: f32 = 384.0;
 const GRID_EXTENT: f32 = 1024.0;
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 const PERSPECTIVE_NEAR_Z: f32 = 0.45;
+
+// Keep the preferred rectilinear renderer, but narrow only the horizontal field
+// of view to reduce its unavoidable sec(theta)^2 yaw-speed increase toward the
+// edges. tan(50deg) gives a 100deg horizontal FOV at any viewport width. Roll is
+// applied after projection, preserving the preferred horizon angle exactly.
+const HORIZONTAL_HALF_FOV_TAN: f32 = 1.1917536;
 
 // Compass labels stay at the original 256-unit world radius. Each glyph is a
 // small vector sign standing on the ground plane and tangent to that compass
@@ -96,6 +105,44 @@ const GLYPH_W_STROKES: [[f32; 4]; 4] = [
     [3.2, 0.0, 4.0, 7.0],
 ];
 
+// Exact copies of the previous fade bands indexed by rounded distance from the
+// horizon. A lookup avoids the old 10-deep threshold chain for every grid pixel.
+const GRID_FADE_LAST: usize = 56;
+const SKY_GRID_FADE: [Rgb565; 57] = [
+    Rgb565::new(0, 40, 26), Rgb565::new(0, 40, 26), Rgb565::new(0, 39, 26), Rgb565::new(0, 39, 26),
+    Rgb565::new(0, 37, 25), Rgb565::new(0, 37, 25), Rgb565::new(0, 37, 25), Rgb565::new(0, 34, 24),
+    Rgb565::new(0, 34, 24), Rgb565::new(0, 34, 24), Rgb565::new(0, 34, 24), Rgb565::new(0, 31, 23),
+    Rgb565::new(0, 31, 23), Rgb565::new(0, 31, 23), Rgb565::new(0, 31, 23), Rgb565::new(0, 31, 23),
+    Rgb565::new(0, 28, 21), Rgb565::new(0, 28, 21), Rgb565::new(0, 28, 21), Rgb565::new(0, 28, 21),
+    Rgb565::new(0, 28, 21), Rgb565::new(0, 28, 21), Rgb565::new(0, 25, 20), Rgb565::new(0, 25, 20),
+    Rgb565::new(0, 25, 20), Rgb565::new(0, 25, 20), Rgb565::new(0, 25, 20), Rgb565::new(0, 25, 20),
+    Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19), Rgb565::new(0, 22, 19),
+    Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17), Rgb565::new(0, 19, 17),
+    Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16), Rgb565::new(0, 16, 16),
+    Rgb565::new(0, 13, 15),
+];
+const GROUND_GRID_FADE: [Rgb565; 57] = [
+    Rgb565::new(11, 23, 11), Rgb565::new(11, 23, 11), Rgb565::new(12, 24, 12), Rgb565::new(12, 24, 12),
+    Rgb565::new(13, 25, 13), Rgb565::new(13, 25, 13), Rgb565::new(13, 25, 13), Rgb565::new(14, 27, 14),
+    Rgb565::new(14, 27, 14), Rgb565::new(14, 27, 14), Rgb565::new(14, 27, 14), Rgb565::new(15, 29, 15),
+    Rgb565::new(15, 29, 15), Rgb565::new(15, 29, 15), Rgb565::new(15, 29, 15), Rgb565::new(15, 29, 15),
+    Rgb565::new(16, 31, 16), Rgb565::new(16, 31, 16), Rgb565::new(16, 31, 16), Rgb565::new(16, 31, 16),
+    Rgb565::new(16, 31, 16), Rgb565::new(16, 31, 16), Rgb565::new(17, 33, 17), Rgb565::new(17, 33, 17),
+    Rgb565::new(17, 33, 17), Rgb565::new(17, 33, 17), Rgb565::new(17, 33, 17), Rgb565::new(17, 33, 17),
+    Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18),
+    Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18), Rgb565::new(18, 35, 18),
+    Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20),
+    Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20), Rgb565::new(20, 38, 20),
+    Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21),
+    Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21), Rgb565::new(21, 41, 21),
+    Rgb565::new(22, 44, 22),
+];
+
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 type ScreenLine = ((i32, i32), (i32, i32));
 
@@ -106,16 +153,25 @@ struct Geometry {
 }
 
 #[derive(Clone, Copy)]
+struct DisplayAttitude {
+    roll_deg: f32,
+    pitch_deg: f32,
+    yaw_deg: i32,
+}
+
+#[derive(Clone, Copy)]
 struct PerspectiveCamera {
     center_x: i32,
     center_y: i32,
-    focal: f32,
+    focal_x: f32,
+    focal_y: f32,
     sin_yaw: f32,
     cos_yaw: f32,
     sin_pitch: f32,
     cos_pitch: f32,
     sin_roll: f32,
     cos_roll: f32,
+    pitch_offset: i32,
     // Q10 coefficients for the displayed horizon's implicit line:
     // a*x + b*y + c = 0. Perpendicular screen distance from this line is a
     // cheap proxy for inverse world depth on the sky/ground planes.
@@ -125,26 +181,25 @@ struct PerspectiveCamera {
 }
 
 pub(crate) struct View {
-    gui: &'static mut Context,
     geometry: Geometry,
 }
 
 impl View {
     pub(crate) fn new() -> Self {
-        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
+        let gui = data_plane::leaked_value_with(|| Context::new(Rect::new(0, 0, VIEW_WIDTH as u32, VIEW_HEIGHT as u32)));
         let app = generated::ImuApp::build(gui).expect("IMU KDL exceeds embedded-gui capacities");
         Self {
             geometry: Geometry {
                 header: required_rect(gui, app.widgets.header_slot, "IMU header"),
                 attitude: required_rect(gui, app.widgets.attitude_slot, "IMU attitude"),
             },
-            gui,
         }
     }
 
     pub(crate) fn present_shell(&mut self, surface: &mut GuiSurface, display: &mut Display) {
         let geometry = self.geometry;
-        surface.present_with_overlay(display, self.gui, move |frame| {
+        surface.present_overlay_only(display, move |frame| {
+            draw_view_gutters(frame, geometry);
             draw_shell(frame, geometry);
         });
     }
@@ -156,10 +211,45 @@ impl View {
         imu: &ImuDisplay,
     ) {
         let geometry = self.geometry;
-        surface.present_with_overlay(display, self.gui, move |frame| {
-            draw_header(frame, geometry.header, imu);
-            draw_attitude(frame, geometry.attitude, imu);
+        let attitude = display_attitude(imu);
+        surface.present_overlay_only(display, move |frame| {
+            draw_view_gutters(frame, geometry);
+            draw_header(frame, geometry.header, imu, attitude);
+            draw_attitude(frame, geometry.attitude, attitude);
         });
+    }
+}
+
+fn draw_view_gutters(frame: &mut GuiFramebuffer, geometry: Geometry) {
+    let white = common::white();
+    let header_y = geometry.header.y.clamp(0, VIEW_HEIGHT);
+    let header_bottom = (geometry.header.y + geometry.header.h as i32).clamp(0, VIEW_HEIGHT);
+    let attitude_y = geometry.attitude.y.clamp(0, VIEW_HEIGHT);
+    let attitude_bottom = (geometry.attitude.y + geometry.attitude.h as i32).clamp(0, VIEW_HEIGHT);
+
+    fill_band(frame, 0, 0, VIEW_WIDTH, header_y, white);
+    fill_band(frame, 0, header_bottom, VIEW_WIDTH, attitude_y - header_bottom, white);
+    fill_band(frame, 0, attitude_bottom, VIEW_WIDTH, VIEW_HEIGHT - attitude_bottom, white);
+
+    let header_right = (geometry.header.x + geometry.header.w as i32).clamp(0, VIEW_WIDTH);
+    fill_band(frame, 0, header_y, geometry.header.x.max(0), geometry.header.h as i32, white);
+    fill_band(frame, header_right, header_y, VIEW_WIDTH - header_right, geometry.header.h as i32, white);
+
+    let attitude_right = (geometry.attitude.x + geometry.attitude.w as i32).clamp(0, VIEW_WIDTH);
+    fill_band(frame, 0, attitude_y, geometry.attitude.x.max(0), geometry.attitude.h as i32, white);
+    fill_band(frame, attitude_right, attitude_y, VIEW_WIDTH - attitude_right, geometry.attitude.h as i32, white);
+}
+
+fn fill_band(
+    frame: &mut GuiFramebuffer,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    color: Rgb565,
+) {
+    if width > 0 && height > 0 {
+        common::fill_box(frame, x, y, width as u32, height as u32, color);
     }
 }
 
@@ -183,7 +273,12 @@ fn draw_shell(frame: &mut GuiFramebuffer, geometry: Geometry) {
     draw_border(frame, geometry.attitude);
 }
 
-fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
+fn draw_header(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    imu: &ImuDisplay,
+    attitude: DisplayAttitude,
+) {
     common::fill_rect(frame, area, common::dark_blue());
     common::draw_title(frame, "IMU", area.x + 6, area.y + 3, common::white());
     common::draw_body(
@@ -215,16 +310,20 @@ fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         common::light_gray(),
     );
 
-    let (roll_deg, pitch_deg) = display_roll_pitch(imu);
-    let yaw_deg = display_yaw(imu);
     let first_x = area.x + 78;
     let column_width = ((area.w as i32 - 78) / 3).max(1);
-    draw_header_value(frame, "ROLL", roll_deg, first_x, area.y);
-    draw_header_value(frame, "PITCH", pitch_deg, first_x + column_width, area.y);
+    draw_header_value(frame, "ROLL", round_degrees(attitude.roll_deg), first_x, area.y);
+    draw_header_value(
+        frame,
+        "PITCH",
+        round_degrees(attitude.pitch_deg),
+        first_x + column_width,
+        area.y,
+    );
     draw_header_value(
         frame,
         "YAW",
-        yaw_deg,
+        attitude.yaw_deg,
         first_x + column_width * 2,
         area.y,
     );
@@ -237,33 +336,30 @@ fn draw_header_value(frame: &mut GuiFramebuffer, label: &str, degrees: i32, x: i
     common::draw_title(frame, value.as_str(), x, y + 22, common::white());
 }
 
-fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
+fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, attitude: DisplayAttitude) {
     let x0 = area.x;
     let y0 = area.y;
     let width = area.w as i32;
     let height = area.h as i32;
-    common::fill_rect(frame, area, common::light_blue());
-
-    let (display_roll, display_pitch) = display_roll_pitch_f32(imu);
-    let yaw_deg = display_yaw(imu);
-    let pitch = round_degrees(display_pitch).clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
     let center_x = width / 2;
     let center_y = height / 2;
-    let pitch_offset = project_angle(pitch, center_y);
-    let roll_radians = display_roll * DEG_TO_RAD;
-    let sin_roll = sin_approx(roll_radians);
-    let cos_roll = cos_approx(roll_radians);
+    let camera = perspective_camera(attitude, center_x, center_y);
 
-    for local_x in 0..width {
-        let x_delta = local_x - center_x;
-        if abs_f32(cos_roll) > HORIZON_VERTICAL_COS_EPSILON {
+    common::fill_rect(frame, area, common::light_blue());
+
+    if abs_f32(camera.cos_roll) > HORIZON_VERTICAL_COS_EPSILON {
+        // One reciprocal replaces a floating-point division for every column.
+        let inv_cos_roll = 1.0 / camera.cos_roll;
+        for local_x in 0..width {
+            let x_delta = local_x - center_x;
             let horizon = round_f32(
                 center_y as f32
-                    + (pitch_offset as f32 + sin_roll * x_delta as f32) / cos_roll,
+                    + (camera.pitch_offset as f32 + camera.sin_roll * x_delta as f32)
+                        * inv_cos_roll,
             )
             .clamp(0, height);
 
-            if cos_roll > 0.0 {
+            if camera.cos_roll > 0.0 {
                 if horizon < height {
                     common::vline(
                         frame,
@@ -282,8 +378,12 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
                     common::dark_gray(),
                 );
             }
-        } else {
-            let ground_side = -sin_roll * x_delta as f32 - pitch_offset as f32 >= 0.0;
+        }
+    } else {
+        for local_x in 0..width {
+            let x_delta = local_x - center_x;
+            let ground_side =
+                -camera.sin_roll * x_delta as f32 - camera.pitch_offset as f32 >= 0.0;
             if ground_side {
                 common::vline(
                     frame,
@@ -296,15 +396,7 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
         }
     }
 
-    draw_perspective_world(
-        frame,
-        area,
-        yaw_deg,
-        display_roll,
-        display_pitch,
-        center_x,
-        center_y,
-    );
+    draw_perspective_world(frame, area, camera);
 
     draw_border(frame, area);
     let cx = x0 + center_x;
@@ -316,28 +408,25 @@ fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay) {
     common::hline(frame, cx - 12, cy + 22, 24, common::white());
 }
 
-fn draw_perspective_world(
-    frame: &mut GuiFramebuffer,
-    area: Rect,
-    yaw_deg: i32,
-    roll_deg: f32,
-    pitch_deg: f32,
+fn perspective_camera(
+    attitude: DisplayAttitude,
     center_x: i32,
     center_y: i32,
-) {
-    let yaw = yaw_deg as f32 * DEG_TO_RAD;
-    let pitch = pitch_deg * DEG_TO_RAD;
-    let roll = roll_deg * DEG_TO_RAD;
+) -> PerspectiveCamera {
+    let yaw = attitude.yaw_deg as f32 * DEG_TO_RAD;
+    let pitch = attitude.pitch_deg * DEG_TO_RAD;
+    let roll = attitude.roll_deg * DEG_TO_RAD;
     let sin_yaw = sin_approx(yaw);
     let cos_yaw = cos_approx(yaw);
     let sin_pitch = sin_approx(pitch);
     let cos_pitch = cos_approx(pitch);
     let sin_roll = sin_approx(roll);
     let cos_roll = cos_approx(roll);
+    let (focal_x, focal_y) = perspective_focals(center_x, center_y);
 
     // Use the exact displayed horizon geometry for fading. This keeps the depth
     // cue attached to the attitude horizon even at high pitch/roll angles.
-    let visual_pitch = round_degrees(pitch_deg).clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
+    let visual_pitch = round_degrees(attitude.pitch_deg).clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
     let pitch_offset = project_angle(visual_pitch, center_y);
     let horizon_a_q10 = round_f32(-sin_roll * TAN_SCALE as f32);
     let horizon_b_q10 = round_f32(cos_roll * TAN_SCALE as f32);
@@ -348,21 +437,29 @@ fn draw_perspective_world(
             * TAN_SCALE as f32,
     );
 
-    let camera = PerspectiveCamera {
+    PerspectiveCamera {
         center_x,
         center_y,
-        focal: center_y.max(1) as f32,
+        focal_x,
+        focal_y,
         sin_yaw,
         cos_yaw,
         sin_pitch,
         cos_pitch,
         sin_roll,
         cos_roll,
+        pitch_offset,
         horizon_a_q10,
         horizon_b_q10,
         horizon_c_q10,
-    };
+    }
+}
 
+fn draw_perspective_world(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    camera: PerspectiveCamera,
+) {
     draw_world_grid_plane(frame, area, camera, PERSPECTIVE_PLANE_HEIGHT, true);
     draw_world_grid_plane(frame, area, camera, -PERSPECTIVE_PLANE_HEIGHT, false);
     draw_world_compass_labels(frame, area, camera);
@@ -431,6 +528,11 @@ fn draw_world_compass_labels(
         return;
     }
 
+    // Keep the preferred centered glyph width after narrowing horizontal FOV.
+    // Roll happens after perspective projection, so this ratio is independent
+    // of roll and costs only one division per frame.
+    let glyph_horizontal_focal_scale = camera.focal_y / camera.focal_x;
+
     for (label, unit_x, unit_z) in WORLD_COMPASS_LABELS {
         let anchor = [
             unit_x * COMPASS_LABEL_RADIUS,
@@ -453,9 +555,11 @@ fn draw_world_compass_labels(
         // horizontally and sec(theta) vertically under rectilinear projection.
         // Counter-scale only the glyph dimensions, not its anchor, so the label
         // keeps its true world direction and grid motion without looking closer
-        // as it approaches the edge of the viewport.
+        // as it approaches the edge of the viewport. The focal correction keeps
+        // the centered glyph width identical to the preferred baseline.
         let depth_scale = (anchor_camera[2] / centered_depth).clamp(0.2, 1.0);
-        let horizontal_scale = depth_scale * depth_scale;
+        let horizontal_scale =
+            depth_scale * depth_scale * glyph_horizontal_focal_scale;
         let vertical_scale = depth_scale;
 
         // Tangent points screen-right whenever this compass direction is in the
@@ -606,7 +710,7 @@ fn draw_solid_line_pixels(
     mut y0: i32,
     x1: i32,
     y1: i32,
-    color: embedded_graphics::pixelcolor::Rgb565,
+    color: Rgb565,
     width: u32,
 ) {
     let dx = (x1 - x0).abs();
@@ -615,16 +719,19 @@ fn draw_solid_line_pixels(
     let sy = if y0 < y1 { 1 } else { -1 };
     let mut error = dx + dy;
     let half = (width as i32) / 2;
+    let width_i32 = width as i32;
 
     loop {
-        common::fill_box(
-            frame,
-            area.x + x0 - half,
-            area.y + y0 - half,
-            width,
-            width,
-            color,
-        );
+        let pixel_x = area.x + x0 - half;
+        let pixel_y = area.y + y0 - half;
+        for offset_y in 0..width_i32 {
+            for offset_x in 0..width_i32 {
+                frame.set_color_at(
+                    Point::new(pixel_x + offset_x, pixel_y + offset_y),
+                    color,
+                );
+            }
+        }
         if x0 == x1 && y0 == y1 {
             break;
         }
@@ -673,11 +780,10 @@ fn world_to_camera(point: [f32; 3], camera: PerspectiveCamera) -> [f32; 3] {
     let pitched_y = camera.cos_pitch * point[1] - camera.sin_pitch * yaw_z;
     let pitched_z = camera.sin_pitch * point[1] + camera.cos_pitch * yaw_z;
 
-    [
-        camera.cos_roll * yaw_x + camera.sin_roll * pitched_y,
-        -camera.sin_roll * yaw_x + camera.cos_roll * pitched_y,
-        pitched_z,
-    ]
+    // Keep roll out of 3D camera space. Applying it after the anisotropic
+    // perspective projection preserves the exact roll angle of the preferred
+    // renderer while still allowing a narrower horizontal FOV.
+    [yaw_x, pitched_y, pitched_z]
 }
 
 fn clip_camera_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
@@ -697,9 +803,20 @@ fn project_camera_point(point: [f32; 3], camera: PerspectiveCamera) -> Option<(i
     if point[2] < PERSPECTIVE_NEAR_Z {
         return None;
     }
+
+    let unrolled_x = camera.focal_x * point[0] / point[2];
+    let unrolled_y = -camera.focal_y * point[1] / point[2];
     Some((
-        round_f32(camera.center_x as f32 + camera.focal * point[0] / point[2]),
-        round_f32(camera.center_y as f32 - camera.focal * point[1] / point[2]),
+        round_f32(
+            camera.center_x as f32
+                + camera.cos_roll * unrolled_x
+                - camera.sin_roll * unrolled_y,
+        ),
+        round_f32(
+            camera.center_y as f32
+                + camera.sin_roll * unrolled_x
+                + camera.cos_roll * unrolled_y,
+        ),
     ))
 }
 
@@ -796,11 +913,9 @@ fn outcode(x: i32, y: i32, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u8
     code
 }
 
-/// Rasterize with a long perspective fade toward the horizon. Distance is
-/// measured from the displayed horizon in integer Q10 pixels. Unlike the old
-/// screen-door fade, projected lines remain continuous all the way to the
-/// vanishing line; only their RGB565 contrast is reduced, so there is no empty
-/// band immediately above or below the horizon.
+/// Rasterize with the exact previous fade, but carry the horizon equation along
+/// the Bresenham walk. This turns two 64-bit multiplies per pixel into small
+/// 32-bit additions and writes the pixel straight to the framebuffer backend.
 fn draw_line_pixels(
     frame: &mut GuiFramebuffer,
     area: Rect,
@@ -816,11 +931,25 @@ fn draw_line_pixels(
     let dy = -(y1 - y0).abs();
     let sy = if y0 < y1 { 1 } else { -1 };
     let mut error = dx + dy;
+    let colors = if sky {
+        &SKY_GRID_FADE
+    } else {
+        &GROUND_GRID_FADE
+    };
+
+    // Screen-clipped coordinates keep this comfortably inside i32 even at the
+    // +/-80 degree pitch limit; no 64-bit arithmetic is needed in the hot loop.
+    let mut signed_q10 = camera.horizon_a_q10 * x0
+        + camera.horizon_b_q10 * y0
+        + camera.horizon_c_q10;
+    let step_x_q10 = camera.horizon_a_q10 * sx;
+    let step_y_q10 = camera.horizon_b_q10 * sy;
 
     loop {
-        let distance = horizon_distance_pixels(camera, x0, y0);
-        let color = grid_pixel_color(sky, distance);
-        common::fill_box(frame, area.x + x0, area.y + y0, 1, 1, color);
+        let distance = ((signed_q10.abs() + TAN_SCALE / 2) >> 10) as usize;
+        let color = colors[distance.min(GRID_FADE_LAST)];
+        frame.set_color_at(Point::new(area.x + x0, area.y + y0), color);
+
         if x0 == x1 && y0 == y1 {
             break;
         }
@@ -828,80 +957,17 @@ fn draw_line_pixels(
         if doubled >= dy {
             error += dy;
             x0 += sx;
+            signed_q10 += step_x_q10;
         }
         if doubled <= dx {
             error += dx;
             y0 += sy;
+            signed_q10 += step_y_q10;
         }
     }
 }
 
-fn horizon_distance_pixels(camera: PerspectiveCamera, x: i32, y: i32) -> i32 {
-    let signed_q10 = camera.horizon_a_q10 as i64 * x as i64
-        + camera.horizon_b_q10 as i64 * y as i64
-        + camera.horizon_c_q10 as i64;
-    ((signed_q10.abs() + (TAN_SCALE as i64 / 2)) / TAN_SCALE as i64) as i32
-}
-
-fn grid_pixel_color(
-    sky: bool,
-    distance: i32,
-) -> embedded_graphics::pixelcolor::Rgb565 {
-    use embedded_graphics::pixelcolor::Rgb565;
-
-    // Start fading much earlier than before. These RGB565 bands approximate a
-    // smooth blend from the grid color toward the actual plane background:
-    // sky dark-blue -> light-blue, ground light-gray -> dark-gray.
-    if sky {
-        if distance >= 56 {
-            common::dark_blue()
-        } else if distance >= 44 {
-            Rgb565::new(0, 16, 16)
-        } else if distance >= 36 {
-            Rgb565::new(0, 19, 17)
-        } else if distance >= 28 {
-            Rgb565::new(0, 22, 19)
-        } else if distance >= 22 {
-            Rgb565::new(0, 25, 20)
-        } else if distance >= 16 {
-            Rgb565::new(0, 28, 21)
-        } else if distance >= 11 {
-            Rgb565::new(0, 31, 23)
-        } else if distance >= 7 {
-            Rgb565::new(0, 34, 24)
-        } else if distance >= 4 {
-            Rgb565::new(0, 37, 25)
-        } else if distance >= 2 {
-            Rgb565::new(0, 39, 26)
-        } else {
-            Rgb565::new(0, 40, 26)
-        }
-    } else if distance >= 56 {
-        common::light_gray()
-    } else if distance >= 44 {
-        Rgb565::new(21, 41, 21)
-    } else if distance >= 36 {
-        Rgb565::new(20, 38, 20)
-    } else if distance >= 28 {
-        Rgb565::new(18, 35, 18)
-    } else if distance >= 22 {
-        Rgb565::new(17, 33, 17)
-    } else if distance >= 16 {
-        Rgb565::new(16, 31, 16)
-    } else if distance >= 11 {
-        Rgb565::new(15, 29, 15)
-    } else if distance >= 7 {
-        Rgb565::new(14, 27, 14)
-    } else if distance >= 4 {
-        Rgb565::new(13, 25, 13)
-    } else if distance >= 2 {
-        Rgb565::new(12, 24, 12)
-    } else {
-        Rgb565::new(11, 23, 11)
-    }
-}
-
-fn display_roll_pitch_f32(imu: &ImuDisplay) -> (f32, f32) {
+fn display_attitude(imu: &ImuDisplay) -> DisplayAttitude {
     let sensor_roll = imu.roll_deg as f32 * DEG_TO_RAD;
     let sensor_pitch = imu.pitch_deg as f32 * DEG_TO_RAD;
     let sin_sensor_roll = sin_approx(sensor_roll);
@@ -916,12 +982,11 @@ fn display_roll_pitch_f32(imu: &ImuDisplay) -> (f32, f32) {
     let screen_roll = atan2_approx(-ax, -ay) * RAD_TO_DEG;
     let horizontal = sqrt_approx(ax * ax + ay * ay);
     let screen_pitch = -atan2_approx(az, horizontal) * RAD_TO_DEG;
-    (screen_roll, screen_pitch)
-}
-
-fn display_roll_pitch(imu: &ImuDisplay) -> (i32, i32) {
-    let (roll, pitch) = display_roll_pitch_f32(imu);
-    (round_degrees(roll), round_degrees(pitch))
+    DisplayAttitude {
+        roll_deg: screen_roll,
+        pitch_deg: screen_pitch,
+        yaw_deg: display_yaw(imu),
+    }
 }
 
 /// The fused yaw convention is opposite to the physical left/right direction
@@ -929,6 +994,12 @@ fn display_roll_pitch(imu: &ImuDisplay) -> (i32, i32) {
 /// so fusion math and magnetic correction keep a single internal convention.
 fn display_yaw(imu: &ImuDisplay) -> i32 {
     -imu.yaw_deg
+}
+
+fn perspective_focals(center_x: i32, center_y: i32) -> (f32, f32) {
+    let focal_x = center_x.max(1) as f32 / HORIZONTAL_HALF_FOV_TAN;
+    let focal_y = center_y.max(1) as f32;
+    (focal_x, focal_y)
 }
 
 fn project_angle(degrees: i32, focal_pixels: i32) -> i32 {
