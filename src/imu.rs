@@ -186,10 +186,9 @@ const MAG_QUIET_SAMPLES_BEFORE_FUSION: u8 = 3;
 // frames. Compare heading-minus-gyro offsets so small residual motion cancels.
 const MAG_INITIAL_LOCK_SAMPLES: u8 = 5;
 const MAX_MAG_INITIAL_OFFSET_JITTER_DEG: f32 = 6.0;
-// A large but stable discrepancy while quiet is evidence that gyro integration
-// lost angle, not grounds for permanent magnetometer rejection. Reacquire only
-// after a longer consistency proof so a transient magnetic disturbance cannot
-// snap heading around.
+// A large but stable discrepancy after real motion is evidence that gyro
+// integration lost angle. Reacquire only after a longer consistency proof; a
+// stationary magnetic disturbance with no preceding motion remains rejected.
 const MAG_RECOVERY_MIN_INNOVATION_DEG: f32 = 30.0;
 const MAG_RECOVERY_SAMPLES: u8 = 8;
 const MAX_MAG_RECOVERY_OFFSET_JITTER_DEG: f32 = 6.0;
@@ -485,6 +484,7 @@ struct Fusion {
     previous_yaw_rate_dps: Option<f32>,
     magnetic_heading_locked: bool,
     quiet_mag_samples: u8,
+    recovery_armed: bool,
     pending_mag_offset: Option<f32>,
     pending_mag_samples: u8,
     recovery_mag_offset: Option<f32>,
@@ -504,6 +504,7 @@ impl Fusion {
             previous_yaw_rate_dps: None,
             magnetic_heading_locked: false,
             quiet_mag_samples: 0,
+            recovery_armed: false,
             pending_mag_offset: None,
             pending_mag_samples: 0,
             recovery_mag_offset: None,
@@ -515,6 +516,7 @@ impl Fusion {
     fn invalidate_absolute_heading(&mut self) {
         self.magnetic_heading_locked = false;
         self.quiet_mag_samples = 0;
+        self.recovery_armed = true;
         self.clear_pending_magnetic_candidate();
         self.clear_recovery_candidate();
     }
@@ -535,6 +537,7 @@ impl Fusion {
 
     fn note_motion(&mut self) {
         self.quiet_mag_samples = 0;
+        self.recovery_armed = true;
         self.clear_pending_magnetic_candidate();
         self.clear_recovery_candidate();
     }
@@ -657,6 +660,7 @@ impl Fusion {
             if self.pending_mag_samples >= MAG_INITIAL_LOCK_SAMPLES {
                 let acquired_offset = self.pending_mag_offset.unwrap_or(offset);
                 self.magnetic_heading_locked = true;
+                self.recovery_armed = false;
                 self.clear_pending_magnetic_candidate();
                 self.clear_recovery_candidate();
                 return wrap_degrees(predicted_yaw + acquired_offset);
@@ -665,10 +669,15 @@ impl Fusion {
             return predicted_yaw;
         }
 
-        // Small innovations are ordinary gyro drift: correct them slowly. A
-        // large innovation is never ignored forever; while quiet it must first
-        // prove itself consistent over several independent magnetic frames.
+        // Large recovery is only legal after actual motion (or explicit timing/
+        // saturation invalidation). Once MAG and gyro agree after a turn, disarm
+        // it so a later stationary magnetic disturbance cannot redefine north.
         if abs_f32(offset) >= MAG_RECOVERY_MIN_INNOVATION_DEG {
+            if !self.recovery_armed {
+                self.clear_recovery_candidate();
+                return predicted_yaw;
+            }
+
             let consistent = self
                 .recovery_mag_offset
                 .map(|previous| {
@@ -690,6 +699,7 @@ impl Fusion {
 
             if self.recovery_mag_samples >= MAG_RECOVERY_SAMPLES {
                 let recovered_offset = self.recovery_mag_offset.unwrap_or(offset);
+                self.recovery_armed = false;
                 self.clear_recovery_candidate();
                 return wrap_degrees(predicted_yaw + recovered_offset);
             }
@@ -697,6 +707,7 @@ impl Fusion {
             return predicted_yaw;
         }
 
+        self.recovery_armed = false;
         self.clear_recovery_candidate();
         let requested = (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * offset;
         let applied = clamp_f32(
