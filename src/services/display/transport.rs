@@ -1,15 +1,11 @@
-//! ILI9342C initialization and pipelined SPI-DMA transport.
+//! Pipelined SPI-DMA transport for the initialized ILI9342C.
 //!
-//! This is intentionally private to `display`: presentation code cannot issue
-//! DCS commands or take ownership of DMA buffers.
+//! One-time controller setup lives in `controller`; this module owns only the
+//! allocation-free steady-state DCS windowing and pixel DMA pipeline.
 
 use core::ops::Range;
 
-use embedded_hal::{
-    delay::DelayNs as _,
-    spi::{ErrorType as SpiErrorType, Operation, SpiBus, SpiDevice},
-};
-use embedded_hal_bus::spi::DeviceError;
+use embedded_hal::spi::SpiBus as _;
 use esp_hal::{
     Blocking,
     delay::Delay,
@@ -18,19 +14,10 @@ use esp_hal::{
     spi::master::{Config as SpiConfig, Spi, SpiDma, SpiDmaBus, SpiDmaTransfer},
     time::Rate,
 };
-use mipidsi::options::{
-    HorizontalRefreshOrder, Orientation, RefreshOrder, Rotation, VerticalRefreshOrder,
-};
 
-use crate::platform::board;
-
-use super::{Pixel, Resources, WIDTH};
+use super::{Pixel, Resources, WIDTH, controller};
 
 const DISPLAY_SPI_MHZ: u32 = 40;
-// Keep Camera pixels at the same board-proven 40 MHz clock as the rest of the
-// display. The 80 MHz experiment corrupted/interleaved pixel writes on hardware.
-// Retain the separate Camera hook so timing experiments remain isolated.
-const CAMERA_PIXEL_SPI_MHZ: u32 = DISPLAY_SPI_MHZ;
 pub(super) const RAW_BATCH_LINES: usize = 7;
 const PIXEL_DMA_BYTES: usize = WIDTH * 2 * RAW_BATCH_LINES;
 const CONTROL_DMA_BYTES: usize = 256;
@@ -42,79 +29,6 @@ const DCS_MEMORY_WRITE: u8 = 0x2C;
 type DisplaySpiDma = SpiDma<'static, Blocking>;
 type DisplaySpiDmaBus = SpiDmaBus<'static, Blocking>;
 type PixelTransfer = SpiDmaTransfer<'static, Blocking, DmaTxBuf>;
-
-/// Small owned `SpiDevice` adapter used only during `mipidsi` initialization.
-/// It can be deconstructed afterwards so steady-state rendering can use the
-/// raw pipelined SPI-DMA transport.
-struct OwnedSpiDevice<BUS, CS> {
-    bus: BUS,
-    cs: CS,
-}
-
-impl<BUS, CS> OwnedSpiDevice<BUS, CS>
-where
-    CS: embedded_hal::digital::OutputPin,
-{
-    fn new(bus: BUS, mut cs: CS) -> Result<Self, CS::Error> {
-        cs.set_high()?;
-        Ok(Self { bus, cs })
-    }
-
-    fn release(self) -> (BUS, CS) {
-        (self.bus, self.cs)
-    }
-}
-
-impl<BUS, CS> SpiErrorType for OwnedSpiDevice<BUS, CS>
-where
-    BUS: SpiBus<u8>,
-    CS: embedded_hal::digital::OutputPin,
-{
-    type Error = DeviceError<BUS::Error, CS::Error>;
-}
-
-impl<BUS, CS> SpiDevice<u8> for OwnedSpiDevice<BUS, CS>
-where
-    BUS: SpiBus<u8>,
-    CS: embedded_hal::digital::OutputPin,
-{
-    fn transaction(&mut self, operations: &mut [Operation<'_, u8>]) -> Result<(), Self::Error> {
-        self.cs.set_low().map_err(DeviceError::Cs)?;
-
-        let mut result = Ok(());
-        let mut delay = Delay::new();
-
-        for operation in operations {
-            let operation_result = match operation {
-                Operation::Read(words) => self.bus.read(words),
-                Operation::Write(words) => self.bus.write(words),
-                Operation::Transfer(read, write) => self.bus.transfer(read, write),
-                Operation::TransferInPlace(words) => self.bus.transfer_in_place(words),
-                Operation::DelayNs(ns) => {
-                    delay.delay_ns(*ns);
-                    Ok(())
-                }
-            };
-
-            if let Err(err) = operation_result {
-                result = Err(DeviceError::Spi(err));
-                break;
-            }
-        }
-
-        if result.is_ok() {
-            if let Err(err) = self.bus.flush() {
-                result = Err(DeviceError::Spi(err));
-            }
-        }
-
-        let cs_result = self.cs.set_high().map_err(DeviceError::Cs);
-        match result {
-            Err(err) => Err(err),
-            Ok(()) => cs_result,
-        }
-    }
-}
 
 enum PipelineState {
     Idle {
@@ -165,48 +79,13 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
 
     let dc = Output::new(dc, Level::Low, OutputConfig::default());
     let cs = Output::new(cs, Level::High, OutputConfig::default());
-    let spi_device =
-        OwnedSpiDevice::new(dma_bus, cs).expect("Failed to initialize LCD SPI device");
-    let di = display_interface_spi::SPIInterface::new(spi_device, dc);
-
-    // The board is mounted 180 degrees, so logical top-to-bottom/left-to-right
-    // GRAM writes travel physically bottom-to-top/right-to-left. Match the
-    // ILI9342C's panel refresh direction to that same physical direction. The
-    // default refresh direction is the opposite, which maximizes the chance that
-    // an asynchronous full-screen camera write crosses the panel's live scan and
-    // exposes a moving horizontal tear boundary.
-    let (orientation, refresh_order) = if board::DISPLAY_ROTATED_180 {
-        (
-            Orientation::new().rotate(Rotation::Deg180),
-            RefreshOrder {
-                vertical: VerticalRefreshOrder::BottomToTop,
-                horizontal: HorizontalRefreshOrder::RightToLeft,
-            },
-        )
-    } else {
-        (
-            Orientation::new(),
-            RefreshOrder {
-                vertical: VerticalRefreshOrder::TopToBottom,
-                horizontal: HorizontalRefreshOrder::LeftToRight,
-            },
-        )
-    };
-
-    // Keep mipidsi for the known-good controller initialization sequence, then
-    // recover the bus and pins for the allocation-free steady-state DMA path.
-    let display = mipidsi::Builder::new(mipidsi::models::ILI9342CRgb565, di)
-        .color_order(mipidsi::options::ColorOrder::Bgr)
-        .invert_colors(mipidsi::options::ColorInversion::Inverted)
-        .orientation(orientation)
-        .refresh_order(refresh_order)
-        .init(delay)
-        .unwrap();
-
-    let (di, _model, _reset) = display.release();
-    let (spi_device, dc) = di.release();
-    let (dma_bus, cs) = spi_device.release();
-    let (spi, control_rx, control_tx) = dma_bus.split();
+    let controller::Initialized {
+        spi,
+        control_rx,
+        control_tx,
+        cs,
+        dc,
+    } = controller::initialize(dma_bus, cs, dc, delay);
 
     // Seven rows cut Camera pixel submissions from 60 to 35 per 240-row frame.
     // The centered 276-pixel Camera region is 3,864 bytes per full batch, below
@@ -283,18 +162,10 @@ impl Transport {
         spi
     }
 
-    fn apply_spi_frequency(spi: &mut DisplaySpiDma, mhz: u32) {
-        let config = SpiConfig::default().with_frequency(Rate::from_mhz(mhz));
-        spi.apply_config(&config)
-            .expect("Failed to change LCD SPI frequency");
-    }
-
-    fn begin_region_with_pixel_frequency(
-        &mut self,
-        columns: Range<usize>,
-        pages: Range<usize>,
-        pixel_spi_mhz: u32,
-    ) {
+    /// Program one rectangular GRAM window before any of its pixel chunks are
+    /// queued. The controller auto-increments through that window, so the pixel
+    /// path only needs to stream consecutive RGB565 bytes afterwards.
+    pub(super) fn begin_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
         if columns.is_empty() || pages.is_empty() {
             return;
         }
@@ -310,29 +181,12 @@ impl Transport {
             panic!("LCD region started while pixel DMA was still in flight");
         };
 
-        let mut spi = self.set_window(spi, columns, pages);
-        if pixel_spi_mhz != DISPLAY_SPI_MHZ {
-            Self::apply_spi_frequency(&mut spi, pixel_spi_mhz);
-        }
-
+        let spi = self.set_window(spi, columns, pages);
         self.state = Some(PipelineState::Idle {
             spi,
             first,
             second,
         });
-    }
-
-    /// Program one rectangular GRAM window before any of its pixel chunks are
-    /// queued. The controller auto-increments through that window, so the pixel
-    /// path only needs to stream consecutive RGB565 bytes afterwards.
-    pub(super) fn begin_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
-        self.begin_region_with_pixel_frequency(columns, pages, DISPLAY_SPI_MHZ);
-    }
-
-    /// Camera-specific GRAM window. The clock is currently pinned to the same
-    /// board-proven rate as normal rendering after the 80 MHz hardware failure.
-    pub(super) fn begin_camera_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
-        self.begin_region_with_pixel_frequency(columns, pages, CAMERA_PIXEL_SPI_MHZ);
     }
 
     fn encode_pixels(buffer: &mut DmaTxBuf, pixels: &[Pixel]) -> usize {
@@ -406,9 +260,9 @@ impl Transport {
         }
     }
 
-    /// Camera-specialized byte queue. While the prior SPI-DMA transfer is still
-    /// shifting pixels to the panel, call `pump` so CPU0 can drain the independent
-    /// camera DMA ring into PSRAM instead of blocking inside `wait()`.
+    /// Queue one raw RGB565 byte batch. While the prior SPI-DMA transfer is
+    /// shifting pixels to the panel, `pump` can advance an independent producer
+    /// such as the next camera frame.
     pub(super) fn queue_bytes_pumped(&mut self, bytes: &[u8], mut pump: impl FnMut()) {
         if bytes.is_empty() {
             return;
@@ -457,9 +311,8 @@ impl Transport {
         }
     }
 
-    /// Finish the final camera LCD transfer while continuing to pump the next
-    /// camera frame. This keeps capture progress moving until the last SPI byte
-    /// of the current frozen frame has left the controller.
+    /// Finish the final LCD transfer while continuing to pump an independent
+    /// producer until the last SPI byte of the current region has left the panel.
     pub(super) fn finish_pumped(&mut self, mut pump: impl FnMut()) {
         let Some(state) = self.state.take() else {
             return;
@@ -473,11 +326,8 @@ impl Transport {
                     core::hint::spin_loop();
                 }
                 pump();
-                let (mut spi, completed) = transfer.wait();
+                let (spi, completed) = transfer.wait();
                 self.cs.set_high();
-                if CAMERA_PIXEL_SPI_MHZ != DISPLAY_SPI_MHZ {
-                    Self::apply_spi_frequency(&mut spi, DISPLAY_SPI_MHZ);
-                }
                 self.state = Some(PipelineState::Idle {
                     spi,
                     first: free,
