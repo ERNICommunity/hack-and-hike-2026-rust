@@ -78,7 +78,9 @@ impl Views {
             ViewId::Settings => self.settings.present(
                 surface,
                 display,
-                settings_display.expect("settings state must be available when presenting Settings"),
+                settings_display
+                    .expect("settings state must be available when presenting Settings")
+                    .brightness,
             ),
             ViewId::Log => self.log.present_shell(surface, display),
         }
