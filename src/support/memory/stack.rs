@@ -32,6 +32,8 @@ fn cpu0_stack_bounds() -> (usize, usize) {
         static _stack_start_cpu0: u32;
     }
 
+    // Linker symbols are addresses, not Rust-owned `u32` values. Raw references
+    // obtain those addresses without dereferencing the symbols.
     (
         (&raw const _stack_end_cpu0) as usize,
         (&raw const _stack_start_cpu0) as usize,
@@ -46,9 +48,17 @@ fn align_down(value: usize, alignment: usize) -> usize {
     value & !(alignment - 1)
 }
 
-unsafe fn paint_stack_range(start: usize, end: usize) {
+/// Paint a range already proven to lie inside the inactive portion of a stack.
+///
+/// This stays a safe private function: `paint_live_stack` is the sole caller and
+/// derives `start..end` from a registered/linker-defined stack, reserves the
+/// guard area, and clips the upper bound below the current SP.
+fn paint_stack_range(start: usize, end: usize) {
     let mut address = start;
     while address + STACK_WORD_BYTES <= end {
+        // SAFETY: `paint_live_stack` supplies a word-aligned range wholly inside
+        // the currently unused stack span. The loop advances by one aligned u32
+        // and never writes at or beyond `end`.
         unsafe {
             (address as *mut u32).write_volatile(STACK_WATERMARK_PATTERN);
         }
@@ -63,6 +73,10 @@ fn scan_stack_watermark(bottom: usize, start: usize, end: usize) -> Option<usize
 
     let mut address = start;
     while address + STACK_WORD_BYTES <= end {
+        // SAFETY: `start..end` is the exact aligned range previously painted and
+        // retained in atomics. CPU0 scans only its own stack; CPU1 scanning is
+        // performed by the CPU1 task, so the other core never races an active
+        // stack write through this pointer.
         let value = unsafe { (address as *const u32).read_volatile() };
         if value != STACK_WATERMARK_PATTERN {
             return Some(address.saturating_sub(bottom));
@@ -94,9 +108,7 @@ fn paint_live_stack(
         return;
     }
 
-    unsafe {
-        paint_stack_range(start, end);
-    }
+    paint_stack_range(start, end);
 
     watermark_start.store(start, Ordering::Release);
     watermark_end.store(end, Ordering::Release);

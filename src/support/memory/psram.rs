@@ -17,6 +17,11 @@ pub(crate) fn enable(psram_peripheral: PSRAM<'static>) {
     let psram = Psram::new(psram_peripheral, config);
     let (start, size) = psram.raw_parts();
 
+    // SAFETY: `psram` is the unique owner created from the singleton PSRAM
+    // peripheral. `raw_parts()` describes that initialized external-memory
+    // region exactly once, and this module keeps the only `EspHeap` that will
+    // ever register or allocate from it. The device-lifetime heap outlives all
+    // allocations made through `data_plane`.
     unsafe {
         PSRAM_HEAP.add_region(HeapRegion::new(
             start,

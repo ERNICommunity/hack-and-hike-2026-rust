@@ -116,6 +116,10 @@ fn alloc_frame_buffer() -> &'static mut [u8] {
         FRAME_BYTES / PSRAM_ALIGNMENT,
         AlignedBlock([0; PSRAM_ALIGNMENT]),
     );
+    // SAFETY: `AlignedBlock` is `repr(C, align(32))` and contains exactly one
+    // `[u8; 32]` with no padding inside the block. The compile-time divisibility
+    // assertion makes the allocated block span exactly `FRAME_BYTES`; the leaked
+    // slice gives this byte view the same device lifetime and unique mutability.
     unsafe { core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), FRAME_BYTES) }
 }
 

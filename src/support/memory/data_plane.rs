@@ -46,6 +46,10 @@ pub(crate) fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &
 /// allocation is exposed as initialized `T`.
 pub(crate) fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
     let mut storage = Box::<T, _>::new_uninit_in(psram::heap());
+    // SAFETY: `storage` owns one properly aligned, uninitialized allocation for
+    // exactly one `T`. `init()` is evaluated before the write, its value is
+    // written exactly once, and no initialized reference is created until after
+    // that write. The box is then intentionally leaked for device lifetime.
     unsafe {
         storage.as_mut_ptr().write(init());
         Box::leak(storage.assume_init())
