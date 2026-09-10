@@ -6,6 +6,7 @@
 //! Board-level power/reset sequencing still happens in firmware bootstrap.
 
 mod brightness;
+mod controller;
 mod transport;
 
 use esp_hal::{
@@ -150,10 +151,9 @@ impl Display {
         transport.finish();
     }
 
-    /// Camera-specialized raw renderer that uses LCD SPI-DMA wait time to make
-    /// progress on an independent context (the next camera frame in practice).
-    /// Camera pixel payloads use the transport's faster experimental SPI clock;
-    /// controller commands and all non-camera rendering stay at the proven clock.
+    /// Raw renderer that uses LCD SPI-DMA wait time to make progress on an
+    /// independent context (the next camera frame in practice). All controller
+    /// commands and pixel payloads stay on the same board-proven 40 MHz clock.
     /// `context` is passed to both callbacks sequentially so callers can borrow a
     /// single mutable camera-frame object without overlapping closure captures.
     pub(crate) fn render_rgb565_be_scanlines_pumped<C>(
@@ -173,7 +173,7 @@ impl Display {
         let mut valid = true;
         let mut local_y = 0usize;
 
-        transport.begin_camera_region(region.x..region.end_x(), region.y..region.end_y());
+        transport.begin_region(region.x..region.end_x(), region.y..region.end_y());
 
         while local_y < region.height {
             let lines = (region.height - local_y).min(transport::RAW_BATCH_LINES);
