@@ -153,6 +153,52 @@ impl Snapshot {
     }
 }
 
+type SnapshotSignal = Signal<CriticalSectionRawMutex, Snapshot>;
+
+struct Service {
+    latest: SnapshotSignal,
+}
+
+impl Service {
+    const fn new() -> Self {
+        Self {
+            latest: Signal::new(),
+        }
+    }
+}
+
+static SERVICE: StaticCell<Service> = StaticCell::new();
+
+#[derive(Clone, Copy)]
+pub(crate) struct Runtime {
+    service: &'static Service,
+}
+
+pub struct Input {
+    service: &'static Service,
+}
+
+pub(crate) struct Endpoints {
+    pub(crate) runtime: Runtime,
+    pub(crate) input: Input,
+}
+
+pub(crate) fn init_endpoints() -> Endpoints {
+    let service: &'static Service = SERVICE.init(Service::new());
+    Endpoints {
+        runtime: Runtime { service },
+        input: Input { service },
+    }
+}
+
+impl Input {
+    /// Take the newest network snapshot, if CPU1 published one since the
+    /// previous take. Multiple CPU1 updates collapse to one latest value.
+    pub fn take_latest(&mut self) -> Option<Snapshot> {
+        self.service.latest.try_take()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PeerState {
     device_id: protocol::DeviceId,
@@ -338,7 +384,6 @@ impl NetworkState {
 }
 
 static STATE: Mutex<RefCell<Option<NetworkState>>> = Mutex::new(RefCell::new(None));
-static LATEST: Signal<CriticalSectionRawMutex, Snapshot> = Signal::new();
 static WIFI_CONTROLLER: StaticCell<WifiController<'static>> = StaticCell::new();
 
 fn with_state<R>(f: impl FnOnce(&mut NetworkState) -> R) -> Option<R> {
@@ -348,15 +393,10 @@ fn with_state<R>(f: impl FnOnce(&mut NetworkState) -> R) -> Option<R> {
     })
 }
 
-fn publish_snapshot(now: Instant) {
+fn publish_snapshot(runtime: Runtime, now: Instant) {
     if let Some(snapshot) = with_state(|state| state.snapshot(now)) {
-        LATEST.signal(snapshot);
+        runtime.service.latest.signal(snapshot);
     }
-}
-
-/// Low-level replace-latest take used by the CPU0 network reader handle.
-pub fn take_latest() -> Option<Snapshot> {
-    LATEST.try_take()
 }
 
 fn physical_device_id() -> protocol::DeviceId {
@@ -370,19 +410,19 @@ fn physical_device_id() -> protocol::DeviceId {
 ///
 /// Initialization failure is reported as a network fault instead of panicking
 /// the rest of the firmware, so audio/IMU/UI can keep running for diagnostics.
-pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
+pub fn start(spawner: &Spawner, resources: Resources, config: Config, runtime: Runtime) {
     let local_id = physical_device_id();
     critical_section::with(|cs| {
         *STATE.borrow(cs).borrow_mut() = Some(NetworkState::new(local_id, config));
     });
-    publish_snapshot(Instant::now());
+    publish_snapshot(runtime, Instant::now());
 
     let (controller, interfaces) = match wifi::new(resources.wifi, Default::default()) {
         Ok(result) => result,
         Err(error) => {
             diagnostics::record_network_init_error();
             let _ = with_state(NetworkState::mark_fault);
-            publish_snapshot(Instant::now());
+            publish_snapshot(runtime, Instant::now());
             ::log::error!("ESP-NOW radio init failed: {:?}", error);
             return;
         }
@@ -393,7 +433,7 @@ pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
     if let Err(error) = esp_now.set_channel(config.channel.number()) {
         diagnostics::record_network_init_error();
         let _ = with_state(NetworkState::mark_fault);
-        publish_snapshot(Instant::now());
+        publish_snapshot(runtime, Instant::now());
         ::log::error!("ESP-NOW channel {} failed: {:?}", config.channel, error);
         return;
     }
@@ -401,14 +441,16 @@ pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
     let version = esp_now.version().unwrap_or(0);
     let (manager, sender, receiver) = esp_now.split();
     let _ = with_state(NetworkState::mark_ready);
-    publish_snapshot(Instant::now());
+    publish_snapshot(runtime, Instant::now());
 
     spawner.spawn(
-        receive_task(manager, receiver, config, local_id)
+        receive_task(manager, receiver, config, local_id, runtime)
             .expect("Failed to allocate CPU1 ESP-NOW receive task"),
     );
-    spawner
-        .spawn(beacon_task(sender, config).expect("Failed to allocate CPU1 ESP-NOW beacon task"));
+    spawner.spawn(
+        beacon_task(sender, config, runtime)
+            .expect("Failed to allocate CPU1 ESP-NOW beacon task"),
+    );
 
     ::log::info!(
         "ESP-NOW started: id={} channel={} version={}",
@@ -419,7 +461,7 @@ pub fn start(spawner: &Spawner, resources: Resources, config: Config) {
 }
 
 #[embassy_executor::task]
-async fn beacon_task(mut sender: EspNowSender<'static>, config: Config) {
+async fn beacon_task(mut sender: EspNowSender<'static>, config: Config, runtime: Runtime) {
     let mut ticker = Ticker::every(config.beacon_period);
 
     loop {
@@ -441,7 +483,7 @@ async fn beacon_task(mut sender: EspNowSender<'static>, config: Config) {
             }
         }
 
-        publish_snapshot(Instant::now());
+        publish_snapshot(runtime, Instant::now());
         ticker.next().await;
     }
 }
@@ -452,13 +494,14 @@ async fn receive_task(
     mut receiver: EspNowReceiver<'static>,
     config: Config,
     local_id: protocol::DeviceId,
+    runtime: Runtime,
 ) {
     loop {
         let received = receiver.receive_async().await;
         let Some(packet) = protocol::Packet::decode(received.data()) else {
             diagnostics::record_network_rx_invalid();
             let _ = with_state(NetworkState::record_invalid_receive);
-            publish_snapshot(Instant::now());
+            publish_snapshot(runtime, Instant::now());
             continue;
         };
 
@@ -495,6 +538,6 @@ async fn receive_task(
             );
         }
 
-        publish_snapshot(now);
+        publish_snapshot(runtime, now);
     }
 }

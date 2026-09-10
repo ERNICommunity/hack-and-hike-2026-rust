@@ -44,9 +44,84 @@ impl LogStore {
     }
 }
 
-// The lock/control object remains internal. Only the byte-ring allocation is
-// external PSRAM data.
-static LOG_STORE: Mutex<RefCell<Option<LogStore>>> = Mutex::new(RefCell::new(None));
+type Store = Mutex<RefCell<Option<LogStore>>>;
+
+// The logger must exist before PSRAM history is enabled, so its service storage
+// starts empty and is populated during bootstrap. The static lifetime is an
+// implementation detail; application code receives only `Input`.
+struct Service {
+    store: Store,
+}
+
+impl Service {
+    const fn new() -> Self {
+        Self {
+            store: Mutex::new(RefCell::new(None)),
+        }
+    }
+}
+
+static SERVICE: Service = Service::new();
+
+pub struct Input {
+    service: &'static Service,
+}
+
+impl Input {
+    pub fn revision(&self) -> u32 {
+        critical_section::with(|cs| {
+            self.service
+                .store
+                .borrow(cs)
+                .borrow()
+                .as_ref()
+                .map_or(0, |store| store.revision)
+        })
+    }
+
+    /// Copy one consistent log-history revision into `out` using short critical
+    /// sections. If a writer changes the ring while the snapshot is in progress,
+    /// return `None` and let the UI retry on its next refresh tick.
+    pub fn snapshot<'a>(&mut self, out: &'a mut [u8]) -> Option<(&'a str, u32)> {
+        let (len, revision) = critical_section::with(|cs| {
+            let store = self.service.store.borrow(cs).borrow();
+            let store = store.as_ref()?;
+            Some((store.history.len().min(out.len()), store.revision))
+        })?;
+
+        let mut offset = 0usize;
+        while offset < len {
+            let end = (offset + SNAPSHOT_CHUNK_BYTES).min(len);
+            let copied = critical_section::with(|cs| {
+                let store = self.service.store.borrow(cs).borrow();
+                let Some(store) = store.as_ref() else {
+                    return 0;
+                };
+
+                if store.revision != revision {
+                    return 0;
+                }
+
+                store
+                    .history
+                    .copy_range_to(offset, &mut out[offset..end])
+            });
+
+            if copied != end - offset {
+                return None;
+            }
+
+            offset = end;
+        }
+
+        if self.revision() != revision {
+            return None;
+        }
+
+        let text = core::str::from_utf8(&out[..len]).ok()?;
+        Some((text, revision))
+    }
+}
 
 pub struct Logger;
 
@@ -80,7 +155,7 @@ impl log::Log for Logger {
         esp_println::print!("{}\r\n", line.trim_end_matches('\n'));
 
         critical_section::with(|cs| {
-            if let Some(store) = LOG_STORE.borrow(cs).borrow_mut().as_mut() {
+            if let Some(store) = SERVICE.store.borrow(cs).borrow_mut().as_mut() {
                 store.push_back(line.as_bytes());
             }
         });
@@ -97,11 +172,11 @@ pub fn init(level: LevelFilter) {
         .expect("Failed to initialize logger");
 }
 
-pub fn enable_psram_history() {
+pub fn enable_psram_history() -> Input {
     let store = LogStore::new();
 
     critical_section::with(|cs| {
-        *LOG_STORE.borrow(cs).borrow_mut() = Some(store);
+        *SERVICE.store.borrow(cs).borrow_mut() = Some(store);
     });
 
     ::log::info!(
@@ -109,57 +184,6 @@ pub fn enable_psram_history() {
         MAX_LOG_ROWS,
         HISTORY_BYTES / 1024
     );
-}
 
-pub fn revision() -> u32 {
-    critical_section::with(|cs| {
-        LOG_STORE
-            .borrow(cs)
-            .borrow()
-            .as_ref()
-            .map_or(0, |store| store.revision)
-    })
-}
-
-/// Copy one consistent log-history revision into `out` using short critical
-/// sections. If a writer changes the ring while the snapshot is in progress,
-/// return `None` and let the UI retry on its next refresh tick.
-pub fn snapshot<'a>(out: &'a mut [u8]) -> Option<(&'a str, u32)> {
-    let (len, revision) = critical_section::with(|cs| {
-        let store = LOG_STORE.borrow(cs).borrow();
-        let store = store.as_ref()?;
-        Some((store.history.len().min(out.len()), store.revision))
-    })?;
-
-    let mut offset = 0usize;
-    while offset < len {
-        let end = (offset + SNAPSHOT_CHUNK_BYTES).min(len);
-        let copied = critical_section::with(|cs| {
-            let store = LOG_STORE.borrow(cs).borrow();
-            let Some(store) = store.as_ref() else {
-                return 0;
-            };
-
-            if store.revision != revision {
-                return 0;
-            }
-
-            store
-                .history
-                .copy_range_to(offset, &mut out[offset..end])
-        });
-
-        if copied != end - offset {
-            return None;
-        }
-
-        offset = end;
-    }
-
-    if self::revision() != revision {
-        return None;
-    }
-
-    let text = core::str::from_utf8(&out[..len]).ok()?;
-    Some((text, revision))
+    Input { service: &SERVICE }
 }

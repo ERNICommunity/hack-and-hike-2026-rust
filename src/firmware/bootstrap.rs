@@ -9,21 +9,29 @@ use ::log::{info, warn};
 use esp_hal::{clock::CpuClock, timer::timg::TimerGroup};
 
 use crate::{
-    firmware::{cpu1, resources, service_inputs},
+    firmware::{cpu1, resources},
     platform::{board, i2c as system_i2c},
     services::{
         audio, camera, display,
         display::brightness as display_control,
-        network,
+        imu, network, touch,
     },
     support::{logging as logger, memory},
 };
+
+pub(crate) struct AppInputs {
+    pub(crate) touch: touch::Input,
+    pub(crate) imu: imu::Input,
+    pub(crate) audio: audio::Input,
+    pub(crate) network: network::Input,
+    pub(crate) log: logger::Input,
+}
 
 pub(crate) struct Bootstrap {
     pub(crate) display: display::Display,
     pub(crate) camera: camera::Camera,
     pub(crate) camera_ready: bool,
-    pub(crate) inputs: service_inputs::Cpu0Inputs,
+    pub(crate) inputs: AppInputs,
     pub(crate) brightness: display_control::BrightnessControl,
     pub(crate) playback: audio::PlaybackControl,
 }
@@ -39,7 +47,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
     let peripherals = esp_hal::init(config);
 
     memory::enable_psram(peripherals.PSRAM);
-    logger::enable_psram_history();
+    let log_input = logger::enable_psram_history();
     memory::report("PSRAM/data-plane ready");
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -199,23 +207,55 @@ pub(crate) fn bootstrap() -> Bootstrap {
     memory::report("before CPU1 startup");
     info!("Starting CPU1 acquisition executor");
 
+    let audio::Endpoints {
+        runtime: audio_runtime,
+        input: audio_input,
+        playback,
+    } = audio::init_endpoints();
+    let imu::Endpoints {
+        runtime: imu_runtime,
+        input: imu_input,
+    } = imu::init_endpoints();
+    let network::Endpoints {
+        runtime: network_runtime,
+        input: network_input,
+    } = network::init_endpoints();
+    let touch::Endpoints {
+        runtime: touch_runtime,
+        input: touch_input,
+    } = touch::init_endpoints();
+    let display_control::Endpoints {
+        runtime: display_runtime,
+        control: brightness,
+    } = display_control::init_endpoints();
+
+    let cpu1_endpoints = cpu1::ServiceEndpoints {
+        audio: audio_runtime,
+        imu: imu_runtime,
+        network: network_runtime,
+        touch: touch_runtime,
+        display: display_runtime,
+    };
+
     let cpu1_stack = cpu1::init_stack();
     esp_rtos::start_second_core(
         peripherals.CPU_CTRL,
         sw_interrupt.software_interrupt1,
         cpu1_stack,
-        move || cpu1::run(system_i2c, audio_resources, network_resources),
+        move || cpu1::run(system_i2c, audio_resources, network_resources, cpu1_endpoints),
     );
-
-    let inputs = service_inputs::Cpu0Inputs::from_static_services();
-    let brightness = display_control::BrightnessControl::from_static_service();
-    let playback = audio::PlaybackControl::from_static_service();
 
     Bootstrap {
         display,
         camera,
         camera_ready,
-        inputs,
+        inputs: AppInputs {
+            touch: touch_input,
+            imu: imu_input,
+            audio: audio_input,
+            network: network_input,
+            log: log_input,
+        },
         brightness,
         playback,
     }

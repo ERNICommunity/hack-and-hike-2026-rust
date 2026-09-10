@@ -17,7 +17,6 @@ extern crate alloc;
 
 use app::{model as models, ui};
 use app::{model::waveform, ui::theme};
-use firmware::service_inputs;
 use platform::{board, i2c as system_i2c};
 use services::{audio, camera, display, imu, network, touch};
 use services::{display::brightness as display_control, network::protocol};
@@ -44,17 +43,19 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         playback,
     } = firmware::bootstrap();
 
-    let service_inputs::Cpu0Inputs {
+    let firmware::AppInputs {
         touch,
         imu: imu_input,
         audio: audio_input,
         network: network_input,
+        log: log_input,
     } = inputs;
     let model = models::AppModel::new(
         models::AppModelInputs {
             network: network_input,
             imu: imu_input,
             audio: audio_input,
+            log: log_input,
         },
         brightness,
         playback,

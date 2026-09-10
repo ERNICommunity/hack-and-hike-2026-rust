@@ -16,7 +16,7 @@ use crate::{
     camera,
     display::Display,
     models::{AppModel, ViewId},
-    service_inputs::TouchInput,
+    touch,
 };
 
 use gui::GuiSurface;
@@ -38,7 +38,7 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(model: AppModel, touch: TouchInput) -> Self {
+    pub fn new(model: AppModel, touch: touch::Input) -> Self {
         let presented_view = model.active_view();
         Self {
             model,

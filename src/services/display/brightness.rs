@@ -7,10 +7,9 @@
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use log::warn;
+use static_cell::StaticCell;
 
 use crate::{board, system_i2c::SystemI2cBus};
-
-static BRIGHTNESS_REQUEST: Signal<CriticalSectionRawMutex, BrightnessPercent> = Signal::new();
 
 /// Valid user-facing LCD brightness percentage.
 ///
@@ -36,27 +35,57 @@ impl BrightnessPercent {
     }
 }
 
+type RequestSignal = Signal<CriticalSectionRawMutex, BrightnessPercent>;
+
+struct Service {
+    request: RequestSignal,
+}
+
+impl Service {
+    const fn new() -> Self {
+        Self {
+            request: Signal::new(),
+        }
+    }
+}
+
+static SERVICE: StaticCell<Service> = StaticCell::new();
+
+#[derive(Clone, Copy)]
+pub(crate) struct Runtime {
+    service: &'static Service,
+}
+
 /// Move-only CPU0 command handle for LCD brightness.
 pub struct BrightnessControl {
-    _private: (),
+    service: &'static Service,
+}
+
+pub(crate) struct Endpoints {
+    pub(crate) runtime: Runtime,
+    pub(crate) control: BrightnessControl,
+}
+
+pub(crate) fn init_endpoints() -> Endpoints {
+    let service: &'static Service = SERVICE.init(Service::new());
+    Endpoints {
+        runtime: Runtime { service },
+        control: BrightnessControl { service },
+    }
 }
 
 impl BrightnessControl {
-    pub(crate) const fn from_static_service() -> Self {
-        Self { _private: () }
-    }
-
     /// Replace any pending brightness request with the newest slider value.
     pub fn set(&mut self, brightness: BrightnessPercent) {
-        BRIGHTNESS_REQUEST.signal(brightness);
+        self.service.request.signal(brightness);
     }
 }
 
 /// CPU1 runtime owner that applies brightness commands over the shared system bus.
 #[embassy_executor::task]
-pub async fn task(bus: SystemI2cBus) {
+pub async fn task(bus: SystemI2cBus, runtime: Runtime) {
     loop {
-        let brightness = BRIGHTNESS_REQUEST.wait().await;
+        let brightness = runtime.service.request.wait().await;
         let result = {
             let mut i2c = bus.lock().await;
             board::power::set_lcd_backlight(&mut *i2c, brightness.get()).await

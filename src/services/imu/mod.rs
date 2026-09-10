@@ -10,6 +10,7 @@ mod bmm150;
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Instant, Timer};
+use static_cell::StaticCell;
 
 use crate::system_i2c::SystemI2cBus;
 
@@ -76,12 +77,50 @@ pub struct Snapshot {
     pub mag_calibration_percent: u8,
 }
 
-static LATEST: Signal<CriticalSectionRawMutex, Snapshot> = Signal::new();
+type SnapshotSignal = Signal<CriticalSectionRawMutex, Snapshot>;
 
-/// Take the newest orientation/status snapshot, if CPU1 published one since the
-/// previous take. Multiple CPU1 updates collapse to one latest value.
-pub fn take_latest() -> Option<Snapshot> {
-    LATEST.try_take()
+struct Service {
+    latest: SnapshotSignal,
+}
+
+impl Service {
+    const fn new() -> Self {
+        Self {
+            latest: Signal::new(),
+        }
+    }
+}
+
+static SERVICE: StaticCell<Service> = StaticCell::new();
+
+#[derive(Clone, Copy)]
+pub(crate) struct Runtime {
+    service: &'static Service,
+}
+
+pub struct Input {
+    service: &'static Service,
+}
+
+pub(crate) struct Endpoints {
+    pub(crate) runtime: Runtime,
+    pub(crate) input: Input,
+}
+
+pub(crate) fn init_endpoints() -> Endpoints {
+    let service: &'static Service = SERVICE.init(Service::new());
+    Endpoints {
+        runtime: Runtime { service },
+        input: Input { service },
+    }
+}
+
+impl Input {
+    /// Take the newest orientation/status snapshot, if CPU1 published one since
+    /// the previous take. Multiple CPU1 updates collapse to one latest value.
+    pub fn take_latest(&mut self) -> Option<Snapshot> {
+        self.service.latest.try_take()
+    }
 }
 
 const BMI270_ADDR: u8 = 0x69;
@@ -720,6 +759,7 @@ impl Fusion {
 }
 
 fn publish(
+    runtime: Runtime,
     revision: &mut u32,
     status: Status,
     orientation: Orientation,
@@ -728,7 +768,7 @@ fn publish(
     mag_calibration_percent: u8,
 ) {
     *revision = revision.wrapping_add(1);
-    LATEST.signal(Snapshot {
+    runtime.service.latest.signal(Snapshot {
         revision: *revision,
         status,
         orientation,
@@ -739,13 +779,14 @@ fn publish(
 }
 
 #[embassy_executor::task]
-pub async fn capture_task(bus: SystemI2cBus, config: Config) {
+pub async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
     let sensor = Bmi270::new(bus);
     let mut revision = 0u32;
     let mut last_orientation = Orientation::default();
 
     loop {
         publish(
+            runtime,
             &mut revision,
             Status::Starting,
             last_orientation,
@@ -759,6 +800,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
             Err(error) => {
                 log_init_error("BMI270", error);
                 publish(
+                    runtime,
                     &mut revision,
                     Status::Fault,
                     last_orientation,
@@ -966,6 +1008,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                         MagStatus::Learning | MagStatus::Ready => Status::Running,
                     };
                     publish(
+                        runtime,
                         &mut revision,
                         status,
                         last_orientation,
@@ -977,6 +1020,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                 Err(_) => {
                     consecutive_errors = consecutive_errors.saturating_add(1);
                     publish(
+                        runtime,
                         &mut revision,
                         Status::Degraded,
                         last_orientation,
@@ -991,6 +1035,7 @@ pub async fn capture_task(bus: SystemI2cBus, config: Config) {
                             consecutive_errors
                         );
                         publish(
+                            runtime,
                             &mut revision,
                             Status::Fault,
                             last_orientation,
