@@ -19,7 +19,6 @@
                 "editor.scrollBeyondLastLine": false,
                 // automatically save after 1 second
                 "editor.formatOnSave": true,
-                "files.autoSave": "afterDelay",
                 // scale the minimap to the window height
                 "editor.minimap.size": "fill",
                 // do not show the right sidebar because we need the screen space for a two column editor layout
@@ -43,7 +42,14 @@
                 "workbench.startupEditor": "readme",
                 "workbench.editorAssociations": {
                     "README.md": "vscode.markdown.preview.editor"
-                }
+                },
+                // show spaces as dots and tabs as arrows
+                "editor.renderWhitespace": "all",
+                "[rust]": {
+                    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+                    "editor.formatOnSave": true
+                },
+                "rust-analyzer.server.path": "/usr/local/rustup/toolchains/1.93.0-aarch64-unknown-linux-gnu/bin/rust-analyzer"
             },
             "extensions": [
                 "rust-lang.rust-analyzer",
