@@ -1,9 +1,7 @@
-//! BMM150 magnetometer data decoding and Bosch factory compensation.
+//! BMM150 magnetometer definitions, data decoding, and Bosch factory compensation.
 //!
-//! Hardware transport lives in `imu.rs` because the BMM150 is reached through
-//! the BMI270 auxiliary I²C interface. Runtime hard/soft-iron calibration lives
-//! in the `calibration` submodule; this facade keeps the acquisition layer API
-//! stable while separating sensor compensation from environmental calibration.
+//! The BMI270 driver owns the auxiliary-bus transport used to reach this sensor.
+//! Runtime hard/soft-iron calibration lives in the `calibration` submodule.
 //!
 //! The compensation equations are derived from Bosch Sensortec's BSD-3-Clause
 //! BMM150 SensorAPI v2.0.0.
@@ -11,6 +9,23 @@
 mod calibration;
 
 pub use calibration::{Calibration, GOOD_FIELD_MAX_UT, GOOD_FIELD_MIN_UT, vector_length};
+
+pub(super) const ADDRESS: u8 = 0x10;
+pub(super) const CHIP_ID: u8 = 0x32;
+pub(super) const REG_CHIP_ID: u8 = 0x40;
+pub(super) const REG_DATA_X_LSB: u8 = 0x42;
+pub(super) const REG_POWER_CONTROL: u8 = 0x4B;
+pub(super) const REG_OP_MODE: u8 = 0x4C;
+pub(super) const REG_REP_XY: u8 = 0x51;
+pub(super) const REG_REP_Z: u8 = 0x52;
+pub(super) const DIG_X1: u8 = 0x5D;
+pub(super) const DIG_Z4_LSB: u8 = 0x62;
+pub(super) const DIG_Z2_LSB: u8 = 0x68;
+
+pub(super) const SOFT_RESET_AND_POWER: u8 = 0x83;
+pub(super) const NORMAL_30HZ: u8 = 0x38;
+pub(super) const REP_XY_REGULAR: u8 = 0x04;
+pub(super) const REP_Z_REGULAR: u8 = 0x07;
 
 const OVERFLOW_XY: i16 = -4096;
 const OVERFLOW_Z: i16 = -16384;
