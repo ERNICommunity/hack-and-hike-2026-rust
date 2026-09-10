@@ -103,7 +103,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
 
     memory::enable_psram(peripherals.PSRAM);
     let log_input = logger::enable_psram_history();
-    memory::report("PSRAM/data-plane ready");
+    memory::report("PSRAM/storage ready");
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_interrupt =

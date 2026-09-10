@@ -21,7 +21,7 @@ pub(crate) fn enable(psram_peripheral: PSRAM<'static>) {
     // peripheral. `raw_parts()` describes that initialized external-memory
     // region exactly once, and this module keeps the only `EspHeap` that will
     // ever register or allocate from it. The device-lifetime heap outlives all
-    // allocations made through `data_plane`.
+    // allocations made through `storage`.
     unsafe {
         PSRAM_HEAP.add_region(HeapRegion::new(
             start,
