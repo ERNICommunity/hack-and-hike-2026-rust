@@ -11,7 +11,6 @@ use crate::{
     audio, data_plane,
     display_control::{BrightnessControl, BrightnessPercent},
     imu, logger, network,
-    service_inputs::{AudioInput, ImuInput, NetworkInput},
     waveform::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame},
 };
 
@@ -50,13 +49,14 @@ impl ViewId {
 }
 
 pub struct AppModelInputs {
-    pub network: NetworkInput,
-    pub imu: ImuInput,
-    pub audio: AudioInput,
+    pub network: network::Input,
+    pub imu: imu::Input,
+    pub audio: audio::Input,
+    pub log: logger::Input,
 }
 
 struct NetworkModel {
-    input: NetworkInput,
+    input: network::Input,
     display: Option<network::Snapshot>,
     last_revision: u32,
     last_update: Instant,
@@ -64,7 +64,7 @@ struct NetworkModel {
 }
 
 impl NetworkModel {
-    fn new(input: NetworkInput) -> Self {
+    fn new(input: network::Input) -> Self {
         Self {
             input,
             display: None,
@@ -117,7 +117,7 @@ pub struct ImuDisplay {
 }
 
 struct ImuModel {
-    input: ImuInput,
+    input: imu::Input,
     display: ImuDisplay,
     last_revision: u32,
     last_update: Instant,
@@ -125,7 +125,7 @@ struct ImuModel {
 }
 
 impl ImuModel {
-    fn new(input: ImuInput) -> Self {
+    fn new(input: imu::Input) -> Self {
         Self {
             input,
             display: ImuDisplay {
@@ -189,7 +189,7 @@ fn round_units(value: f32) -> i32 {
 }
 
 struct WaveformModel {
-    input: AudioInput,
+    input: audio::Input,
     frame: WaveformFrame,
     samples: [i16; audio::BLOCK_SAMPLES],
     last_sequence: u32,
@@ -198,7 +198,7 @@ struct WaveformModel {
 }
 
 impl WaveformModel {
-    fn new(input: AudioInput) -> Self {
+    fn new(input: audio::Input) -> Self {
         Self {
             input,
             frame: WaveformFrame::silent(),
@@ -408,6 +408,7 @@ impl SpeakerModel {
 }
 
 struct LogModel {
+    input: logger::Input,
     bytes: data_plane::FixedPsramBuffer<u8>,
     len: usize,
     revision: u32,
@@ -416,8 +417,9 @@ struct LogModel {
 }
 
 impl LogModel {
-    fn new() -> Self {
+    fn new(input: logger::Input) -> Self {
         Self {
+            input,
             bytes: data_plane::FixedPsramBuffer::filled(logger::HISTORY_BYTES, 0),
             len: 0,
             revision: u32::MAX,
@@ -439,10 +441,10 @@ impl LogModel {
     }
 
     fn refresh(&mut self) {
-        if logger::revision() == self.revision {
+        if self.input.revision() == self.revision {
             return;
         }
-        let Some((logs, revision)) = logger::snapshot(self.bytes.as_mut_slice()) else {
+        let Some((logs, revision)) = self.input.snapshot(self.bytes.as_mut_slice()) else {
             return;
         };
         self.len = logs.len();
@@ -481,8 +483,9 @@ impl AppModel {
             network,
             imu,
             audio,
+            log,
         } = inputs;
-        let mut log = LogModel::new();
+        let mut log = LogModel::new(log);
         log.refresh();
 
         Self {

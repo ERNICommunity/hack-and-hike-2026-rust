@@ -24,6 +24,7 @@ use esp_hal::{
     peripherals::{DMA_CH0, GPIO0, GPIO13, GPIO14, GPIO33, GPIO34, I2S0},
     time::Rate,
 };
+use static_cell::StaticCell;
 
 use crate::{board, data_plane, diagnostics};
 use chime::FlashChime;
@@ -117,27 +118,6 @@ impl PlaybackSettings {
     };
 }
 
-static PLAYBACK_SETTINGS: Signal<CriticalSectionRawMutex, PlaybackSettings> = Signal::new();
-static ONE_SHOT_SEQUENCE: AtomicU32 = AtomicU32::new(0);
-
-/// CPU0 command handle for the CPU1 audio-output service.
-#[derive(Clone, Copy)]
-pub struct PlaybackControl;
-
-impl PlaybackControl {
-    pub const fn from_static_service() -> Self {
-        Self
-    }
-
-    pub fn set(self, settings: PlaybackSettings) {
-        PLAYBACK_SETTINGS.signal(settings);
-    }
-
-    pub fn play_one_shot(self) {
-        ONE_SHOT_SEQUENCE.fetch_add(1, Ordering::Release);
-    }
-}
-
 /// CPU1-owned physical resources required by the shared audio service.
 pub struct Resources {
     pub i2s0: I2S0<'static>,
@@ -174,7 +154,82 @@ impl LatestAudio {
     }
 }
 
-static LATEST_AUDIO: Mutex<CriticalSectionRawMutex, LatestAudio> = Mutex::new(LatestAudio::new());
+type LatestAudioStore = Mutex<CriticalSectionRawMutex, LatestAudio>;
+type PlaybackSignal = Signal<CriticalSectionRawMutex, PlaybackSettings>;
+
+struct Service {
+    latest_audio: LatestAudioStore,
+    playback_settings: PlaybackSignal,
+    one_shot_sequence: AtomicU32,
+}
+
+impl Service {
+    const fn new() -> Self {
+        Self {
+            latest_audio: Mutex::new(LatestAudio::new()),
+            playback_settings: Signal::new(),
+            one_shot_sequence: AtomicU32::new(0),
+        }
+    }
+}
+
+static SERVICE: StaticCell<Service> = StaticCell::new();
+
+#[derive(Clone, Copy)]
+pub(crate) struct Runtime {
+    service: &'static Service,
+}
+
+/// CPU0 input endpoint for the newest complete stereo microphone block.
+pub struct Input {
+    service: &'static Service,
+}
+
+/// CPU0 command endpoint for the CPU1 audio-output service.
+pub struct PlaybackControl {
+    service: &'static Service,
+}
+
+pub(crate) struct Endpoints {
+    pub(crate) runtime: Runtime,
+    pub(crate) input: Input,
+    pub(crate) playback: PlaybackControl,
+}
+
+pub(crate) fn init_endpoints() -> Endpoints {
+    let service: &'static Service = SERVICE.init(Service::new());
+    Endpoints {
+        runtime: Runtime { service },
+        input: Input { service },
+        playback: PlaybackControl { service },
+    }
+}
+
+impl Input {
+    pub fn copy_latest_interleaved(
+        &mut self,
+        out: &mut [i16; BLOCK_SAMPLES],
+    ) -> Option<AudioBlockInfo> {
+        let latest = self.service.latest_audio.try_lock().ok()?;
+        if latest.info.sequence == 0 {
+            return None;
+        }
+        out.copy_from_slice(&latest.samples);
+        Some(latest.info)
+    }
+}
+
+impl PlaybackControl {
+    pub fn set(&mut self, settings: PlaybackSettings) {
+        self.service.playback_settings.signal(settings);
+    }
+
+    pub fn play_one_shot(&mut self) {
+        self.service
+            .one_shot_sequence
+            .fetch_add(1, Ordering::Release);
+    }
+}
 
 /// Configure ES7210 MIC1/MIC2 for stereo 16 kHz I2S input.
 pub fn init_es7210<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
@@ -227,22 +282,18 @@ where
     i2c.write(AW88298_ADDR, &[register, high, low])
 }
 
-async fn publish(samples: &[i16; BLOCK_SAMPLES], peak_left: u16, peak_right: u16) -> u32 {
-    let mut latest = LATEST_AUDIO.lock().await;
+async fn publish(
+    runtime: Runtime,
+    samples: &[i16; BLOCK_SAMPLES],
+    peak_left: u16,
+    peak_right: u16,
+) -> u32 {
+    let mut latest = runtime.service.latest_audio.lock().await;
     latest.samples.copy_from_slice(samples);
     latest.info.sequence = latest.info.sequence.wrapping_add(1);
     latest.info.peak_left = peak_left;
     latest.info.peak_right = peak_right;
     latest.info.sequence
-}
-
-pub fn copy_latest_interleaved(out: &mut [i16; BLOCK_SAMPLES]) -> Option<AudioBlockInfo> {
-    let latest = LATEST_AUDIO.try_lock().ok()?;
-    if latest.info.sequence == 0 {
-        return None;
-    }
-    out.copy_from_slice(&latest.samples);
-    Some(latest.info)
 }
 
 /// Yield exactly once even if the caller has more buffered work available.
@@ -271,7 +322,7 @@ async fn yield_to_executor() {
 /// RX forever. TX is the physical BCLK/WS master; RX follows the same signals
 /// through the peripheral's internal signal-loopback path.
 #[embassy_executor::task]
-pub async fn capture_task(resources: Resources, spawner: Spawner) {
+pub async fn capture_task(resources: Resources, spawner: Spawner, runtime: Runtime) {
     let Resources {
         i2s0,
         dma,
@@ -311,8 +362,10 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
         .with_din(data_in)
         .build(rx_descriptors);
 
-    spawner
-        .spawn(playback_task(i2s_tx, tx_buffer).expect("Failed to allocate speaker playback task"));
+    spawner.spawn(
+        playback_task(i2s_tx, tx_buffer, runtime)
+            .expect("Failed to allocate speaker playback task"),
+    );
 
     let mut transfer = i2s_rx
         .read_dma_circular_async(rx_buffer)
@@ -355,7 +408,7 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
                 frame_index += 1;
 
                 if frame_index == BLOCK_FRAMES {
-                    let sequence = publish(&samples, peak_left, peak_right).await;
+                    let sequence = publish(runtime, &samples, peak_left, peak_right).await;
                     if first_block {
                         first_block = false;
                         ::log::info!(
@@ -377,7 +430,11 @@ pub async fn capture_task(resources: Resources, spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn playback_task(i2s_tx: I2sTx<'static, Async>, tx_buffer: &'static mut [u8]) {
+async fn playback_task(
+    i2s_tx: I2sTx<'static, Async>,
+    tx_buffer: &'static mut [u8],
+    runtime: Runtime,
+) {
     // Circular TX starts reading immediately. Silence the complete ring first
     // so startup can never replay uninitialized/stale bytes before the task's
     // first refill.
@@ -388,20 +445,26 @@ async fn playback_task(i2s_tx: I2sTx<'static, Async>, tx_buffer: &'static mut [u
         .expect("Failed to start circular I2S TX DMA");
     let mut engine = PlaybackEngine::new();
     let mut settings = PlaybackSettings::DEFAULT;
-    let mut one_shot_seen = ONE_SHOT_SEQUENCE.load(Ordering::Acquire);
+    let mut one_shot_seen = runtime
+        .service
+        .one_shot_sequence
+        .load(Ordering::Acquire);
     let mut staging = [0u8; PLAYBACK_FILL_BYTES];
     let mut staging_offset = staging.len();
 
     loop {
         if staging_offset == staging.len() {
-            if let Some(next) = PLAYBACK_SETTINGS.try_take() {
+            if let Some(next) = runtime.service.playback_settings.try_take() {
                 if next.melody_playing && !settings.melody_playing {
                     engine.melody.restart();
                 }
                 settings = next;
             }
 
-            let one_shot_sequence = ONE_SHOT_SEQUENCE.load(Ordering::Acquire);
+            let one_shot_sequence = runtime
+                .service
+                .one_shot_sequence
+                .load(Ordering::Acquire);
             if one_shot_sequence != one_shot_seen {
                 one_shot_seen = one_shot_sequence;
                 engine.chime.restart();

@@ -1,7 +1,7 @@
 //! Runtime hardware ownership expressed through concrete resource bundles.
 //!
 //! `RuntimeResources` describes only raw-peripheral ownership. CPU1→CPU0 reader
-//! handles live separately in `service_inputs::Cpu0Inputs` because peripheral
+//! handles live separately as service-owned endpoints because peripheral
 //! ownership and access to static cross-core data contracts are different
 //! architectural concerns.
 //!

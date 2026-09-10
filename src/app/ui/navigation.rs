@@ -8,8 +8,7 @@
 use crate::{
     display::Display,
     models::ViewId,
-    service_inputs::TouchInput,
-    touch::{TouchEdge, TouchPoint},
+    touch::{Input as TouchInput, TouchEdge, TouchPoint},
 };
 
 use super::design;
