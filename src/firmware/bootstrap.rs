@@ -11,11 +11,7 @@ use esp_hal::{clock::CpuClock, timer::timg::TimerGroup};
 use crate::{
     firmware::{cpu1, resources},
     platform::{board, i2c as system_i2c},
-    services::{
-        audio, camera, display,
-        display::brightness as display_control,
-        imu, network, touch,
-    },
+    services::{audio, camera, display, imu, network, touch},
     support::{logging as logger, memory},
 };
 
@@ -32,7 +28,7 @@ pub(crate) struct Bootstrap {
     pub(crate) camera: camera::Camera,
     pub(crate) camera_ready: bool,
     pub(crate) inputs: AppInputs,
-    pub(crate) brightness: display_control::BrightnessControl,
+    pub(crate) brightness: display::BrightnessControl,
     pub(crate) playback: audio::PlaybackControl,
 }
 
@@ -224,10 +220,10 @@ pub(crate) fn bootstrap() -> Bootstrap {
         runtime: touch_runtime,
         input: touch_input,
     } = touch::init_endpoints();
-    let display_control::Endpoints {
+    let display::BrightnessEndpoints {
         runtime: display_runtime,
         control: brightness,
-    } = display_control::init_endpoints();
+    } = display::init_brightness_endpoints();
 
     let cpu1_endpoints = cpu1::ServiceEndpoints {
         audio: audio_runtime,

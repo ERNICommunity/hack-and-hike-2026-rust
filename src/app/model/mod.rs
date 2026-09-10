@@ -16,7 +16,7 @@ use embassy_time::Instant;
 
 use crate::{
     audio,
-    display_control::{BrightnessControl, BrightnessPercent},
+    display::{BrightnessControl, BrightnessPercent},
     imu as imu_service, logger,
     network as network_service,
 };

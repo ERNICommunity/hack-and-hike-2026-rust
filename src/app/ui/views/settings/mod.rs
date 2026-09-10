@@ -15,7 +15,7 @@ use embedded_graphics::{
 };
 use embedded_gui::prelude::*;
 
-use crate::{data_plane, display::Display, display_control::BrightnessPercent};
+use crate::{data_plane, display::{BrightnessPercent, Display}};
 
 use super::super::{
     gui::{GuiFramebuffer, GuiSurface},

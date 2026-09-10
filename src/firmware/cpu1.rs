@@ -10,7 +10,7 @@ use static_cell::StaticCell;
 
 use crate::{
     platform::i2c as system_i2c,
-    services::{audio, display::brightness as display_control, imu, network, touch},
+    services::{audio, display, imu, network, touch},
     support::memory,
 };
 
@@ -24,7 +24,7 @@ pub(crate) struct ServiceEndpoints {
     pub(crate) imu: imu::Runtime,
     pub(crate) network: network::Runtime,
     pub(crate) touch: touch::Runtime,
-    pub(crate) display: display_control::Runtime,
+    pub(crate) display: display::BrightnessRuntime,
 }
 
 pub(crate) fn init_stack() -> &'static mut Stack<STACK_SIZE> {
@@ -63,7 +63,7 @@ pub(crate) fn run(
 
         let system_bus = system_i2c::into_async(system_i2c);
         spawner.spawn(
-            display_control::task(system_bus, display_runtime)
+            display::brightness_task(system_bus, display_runtime)
                 .expect("Failed to allocate CPU1 display-control task"),
         );
         spawner.spawn(
