@@ -16,7 +16,7 @@ mod support;
 extern crate alloc;
 
 use app::{model as models, ui};
-use app::{model::waveform, ui::theme};
+use app::{model::microphone as waveform, ui::theme};
 use platform::{board, i2c as system_i2c};
 use services::{audio, camera, display, imu, network, touch};
 use services::{display::brightness as display_control, network::protocol};
