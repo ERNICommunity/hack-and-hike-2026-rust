@@ -4,6 +4,7 @@
 //! mechanics, and compass geometry remain private view-local modules so this
 //! facade only coordinates the generated GUI shell and semantic IMU state.
 
+mod attitude;
 mod compass;
 mod horizon;
 mod projection;
@@ -22,7 +23,8 @@ use crate::{
 
 use super::super::gui::{GuiFramebuffer, GuiSurface};
 use super::common;
-use projection::{DisplayAttitude, display_attitude, round_degrees};
+use attitude::Tracker as AttitudeTracker;
+use projection::{DisplayAttitude, round_degrees};
 
 mod generated {
     use embedded_gui::prelude::*;
@@ -45,6 +47,7 @@ struct Geometry {
 
 pub(super) struct View {
     geometry: Geometry,
+    attitude: AttitudeTracker,
 }
 
 impl View {
@@ -58,6 +61,7 @@ impl View {
                 header: required_rect(gui, app.widgets.header_slot, "IMU header"),
                 attitude: required_rect(gui, app.widgets.attitude_slot, "IMU attitude"),
             },
+            attitude: AttitudeTracker::new(),
         }
     }
 
@@ -76,7 +80,7 @@ impl View {
         imu: &ImuDisplay,
     ) {
         let geometry = self.geometry;
-        let attitude = display_attitude(imu);
+        let attitude = self.attitude.update(imu);
         surface.present_overlay_only(display, move |frame| {
             draw_view_gutters(frame, geometry);
             draw_header(frame, geometry.header, imu, attitude);
