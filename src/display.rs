@@ -118,6 +118,31 @@ impl Display {
         transport.finish();
     }
 
+    /// Stream an already big-endian RGB565 region in multi-line DMA batches.
+    ///
+    /// GUI framebuffers use an endian-correcting backend, so their backing bytes
+    /// can be prepared in the LCD's native wire order while drawing. Sending the
+    /// bytes directly removes the old per-frame RGB565 decode/re-encode pass and
+    /// reduces a 240-row content frame from 240 DMA submissions to 35 seven-row
+    /// batches without changing the proven 40 MHz LCD clock.
+    pub fn render_rgb565_be_bytes(&mut self, region: Region, bytes: &[u8]) {
+        if region.is_empty() {
+            return;
+        }
+
+        let row_bytes = region.width * RGB565_BYTES_PER_PIXEL;
+        let expected_bytes = row_bytes * region.height;
+        assert_eq!(bytes.len(), expected_bytes);
+        let batch_bytes = row_bytes * transport::RAW_BATCH_LINES;
+        let transport = &mut self.transport;
+
+        transport.begin_region(region.x..region.end_x(), region.y..region.end_y());
+        for batch in bytes.chunks(batch_bytes) {
+            transport.queue_bytes_pumped(batch, || {});
+        }
+        transport.finish();
+    }
+
     /// Camera-specialized raw renderer that uses LCD SPI-DMA wait time to make
     /// progress on an independent context (the next camera frame in practice).
     /// Camera pixel payloads use the transport's faster experimental SPI clock;
