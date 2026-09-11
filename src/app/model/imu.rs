@@ -11,11 +11,15 @@ const IMU_UPDATE: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ImuDisplay {
-    /// CPU1 publication revision for detecting renderer-side sample gaps.
+    /// CPU1 publication revision for diagnostics and stale-sample detection.
     pub(crate) sample_revision: u32,
+    /// Euler values are for the numeric header only. World rendering consumes
+    /// gravity_screen/north_screen directly and never reconstructs pose from them.
     pub(crate) roll_deg: f32,
     pub(crate) pitch_deg: f32,
     pub(crate) yaw_deg: f32,
+    pub(crate) gravity_screen: [f32; 3],
+    pub(crate) north_screen: [f32; 3],
     pub(crate) status: imu::Status,
     pub(crate) mag_status: imu::MagStatus,
     pub(crate) mag_field_ut: i32,
@@ -40,6 +44,8 @@ impl Model {
                 roll_deg: 0.0,
                 pitch_deg: 0.0,
                 yaw_deg: 0.0,
+                gravity_screen: [0.0, 0.0, 1.0],
+                north_screen: [1.0, 0.0, 0.0],
                 status: imu::Status::Starting,
                 mag_status: imu::MagStatus::Missing,
                 mag_field_ut: 0,
@@ -85,6 +91,8 @@ impl Model {
             roll_deg: snapshot.orientation.roll_deg,
             pitch_deg: snapshot.orientation.pitch_deg,
             yaw_deg: snapshot.orientation.yaw_deg,
+            gravity_screen: snapshot.orientation.gravity_screen,
+            north_screen: snapshot.orientation.north_screen,
             status: snapshot.status,
             mag_status: snapshot.mag_status,
             mag_field_ut: round_units(snapshot.mag_field_ut),

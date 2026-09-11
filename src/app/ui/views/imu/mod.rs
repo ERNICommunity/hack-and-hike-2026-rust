@@ -4,7 +4,6 @@
 //! mechanics, and compass geometry remain private view-local modules so this
 //! facade only coordinates the generated GUI shell and semantic IMU state.
 
-mod attitude;
 mod compass;
 mod horizon;
 mod projection;
@@ -23,7 +22,6 @@ use crate::{
 
 use super::super::gui::{GuiFramebuffer, GuiSurface};
 use super::common;
-use attitude::Tracker as AttitudeTracker;
 use projection::{DisplayAttitude, display_attitude, round_degrees};
 
 mod generated {
@@ -37,8 +35,10 @@ const EVENT_CAPACITY: usize = 2;
 const VIEW_WIDTH: i32 = 276;
 const VIEW_HEIGHT: i32 = 240;
 const WORLDVIEW_TRACE_EVERY_FRAMES: u32 = 20;
-const WORLDVIEW_JUMP_DEG: f32 = 45.0;
-const WORLDVIEW_POLE_DEG: f32 = 80.0;
+// Dot product below cos(45deg) means the actual fused basis moved by more than
+// 45 degrees between displayed frames. Unlike Euler yaw jumps, this is a real
+// orientation discontinuity worth flagging.
+const BASIS_JUMP_DOT: f32 = 0.70710677;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
@@ -50,11 +50,9 @@ struct Geometry {
 
 pub(in crate::app::ui) struct View {
     geometry: Geometry,
-    attitude: AttitudeTracker,
     trace_frames: u32,
-    previous_fused_yaw_deg: Option<f32>,
-    previous_display_yaw_deg: Option<f32>,
-    previous_display_pitch_deg: Option<f32>,
+    previous_gravity_screen: Option<[f32; 3]>,
+    previous_north_screen: Option<[f32; 3]>,
 }
 
 impl View {
@@ -68,11 +66,9 @@ impl View {
                 header: required_rect(gui, app.widgets.header_slot, "IMU header"),
                 attitude: required_rect(gui, app.widgets.attitude_slot, "IMU attitude"),
             },
-            attitude: AttitudeTracker::new(),
             trace_frames: 0,
-            previous_fused_yaw_deg: None,
-            previous_display_yaw_deg: None,
-            previous_display_pitch_deg: None,
+            previous_gravity_screen: None,
+            previous_north_screen: None,
         }
     }
 
@@ -81,11 +77,9 @@ impl View {
         surface: &mut GuiSurface,
         display: &mut Display,
     ) {
-        self.attitude.reset();
-        self.previous_fused_yaw_deg = None;
-        self.previous_display_yaw_deg = None;
-        self.previous_display_pitch_deg = None;
-        ::log::info!("WORLDVIEW-EVENT tracker-reset");
+        self.previous_gravity_screen = None;
+        self.previous_north_screen = None;
+        ::log::info!("WORLDVIEW-EVENT basis-history-reset");
 
         let geometry = self.geometry;
         surface.present_overlay_only(display, move |frame| {
@@ -101,80 +95,50 @@ impl View {
         imu: &ImuDisplay,
     ) {
         let geometry = self.geometry;
-        let raw_attitude = display_attitude(imu);
-        let mut attitude = raw_attitude;
-        attitude.yaw_deg = self.attitude.update(
-            imu.sample_revision,
-            attitude.roll_deg,
-            attitude.pitch_deg,
-            attitude.yaw_deg,
-        );
+        let attitude = display_attitude(imu);
 
         self.trace_frames = self.trace_frames.wrapping_add(1);
-        let fused_delta = self
-            .previous_fused_yaw_deg
-            .map(|previous| angular_delta(imu.yaw_deg, previous));
-        let display_delta = self
-            .previous_display_yaw_deg
-            .map(|previous| angular_delta(attitude.yaw_deg, previous));
-        let crossed_pole_band = self
-            .previous_display_pitch_deg
-            .map(|previous| {
-                (previous.abs() < WORLDVIEW_POLE_DEG && attitude.pitch_deg.abs() >= WORLDVIEW_POLE_DEG)
-                    || (previous.abs() >= WORLDVIEW_POLE_DEG
-                        && attitude.pitch_deg.abs() < WORLDVIEW_POLE_DEG)
-            })
-            .unwrap_or(false);
+        let gravity_dot = self
+            .previous_gravity_screen
+            .map(|previous| dot3(previous, imu.gravity_screen));
+        let north_dot = self
+            .previous_north_screen
+            .map(|previous| dot3(previous, imu.north_screen));
 
-        if crossed_pole_band {
-            ::log::warn!(
-                "WORLDVIEW-EVENT pole-band rev={} fused_rpy=[{},{},{}] raw_display=[{},{},{}] tracked_yaw={}",
-                imu.sample_revision,
-                imu.roll_deg,
-                imu.pitch_deg,
-                imu.yaw_deg,
-                raw_attitude.roll_deg,
-                raw_attitude.pitch_deg,
-                raw_attitude.yaw_deg,
-                attitude.yaw_deg
-            );
-        }
-        if fused_delta.map(|delta| delta.abs() >= WORLDVIEW_JUMP_DEG).unwrap_or(false)
-            || display_delta.map(|delta| delta.abs() >= WORLDVIEW_JUMP_DEG).unwrap_or(false)
+        if gravity_dot.map(|dot| dot < BASIS_JUMP_DOT).unwrap_or(false)
+            || north_dot.map(|dot| dot < BASIS_JUMP_DOT).unwrap_or(false)
         {
             ::log::warn!(
-                "WORLDVIEW-EVENT jump rev={} fused_yaw={} fused_delta={} raw_display_yaw={} tracked_yaw={} display_delta={} pitch={} roll={}",
+                "WORLDVIEW-EVENT basis-jump rev={} gravity_dot={} north_dot={} g=[{},{},{}] n=[{},{},{}] sensor_rpy=[{},{},{}]",
                 imu.sample_revision,
-                imu.yaw_deg,
-                fused_delta.unwrap_or(0.0),
-                raw_attitude.yaw_deg,
-                attitude.yaw_deg,
-                display_delta.unwrap_or(0.0),
-                attitude.pitch_deg,
-                attitude.roll_deg
+                gravity_dot.unwrap_or(1.0),
+                north_dot.unwrap_or(1.0),
+                imu.gravity_screen[0], imu.gravity_screen[1], imu.gravity_screen[2],
+                imu.north_screen[0], imu.north_screen[1], imu.north_screen[2],
+                imu.roll_deg, imu.pitch_deg, imu.yaw_deg
             );
         }
         if self.trace_frames % WORLDVIEW_TRACE_EVERY_FRAMES == 0 {
             ::log::info!(
-                "WORLDVIEW-TRACE rev={} sensor_rpy=[{},{},{}] projected_rpy=[{},{},{}] tracked_yaw={} fused_dyaw={} display_dyaw={} mag_status={:?} field_ut={} cal={}",
+                "WORLDVIEW-TRACE rev={} sensor_rpy=[{},{},{}] display_rpy=[{},{},{}] g=[{},{},{}] n=[{},{},{}] gdot={} ndot={} mag_status={:?} field_ut={} cal={}",
                 imu.sample_revision,
                 imu.roll_deg,
                 imu.pitch_deg,
                 imu.yaw_deg,
-                raw_attitude.roll_deg,
-                raw_attitude.pitch_deg,
-                raw_attitude.yaw_deg,
+                attitude.roll_deg,
+                attitude.pitch_deg,
                 attitude.yaw_deg,
-                fused_delta.unwrap_or(0.0),
-                display_delta.unwrap_or(0.0),
+                imu.gravity_screen[0], imu.gravity_screen[1], imu.gravity_screen[2],
+                imu.north_screen[0], imu.north_screen[1], imu.north_screen[2],
+                gravity_dot.unwrap_or(1.0),
+                north_dot.unwrap_or(1.0),
                 imu.mag_status,
                 imu.mag_field_ut,
                 imu.mag_calibration
             );
         }
-        self.previous_fused_yaw_deg = Some(imu.yaw_deg);
-        self.previous_display_yaw_deg = Some(attitude.yaw_deg);
-        self.previous_display_pitch_deg = Some(attitude.pitch_deg);
+        self.previous_gravity_screen = Some(imu.gravity_screen);
+        self.previous_north_screen = Some(imu.north_screen);
 
         surface.present_overlay_only(display, move |frame| {
             draw_view_gutters(frame, geometry);
@@ -184,11 +148,8 @@ impl View {
     }
 }
 
-fn angular_delta(value: f32, previous: f32) -> f32 {
-    let mut delta = value - previous;
-    while delta > 180.0 { delta -= 360.0; }
-    while delta < -180.0 { delta += 360.0; }
-    delta
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn draw_view_gutters(frame: &mut GuiFramebuffer, geometry: Geometry) {

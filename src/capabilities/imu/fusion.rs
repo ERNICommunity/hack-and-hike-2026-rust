@@ -6,27 +6,27 @@
 //! gravity direction and magnetic-north direction expressed in the rotating
 //! device frame. Both vectors are propagated by the gyroscope. Accelerometer
 //! correction rotates the complete basis, while magnetometer correction rotates
-//! only north around gravity. This avoids the Euler/azimuth singularity that a
-//! separate `gravity + scalar yaw` representation has when camera-forward is
-//! vertical (display flat on a table).
+//! only north around gravity. Euler angles are derived outputs only.
 
 use super::Orientation;
 
-// Magnetic north is a long-term absolute reference. Keep its per-frame authority
-// deliberately small so residual hard/soft-iron error cannot make the compass
-// hunt while the gyro already provides smooth short-term motion.
-const MAX_MAG_CORRECTION_PER_SAMPLE_DEG: f32 = 0.08;
+// Magnetic correction is intentionally bounded so a delayed/noisy 30 Hz BMM150
+// cannot steer the short-term attitude. Unlike the previous policy, fast motion
+// reduces magnetic authority continuously rather than disabling it entirely.
+const MAX_MAG_CORRECTION_NORMAL_DEG: f32 = 0.12;
+const MAX_MAG_CORRECTION_RECOVERY_DEG: f32 = 0.75;
 const MAG_DEADBAND_DEG: f32 = 1.5;
-const MAG_DIRECTION_FILTER_ALPHA: f32 = 0.18;
-// The 30 Hz BMM150 is delayed relative to the gyro. Only fuse it once hand motion
-// is genuinely slow; faster motion is carried by the gyro and corrected later.
-const MAG_FUSION_MAX_RATE_DPS: f32 = 20.0;
-const MAG_QUIET_SAMPLES_BEFORE_FUSION: u8 = 5;
+const MAG_DIRECTION_FILTER_ALPHA_SLOW: f32 = 0.18;
+const MAG_DIRECTION_FILTER_ALPHA_FAST: f32 = 0.75;
+const MAG_DIRECTION_FILTER_FAST_RATE_DPS: f32 = 240.0;
+const MAG_FULL_AUTHORITY_RATE_DPS: f32 = 20.0;
+const MAG_LOW_AUTHORITY_RATE_DPS: f32 = 360.0;
+const MAG_MIN_MOTION_WEIGHT: f32 = 0.08;
 const MAG_INITIAL_LOCK_SAMPLES: u8 = 5;
-const MAX_MAG_INITIAL_ERROR_JITTER_DEG: f32 = 6.0;
-const MAG_RECOVERY_MIN_INNOVATION_DEG: f32 = 30.0;
-const MAG_RECOVERY_SAMPLES: u8 = 8;
-const MAX_MAG_RECOVERY_ERROR_JITTER_DEG: f32 = 6.0;
+const MAG_INITIAL_LOCK_MAX_RATE_DPS: f32 = 120.0;
+const MAG_LARGE_INNOVATION_DEG: f32 = 30.0;
+const MAG_LARGE_CONFIRM_SAMPLES: u8 = 5;
+const MAX_MAG_ERROR_JITTER_DEG: f32 = 8.0;
 // Reject only a physically weak horizontal magnetic field. Device attitude is
 // intentionally not part of this test: magnetic north remains observable when
 // camera-forward is vertical.
@@ -83,12 +83,10 @@ pub(super) struct Fusion {
     previous_gyro_screen_dps: Option<[f32; 3]>,
     magnetic_locked: bool,
     filtered_magnetic_north: Option<[f32; 3]>,
-    quiet_mag_samples: u8,
-    recovery_armed: bool,
     pending_mag_error_deg: Option<f32>,
     pending_mag_samples: u8,
-    recovery_mag_error_deg: Option<f32>,
-    recovery_mag_samples: u8,
+    large_mag_error_deg: Option<f32>,
+    large_mag_samples: u8,
     initialized: bool,
 }
 
@@ -99,18 +97,18 @@ impl Fusion {
                 roll_deg: 0.0,
                 pitch_deg: 0.0,
                 yaw_deg: 0.0,
+                gravity_screen: [0.0, 0.0, 1.0],
+                north_screen: [1.0, 0.0, 0.0],
             },
             gravity_screen: [0.0, 0.0, 1.0],
             north_screen: [1.0, 0.0, 0.0],
             previous_gyro_screen_dps: None,
             magnetic_locked: false,
             filtered_magnetic_north: None,
-            quiet_mag_samples: 0,
-            recovery_armed: false,
             pending_mag_error_deg: None,
             pending_mag_samples: 0,
-            recovery_mag_error_deg: None,
-            recovery_mag_samples: 0,
+            large_mag_error_deg: None,
+            large_mag_samples: 0,
             initialized: false,
         }
     }
@@ -118,10 +116,8 @@ impl Fusion {
     pub(super) fn invalidate_absolute_heading(&mut self) {
         self.magnetic_locked = false;
         self.filtered_magnetic_north = None;
-        self.quiet_mag_samples = 0;
-        self.recovery_armed = true;
         self.clear_pending_magnetic_candidate();
-        self.clear_recovery_candidate();
+        self.clear_large_magnetic_candidate();
     }
 
     pub(super) fn reset_rate_history(&mut self) {
@@ -133,21 +129,9 @@ impl Fusion {
         self.pending_mag_samples = 0;
     }
 
-    fn clear_recovery_candidate(&mut self) {
-        self.recovery_mag_error_deg = None;
-        self.recovery_mag_samples = 0;
-    }
-
-    fn reset_magnetic_observation_window(&mut self) {
-        self.quiet_mag_samples = 0;
-        self.filtered_magnetic_north = None;
-        self.recovery_armed = true;
-        self.clear_pending_magnetic_candidate();
-        self.clear_recovery_candidate();
-    }
-
-    fn note_motion(&mut self) {
-        self.reset_magnetic_observation_window();
+    fn clear_large_magnetic_candidate(&mut self) {
+        self.large_mag_error_deg = None;
+        self.large_mag_samples = 0;
     }
 
     pub(super) fn update(
@@ -167,7 +151,7 @@ impl Fusion {
             }
             self.north_screen = initial_horizontal_reference(self.gravity_screen);
             self.initialized = true;
-            self.update_euler_output();
+            self.update_output();
             return self.orientation;
         }
 
@@ -205,8 +189,7 @@ impl Fusion {
                 .unwrap_or(predicted_gravity);
 
                 // Apply the same leveling correction to north. Correcting gravity
-                // alone and then reconstructing yaw would silently destroy one
-                // degree of orientation during arbitrary 3-D movement.
+                // alone would silently alter heading during arbitrary 3-D motion.
                 self.north_screen = rotate_between(predicted_gravity, blended, predicted_north);
                 self.gravity_screen = blended;
             } else {
@@ -221,43 +204,49 @@ impl Fusion {
             .unwrap_or_else(|| initial_horizontal_reference(self.gravity_screen));
 
         let total_rate_dps = max_abs3(gyro_dps);
-        if total_rate_dps > MAG_FUSION_MAX_RATE_DPS {
-            self.note_motion();
-        } else if let Some(measured_north) = magnetic_field_ut
+        if let Some(measured_north) = magnetic_field_ut
             .map(screen_vector_from_body)
             .and_then(|field| magnetic_north(field, self.gravity_screen))
         {
-            let measured_north = self.filter_magnetic_direction(measured_north);
-            self.fuse_magnetic_north(measured_north, yaw_alpha);
+            let measured_north = self.filter_magnetic_direction(measured_north, total_rate_dps);
+            self.fuse_magnetic_north(measured_north, yaw_alpha, total_rate_dps);
         }
 
-        self.update_euler_output();
+        self.update_output();
         self.orientation
     }
 
-    fn update_euler_output(&mut self) {
+    fn update_output(&mut self) {
+        self.orientation.gravity_screen = self.gravity_screen;
+        self.orientation.north_screen = self.north_screen;
+
         let gravity_body = body_vector_from_screen(self.gravity_screen);
         let (roll, pitch) = attitude_from_gravity(gravity_body);
         self.orientation.roll_deg = roll;
         self.orientation.pitch_deg = pitch;
 
-        // Camera-forward azimuth is mathematically undefined only at the exact
-        // pole. The full north/gravity basis remains valid there, so retain the
-        // last scalar display value for that instant and naturally emerge on the
-        // correct branch as soon as forward has a horizontal projection again.
+        // Scalar heading is diagnostic/presentation data. It is undefined only
+        // when camera-forward is exactly vertical; retain the previous value for
+        // that instant while the full basis remains continuous and authoritative.
         if let Some(yaw) = heading_from_north(self.north_screen, self.gravity_screen) {
             self.orientation.yaw_deg = yaw;
         }
     }
 
-    fn filter_magnetic_direction(&mut self, measured: [f32; 3]) -> [f32; 3] {
+    fn filter_magnetic_direction(&mut self, measured: [f32; 3], rate_dps: f32) -> [f32; 3] {
+        // At high angular speed, favor the newest BMM150 sample so the direction
+        // filter itself does not add avoidable phase lag. Correction authority is
+        // reduced separately below.
+        let rate_ratio = clamp_f32(rate_dps / MAG_DIRECTION_FILTER_FAST_RATE_DPS, 0.0, 1.0);
+        let filter_alpha = MAG_DIRECTION_FILTER_ALPHA_SLOW
+            + (MAG_DIRECTION_FILTER_ALPHA_FAST - MAG_DIRECTION_FILTER_ALPHA_SLOW) * rate_ratio;
         let filtered = self
             .filtered_magnetic_north
             .and_then(|previous| {
                 normalize3([
-                    previous[0] + MAG_DIRECTION_FILTER_ALPHA * (measured[0] - previous[0]),
-                    previous[1] + MAG_DIRECTION_FILTER_ALPHA * (measured[1] - previous[1]),
-                    previous[2] + MAG_DIRECTION_FILTER_ALPHA * (measured[2] - previous[2]),
+                    previous[0] + filter_alpha * (measured[0] - previous[0]),
+                    previous[1] + filter_alpha * (measured[1] - previous[1]),
+                    previous[2] + filter_alpha * (measured[2] - previous[2]),
                 ])
             })
             .unwrap_or(measured);
@@ -266,19 +255,27 @@ impl Fusion {
         filtered
     }
 
-    fn fuse_magnetic_north(&mut self, measured_north: [f32; 3], yaw_alpha: f32) {
-        self.quiet_mag_samples = self.quiet_mag_samples.saturating_add(1);
-        if self.quiet_mag_samples < MAG_QUIET_SAMPLES_BEFORE_FUSION {
-            return;
-        }
-
+    fn fuse_magnetic_north(
+        &mut self,
+        measured_north: [f32; 3],
+        yaw_alpha: f32,
+        rate_dps: f32,
+    ) {
         let error_deg = signed_angle_deg(self.north_screen, measured_north, self.gravity_screen);
 
+        // Do not establish a brand-new absolute reference while the 30 Hz field
+        // measurement is badly delayed by very fast motion. Once locked, though,
+        // magnetic authority never falls to zero solely because of motion.
         if !self.magnetic_locked {
+            if rate_dps > MAG_INITIAL_LOCK_MAX_RATE_DPS {
+                self.clear_pending_magnetic_candidate();
+                return;
+            }
+
             let consistent = self
                 .pending_mag_error_deg
                 .map(|previous| {
-                    abs_f32(wrap_degrees(error_deg - previous)) <= MAX_MAG_INITIAL_ERROR_JITTER_DEG
+                    abs_f32(wrap_degrees(error_deg - previous)) <= MAX_MAG_ERROR_JITTER_DEG
                 })
                 .unwrap_or(false);
 
@@ -293,63 +290,59 @@ impl Fusion {
                 self.pending_mag_samples = 1;
             }
 
-            if self.pending_mag_samples >= MAG_INITIAL_LOCK_SAMPLES {
-                let acquired = self.pending_mag_error_deg.unwrap_or(error_deg);
-                self.rotate_north(acquired);
-                self.magnetic_locked = true;
-                self.recovery_armed = false;
-                self.clear_pending_magnetic_candidate();
-                self.clear_recovery_candidate();
-            }
-            return;
-        }
-
-        if abs_f32(error_deg) >= MAG_RECOVERY_MIN_INNOVATION_DEG {
-            if !self.recovery_armed {
-                self.clear_recovery_candidate();
+            if self.pending_mag_samples < MAG_INITIAL_LOCK_SAMPLES {
                 return;
             }
 
+            self.magnetic_locked = true;
+            self.clear_pending_magnetic_candidate();
+        }
+
+        let large_error = abs_f32(error_deg) >= MAG_LARGE_INNOVATION_DEG;
+        if large_error {
             let consistent = self
-                .recovery_mag_error_deg
+                .large_mag_error_deg
                 .map(|previous| {
-                    abs_f32(wrap_degrees(error_deg - previous))
-                        <= MAX_MAG_RECOVERY_ERROR_JITTER_DEG
+                    abs_f32(wrap_degrees(error_deg - previous)) <= MAX_MAG_ERROR_JITTER_DEG
                 })
                 .unwrap_or(false);
 
             if consistent {
-                self.recovery_mag_samples = self.recovery_mag_samples.saturating_add(1);
-                let previous = self.recovery_mag_error_deg.unwrap_or(error_deg);
-                self.recovery_mag_error_deg = Some(wrap_degrees(
+                self.large_mag_samples = self.large_mag_samples.saturating_add(1);
+                let previous = self.large_mag_error_deg.unwrap_or(error_deg);
+                self.large_mag_error_deg = Some(wrap_degrees(
                     previous + 0.25 * wrap_degrees(error_deg - previous),
                 ));
             } else {
-                self.recovery_mag_error_deg = Some(error_deg);
-                self.recovery_mag_samples = 1;
+                self.large_mag_error_deg = Some(error_deg);
+                self.large_mag_samples = 1;
             }
 
-            if self.recovery_mag_samples >= MAG_RECOVERY_SAMPLES {
-                let recovered = self.recovery_mag_error_deg.unwrap_or(error_deg);
-                self.rotate_north(recovered);
-                self.recovery_armed = false;
-                self.clear_recovery_candidate();
+            // A large innovation must be stable before it can steer north. This
+            // rejects delayed transient directions during a fast hand movement,
+            // but confirmed reacquisition is applied smoothly instead of as a
+            // single branch-changing snap.
+            if self.large_mag_samples < MAG_LARGE_CONFIRM_SAMPLES {
+                return;
             }
-            return;
+        } else {
+            self.clear_large_magnetic_candidate();
         }
 
-        self.recovery_armed = false;
-        self.clear_recovery_candidate();
         if abs_f32(error_deg) <= MAG_DEADBAND_DEG {
             return;
         }
 
-        let requested = (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * error_deg;
-        let applied = clamp_f32(
-            requested,
-            -MAX_MAG_CORRECTION_PER_SAMPLE_DEG,
-            MAX_MAG_CORRECTION_PER_SAMPLE_DEG,
-        );
+        let motion_weight = magnetic_motion_weight(rate_dps);
+        let base_gain = 1.0 - clamp_f32(yaw_alpha, 0.0, 1.0);
+        let gain = if large_error { base_gain * 4.0 } else { base_gain };
+        let requested = gain * error_deg * motion_weight;
+        let max_step = if large_error {
+            MAX_MAG_CORRECTION_RECOVERY_DEG
+        } else {
+            MAX_MAG_CORRECTION_NORMAL_DEG
+        } * motion_weight;
+        let applied = clamp_f32(requested, -max_step, max_step);
         self.rotate_north(applied);
     }
 
@@ -362,6 +355,18 @@ impl Fusion {
         self.north_screen = horizontal_unit(self.north_screen, self.gravity_screen)
             .unwrap_or(self.north_screen);
     }
+}
+
+fn magnetic_motion_weight(rate_dps: f32) -> f32 {
+    if rate_dps <= MAG_FULL_AUTHORITY_RATE_DPS {
+        return 1.0;
+    }
+    if rate_dps >= MAG_LOW_AUTHORITY_RATE_DPS {
+        return MAG_MIN_MOTION_WEIGHT;
+    }
+    let span = MAG_LOW_AUTHORITY_RATE_DPS - MAG_FULL_AUTHORITY_RATE_DPS;
+    let t = (rate_dps - MAG_FULL_AUTHORITY_RATE_DPS) / span;
+    1.0 - t * (1.0 - MAG_MIN_MOTION_WEIGHT)
 }
 
 const PI: f32 = 3.14159265358979323846;
@@ -551,15 +556,18 @@ fn signed_angle_deg(from: [f32; 3], to: [f32; 3], axis: [f32; 3]) -> f32 {
 }
 
 fn sin_approx(value: f32) -> f32 {
-    let x = wrap_radians(value);
+    let mut x = wrap_radians(value);
+    if x > PI * 0.5 {
+        x = PI - x;
+    } else if x < -PI * 0.5 {
+        x = -PI - x;
+    }
     let x2 = x * x;
     x * (1.0 - x2 / 6.0 + x2 * x2 / 120.0 - x2 * x2 * x2 / 5040.0)
 }
 
 fn cos_approx(value: f32) -> f32 {
-    let x = wrap_radians(value);
-    let x2 = x * x;
-    1.0 - x2 / 2.0 + x2 * x2 / 24.0 - x2 * x2 * x2 / 720.0
+    sin_approx(value + PI * 0.5)
 }
 
 fn wrap_radians(mut value: f32) -> f32 {

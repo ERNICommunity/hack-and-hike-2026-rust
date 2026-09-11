@@ -1,37 +1,22 @@
 //! IMU-view projection and presentation-space attitude math.
 //!
-//! These helpers are deliberately local to the IMU screen. They are rendering
-//! mechanics, not a generic graphics or sensor abstraction.
+//! The worldview consumes the fused gravity/north basis directly. Euler angles
+//! exist only for the numeric header and are never used to reconstruct camera
+//! orientation, so the renderer has no pole branch to infer or repair.
 
 use embedded_gui::prelude::Rect;
 
 use crate::app::model::ImuDisplay;
 
 pub(super) const TAN_SCALE: i32 = 1024;
-const TAN_STEP_DEG: i32 = 5;
-const TAN_MAX_DEG: i32 = 80;
-const TAN_Q10: [i32; 17] = [
-    0, 90, 181, 274, 373, 477, 591, 717, 859, 1024, 1220, 1462, 1774, 2196, 2814, 3822, 5807,
-];
+pub(super) const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
 const PI: f32 = 3.14159265358979323846;
 const RAD_TO_DEG: f32 = 180.0 / PI;
-const DEG_TO_RAD: f32 = PI / 180.0;
-pub(super) const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
-// Keep the preferred rectilinear renderer, but narrow only the horizontal field
-// of view to reduce its unavoidable sec(theta)^2 yaw-speed increase toward the
-// edges. tan(50deg) gives a 100deg horizontal FOV at any viewport width.
+// tan(50deg) gives a 100deg horizontal FOV at any viewport width.
 const HORIZONTAL_HALF_FOV_TAN: f32 = 1.1917536;
-
-// The historical renderer applies roll after anisotropic perspective projection
-// so screen roll looks exact. That makes roll and yaw non-equivalent at the Euler
-// pole even though they describe the same physical degree of freedom there. Keep
-// the historical projection everywhere below the pole-lock region, then blend to
-// true 3-D camera roll before reaching the singularity. At the pole the grid and
-// compass therefore depend only on the pole invariant maintained by attitude.rs.
-const POLE_SAFE_BLEND_START_DEG: f32 = 80.0;
-const POLE_SAFE_BLEND_END_DEG: f32 = 88.0;
+const HORIZON_AT_INFINITY_DISTANCE_PX: f32 = 64.0;
 
 type ScreenLine = ((i32, i32), (i32, i32));
 
@@ -40,6 +25,15 @@ pub(super) struct DisplayAttitude {
     pub(super) roll_deg: f32,
     pub(super) pitch_deg: f32,
     pub(super) yaw_deg: f32,
+    basis: WorldBasis,
+}
+
+/// Complete physical orientation used by the worldview. Screen +X is camera
+/// forward, +Z is screen-down, and +Y completes the right-handed sensor frame.
+#[derive(Clone, Copy)]
+struct WorldBasis {
+    gravity_screen: [f32; 3],
+    north_screen: [f32; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -48,49 +42,43 @@ pub(super) struct PerspectiveCamera {
     pub(super) center_y: i32,
     pub(super) focal_x: f32,
     pub(super) focal_y: f32,
-    pub(super) sin_yaw: f32,
-    pub(super) cos_yaw: f32,
+    // Compatibility geometry for the existing horizon rasterizer and compass
+    // size normalization. These are derived from gravity, not Euler pose.
     pub(super) sin_pitch: f32,
     pub(super) cos_pitch: f32,
     pub(super) sin_roll: f32,
     pub(super) cos_roll: f32,
-    pole_safe_blend: f32,
     pub(super) pitch_offset: i32,
-    // Q10 coefficients for the displayed horizon's implicit line:
-    // a*x + b*y + c = 0. Perpendicular screen distance from this line is a
-    // cheap proxy for inverse world depth on the sky/ground planes.
+    // Columns of the world->camera rotation. Computing them once per frame keeps
+    // every grid/glyph point to nine multiplies + six adds and no trig.
+    world_x_camera: [f32; 3],
+    world_y_camera: [f32; 3],
+    world_z_camera: [f32; 3],
+    /// World gravity (down) in renderer camera coordinates: +X right, +Y up,
+    /// +Z forward.
+    pub(super) gravity_camera: [f32; 3],
+    // Unit-normalized screen-space horizon equation in absolute local pixels:
+    // a*x + b*y + c = 0. Its absolute value is pixel distance from the horizon.
     pub(super) horizon_a_q10: i32,
     pub(super) horizon_b_q10: i32,
     pub(super) horizon_c_q10: i32,
 }
 
 pub(super) fn display_attitude(imu: &ImuDisplay) -> DisplayAttitude {
-    let sensor_roll = imu.roll_deg * DEG_TO_RAD;
-    let sensor_pitch = imu.pitch_deg * DEG_TO_RAD;
-    let sin_sensor_roll = sin_approx(sensor_roll);
-    let cos_sensor_roll = cos_approx(sensor_roll);
-    let sin_sensor_pitch = sin_approx(sensor_pitch);
-    let cos_sensor_pitch = cos_approx(sensor_pitch);
-
-    let ax = -sin_sensor_pitch;
-    let ay = sin_sensor_roll * cos_sensor_pitch;
-    let az = cos_sensor_roll * cos_sensor_pitch;
-
-    let screen_roll = atan2_approx(-ax, -ay) * RAD_TO_DEG;
-    let horizontal = sqrt_approx(ax * ax + ay * ay);
-    let screen_pitch = -atan2_approx(az, horizontal) * RAD_TO_DEG;
+    let gravity = screen_to_camera(imu.gravity_screen);
+    let roll = atan2_approx(-gravity[0], -gravity[1]) * RAD_TO_DEG;
+    let horizontal = sqrt_approx(gravity[0] * gravity[0] + gravity[1] * gravity[1]);
+    let pitch = -atan2_approx(gravity[2], horizontal) * RAD_TO_DEG;
     DisplayAttitude {
-        roll_deg: screen_roll,
-        pitch_deg: screen_pitch,
-        yaw_deg: display_yaw(imu),
+        roll_deg: roll,
+        pitch_deg: pitch,
+        // Keep the established display-heading sign for the numeric header only.
+        yaw_deg: -imu.yaw_deg,
+        basis: WorldBasis {
+            gravity_screen: imu.gravity_screen,
+            north_screen: imu.north_screen,
+        },
     }
-}
-
-/// The fused yaw convention is opposite to the physical left/right direction
-/// desired by the screen instruments. Flip it only at the presentation boundary
-/// so fusion math and magnetic correction keep a single internal convention.
-fn display_yaw(imu: &ImuDisplay) -> f32 {
-    -imu.yaw_deg
 }
 
 pub(super) fn perspective_camera(
@@ -98,66 +86,103 @@ pub(super) fn perspective_camera(
     center_x: i32,
     center_y: i32,
 ) -> PerspectiveCamera {
-    let yaw = attitude.yaw_deg * DEG_TO_RAD;
-    let pitch = attitude.pitch_deg * DEG_TO_RAD;
-    let roll = attitude.roll_deg * DEG_TO_RAD;
-    let sin_yaw = sin_approx(yaw);
-    let cos_yaw = cos_approx(yaw);
-    let sin_pitch = sin_approx(pitch);
-    let cos_pitch = cos_approx(pitch);
-    let sin_roll = sin_approx(roll);
-    let cos_roll = cos_approx(roll);
+    let gravity_screen = normalize3(attitude.basis.gravity_screen).unwrap_or([0.0, 0.0, 1.0]);
+    let north_screen = horizontal_unit(attitude.basis.north_screen, gravity_screen)
+        .unwrap_or_else(|| initial_horizontal_reference(gravity_screen));
+
+    // Renderer world coordinates use +Y up and -Z north. With gravity=down and
+    // north known in screen coordinates, the remaining +X world axis follows
+    // directly from handedness. No Euler decomposition is involved.
+    let world_x_screen = cross3(gravity_screen, north_screen);
+    let world_y_screen = negate3(gravity_screen);
+    let world_z_screen = negate3(north_screen);
+
+    let world_x_camera = screen_to_camera(world_x_screen);
+    let world_y_camera = screen_to_camera(world_y_screen);
+    let world_z_camera = screen_to_camera(world_z_screen);
+    let gravity_camera = screen_to_camera(gravity_screen);
     let (focal_x, focal_y) = perspective_focals(center_x, center_y);
-    let abs_pitch_deg = abs_f32(attitude.pitch_deg);
-    let pole_safe_blend = if abs_pitch_deg <= POLE_SAFE_BLEND_START_DEG {
-        0.0
-    } else if abs_pitch_deg >= POLE_SAFE_BLEND_END_DEG {
-        1.0
+
+    // Derive the old horizon rasterizer's slope/intercept coefficients directly
+    // from gravity. The focal_x/focal_y term keeps the horizon exact under the
+    // renderer's anisotropic horizontal FOV.
+    let scaled_gravity_x = gravity_camera[0] * focal_y / focal_x;
+    let raster_norm = sqrt_approx(
+        scaled_gravity_x * scaled_gravity_x + gravity_camera[1] * gravity_camera[1],
+    );
+    let (sin_roll, cos_roll, pitch_offset) = if raster_norm > 0.0001 {
+        (
+            -scaled_gravity_x / raster_norm,
+            -gravity_camera[1] / raster_norm,
+            round_f32(-focal_y * gravity_camera[2] / raster_norm),
+        )
     } else {
-        (abs_pitch_deg - POLE_SAFE_BLEND_START_DEG)
-            / (POLE_SAFE_BLEND_END_DEG - POLE_SAFE_BLEND_START_DEG)
+        // Looking straight down puts the horizon above the viewport (all ground);
+        // looking straight up puts it below (all sky). Roll is irrelevant there.
+        let offscreen = center_y.max(1) * 8;
+        (
+            0.0,
+            1.0,
+            if gravity_camera[2] >= 0.0 { -offscreen } else { offscreen },
+        )
     };
 
-    // Use the exact displayed horizon geometry for fading. This keeps the depth
-    // cue attached to the attitude horizon even at high pitch/roll angles.
-    let visual_pitch = round_degrees(attitude.pitch_deg).clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
-    let pitch_offset = project_angle(visual_pitch, center_y);
-    let horizon_a_q10 = round_f32(-sin_roll * TAN_SCALE as f32);
-    let horizon_b_q10 = round_f32(cos_roll * TAN_SCALE as f32);
-    let horizon_c_q10 = round_f32(
-        (sin_roll * center_x as f32 - cos_roll * center_y as f32 - pitch_offset as f32)
-            * TAN_SCALE as f32,
+    let cos_pitch = sqrt_approx(
+        gravity_camera[0] * gravity_camera[0] + gravity_camera[1] * gravity_camera[1],
     );
+    let sin_pitch = -gravity_camera[2];
+
+    // A camera ray through pixel offset (dx,dy) is proportional to
+    // [dx/fx, -dy/fy, 1]. The horizon is where this ray is perpendicular to
+    // gravity. Normalize the resulting pixel-space line so the grid fade can use
+    // |a*x+b*y+c| directly as a pixel distance.
+    let a_raw = gravity_camera[0] * focal_y;
+    let b_raw = -gravity_camera[1] * focal_x;
+    let c_center_raw = gravity_camera[2] * focal_x * focal_y;
+    let line_norm = sqrt_approx(a_raw * a_raw + b_raw * b_raw);
+    let (horizon_a, horizon_b, horizon_c) = if line_norm > 0.0001 {
+        let inverse = 1.0 / line_norm;
+        (
+            a_raw * inverse,
+            b_raw * inverse,
+            (c_center_raw - a_raw * center_x as f32 - b_raw * center_y as f32) * inverse,
+        )
+    } else {
+        (0.0, 0.0, HORIZON_AT_INFINITY_DISTANCE_PX)
+    };
 
     PerspectiveCamera {
         center_x,
         center_y,
         focal_x,
         focal_y,
-        sin_yaw,
-        cos_yaw,
         sin_pitch,
         cos_pitch,
         sin_roll,
         cos_roll,
-        pole_safe_blend,
         pitch_offset,
-        horizon_a_q10,
-        horizon_b_q10,
-        horizon_c_q10,
+        world_x_camera,
+        world_y_camera,
+        world_z_camera,
+        gravity_camera,
+        horizon_a_q10: round_f32(horizon_a * TAN_SCALE as f32),
+        horizon_b_q10: round_f32(horizon_b * TAN_SCALE as f32),
+        horizon_c_q10: round_f32(horizon_c * TAN_SCALE as f32),
     }
 }
 
 pub(super) fn world_to_camera(point: [f32; 3], camera: PerspectiveCamera) -> [f32; 3] {
-    let yaw_x = camera.cos_yaw * point[0] - camera.sin_yaw * point[2];
-    let yaw_z = camera.sin_yaw * point[0] + camera.cos_yaw * point[2];
-    let pitched_y = camera.cos_pitch * point[1] - camera.sin_pitch * yaw_z;
-    let pitched_z = camera.sin_pitch * point[1] + camera.cos_pitch * yaw_z;
-
-    // Leave roll until projection so the normal view remains pixel-for-pixel
-    // compatible with the existing renderer. project_camera_point blends that
-    // legacy screen roll into a true 3-D roll only near the pitch singularity.
-    [yaw_x, pitched_y, pitched_z]
+    [
+        point[0] * camera.world_x_camera[0]
+            + point[1] * camera.world_y_camera[0]
+            + point[2] * camera.world_z_camera[0],
+        point[0] * camera.world_x_camera[1]
+            + point[1] * camera.world_y_camera[1]
+            + point[2] * camera.world_z_camera[1],
+        point[0] * camera.world_x_camera[2]
+            + point[1] * camera.world_y_camera[2]
+            + point[2] * camera.world_z_camera[2],
+    ]
 }
 
 pub(super) fn clip_camera_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
@@ -182,31 +207,9 @@ pub(super) fn project_camera_point(
     }
 
     let inverse_z = 1.0 / point[2];
-
-    // Existing path: project first, then rotate pixels. This preserves the exact
-    // historical appearance away from vertical pitch.
-    let unrolled_x = camera.focal_x * point[0] * inverse_z;
-    let unrolled_y = -camera.focal_y * point[1] * inverse_z;
-    let legacy_x = camera.cos_roll * unrolled_x - camera.sin_roll * unrolled_y;
-    let legacy_y = camera.sin_roll * unrolled_x + camera.cos_roll * unrolled_y;
-
-    // Pole-safe path: roll the camera-space vector before anisotropic projection.
-    // At +/-90deg pitch this restores the true Euler equivalence, so a noisy
-    // gravity-derived roll exactly cancels with attitude.rs' yaw compensation
-    // instead of rotating the grid around the screen.
-    let rolled_x = camera.cos_roll * point[0] + camera.sin_roll * point[1];
-    let rolled_y = -camera.sin_roll * point[0] + camera.cos_roll * point[1];
-    let pole_x = camera.focal_x * rolled_x * inverse_z;
-    let pole_y = -camera.focal_y * rolled_y * inverse_z;
-
-    let blend = camera.pole_safe_blend;
-    let legacy_weight = 1.0 - blend;
-    let projected_x = legacy_x * legacy_weight + pole_x * blend;
-    let projected_y = legacy_y * legacy_weight + pole_y * blend;
-
     Some((
-        round_f32(camera.center_x as f32 + projected_x),
-        round_f32(camera.center_y as f32 + projected_y),
+        round_f32(camera.center_x as f32 + camera.focal_x * point[0] * inverse_z),
+        round_f32(camera.center_y as f32 - camera.focal_y * point[1] * inverse_z),
     ))
 }
 
@@ -321,29 +324,6 @@ fn perspective_focals(center_x: i32, center_y: i32) -> (f32, f32) {
     (focal_x, focal_y)
 }
 
-fn project_angle(degrees: i32, focal_pixels: i32) -> i32 {
-    focal_pixels * tangent_q10(degrees) / TAN_SCALE
-}
-
-fn tangent_q10(degrees: i32) -> i32 {
-    let clamped = degrees.clamp(-TAN_MAX_DEG, TAN_MAX_DEG);
-    let (sign, magnitude) = if clamped < 0 {
-        (-1, -clamped)
-    } else {
-        (1, clamped)
-    };
-
-    let lower_index = (magnitude / TAN_STEP_DEG) as usize;
-    if lower_index >= TAN_Q10.len() - 1 {
-        return sign * TAN_Q10[TAN_Q10.len() - 1];
-    }
-
-    let remainder = magnitude % TAN_STEP_DEG;
-    let lower = TAN_Q10[lower_index];
-    let upper = TAN_Q10[lower_index + 1];
-    sign * (lower + (upper - lower) * remainder / TAN_STEP_DEG)
-}
-
 pub(super) fn round_degrees(value: f32) -> i32 {
     round_f32(value)
 }
@@ -360,14 +340,48 @@ pub(super) fn abs_f32(value: f32) -> f32 {
     if value < 0.0 { -value } else { value }
 }
 
-fn wrap_radians(mut value: f32) -> f32 {
-    while value > PI {
-        value -= 2.0 * PI;
+fn screen_to_camera(value: [f32; 3]) -> [f32; 3] {
+    [-value[1], -value[2], value[0]]
+}
+
+fn negate3(value: [f32; 3]) -> [f32; 3] {
+    [-value[0], -value[1], -value[2]]
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize3(value: [f32; 3]) -> Option<[f32; 3]> {
+    let norm_sq = dot3(value, value);
+    if norm_sq < 0.000001 {
+        return None;
     }
-    while value < -PI {
-        value += 2.0 * PI;
-    }
-    value
+    let inverse = 1.0 / sqrt_approx(norm_sq);
+    Some([value[0] * inverse, value[1] * inverse, value[2] * inverse])
+}
+
+fn horizontal_unit(value: [f32; 3], gravity: [f32; 3]) -> Option<[f32; 3]> {
+    let along_gravity = dot3(value, gravity);
+    normalize3([
+        value[0] - gravity[0] * along_gravity,
+        value[1] - gravity[1] * along_gravity,
+        value[2] - gravity[2] * along_gravity,
+    ])
+}
+
+fn initial_horizontal_reference(gravity: [f32; 3]) -> [f32; 3] {
+    horizontal_unit([1.0, 0.0, 0.0], gravity)
+        .or_else(|| horizontal_unit([0.0, 1.0, 0.0], gravity))
+        .unwrap_or([0.0, 0.0, 1.0])
 }
 
 fn sqrt_approx(value: f32) -> f32 {
@@ -396,20 +410,4 @@ fn atan2_approx(y: f32, x: f32) -> f32 {
     let angle = base + (0.1963 * ratio * ratio - 0.9817) * ratio;
 
     if y < 0.0 { -angle } else { angle }
-}
-
-fn sin_approx(value: f32) -> f32 {
-    let mut x = wrap_radians(value);
-    if x > PI * 0.5 {
-        x = PI - x;
-    } else if x < -PI * 0.5 {
-        x = -PI - x;
-    }
-
-    let x2 = x * x;
-    x * (1.0 - x2 / 6.0 + x2 * x2 / 120.0 - x2 * x2 * x2 / 5040.0)
-}
-
-fn cos_approx(value: f32) -> f32 {
-    sin_approx(value + PI * 0.5)
 }

@@ -1,6 +1,6 @@
 //! Runtime IMU acquisition and service orchestration.
 
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Ticker, Timer};
 
 use crate::platform::i2c::SystemI2cBus;
 
@@ -96,11 +96,15 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
         let mut consecutive_errors = 0u8;
         let mut trace_samples = 0u32;
         let mut previous_mag_status = magnetic.status();
+        // Ticker advances against a fixed deadline. The old Timer::after loop
+        // added I2C/fusion execution time to every nominal 10 ms period and ran
+        // closer to 80-90 Hz in the captured trace.
+        let mut sample_ticker = Ticker::every(config.sample_period);
 
         ::log::info!("IMU-TRACE session-start revision={}", revision);
 
         loop {
-            Timer::after(config.sample_period).await;
+            sample_ticker.next().await;
             let now = Instant::now();
             magnetic.maintain(&sensor, now).await;
 
@@ -176,7 +180,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                     if trace_samples % IMU_TRACE_EVERY_SAMPLES == 0 {
                         let mag = magnetic_for_fusion.unwrap_or([0.0, 0.0, 0.0]);
                         ::log::info!(
-                            "IMU-TRACE rev={} st={} dt_ms={} acc=[{},{},{}] gyro_raw=[{},{},{}] gyro_corr=[{},{},{}] mag_used={} mag=[{},{},{}] field_ut={} mag_status={:?} cal={} out_rpy=[{},{},{}]",
+                            "IMU-TRACE rev={} st={} dt_ms={} acc=[{},{},{}] gyro_raw=[{},{},{}] gyro_corr=[{},{},{}] mag_used={} mag=[{},{},{}] field_ut={} mag_status={:?} cal={} out_rpy=[{},{},{}] g=[{},{},{}] n=[{},{},{}]",
                             revision.wrapping_add(1),
                             sample.sensor_time,
                             dt_seconds * 1000.0,
@@ -190,7 +194,13 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                             calibration_percent,
                             last_orientation.roll_deg,
                             last_orientation.pitch_deg,
-                            last_orientation.yaw_deg
+                            last_orientation.yaw_deg,
+                            last_orientation.gravity_screen[0],
+                            last_orientation.gravity_screen[1],
+                            last_orientation.gravity_screen[2],
+                            last_orientation.north_screen[0],
+                            last_orientation.north_screen[1],
+                            last_orientation.north_screen[2]
                         );
                     }
 
