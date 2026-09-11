@@ -144,6 +144,25 @@ fn magnetic_half_turn_reacquisition_does_not_apply_the_branch_twice() {
 }
 
 #[test]
+fn non_half_turn_magnetic_recovery_does_not_jump_compass() {
+    let mut tracker = Tracker::new();
+    let _ = tracker.update(1, 90.0, 89.0, 0.0);
+    let crossed_yaw = tracker.update(2, -90.0, 89.0, 0.0);
+
+    // Gyro integration can leave the magnetic recovery short of an exact 180
+    // degree branch change. The visible world must still remain continuous.
+    let candidate_1 = tracker.update(3, -90.0, 85.0, 160.0);
+    let candidate_2 = tracker.update(4, -90.0, 82.0, 159.0);
+    let candidate_3 = tracker.update(5, -90.0, 78.0, 161.0);
+    let committed = tracker.update(6, -90.0, 75.0, 160.0);
+
+    assert_angle_eq(candidate_1, crossed_yaw);
+    assert_angle_eq(candidate_2, crossed_yaw - 1.0);
+    assert_angle_eq(candidate_3, crossed_yaw + 1.0);
+    assert_angle_eq(committed, crossed_yaw);
+}
+
+#[test]
 fn transient_magnetic_half_turn_does_not_flip_compass_branch() {
     let mut tracker = Tracker::new();
     let _ = tracker.update(1, 90.0, 89.0, 0.0);
