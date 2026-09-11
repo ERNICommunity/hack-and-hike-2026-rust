@@ -29,6 +29,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
     let sensor = Bmi270::new(bus);
     let mut revision = 0u32;
     let mut last_orientation = Orientation::default();
+    let mut logged_calibrated_publish = false;
     // Calibration describes the physical sensor/enclosure, not one transport
     // session. Keep it alive across BMI270/AUX recovery for the whole boot.
     let mut magnetic = MagneticState::new(Instant::now());
@@ -112,9 +113,6 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                     };
                     let dt_seconds = integration_ticks as f32 * SENSOR_TIME_TICK_SECONDS;
 
-                    // Saturation or a timing discontinuity can lose turn angle.
-                    // Mark absolute yaw untrusted, but retain the best gyro path;
-                    // quiet-state MAG recovery below will establish north again.
                     if timing_gap || max_abs3(sample.gyro_dps) >= GYRO_NEAR_SATURATION_DPS {
                         fusion.invalidate_absolute_heading();
                     }
@@ -134,19 +132,31 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                         config.yaw_alpha,
                     );
 
-                    let status = match magnetic.status() {
+                    let mag_status = magnetic.status();
+                    let calibration_percent = magnetic.calibration_percent();
+                    let status = match mag_status {
                         MagStatus::Learning => Status::Starting,
                         MagStatus::Ready => Status::Running,
                         MagStatus::Missing | MagStatus::Disturbed => Status::Degraded,
                     };
+                    if calibration_percent == 100 && !logged_calibrated_publish {
+                        ::log::info!(
+                            "CPU1 publishing calibrated IMU snapshot: status={:?} mag_status={:?} field={}uT revision={}",
+                            status,
+                            mag_status,
+                            magnetic.field_ut(),
+                            revision.wrapping_add(1)
+                        );
+                        logged_calibrated_publish = true;
+                    }
                     channels::publish(
                         runtime,
                         &mut revision,
                         status,
                         last_orientation,
-                        magnetic.status(),
+                        mag_status,
                         magnetic.field_ut(),
-                        magnetic.calibration_percent(),
+                        calibration_percent,
                     );
                 }
                 Err(_) => {
