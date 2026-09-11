@@ -84,11 +84,16 @@ pub(crate) fn reset_camera<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), 
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    // GC0308 RESETB is active-low. The boot policy configures P1_0 as a GPIO
-    // output; assert it low, then release high and allow the external 20 MHz
-    // camera clock to run before SCCB access.
+    // Make camera reset self-contained so camera-only firmware does not depend
+    // on the display/touch bootstrap having configured AW9523 first. Drive the
+    // latch low before switching P1_0 to an output to avoid a high-going glitch.
+    update_register_bits(i2c, PORT1_MODE_REGISTER, CAMERA_RESET, CAMERA_RESET)?;
     update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, 0)?;
+    update_register_bits(i2c, PORT1_DIRECTION_REGISTER, CAMERA_RESET, 0)?;
     delay.delay_millis(20u32);
+
+    // GC0308 RESETB is active-low. Release it and allow the external 20 MHz
+    // camera clock to run before SCCB access.
     update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, CAMERA_RESET)?;
     delay.delay_millis(20u32);
     Ok(())
