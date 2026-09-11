@@ -158,9 +158,11 @@ impl Tracker {
             }
 
             // The fused yaw returned to its old branch before confirmation.
-            // Discard the provisional correction; the persistent pole offset
-            // keeps the compass on the same visible world orientation.
+            // This sample has already resolved the pending transition, so do not
+            // compare it with the transient candidate again as though it were a
+            // fresh half-turn. Keep the persistent pole offset for this frame.
             self.pending_reacquisition = None;
+            return self.yaw_offset_deg;
         }
 
         let Some(previous_base_yaw_deg) = self.previous_base_yaw_deg else {
