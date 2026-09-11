@@ -3,12 +3,9 @@
 //! KDL owns all content-view geometry. This module retains only the physical
 //! content/navigation partition and navigation-rail styling/order.
 
-use crate::{
-    app::model::ViewId,
-    capabilities::display::{self, Region},
-};
+use crate::capabilities::display::{self, Region};
 
-use super::theme;
+use super::{navigation::ViewId, theme};
 
 const NAV_WIDTH: usize = 44;
 pub(crate) const NAV_ICON_SIZE: usize = 16;
