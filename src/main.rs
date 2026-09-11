@@ -8,6 +8,15 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
+#[cfg(any(
+    feature = "imu-worldview",
+    feature = "mic-waveform",
+    feature = "speaker-synth",
+    feature = "network-demo",
+    feature = "camera-view",
+    feature = "settings",
+    feature = "log-view",
+))]
 mod app;
 mod firmware;
 mod platform;
@@ -16,9 +25,28 @@ mod support;
 
 extern crate alloc;
 
+#[cfg(any(
+    feature = "imu-worldview",
+    feature = "mic-waveform",
+    feature = "speaker-synth",
+    feature = "network-demo",
+    feature = "camera-view",
+    feature = "settings",
+    feature = "log-view",
+))]
 use ::log::info;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Timer};
+#[cfg(any(
+    feature = "imu-worldview",
+    feature = "mic-waveform",
+    feature = "speaker-synth",
+    feature = "network-demo",
+    feature = "camera-view",
+    feature = "settings",
+    feature = "log-view",
+))]
+use embassy_time::Instant;
 use esp_backtrace as _;
 
 const UI_IDLE_DELAY: Duration = Duration::from_millis(5);
@@ -27,39 +55,74 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_rtos::main]
 async fn main(_cpu0_spawner: Spawner) -> ! {
-    let firmware::Bootstrap {
-        mut display,
-        mut camera,
-        camera_ready,
-        inputs,
-        brightness,
-        playback,
-    } = firmware::bootstrap();
+    let bootstrap = firmware::bootstrap();
 
-    let firmware::AppInputs {
-        touch,
-        imu: imu_input,
-        audio: audio_input,
-        network: network_input,
-        log: log_input,
-    } = inputs;
-    let model = app::model::AppModel::new(
-        app::model::AppModelInputs {
-            network: network_input,
-            imu: imu_input,
-            audio: audio_input,
-            log: log_input,
-        },
-        brightness,
-        playback,
-    );
-    let mut ui = app::ui::Ui::new(model, touch);
+    #[cfg(any(
+        feature = "imu-worldview",
+        feature = "mic-waveform",
+        feature = "speaker-synth",
+        feature = "network-demo",
+        feature = "camera-view",
+        feature = "settings",
+        feature = "log-view",
+    ))]
+    run_applications(bootstrap).await;
 
+    #[cfg(not(any(
+        feature = "imu-worldview",
+        feature = "mic-waveform",
+        feature = "speaker-synth",
+        feature = "network-demo",
+        feature = "camera-view",
+        feature = "settings",
+        feature = "log-view",
+    )))]
+    {
+        // Capability-only builds intentionally have no stock application host.
+        // Keep the concrete capability owners alive while their CPU1 services run.
+        let _bootstrap = bootstrap;
+        loop {
+            Timer::after(UI_IDLE_DELAY).await;
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "imu-worldview",
+    feature = "mic-waveform",
+    feature = "speaker-synth",
+    feature = "network-demo",
+    feature = "camera-view",
+    feature = "settings",
+    feature = "log-view",
+))]
+async fn run_applications(mut bootstrap: firmware::Bootstrap) -> ! {
+    let model = app::model::AppModel::new(app::model::AppModelInputs {
+        #[cfg(feature = "network-demo")]
+        network: bootstrap.inputs.network,
+        #[cfg(feature = "imu-worldview")]
+        imu: bootstrap.inputs.imu,
+        #[cfg(feature = "mic-waveform")]
+        audio: bootstrap.inputs.audio,
+        #[cfg(feature = "speaker-synth")]
+        playback: bootstrap.playback,
+        #[cfg(feature = "settings")]
+        brightness: bootstrap.brightness,
+        #[cfg(feature = "log-view")]
+        log: bootstrap.inputs.log,
+    });
+
+    #[cfg(feature = "touch")]
+    let mut ui = app::ui::Ui::new(model, bootstrap.inputs.touch);
+    #[cfg(not(feature = "touch"))]
+    let mut ui = app::ui::Ui::new(model);
+
+    let display = &mut bootstrap.display;
     let now = Instant::now();
     let mut heap_monitor = support::memory::HeapMonitor::new(now);
     heap_monitor.checkpoint("after model + UI construction");
 
-    ui.render_initial(&mut display);
+    ui.render_initial(display);
     heap_monitor.checkpoint("after initial UI render");
 
     loop {
@@ -68,18 +131,25 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
         if let Some(transition) = transition {
             heap_monitor.begin_activity(transition.to.name());
+            #[cfg(feature = "camera-view")]
             if transition.from == app::model::ViewId::Camera {
-                camera.pause();
+                bootstrap.camera.pause();
             }
-            ui.apply_navigation(transition, &mut display);
+            ui.apply_navigation(transition, display);
         }
 
-        ui.render(&mut display);
+        ui.render(display);
 
-        let camera_active = camera_ready && ui.presented_view() == app::model::ViewId::Camera;
+        #[cfg(feature = "camera-view")]
+        let camera_active = bootstrap.camera_ready
+            && ui.presented_view() == app::model::ViewId::Camera;
+        #[cfg(not(feature = "camera-view"))]
+        let camera_active = false;
+
+        #[cfg(feature = "camera-view")]
         if camera_active {
-            if let Some(mut frame) = camera.begin_frame() {
-                ui.render_camera(&mut display, &mut frame);
+            if let Some(mut frame) = bootstrap.camera.begin_frame() {
+                ui.render_camera(display, &mut frame);
                 frame.finish();
             }
         }
@@ -90,11 +160,11 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         }
         heap_monitor.poll(now);
 
-        // Camera capture is frame-paced by the sensor, while the IMU view is
-        // paced by fresh 100 Hz fusion snapshots plus the proven 40 MHz LCD path.
-        // Do not insert an arbitrary CPU0 sleep for either high-rate view; other
-        // screens retain the small idle delay to avoid unnecessary busy looping.
+        #[cfg(feature = "imu-worldview")]
         let imu_active = ui.presented_view() == app::model::ViewId::Imu;
+        #[cfg(not(feature = "imu-worldview"))]
+        let imu_active = false;
+
         if !camera_active && !imu_active {
             Timer::after(UI_IDLE_DELAY).await;
         }
