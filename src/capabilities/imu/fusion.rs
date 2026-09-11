@@ -1,37 +1,36 @@
 //! Pure gyro-bias estimation and orientation fusion.
 //!
 //! This module deliberately has no I2C, Embassy, or sensor-register knowledge.
+//!
+//! Fusion keeps a complete orientation basis in screen coordinates: the world
+//! gravity direction and magnetic-north direction expressed in the rotating
+//! device frame. Both vectors are propagated by the gyroscope. Accelerometer
+//! correction rotates the complete basis, while magnetometer correction rotates
+//! only north around gravity. This avoids the Euler/azimuth singularity that a
+//! separate `gravity + scalar yaw` representation has when camera-forward is
+//! vertical (display flat on a table).
 
 use super::Orientation;
 
-// Magnetic yaw is a long-term absolute reference. Keep its per-frame authority
-// deliberately small so residual hard/soft-iron and tilt errors cannot make the
-// compass hunt while the gyro already provides a smooth short-term heading.
-const MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG: f32 = 0.08;
-const MAG_YAW_DEADBAND_DEG: f32 = 1.5;
-const MAG_HEADING_FILTER_ALPHA: f32 = 0.18;
+// Magnetic north is a long-term absolute reference. Keep its per-frame authority
+// deliberately small so residual hard/soft-iron error cannot make the compass
+// hunt while the gyro already provides smooth short-term motion.
+const MAX_MAG_CORRECTION_PER_SAMPLE_DEG: f32 = 0.08;
+const MAG_DEADBAND_DEG: f32 = 1.5;
+const MAG_DIRECTION_FILTER_ALPHA: f32 = 0.18;
 // The 30 Hz BMM150 is delayed relative to the gyro. Only fuse it once hand motion
-// is genuinely slow; faster motion is carried by gyro yaw and corrected later.
+// is genuinely slow; faster motion is carried by the gyro and corrected later.
 const MAG_FUSION_MAX_RATE_DPS: f32 = 20.0;
-// Require several fresh low-motion MAG frames before using the compass after a
-// turn. At 30 Hz this is roughly 170 ms, enough for the AUX pipeline to settle.
 const MAG_QUIET_SAMPLES_BEFORE_FUSION: u8 = 5;
-// Initial/reacquired north must be consistent over multiple independent BMM150
-// frames. Compare heading-minus-gyro offsets so small residual motion cancels.
 const MAG_INITIAL_LOCK_SAMPLES: u8 = 5;
-const MAX_MAG_INITIAL_OFFSET_JITTER_DEG: f32 = 6.0;
-// A large but stable discrepancy after real motion is evidence that gyro
-// integration lost angle. Reacquire only after a longer consistency proof; a
-// stationary magnetic disturbance with no preceding motion remains rejected.
+const MAX_MAG_INITIAL_ERROR_JITTER_DEG: f32 = 6.0;
 const MAG_RECOVERY_MIN_INNOVATION_DEG: f32 = 30.0;
 const MAG_RECOVERY_SAMPLES: u8 = 8;
-const MAX_MAG_RECOVERY_OFFSET_JITTER_DEG: f32 = 6.0;
-// Reject poorly conditioned tilt compensation. The horizontal geomagnetic field
-// should be comfortably above sensor noise, and the camera-forward heading axis
-// must be at least 50% horizontal. Near its vertical singularity gyro yaw is a
-// substantially better short-term heading reference than amplified MAG noise.
+const MAX_MAG_RECOVERY_ERROR_JITTER_DEG: f32 = 6.0;
+// Reject only a physically weak horizontal magnetic field. Device attitude is
+// intentionally not part of this test: magnetic north remains observable when
+// camera-forward is vertical.
 const MIN_MAG_HORIZONTAL_FIELD_UT: f32 = 8.0;
-const MIN_HEADING_AXIS_HORIZONTAL_SQ: f32 = 0.25;
 
 #[derive(Clone, Copy)]
 pub(super) struct GyroBias {
@@ -50,8 +49,7 @@ impl GyroBias {
     }
 
     pub(super) fn correct(&mut self, accel_g: [f32; 3], gyro_dps: [f32; 3]) -> [f32; 3] {
-        let accel_norm_sq =
-            accel_g[0] * accel_g[0] + accel_g[1] * accel_g[1] + accel_g[2] * accel_g[2];
+        let accel_norm_sq = dot3(accel_g, accel_g);
         let gyro_max = max_abs3(gyro_dps);
         let stationary = (0.90 * 0.90..=1.10 * 1.10).contains(&accel_norm_sq) && gyro_max < 3.0;
 
@@ -79,15 +77,17 @@ impl GyroBias {
 #[derive(Clone, Copy)]
 pub(super) struct Fusion {
     orientation: Orientation,
-    gravity_body: [f32; 3],
-    previous_yaw_rate_dps: Option<f32>,
-    magnetic_heading_locked: bool,
-    filtered_magnetic_heading_deg: Option<f32>,
+    // Inertially fixed world vectors expressed in the rotating screen frame.
+    gravity_screen: [f32; 3],
+    north_screen: [f32; 3],
+    previous_gyro_screen_dps: Option<[f32; 3]>,
+    magnetic_locked: bool,
+    filtered_magnetic_north: Option<[f32; 3]>,
     quiet_mag_samples: u8,
     recovery_armed: bool,
-    pending_mag_offset: Option<f32>,
+    pending_mag_error_deg: Option<f32>,
     pending_mag_samples: u8,
-    recovery_mag_offset: Option<f32>,
+    recovery_mag_error_deg: Option<f32>,
     recovery_mag_samples: u8,
     initialized: bool,
 }
@@ -100,23 +100,24 @@ impl Fusion {
                 pitch_deg: 0.0,
                 yaw_deg: 0.0,
             },
-            gravity_body: [0.0, 0.0, 1.0],
-            previous_yaw_rate_dps: None,
-            magnetic_heading_locked: false,
-            filtered_magnetic_heading_deg: None,
+            gravity_screen: [0.0, 0.0, 1.0],
+            north_screen: [1.0, 0.0, 0.0],
+            previous_gyro_screen_dps: None,
+            magnetic_locked: false,
+            filtered_magnetic_north: None,
             quiet_mag_samples: 0,
             recovery_armed: false,
-            pending_mag_offset: None,
+            pending_mag_error_deg: None,
             pending_mag_samples: 0,
-            recovery_mag_offset: None,
+            recovery_mag_error_deg: None,
             recovery_mag_samples: 0,
             initialized: false,
         }
     }
 
     pub(super) fn invalidate_absolute_heading(&mut self) {
-        self.magnetic_heading_locked = false;
-        self.filtered_magnetic_heading_deg = None;
+        self.magnetic_locked = false;
+        self.filtered_magnetic_north = None;
         self.quiet_mag_samples = 0;
         self.recovery_armed = true;
         self.clear_pending_magnetic_candidate();
@@ -124,22 +125,22 @@ impl Fusion {
     }
 
     pub(super) fn reset_rate_history(&mut self) {
-        self.previous_yaw_rate_dps = None;
+        self.previous_gyro_screen_dps = None;
     }
 
     fn clear_pending_magnetic_candidate(&mut self) {
-        self.pending_mag_offset = None;
+        self.pending_mag_error_deg = None;
         self.pending_mag_samples = 0;
     }
 
     fn clear_recovery_candidate(&mut self) {
-        self.recovery_mag_offset = None;
+        self.recovery_mag_error_deg = None;
         self.recovery_mag_samples = 0;
     }
 
     fn reset_magnetic_observation_window(&mut self) {
         self.quiet_mag_samples = 0;
-        self.filtered_magnetic_heading_deg = None;
+        self.filtered_magnetic_north = None;
         self.recovery_armed = true;
         self.clear_pending_magnetic_candidate();
         self.clear_recovery_candidate();
@@ -158,198 +159,208 @@ impl Fusion {
         magnetic_field_ut: Option<[f32; 3]>,
         yaw_alpha: f32,
     ) -> Orientation {
-        let measured_gravity = normalize3(accel_g);
+        let measured_gravity_screen = normalize3(screen_vector_from_body(accel_g));
 
         if !self.initialized {
-            if let Some(gravity) = measured_gravity {
-                self.gravity_body = gravity;
+            if let Some(gravity) = measured_gravity_screen {
+                self.gravity_screen = gravity;
             }
-            let (roll, pitch) = attitude_from_gravity(self.gravity_body);
-            self.orientation.roll_deg = roll;
-            self.orientation.pitch_deg = pitch;
-            self.orientation.yaw_deg = 0.0;
+            self.north_screen = initial_horizontal_reference(self.gravity_screen);
             self.initialized = true;
+            self.update_euler_output();
             return self.orientation;
         }
 
-        // Propagate one gravity vector with the complete body-rate vector instead
-        // of integrating roll/pitch as independent Euler angles. A yaw rotation
-        // around gravity therefore leaves tilt unchanged by construction.
-        let predicted_gravity = integrate_gravity(self.gravity_body, gyro_dps, dt_seconds);
+        let gyro_screen = screen_vector_from_body(gyro_dps);
+        let integration_gyro = self
+            .previous_gyro_screen_dps
+            .map(|previous| {
+                [
+                    0.5 * (previous[0] + gyro_screen[0]),
+                    0.5 * (previous[1] + gyro_screen[1]),
+                    0.5 * (previous[2] + gyro_screen[2]),
+                ]
+            })
+            .unwrap_or(gyro_screen);
+        self.previous_gyro_screen_dps = Some(gyro_screen);
+
+        // Propagate the complete orientation basis. Coordinates of an inertially
+        // fixed vector in a rotating body obey v_dot = v x omega.
+        let predicted_gravity =
+            integrate_inertial_vector(self.gravity_screen, integration_gyro, dt_seconds);
+        let predicted_north =
+            integrate_inertial_vector(self.north_screen, integration_gyro, dt_seconds);
+
         let accel_norm_sq = dot3(accel_g, accel_g);
         let accel_plausible = (0.75 * 0.75..=1.25 * 1.25).contains(&accel_norm_sq);
         let alpha = clamp_f32(roll_pitch_alpha, 0.0, 1.0);
-        self.gravity_body = if accel_plausible {
-            if let Some(measured) = measured_gravity {
-                let blended = [
+
+        if accel_plausible {
+            if let Some(measured) = measured_gravity_screen {
+                let blended = normalize3([
                     alpha * predicted_gravity[0] + (1.0 - alpha) * measured[0],
                     alpha * predicted_gravity[1] + (1.0 - alpha) * measured[1],
                     alpha * predicted_gravity[2] + (1.0 - alpha) * measured[2],
-                ];
-                normalize3(blended).unwrap_or(predicted_gravity)
+                ])
+                .unwrap_or(predicted_gravity);
+
+                // Apply the same leveling correction to north. Correcting gravity
+                // alone and then reconstructing yaw would silently destroy one
+                // degree of orientation during arbitrary 3-D movement.
+                self.north_screen = rotate_between(predicted_gravity, blended, predicted_north);
+                self.gravity_screen = blended;
             } else {
-                predicted_gravity
+                self.gravity_screen = predicted_gravity;
+                self.north_screen = predicted_north;
             }
         } else {
-            predicted_gravity
-        };
-
-        let (roll, pitch) = attitude_from_gravity(self.gravity_body);
-        self.orientation.roll_deg = roll;
-        self.orientation.pitch_deg = pitch;
-
-        let screen_gravity =
-            normalize3(screen_vector_from_body(self.gravity_body)).unwrap_or([0.0, 0.0, 1.0]);
-        let screen_gyro = screen_vector_from_body(gyro_dps);
-
-        // Yaw rate is the component of angular velocity around local gravity.
-        let yaw_rate_dps = dot3(screen_gyro, screen_gravity);
-        // Trapezoidal integration preserves substantially more turn angle during
-        // fast acceleration/deceleration than integrating only the newest rate.
-        let integrated_yaw_rate = self
-            .previous_yaw_rate_dps
-            .map(|previous| 0.5 * (previous + yaw_rate_dps))
-            .unwrap_or(yaw_rate_dps);
-        self.previous_yaw_rate_dps = Some(yaw_rate_dps);
-        let predicted_yaw =
-            wrap_degrees(self.orientation.yaw_deg + integrated_yaw_rate * dt_seconds);
-
-        let heading_axis_horizontal_sq = 1.0 - screen_gravity[0] * screen_gravity[0];
-        if heading_axis_horizontal_sq < MIN_HEADING_AXIS_HORIZONTAL_SQ {
-            // Camera-forward azimuth is undefined here. Treat this exactly like a
-            // magnetic observation discontinuity even during a slow crossing:
-            // throw away the pre-pole filter state and require a fresh, stable
-            // magnetic recovery once the heading axis is well-conditioned again.
-            self.reset_magnetic_observation_window();
-            self.orientation.yaw_deg = predicted_yaw;
-            return self.orientation;
+            self.gravity_screen = predicted_gravity;
+            self.north_screen = predicted_north;
         }
+        self.north_screen = horizontal_unit(self.north_screen, self.gravity_screen)
+            .unwrap_or_else(|| initial_horizontal_reference(self.gravity_screen));
 
         let total_rate_dps = max_abs3(gyro_dps);
         if total_rate_dps > MAG_FUSION_MAX_RATE_DPS {
-            // Never mix delayed 30 Hz magnetic observations into active motion.
             self.note_motion();
-            self.orientation.yaw_deg = predicted_yaw;
-            return self.orientation;
+        } else if let Some(measured_north) = magnetic_field_ut
+            .map(screen_vector_from_body)
+            .and_then(|field| magnetic_north(field, self.gravity_screen))
+        {
+            let measured_north = self.filter_magnetic_direction(measured_north);
+            self.fuse_magnetic_north(measured_north, yaw_alpha);
         }
 
-        let magnetic_heading = magnetic_field_ut
-            .map(screen_vector_from_body)
-            .and_then(|field| gravity_compensated_heading(field, screen_gravity))
-            .map(|heading| self.filter_magnetic_heading(heading));
-
-        self.orientation.yaw_deg = if let Some(heading) = magnetic_heading {
-            self.fuse_magnetic_yaw(predicted_yaw, heading, yaw_alpha)
-        } else {
-            predicted_yaw
-        };
-
+        self.update_euler_output();
         self.orientation
     }
 
-    fn filter_magnetic_heading(&mut self, heading: f32) -> f32 {
+    fn update_euler_output(&mut self) {
+        let gravity_body = body_vector_from_screen(self.gravity_screen);
+        let (roll, pitch) = attitude_from_gravity(gravity_body);
+        self.orientation.roll_deg = roll;
+        self.orientation.pitch_deg = pitch;
+
+        // Camera-forward azimuth is mathematically undefined only at the exact
+        // pole. The full north/gravity basis remains valid there, so retain the
+        // last scalar display value for that instant and naturally emerge on the
+        // correct branch as soon as forward has a horizontal projection again.
+        if let Some(yaw) = heading_from_north(self.north_screen, self.gravity_screen) {
+            self.orientation.yaw_deg = yaw;
+        }
+    }
+
+    fn filter_magnetic_direction(&mut self, measured: [f32; 3]) -> [f32; 3] {
         let filtered = self
-            .filtered_magnetic_heading_deg
-            .map(|previous| {
-                wrap_degrees(
-                    previous + MAG_HEADING_FILTER_ALPHA * wrap_degrees(heading - previous),
-                )
+            .filtered_magnetic_north
+            .and_then(|previous| {
+                normalize3([
+                    previous[0] + MAG_DIRECTION_FILTER_ALPHA * (measured[0] - previous[0]),
+                    previous[1] + MAG_DIRECTION_FILTER_ALPHA * (measured[1] - previous[1]),
+                    previous[2] + MAG_DIRECTION_FILTER_ALPHA * (measured[2] - previous[2]),
+                ])
             })
-            .unwrap_or(heading);
-        self.filtered_magnetic_heading_deg = Some(filtered);
+            .unwrap_or(measured);
+        let filtered = horizontal_unit(filtered, self.gravity_screen).unwrap_or(measured);
+        self.filtered_magnetic_north = Some(filtered);
         filtered
     }
 
-    fn fuse_magnetic_yaw(&mut self, predicted_yaw: f32, heading: f32, yaw_alpha: f32) -> f32 {
+    fn fuse_magnetic_north(&mut self, measured_north: [f32; 3], yaw_alpha: f32) {
         self.quiet_mag_samples = self.quiet_mag_samples.saturating_add(1);
         if self.quiet_mag_samples < MAG_QUIET_SAMPLES_BEFORE_FUSION {
-            return predicted_yaw;
+            return;
         }
 
-        let offset = wrap_degrees(heading - predicted_yaw);
+        let error_deg = signed_angle_deg(self.north_screen, measured_north, self.gravity_screen);
 
-        if !self.magnetic_heading_locked {
+        if !self.magnetic_locked {
             let consistent = self
-                .pending_mag_offset
+                .pending_mag_error_deg
                 .map(|previous| {
-                    abs_f32(wrap_degrees(offset - previous)) <= MAX_MAG_INITIAL_OFFSET_JITTER_DEG
+                    abs_f32(wrap_degrees(error_deg - previous)) <= MAX_MAG_INITIAL_ERROR_JITTER_DEG
                 })
                 .unwrap_or(false);
 
             if consistent {
                 self.pending_mag_samples = self.pending_mag_samples.saturating_add(1);
-                let previous = self.pending_mag_offset.unwrap_or(offset);
-                self.pending_mag_offset = Some(wrap_degrees(
-                    previous + 0.25 * wrap_degrees(offset - previous),
+                let previous = self.pending_mag_error_deg.unwrap_or(error_deg);
+                self.pending_mag_error_deg = Some(wrap_degrees(
+                    previous + 0.25 * wrap_degrees(error_deg - previous),
                 ));
             } else {
-                self.pending_mag_offset = Some(offset);
+                self.pending_mag_error_deg = Some(error_deg);
                 self.pending_mag_samples = 1;
             }
 
             if self.pending_mag_samples >= MAG_INITIAL_LOCK_SAMPLES {
-                let acquired_offset = self.pending_mag_offset.unwrap_or(offset);
-                self.magnetic_heading_locked = true;
+                let acquired = self.pending_mag_error_deg.unwrap_or(error_deg);
+                self.rotate_north(acquired);
+                self.magnetic_locked = true;
                 self.recovery_armed = false;
                 self.clear_pending_magnetic_candidate();
                 self.clear_recovery_candidate();
-                return wrap_degrees(predicted_yaw + acquired_offset);
             }
-
-            return predicted_yaw;
+            return;
         }
 
-        // Large recovery is only legal after actual motion (or a magnetic
-        // geometry discontinuity such as the flat-pose singularity). Once MAG
-        // and gyro agree after a turn, disarm it so a later stationary magnetic
-        // disturbance cannot redefine north.
-        if abs_f32(offset) >= MAG_RECOVERY_MIN_INNOVATION_DEG {
+        if abs_f32(error_deg) >= MAG_RECOVERY_MIN_INNOVATION_DEG {
             if !self.recovery_armed {
                 self.clear_recovery_candidate();
-                return predicted_yaw;
+                return;
             }
 
             let consistent = self
-                .recovery_mag_offset
+                .recovery_mag_error_deg
                 .map(|previous| {
-                    abs_f32(wrap_degrees(offset - previous)) <= MAX_MAG_RECOVERY_OFFSET_JITTER_DEG
+                    abs_f32(wrap_degrees(error_deg - previous))
+                        <= MAX_MAG_RECOVERY_ERROR_JITTER_DEG
                 })
                 .unwrap_or(false);
 
             if consistent {
                 self.recovery_mag_samples = self.recovery_mag_samples.saturating_add(1);
-                let previous = self.recovery_mag_offset.unwrap_or(offset);
-                self.recovery_mag_offset = Some(wrap_degrees(
-                    previous + 0.25 * wrap_degrees(offset - previous),
+                let previous = self.recovery_mag_error_deg.unwrap_or(error_deg);
+                self.recovery_mag_error_deg = Some(wrap_degrees(
+                    previous + 0.25 * wrap_degrees(error_deg - previous),
                 ));
             } else {
-                self.recovery_mag_offset = Some(offset);
+                self.recovery_mag_error_deg = Some(error_deg);
                 self.recovery_mag_samples = 1;
             }
 
             if self.recovery_mag_samples >= MAG_RECOVERY_SAMPLES {
-                let recovered_offset = self.recovery_mag_offset.unwrap_or(offset);
+                let recovered = self.recovery_mag_error_deg.unwrap_or(error_deg);
+                self.rotate_north(recovered);
                 self.recovery_armed = false;
                 self.clear_recovery_candidate();
-                return wrap_degrees(predicted_yaw + recovered_offset);
             }
-
-            return predicted_yaw;
+            return;
         }
 
         self.recovery_armed = false;
         self.clear_recovery_candidate();
-        if abs_f32(offset) <= MAG_YAW_DEADBAND_DEG {
-            return predicted_yaw;
+        if abs_f32(error_deg) <= MAG_DEADBAND_DEG {
+            return;
         }
 
-        let requested = (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * offset;
+        let requested = (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * error_deg;
         let applied = clamp_f32(
             requested,
-            -MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG,
-            MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG,
+            -MAX_MAG_CORRECTION_PER_SAMPLE_DEG,
+            MAX_MAG_CORRECTION_PER_SAMPLE_DEG,
         );
-        wrap_degrees(predicted_yaw + applied)
+        self.rotate_north(applied);
+    }
+
+    fn rotate_north(&mut self, degrees: f32) {
+        self.north_screen = rotate_around_axis(
+            self.north_screen,
+            self.gravity_screen,
+            degrees * DEG_TO_RAD,
+        );
+        self.north_screen = horizontal_unit(self.north_screen, self.gravity_screen)
+            .unwrap_or(self.north_screen);
     }
 }
 
@@ -414,6 +425,10 @@ fn screen_vector_from_body(value: [f32; 3]) -> [f32; 3] {
     [value[2], -value[0], -value[1]]
 }
 
+fn body_vector_from_screen(value: [f32; 3]) -> [f32; 3] {
+    [-value[1], -value[2], value[0]]
+}
+
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -428,28 +443,76 @@ fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 
 fn normalize3(value: [f32; 3]) -> Option<[f32; 3]> {
     let norm_sq = dot3(value, value);
-    if norm_sq < 0.01 {
+    if norm_sq < 0.000001 {
         return None;
     }
     let inverse = 1.0 / sqrt_approx(norm_sq);
     Some([value[0] * inverse, value[1] * inverse, value[2] * inverse])
 }
 
-fn integrate_gravity(gravity: [f32; 3], gyro_dps: [f32; 3], dt_seconds: f32) -> [f32; 3] {
+fn horizontal_unit(value: [f32; 3], gravity: [f32; 3]) -> Option<[f32; 3]> {
+    let along_gravity = dot3(value, gravity);
+    normalize3([
+        value[0] - gravity[0] * along_gravity,
+        value[1] - gravity[1] * along_gravity,
+        value[2] - gravity[2] * along_gravity,
+    ])
+}
+
+fn initial_horizontal_reference(gravity: [f32; 3]) -> [f32; 3] {
+    horizontal_unit([1.0, 0.0, 0.0], gravity)
+        .or_else(|| horizontal_unit([0.0, 1.0, 0.0], gravity))
+        .unwrap_or([0.0, 0.0, 1.0])
+}
+
+fn integrate_inertial_vector(
+    vector: [f32; 3],
+    gyro_dps: [f32; 3],
+    dt_seconds: f32,
+) -> [f32; 3] {
     let omega = [
         gyro_dps[0] * DEG_TO_RAD,
         gyro_dps[1] * DEG_TO_RAD,
         gyro_dps[2] * DEG_TO_RAD,
     ];
-    // Coordinates of an inertially fixed gravity vector in a rotating body obey
-    // g_dot = -omega x g = g x omega.
-    let derivative = cross3(gravity, omega);
-    let predicted = [
-        gravity[0] + derivative[0] * dt_seconds,
-        gravity[1] + derivative[1] * dt_seconds,
-        gravity[2] + derivative[2] * dt_seconds,
-    ];
-    normalize3(predicted).unwrap_or(gravity)
+    let derivative = cross3(vector, omega);
+    normalize3([
+        vector[0] + derivative[0] * dt_seconds,
+        vector[1] + derivative[1] * dt_seconds,
+        vector[2] + derivative[2] * dt_seconds,
+    ])
+    .unwrap_or(vector)
+}
+
+fn rotate_between(from: [f32; 3], to: [f32; 3], value: [f32; 3]) -> [f32; 3] {
+    let axis_raw = cross3(from, to);
+    let axis_norm_sq = dot3(axis_raw, axis_raw);
+    if axis_norm_sq < 0.000001 {
+        return value;
+    }
+    let axis = normalize3(axis_raw).unwrap_or([0.0, 0.0, 1.0]);
+    let sine = sqrt_approx(axis_norm_sq).min(1.0);
+    let cosine = clamp_f32(dot3(from, to), -1.0, 1.0);
+    rotate_around_axis_sin_cos(value, axis, sine, cosine)
+}
+
+fn rotate_around_axis(value: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
+    rotate_around_axis_sin_cos(value, axis, sin_approx(angle), cos_approx(angle))
+}
+
+fn rotate_around_axis_sin_cos(
+    value: [f32; 3],
+    axis: [f32; 3],
+    sine: f32,
+    cosine: f32,
+) -> [f32; 3] {
+    let cross = cross3(axis, value);
+    let along = dot3(axis, value) * (1.0 - cosine);
+    [
+        value[0] * cosine + cross[0] * sine + axis[0] * along,
+        value[1] * cosine + cross[1] * sine + axis[1] * along,
+        value[2] * cosine + cross[2] * sine + axis[2] * along,
+    ]
 }
 
 fn attitude_from_gravity(gravity: [f32; 3]) -> (f32, f32) {
@@ -459,38 +522,54 @@ fn attitude_from_gravity(gravity: [f32; 3]) -> (f32, f32) {
     (roll, pitch)
 }
 
-/// Compute magnetic heading without inventing a leveling rotation.
-///
-/// Project both magnetic north and the fixed camera-forward (+X) heading axis
-/// onto the plane perpendicular to gravity, then measure their signed angle
-/// around gravity. This is tilt-invariant wherever camera-forward azimuth is
-/// physically defined. The presentation layer owns visual Euler-branch
-/// continuity when this raw heading changes branch across the vertical pole.
-fn gravity_compensated_heading(field: [f32; 3], gravity: [f32; 3]) -> Option<f32> {
+fn magnetic_north(field: [f32; 3], gravity: [f32; 3]) -> Option<[f32; 3]> {
     let field_along_gravity = dot3(field, gravity);
-    let horizontal_field = [
+    let horizontal = [
         field[0] - gravity[0] * field_along_gravity,
         field[1] - gravity[1] * field_along_gravity,
         field[2] - gravity[2] * field_along_gravity,
     ];
-    let horizontal_field_sq = dot3(horizontal_field, horizontal_field);
-    if horizontal_field_sq < MIN_MAG_HORIZONTAL_FIELD_UT * MIN_MAG_HORIZONTAL_FIELD_UT {
+    let horizontal_sq = dot3(horizontal, horizontal);
+    if horizontal_sq < MIN_MAG_HORIZONTAL_FIELD_UT * MIN_MAG_HORIZONTAL_FIELD_UT {
         return None;
     }
+    normalize3(horizontal)
+}
 
-    let forward_along_gravity = gravity[0];
-    let horizontal_forward = [
-        1.0 - gravity[0] * forward_along_gravity,
-        -gravity[1] * forward_along_gravity,
-        -gravity[2] * forward_along_gravity,
-    ];
-    if dot3(horizontal_forward, horizontal_forward) < MIN_HEADING_AXIS_HORIZONTAL_SQ {
-        return None;
-    }
-
-    let sine = -dot3(gravity, cross3(horizontal_forward, horizontal_field));
-    let cosine = dot3(horizontal_forward, horizontal_field);
+fn heading_from_north(north: [f32; 3], gravity: [f32; 3]) -> Option<f32> {
+    let horizontal_forward = horizontal_unit([1.0, 0.0, 0.0], gravity)?;
+    let horizontal_north = horizontal_unit(north, gravity)?;
+    let sine = -dot3(gravity, cross3(horizontal_forward, horizontal_north));
+    let cosine = dot3(horizontal_forward, horizontal_north);
     Some(wrap_degrees(radians_to_degrees(atan2_approx(sine, cosine))))
+}
+
+fn signed_angle_deg(from: [f32; 3], to: [f32; 3], axis: [f32; 3]) -> f32 {
+    let sine = dot3(axis, cross3(from, to));
+    let cosine = dot3(from, to);
+    wrap_degrees(radians_to_degrees(atan2_approx(sine, cosine)))
+}
+
+fn sin_approx(value: f32) -> f32 {
+    let x = wrap_radians(value);
+    let x2 = x * x;
+    x * (1.0 - x2 / 6.0 + x2 * x2 / 120.0 - x2 * x2 * x2 / 5040.0)
+}
+
+fn cos_approx(value: f32) -> f32 {
+    let x = wrap_radians(value);
+    let x2 = x * x;
+    1.0 - x2 / 2.0 + x2 * x2 / 24.0 - x2 * x2 * x2 / 720.0
+}
+
+fn wrap_radians(mut value: f32) -> f32 {
+    while value > PI {
+        value -= 2.0 * PI;
+    }
+    while value < -PI {
+        value += 2.0 * PI;
+    }
+    value
 }
 
 fn atan2_approx(y: f32, x: f32) -> f32 {
