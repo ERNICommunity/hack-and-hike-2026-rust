@@ -101,7 +101,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
         // closer to 80-90 Hz in the captured trace.
         let mut sample_ticker = Ticker::every(config.sample_period);
 
-        ::log::trace!("IMU-TRACE session-start revision={}", revision);
+        ::log::trace!("IMU session-start revision={}", revision);
 
         loop {
             sample_ticker.next().await;
@@ -180,15 +180,23 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                     if trace_samples % IMU_TRACE_EVERY_SAMPLES == 0 {
                         let mag = magnetic_for_fusion.unwrap_or([0.0, 0.0, 0.0]);
                         ::log::trace!(
-                            "IMU-TRACE rev={} st={} dt_ms={} acc=[{},{},{}] gyro_raw=[{},{},{}] gyro_corr=[{},{},{}] mag_used={} mag=[{},{},{}] field_ut={} mag_status={:?} cal={} out_rpy=[{},{},{}] g=[{},{},{}] n=[{},{},{}]",
+                            "IMU rev={} st={} dt_ms={} acc=[{},{},{}] gyro_raw=[{},{},{}] gyro_corr=[{},{},{}] mag_used={} mag=[{},{},{}] field_ut={} mag_status={:?} cal={} out_rpy=[{},{},{}] g=[{},{},{}] n=[{},{},{}]",
                             revision.wrapping_add(1),
                             sample.sensor_time,
                             dt_seconds * 1000.0,
-                            sample.accel_g[0], sample.accel_g[1], sample.accel_g[2],
-                            sample.gyro_dps[0], sample.gyro_dps[1], sample.gyro_dps[2],
-                            corrected_gyro[0], corrected_gyro[1], corrected_gyro[2],
+                            sample.accel_g[0],
+                            sample.accel_g[1],
+                            sample.accel_g[2],
+                            sample.gyro_dps[0],
+                            sample.gyro_dps[1],
+                            sample.gyro_dps[2],
+                            corrected_gyro[0],
+                            corrected_gyro[1],
+                            corrected_gyro[2],
                             magnetic_for_fusion.is_some(),
-                            mag[0], mag[1], mag[2],
+                            mag[0],
+                            mag[1],
+                            mag[2],
                             magnetic.field_ut(),
                             mag_status,
                             calibration_percent,

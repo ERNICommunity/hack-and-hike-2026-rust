@@ -24,7 +24,7 @@ pub(crate) use capture::capture_task;
 pub(crate) use channels::Input;
 #[cfg(feature = "speaker-synth")]
 pub(crate) use channels::PlaybackControl;
-pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
+pub(crate) use channels::{Runtime, init_endpoints};
 pub(crate) use codecs::{init_aw88298, init_es7210};
 
 pub(crate) const SAMPLE_RATE_HZ: u32 = 16_000;

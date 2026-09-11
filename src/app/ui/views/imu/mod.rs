@@ -119,8 +119,8 @@ impl View {
             );
         }
         if self.trace_frames % WORLDVIEW_TRACE_EVERY_FRAMES == 0 {
-            ::log::info!(
-                "WORLDVIEW-TRACE rev={} sensor_rpy=[{},{},{}] display_rpy=[{},{},{}] g=[{},{},{}] n=[{},{},{}] gdot={} ndot={} mag_status={:?} field_ut={} cal={}",
+            ::log::trace!(
+                "WORLDVIEW rev={} sensor_rpy=[{},{},{}] display_rpy=[{},{},{}] g=[{},{},{}] n=[{},{},{}] gdot={} ndot={} mag_status={:?} field_ut={} cal={}",
                 imu.sample_revision,
                 imu.roll_deg,
                 imu.pitch_deg,

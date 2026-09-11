@@ -54,9 +54,6 @@ pub(super) struct PerspectiveCamera {
     world_x_camera: [f32; 3],
     world_y_camera: [f32; 3],
     world_z_camera: [f32; 3],
-    /// World gravity (down) in renderer camera coordinates: +X right, +Y up,
-    /// +Z forward.
-    pub(super) gravity_camera: [f32; 3],
     // Unit-normalized screen-space horizon equation in absolute local pixels:
     // a*x + b*y + c = 0. Its absolute value is pixel distance from the horizon.
     pub(super) horizon_a_q10: i32,
@@ -164,7 +161,7 @@ pub(super) fn perspective_camera(
         world_x_camera,
         world_y_camera,
         world_z_camera,
-        gravity_camera,
+        
         horizon_a_q10: round_f32(horizon_a * TAN_SCALE as f32),
         horizon_b_q10: round_f32(horizon_b * TAN_SCALE as f32),
         horizon_c_q10: round_f32(horizon_c * TAN_SCALE as f32),

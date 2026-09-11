@@ -39,23 +39,6 @@ impl ViewId {
     }
 }
 
-pub(super) const ENABLED_VIEWS: &[ViewId] = &[
-    #[cfg(feature = "network-demo")]
-    ViewId::Network,
-    #[cfg(feature = "imu-worldview")]
-    ViewId::Imu,
-    #[cfg(feature = "mic-waveform")]
-    ViewId::Microphone,
-    #[cfg(feature = "speaker-synth")]
-    ViewId::Speaker,
-    #[cfg(feature = "camera-view")]
-    ViewId::Camera,
-    #[cfg(feature = "settings")]
-    ViewId::Settings,
-    #[cfg(feature = "log-view")]
-    ViewId::Log,
-];
-
 pub(super) struct Model {
     active_view: ViewId,
 }
