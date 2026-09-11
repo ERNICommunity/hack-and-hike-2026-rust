@@ -4,7 +4,7 @@ use core::fmt::Write;
 use critical_section::Mutex;
 use log::{LevelFilter, Metadata, Record};
 
-use crate::support::memory::storage::PsramByteRing;
+use crate::support::memory::storage::{FixedPsramBuffer, PsramByteRing};
 
 /// Maximum number of rows retained by the on-device log model.
 pub(crate) const MAX_LOG_ROWS: usize = 64;
@@ -20,7 +20,7 @@ const LOG_RECORD_BYTES: usize = 512;
 /// this; this constant only sizes the byte ring from the row-count policy.
 const LOG_BYTES_PER_ROW_BUDGET: usize = 256;
 
-pub(crate) const HISTORY_BYTES: usize = MAX_LOG_ROWS * LOG_BYTES_PER_ROW_BUDGET;
+const HISTORY_BYTES: usize = MAX_LOG_ROWS * LOG_BYTES_PER_ROW_BUDGET;
 const SNAPSHOT_CHUNK_BYTES: usize = 512;
 const TRUNCATION_SUFFIX: &str = "...\n";
 
@@ -68,7 +68,7 @@ pub(crate) struct Input {
 }
 
 impl Input {
-    pub(crate) fn revision(&self) -> u32 {
+    fn revision(&self) -> u32 {
         critical_section::with(|cs| {
             self.service
                 .store
@@ -82,7 +82,7 @@ impl Input {
     /// Copy one consistent log-history revision into `out` using short critical
     /// sections. If a writer changes the ring while the snapshot is in progress,
     /// return `None` and let the UI retry on its next refresh tick.
-    pub(crate) fn snapshot<'a>(&mut self, out: &'a mut [u8]) -> Option<(&'a str, u32)> {
+    fn snapshot<'a>(&mut self, out: &'a mut [u8]) -> Option<(&'a str, u32)> {
         let (len, revision) = critical_section::with(|cs| {
             let store = self.service.store.borrow(cs).borrow();
             let store = store.as_ref()?;
@@ -118,6 +118,50 @@ impl Input {
 
         let text = core::str::from_utf8(&out[..len]).ok()?;
         Some((text, revision))
+    }
+}
+
+/// Application-facing snapshot storage for the device log history.
+///
+/// The concrete PSRAM allocation remains a logging implementation detail. The
+/// app model only asks this buffer to refresh from `Input` and borrow its text.
+pub(crate) struct HistoryBuffer {
+    bytes: FixedPsramBuffer<u8>,
+    len: usize,
+    revision: u32,
+}
+
+impl HistoryBuffer {
+    pub(crate) fn new() -> Self {
+        Self {
+            bytes: FixedPsramBuffer::filled(HISTORY_BYTES, 0),
+            len: 0,
+            revision: u32::MAX,
+        }
+    }
+
+    /// Refresh from the logging service if a newer consistent revision exists.
+    /// Returns `true` only when the visible snapshot changed.
+    pub(crate) fn refresh(&mut self, input: &mut Input) -> bool {
+        if input.revision() == self.revision {
+            return false;
+        }
+
+        let Some((len, revision)) = ({
+            let snapshot = input.snapshot(self.bytes.as_mut_slice());
+            snapshot.map(|(text, revision)| (text.len(), revision))
+        }) else {
+            return false;
+        };
+
+        self.len = len;
+        self.revision = revision;
+        true
+    }
+
+    pub(crate) fn text(&self) -> Option<&str> {
+        let bytes = self.bytes.as_slice().get(..self.len)?;
+        core::str::from_utf8(bytes).ok()
     }
 }
 

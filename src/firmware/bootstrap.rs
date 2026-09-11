@@ -9,7 +9,7 @@ use ::log::{info, warn};
 use esp_hal::{clock::CpuClock, delay::Delay, timer::timg::TimerGroup};
 
 use crate::{
-    firmware::{cpu1, resources},
+    firmware::cpu1,
     platform::{board, i2c as system_i2c},
     services::{audio, camera, display, imu, network, touch},
     support::{logging as logger, memory},
@@ -110,56 +110,50 @@ pub(crate) fn bootstrap() -> Bootstrap {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    let resources::Cpu0Resources {
-        display: display_resources,
-        camera: camera_resources,
-    } = resources::Cpu0Resources {
-        display: display::Resources {
-            spi2: peripherals.SPI2,
-            dma: peripherals.DMA_CH1,
-            sck: peripherals.GPIO36,
-            mosi: peripherals.GPIO37,
-            dc: peripherals.GPIO35,
-            cs: peripherals.GPIO3,
-        },
-        camera: camera::Resources {
-            lcd_cam: peripherals.LCD_CAM,
-            dma: peripherals.DMA_CH2,
-            pclk: peripherals.GPIO45,
-            vsync: peripherals.GPIO46,
-            href: peripherals.GPIO38,
-            d0: peripherals.GPIO39,
-            d1: peripherals.GPIO40,
-            d2: peripherals.GPIO41,
-            d3: peripherals.GPIO42,
-            d4: peripherals.GPIO15,
-            d5: peripherals.GPIO16,
-            d6: peripherals.GPIO48,
-            d7: peripherals.GPIO47,
-        },
+    // CPU0 keeps display and camera peripherals for synchronous presentation.
+    let display_resources = display::Resources {
+        spi2: peripherals.SPI2,
+        dma: peripherals.DMA_CH1,
+        sck: peripherals.GPIO36,
+        mosi: peripherals.GPIO37,
+        dc: peripherals.GPIO35,
+        cs: peripherals.GPIO3,
     };
-    let resources::Cpu1Resources {
-        system_i2c: mut system_i2c_resources,
-        audio: audio_resources,
-        network: network_resources,
-    } = resources::Cpu1Resources {
-        system_i2c: system_i2c::Resources {
-            i2c0: peripherals.I2C0,
-            sda: peripherals.GPIO12,
-            scl: peripherals.GPIO11,
-        },
-        audio: audio::Resources {
-            i2s0: peripherals.I2S0,
-            dma: peripherals.DMA_CH0,
-            mclk: peripherals.GPIO0,
-            bclk: peripherals.GPIO34,
-            word_select: peripherals.GPIO33,
-            data_in: peripherals.GPIO14,
-            data_out: peripherals.GPIO13,
-        },
-        network: network::Resources {
-            wifi: peripherals.WIFI,
-        },
+    let camera_resources = camera::Resources {
+        lcd_cam: peripherals.LCD_CAM,
+        dma: peripherals.DMA_CH2,
+        pclk: peripherals.GPIO45,
+        vsync: peripherals.GPIO46,
+        href: peripherals.GPIO38,
+        d0: peripherals.GPIO39,
+        d1: peripherals.GPIO40,
+        d2: peripherals.GPIO41,
+        d3: peripherals.GPIO42,
+        d4: peripherals.GPIO15,
+        d5: peripherals.GPIO16,
+        d6: peripherals.GPIO48,
+        d7: peripherals.GPIO47,
+    };
+
+    // These concrete resources are moved to CPU1 after board/camera bootstrap.
+    // Touch and IMU share the final CPU1-local system I2C owner rather than
+    // receiving independent raw peripheral handles.
+    let mut system_i2c_resources = system_i2c::Resources {
+        i2c0: peripherals.I2C0,
+        sda: peripherals.GPIO12,
+        scl: peripherals.GPIO11,
+    };
+    let audio_resources = audio::Resources {
+        i2s0: peripherals.I2S0,
+        dma: peripherals.DMA_CH0,
+        mclk: peripherals.GPIO0,
+        bclk: peripherals.GPIO34,
+        word_select: peripherals.GPIO33,
+        data_in: peripherals.GPIO14,
+        data_out: peripherals.GPIO13,
+    };
+    let network_resources = network::Resources {
+        wifi: peripherals.WIFI,
     };
 
     let mut delay = Delay::new();

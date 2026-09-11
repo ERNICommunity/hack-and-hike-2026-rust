@@ -2,15 +2,13 @@
 
 use embassy_time::{Duration, Instant};
 
-use crate::support::{logging, memory::storage};
+use crate::support::logging;
 
 const LOG_REFRESH: Duration = Duration::from_millis(100);
 
 pub(super) struct Model {
     input: logging::Input,
-    bytes: storage::FixedPsramBuffer<u8>,
-    len: usize,
-    revision: u32,
+    history: logging::HistoryBuffer,
     last_check: Instant,
     dirty: bool,
 }
@@ -19,9 +17,7 @@ impl Model {
     pub(super) fn new(input: logging::Input) -> Self {
         Self {
             input,
-            bytes: storage::FixedPsramBuffer::filled(logging::HISTORY_BYTES, 0),
-            len: 0,
-            revision: u32::MAX,
+            history: logging::HistoryBuffer::new(),
             last_check: Instant::now(),
             dirty: true,
         }
@@ -40,15 +36,9 @@ impl Model {
     }
 
     pub(super) fn refresh(&mut self) {
-        if self.input.revision() == self.revision {
-            return;
+        if self.history.refresh(&mut self.input) {
+            self.dirty = true;
         }
-        let Some((logs, revision)) = self.input.snapshot(self.bytes.as_mut_slice()) else {
-            return;
-        };
-        self.len = logs.len();
-        self.revision = revision;
-        self.dirty = true;
     }
 
     pub(super) fn with_text<R>(&mut self, render: impl FnOnce(&str) -> R) -> Option<R> {
@@ -56,8 +46,6 @@ impl Model {
             return None;
         }
         self.dirty = false;
-        let bytes = self.bytes.as_slice().get(..self.len)?;
-        let text = core::str::from_utf8(bytes).ok()?;
-        Some(render(text))
+        Some(render(self.history.text()?))
     }
 }
