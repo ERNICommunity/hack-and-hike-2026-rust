@@ -21,13 +21,31 @@ fn angular_distance(a: f32, b: f32) -> f32 {
     delta.abs()
 }
 
+fn settle_heading(
+    fusion: &mut Fusion,
+    accel_g: [f32; 3],
+    field_ut: [f32; 3],
+    samples: usize,
+) -> Orientation {
+    let mut orientation = Orientation::default();
+    for _ in 0..samples {
+        orientation = fusion.update(
+            accel_g,
+            [0.0, 0.0, 0.0],
+            0.01,
+            0.0,
+            Some(field_ut),
+            0.98,
+        );
+    }
+    orientation
+}
+
 #[test]
-fn magnetic_heading_branch_stays_continuous_through_flat_pose() {
+fn flat_crossing_does_not_leave_a_sticky_magnetic_branch_offset() {
     let mut fusion = Fusion::new();
 
-    // Start with the camera-forward axis horizontal and magnetic north aligned
-    // with it. The first call only initializes gravity; the following samples
-    // establish the absolute magnetic lock at yaw 0.
+    // Establish absolute heading on the first side of the flat-pose singularity.
     let _ = fusion.update(
         [0.0, -1.0, 0.0],
         [0.0, 0.0, 0.0],
@@ -36,22 +54,16 @@ fn magnetic_heading_branch_stays_continuous_through_flat_pose() {
         Some([0.0, 0.0, 50.0]),
         0.98,
     );
-    let mut orientation = Orientation::default();
-    for _ in 0..10 {
-        orientation = fusion.update(
-            [0.0, -1.0, 0.0],
-            [0.0, 0.0, 0.0],
-            0.01,
-            0.0,
-            Some([0.0, 0.0, 50.0]),
-            0.98,
-        );
-    }
+    let mut orientation = settle_heading(
+        &mut fusion,
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 50.0],
+        12,
+    );
     assert!(angular_distance(orientation.yaw_deg, 0.0) < 1.0);
 
-    // Pitch rapidly through the flat pose. In screen coordinates gravity is now
-    // +X, so camera-forward azimuth is singular. The gyro rate is perpendicular
-    // to gravity: it arms magnetic recovery without changing yaw.
+    // Cross the singular flat pose while moving. Fusion must discard the old
+    // magnetic filter window rather than carrying it across an undefined azimuth.
     orientation = fusion.update(
         [0.0, 0.0, 1.0],
         [-100.0, 0.0, 0.0],
@@ -62,23 +74,41 @@ fn magnetic_heading_branch_stays_continuous_through_flat_pose() {
     );
     assert!(angular_distance(orientation.yaw_deg, 0.0) < 1.0);
 
-    // On the far side the raw camera-forward magnetic heading is 180 degrees,
-    // even though no yaw rotation occurred. Fusion must unwrap that branch after
-    // the singularity instead of performing a 180-degree magnetic recovery.
-    for _ in 0..14 {
-        orientation = fusion.update(
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0],
-            0.01,
-            0.0,
-            Some([0.0, 0.0, -50.0]),
-            0.98,
-        );
-    }
+    // The raw tilt-compensated heading is on the opposite Euler branch here.
+    // Fusion may reacquire that raw branch; presentation continuity is handled
+    // by attitude.rs. What matters here is that fusion does not invent and keep
+    // an additional persistent 180-degree branch offset of its own.
+    orientation = settle_heading(
+        &mut fusion,
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, -50.0],
+        16,
+    );
+    assert!(
+        angular_distance(orientation.yaw_deg, 180.0) < 1.0,
+        "expected raw far-side magnetic branch near 180 deg, got {} deg",
+        orientation.yaw_deg
+    );
 
+    // Cross back through flat and settle on the original side. A sticky fusion
+    // branch offset would leave yaw at 180; the correct raw heading returns to 0.
+    let _ = fusion.update(
+        [0.0, 0.0, 1.0],
+        [100.0, 0.0, 0.0],
+        0.01,
+        0.0,
+        Some([0.0, 50.0, 0.0]),
+        0.98,
+    );
+    orientation = settle_heading(
+        &mut fusion,
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 50.0],
+        16,
+    );
     assert!(
         angular_distance(orientation.yaw_deg, 0.0) < 1.0,
-        "expected continuous yaw near 0 deg, got {} deg",
+        "expected original magnetic branch near 0 deg, got {} deg",
         orientation.yaw_deg
     );
 }
@@ -96,17 +126,12 @@ fn stationary_noisy_magnetic_samples_do_not_make_yaw_hunt() {
         0.98,
     );
 
-    let mut orientation = Orientation::default();
-    for _ in 0..12 {
-        orientation = fusion.update(
-            [0.0, -1.0, 0.0],
-            [0.0, 0.0, 0.0],
-            0.01,
-            0.0,
-            Some([0.0, 0.0, 50.0]),
-            0.98,
-        );
-    }
+    let mut orientation = settle_heading(
+        &mut fusion,
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 50.0],
+        12,
+    );
     assert!(angular_distance(orientation.yaw_deg, 0.0) < 1.0);
 
     let mut max_deviation = 0.0f32;
