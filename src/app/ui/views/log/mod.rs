@@ -5,7 +5,7 @@
 
 use embedded_gui::prelude::*;
 
-use crate::{services::display::Display, support::memory::storage};
+use crate::{capabilities::display::Display, support::memory::storage};
 
 use super::super::gui::GuiSurface;
 use super::common;

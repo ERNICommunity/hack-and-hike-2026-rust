@@ -9,7 +9,7 @@ use embedded_gui::prelude::*;
 
 use crate::{
     app::model::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame},
-    services::display::Display,
+    capabilities::display::Display,
     support::memory::storage,
 };
 

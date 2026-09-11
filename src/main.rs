@@ -18,9 +18,9 @@
     feature = "log-view",
 ))]
 mod app;
+mod capabilities;
 mod firmware;
 mod platform;
-mod services;
 mod support;
 
 extern crate alloc;
@@ -157,7 +157,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     )))]
     {
         // Capability-only builds intentionally have no stock application host.
-        // Keep the concrete capability owners alive while their CPU1 services run.
+        // Keep the concrete capability owners alive while their CPU1 capabilities run.
         let _bootstrap = bootstrap;
         loop {
             Timer::after(UI_IDLE_DELAY).await;

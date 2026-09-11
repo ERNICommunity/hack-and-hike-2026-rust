@@ -1,6 +1,6 @@
 //! Settings presentation model.
 
-use crate::services::display::{BrightnessControl, BrightnessPercent};
+use crate::capabilities::display::{BrightnessControl, BrightnessPercent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SettingsDisplay {

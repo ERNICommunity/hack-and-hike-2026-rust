@@ -1,4 +1,4 @@
-//! CPU1-owned ESP-NOW discovery service.
+//! CPU1-owned ESP-NOW discovery capability.
 //!
 //! CPU0 consumes only semantic snapshots. Peer-state logic, radio adaptation,
 //! cross-core synchronization, and wire-format details remain private to this
@@ -47,7 +47,7 @@ pub(crate) const DEFAULT_CHANNEL: Channel = Channel::new(6);
 pub(crate) const DEFAULT_BEACON_PERIOD: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_DEVICE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Radio configuration owned by the CPU1 network service.
+/// Radio configuration owned by the CPU1 network capability.
 #[derive(Clone, Copy)]
 pub(crate) struct Config {
     pub(crate) channel: Channel,
@@ -77,7 +77,7 @@ pub(crate) enum Status {
 /// Signed received-signal strength in dBm.
 ///
 /// ESP radio metadata exposes the hardware byte representation. Converting it at
-/// the service boundary prevents values such as raw `224` from leaking into the
+/// the capability boundary prevents values such as raw `224` from leaking into the
 /// application when that byte actually represents `-32 dBm`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RssiDbm(i8);

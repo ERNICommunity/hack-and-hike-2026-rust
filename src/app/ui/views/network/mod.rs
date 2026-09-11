@@ -10,7 +10,7 @@ use arrayvec::ArrayString;
 use embedded_gui::prelude::*;
 
 use crate::{
-    services::{display::Display, network},
+    capabilities::{display::Display, network},
     support::memory::storage,
 };
 

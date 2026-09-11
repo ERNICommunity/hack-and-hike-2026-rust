@@ -1,8 +1,8 @@
-//! CPU1-owned physical audio runtime.
+//! Private physical audio runtime backing the `mic` and `speaker` capability APIs.
 //!
 //! I2S0 owns the shared microphone/speaker clock domain. The `mic` and `speaker`
 //! Cargo capabilities remain independent at the application boundary even though
-//! they share clocks, DMA, and codec bring-up internally.
+//! this private runtime shares clocks, DMA, and codec bring-up internally.
 
 mod capture;
 mod channels;

@@ -2,7 +2,7 @@
 
 use embassy_time::{Duration, Instant};
 
-use crate::services::audio;
+use crate::capabilities::audio;
 
 pub(crate) const POINTS: usize = 128;
 pub(crate) const MAX_AMPLITUDE_PIXELS: i32 = 42;

@@ -12,7 +12,7 @@ use embedded_gui::{
     EndianCorrection, FrameBuf, GuiContext, TransferError,
 };
 
-use crate::{services::display::Display, support::memory::storage};
+use crate::{capabilities::display::Display, support::memory::storage};
 
 use super::design;
 

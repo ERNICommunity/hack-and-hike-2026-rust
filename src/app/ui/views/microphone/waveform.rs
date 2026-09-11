@@ -2,7 +2,7 @@
 
 use crate::{
     app::model::{POINTS, WaveformFrame},
-    services::display::Display,
+    capabilities::display::Display,
 };
 
 use super::super::super::{design::ContentRect, theme};

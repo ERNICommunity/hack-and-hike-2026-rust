@@ -6,8 +6,8 @@
 //! intentionally read-only.
 
 #[cfg(feature = "touch")]
-use crate::services::touch::{Input as TouchInput, TouchEdge, TouchPoint};
-use crate::{app::model::ViewId, services::display::Display};
+use crate::capabilities::touch::{Input as TouchInput, TouchEdge, TouchPoint};
+use crate::{app::model::ViewId, capabilities::display::Display};
 
 use super::design;
 

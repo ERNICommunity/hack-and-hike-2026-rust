@@ -14,7 +14,7 @@ use embedded_graphics::{
 use embedded_gui::prelude::*;
 
 use crate::{
-    services::display::{BrightnessPercent, Display},
+    capabilities::display::{BrightnessPercent, Display},
     support::memory::storage,
 };
 

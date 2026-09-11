@@ -1,6 +1,6 @@
 //! Speaker presentation and playback-control model.
 
-use crate::services::audio;
+use crate::capabilities::audio;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SpeakerDisplay {

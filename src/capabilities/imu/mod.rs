@@ -1,4 +1,4 @@
-//! BMI270 + BMM150 orientation service.
+//! BMI270 + BMM150 orientation capability.
 //!
 //! CPU1 owns raw sensor access and fusion. CPU0 sees only the semantic
 //! configuration/status types and the replace-latest [`Input`] endpoint.

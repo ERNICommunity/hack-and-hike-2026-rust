@@ -21,13 +21,13 @@ mod speaker;
 use embassy_time::Instant;
 
 #[cfg(any(feature = "mic-waveform", feature = "speaker-synth"))]
-use crate::services::audio;
+use crate::capabilities::audio;
 #[cfg(feature = "settings")]
-use crate::services::display::{BrightnessControl, BrightnessPercent};
+use crate::capabilities::display::{BrightnessControl, BrightnessPercent};
 #[cfg(feature = "imu-worldview")]
-use crate::services::imu as imu_service;
+use crate::capabilities::imu as imu_capability;
 #[cfg(feature = "network-demo")]
-use crate::services::network as network_service;
+use crate::capabilities::network as network_capability;
 #[cfg(feature = "log-view")]
 use crate::support::logging;
 
@@ -43,9 +43,9 @@ pub(crate) use speaker::SpeakerDisplay;
 
 pub(crate) struct AppModelInputs {
     #[cfg(feature = "network-demo")]
-    pub(crate) network: network_service::Input,
+    pub(crate) network: network_capability::Input,
     #[cfg(feature = "imu-worldview")]
-    pub(crate) imu: imu_service::Input,
+    pub(crate) imu: imu_capability::Input,
     #[cfg(feature = "mic-waveform")]
     pub(crate) audio: audio::Input,
     #[cfg(feature = "speaker-synth")]
@@ -193,7 +193,7 @@ impl AppModel {
     }
 
     #[cfg(feature = "network-demo")]
-    pub(crate) fn take_network_display(&mut self) -> Option<network_service::Snapshot> {
+    pub(crate) fn take_network_display(&mut self) -> Option<network_capability::Snapshot> {
         if self.navigation.active_view() != ViewId::Network {
             return None;
         }

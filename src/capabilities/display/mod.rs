@@ -70,7 +70,7 @@ impl Region {
 /// Raw CPU0 hardware resources consumed exactly once by `init`.
 ///
 /// Moving this bundle into `Display` transfers exclusive ownership of SPI2,
-/// DMA_CH1, and the LCD GPIOs to the display service.
+/// DMA_CH1, and the LCD GPIOs to the display capability.
 pub(crate) struct Resources {
     pub(crate) spi2: SPI2<'static>,
     pub(crate) dma: DMA_CH1<'static>,

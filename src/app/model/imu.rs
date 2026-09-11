@@ -2,7 +2,7 @@
 
 use embassy_time::{Duration, Instant};
 
-use crate::services::imu;
+use crate::capabilities::imu;
 
 // Match the 100 Hz fusion publisher instead of imposing a separate 25 Hz UI
 // ceiling. The replace-latest input still collapses samples whenever rendering

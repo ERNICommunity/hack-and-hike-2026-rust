@@ -5,7 +5,7 @@ struct Orientation {
     yaw_deg: f32,
 }
 
-#[path = "../src/services/imu/fusion.rs"]
+#[path = "../src/capabilities/imu/fusion.rs"]
 mod fusion;
 
 use fusion::Fusion;

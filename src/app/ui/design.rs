@@ -6,7 +6,7 @@
 
 use crate::{
     app::model::ViewId,
-    services::display::{self, Region},
+    capabilities::display::{self, Region},
 };
 
 use super::theme;

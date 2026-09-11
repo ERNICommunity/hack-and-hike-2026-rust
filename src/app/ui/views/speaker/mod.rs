@@ -15,7 +15,7 @@ use embedded_gui::prelude::*;
 
 use crate::{
     app::model::SpeakerDisplay,
-    services::{
+    capabilities::{
         audio::{PitchSemitones, TempoBpm},
         display::Display,
     },

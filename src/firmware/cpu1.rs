@@ -10,15 +10,15 @@ use static_cell::StaticCell;
 #[cfg(any(feature = "display", feature = "imu", feature = "touch"))]
 use crate::platform::i2c as system_i2c;
 #[cfg(any(feature = "mic", feature = "speaker"))]
-use crate::services::audio;
+use crate::capabilities::audio;
 #[cfg(feature = "display")]
-use crate::services::display;
+use crate::capabilities::display;
 #[cfg(feature = "imu")]
-use crate::services::imu;
+use crate::capabilities::imu;
 #[cfg(feature = "network")]
-use crate::services::network;
+use crate::capabilities::network;
 #[cfg(feature = "touch")]
-use crate::services::touch;
+use crate::capabilities::touch;
 use crate::support::memory;
 
 const STACK_SIZE: usize = 16 * 1024;
@@ -26,7 +26,7 @@ const STACK_SIZE: usize = 16 * 1024;
 static STACK: StaticCell<Stack<STACK_SIZE>> = StaticCell::new();
 static EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
 
-pub(super) struct ServiceEndpoints {
+pub(super) struct CapabilityEndpoints {
     #[cfg(any(feature = "mic", feature = "speaker"))]
     pub(super) audio: audio::Runtime,
     #[cfg(feature = "imu")]
@@ -50,7 +50,7 @@ pub(super) fn run(
     system_i2c: system_i2c::SystemI2cBlocking,
     #[cfg(any(feature = "mic", feature = "speaker"))] audio_resources: audio::Resources,
     #[cfg(feature = "network")] network_resources: network::Resources,
-    endpoints: ServiceEndpoints,
+    endpoints: CapabilityEndpoints,
 ) {
     memory::init_cpu1_stack_watermark();
     let executor = EXECUTOR.init(esp_rtos::embassy::Executor::new());

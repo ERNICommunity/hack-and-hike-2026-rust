@@ -1,10 +1,10 @@
 //! Camera presentation view.
 //!
-//! The camera service owns capture and frame lifetime. This module owns only
+//! The camera capability owns capture and frame lifetime. This module owns only
 //! presentation-specific cropping and the LCD scanline-pump strategy used while
 //! the Camera screen is visible.
 
-use crate::services::{camera, display::Display};
+use crate::capabilities::{camera, display::Display};
 
 use super::super::{design, theme};
 

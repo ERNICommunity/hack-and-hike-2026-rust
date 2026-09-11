@@ -1,3 +1,7 @@
+//! Hardware/runtime capabilities exposed to applications.
+//!
+//! A capability owns hardware/runtime implementation and exposes a semantic data API to applications.
+
 #[cfg(any(feature = "mic", feature = "speaker"))]
 pub(crate) mod audio;
 #[cfg(feature = "camera")]

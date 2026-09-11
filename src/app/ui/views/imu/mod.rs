@@ -17,7 +17,7 @@ use embedded_gui::prelude::*;
 
 use crate::{
     app::model::ImuDisplay,
-    services::{display::Display, imu as sensor},
+    capabilities::{display::Display, imu as sensor},
     support::memory::storage,
 };
 

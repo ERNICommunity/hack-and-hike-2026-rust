@@ -21,17 +21,17 @@ use crate::platform::board;
 ))]
 use crate::platform::i2c as system_i2c;
 #[cfg(any(feature = "mic", feature = "speaker"))]
-use crate::services::audio;
+use crate::capabilities::audio;
 #[cfg(feature = "camera")]
-use crate::services::camera;
+use crate::capabilities::camera;
 #[cfg(feature = "display")]
-use crate::services::display;
+use crate::capabilities::display;
 #[cfg(feature = "imu")]
-use crate::services::imu;
+use crate::capabilities::imu;
 #[cfg(feature = "network")]
-use crate::services::network;
+use crate::capabilities::network;
 #[cfg(feature = "touch")]
-use crate::services::touch;
+use crate::capabilities::touch;
 use crate::{
     firmware::cpu1,
     support::{logging as logger, memory},
@@ -291,7 +291,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
         memory::report("before CPU1 startup");
         info!("Starting CPU1 acquisition executor");
 
-        let cpu1_endpoints = cpu1::ServiceEndpoints {
+        let cpu1_endpoints = cpu1::CapabilityEndpoints {
             #[cfg(any(feature = "mic", feature = "speaker"))]
             audio: audio_runtime,
             #[cfg(feature = "imu")]
