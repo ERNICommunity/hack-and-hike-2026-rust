@@ -1,10 +1,10 @@
-//! CPU1 ESP-NOW adapter translating radio events into network state operations.
+//! CPU1 ESP-NOW adapter translating radio events into network capability operations.
 
 use core::cell::RefCell;
 
 use critical_section::Mutex;
 use embassy_executor::Spawner;
-use embassy_time::{Instant, Ticker};
+use embassy_time::{Duration, Instant, Ticker};
 use esp_hal::efuse;
 use esp_radio::{
     esp_now::{
@@ -20,6 +20,8 @@ use crate::support::diagnostics;
 use super::{
     Config, MacAddress, Resources, RssiDbm, channels::Runtime, protocol, state::NetworkState,
 };
+
+const TX_POLL_PERIOD: Duration = Duration::from_millis(10);
 
 static STATE: Mutex<RefCell<Option<NetworkState>>> = Mutex::new(RefCell::new(None));
 static WIFI_CONTROLLER: StaticCell<WifiController<'static>> = StaticCell::new();
@@ -90,7 +92,8 @@ pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, run
             .expect("Failed to allocate CPU1 ESP-NOW receive task"),
     );
     spawner.spawn(
-        beacon_task(sender, config, runtime).expect("Failed to allocate CPU1 ESP-NOW beacon task"),
+        transmit_task(sender, config, local_id, runtime)
+            .expect("Failed to allocate CPU1 ESP-NOW transmit task"),
     );
 
     ::log::info!(
@@ -102,26 +105,71 @@ pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, run
 }
 
 #[embassy_executor::task]
-async fn beacon_task(mut sender: EspNowSender<'static>, config: Config, runtime: Runtime) {
-    let mut ticker = Ticker::every(config.beacon_period);
+async fn transmit_task(
+    mut sender: EspNowSender<'static>,
+    config: Config,
+    local_id: protocol::DeviceId,
+    runtime: Runtime,
+) {
+    let mut ticker = Ticker::every(TX_POLL_PERIOD);
+    let mut next_beacon_ms = 0u64;
+    let mut encoded = [0u8; protocol::MAX_RADIO_PACKET_BYTES];
 
     loop {
-        let now = Instant::now();
-        let Some(packet) = with_state(|state| state.next_beacon(now.as_millis())) else {
-            ticker.next().await;
-            continue;
-        };
-        let payload = packet.encode();
+        while let Some(message) = runtime.try_take_outgoing() {
+            let destination = match message.recipient {
+                None => Some(BROADCAST_ADDRESS),
+                Some(device_id) => with_state(|state| state.route_for(device_id))
+                    .flatten()
+                    .map(MacAddress::bytes),
+            };
 
-        match sender.send_async(&BROADCAST_ADDRESS, &payload).await {
-            Ok(()) => {
-                diagnostics::record_network_tx_packet();
-                let _ = with_state(NetworkState::record_send_ok);
-            }
-            Err(_) => {
+            let Some(destination) = destination else {
                 diagnostics::record_network_tx_error();
                 let _ = with_state(NetworkState::record_send_error);
+                continue;
+            };
+            let Some(encoded_len) = protocol::encode_application(
+                local_id,
+                message.recipient,
+                &message.payload[..message.len],
+                &mut encoded,
+            ) else {
+                diagnostics::record_network_tx_error();
+                let _ = with_state(NetworkState::record_send_error);
+                continue;
+            };
+
+            match sender.send_async(&destination, &encoded[..encoded_len]).await {
+                Ok(()) => {
+                    diagnostics::record_network_tx_packet();
+                    let _ = with_state(NetworkState::record_send_ok);
+                }
+                Err(_) => {
+                    diagnostics::record_network_tx_error();
+                    let _ = with_state(NetworkState::record_send_error);
+                }
             }
+        }
+
+        let now = Instant::now();
+        if now.as_millis() >= next_beacon_ms {
+            if let Some(packet) = with_state(|state| state.next_beacon(now.as_millis())) {
+                let payload = packet.encode();
+                match sender.send_async(&BROADCAST_ADDRESS, &payload).await {
+                    Ok(()) => {
+                        diagnostics::record_network_tx_packet();
+                        let _ = with_state(NetworkState::record_send_ok);
+                    }
+                    Err(_) => {
+                        diagnostics::record_network_tx_error();
+                        let _ = with_state(NetworkState::record_send_error);
+                    }
+                }
+            }
+            next_beacon_ms = now
+                .as_millis()
+                .saturating_add(config.beacon_period.as_millis());
         }
 
         publish_snapshot(runtime, Instant::now());
@@ -139,22 +187,38 @@ async fn receive_task(
 ) {
     loop {
         let received = receiver.receive_async().await;
-        let Some(packet) = protocol::Packet::decode(received.data()) else {
-            diagnostics::record_network_rx_invalid();
-            let _ = with_state(NetworkState::record_invalid_receive);
-            publish_snapshot(runtime, Instant::now());
+        let Some(frame) = protocol::decode_frame(received.data()) else {
+            record_invalid(runtime);
             continue;
         };
 
-        if packet.device_id == local_id {
+        let mac = MacAddress::new(received.info.src_address);
+        let rssi = RssiDbm::from_radio_raw(received.info.rx_control.rssi as u8);
+        let now = Instant::now();
+
+        let (sender_id, beacon) = match frame {
+            protocol::DecodedFrame::Beacon(packet) => (packet.device_id, Some(packet)),
+            protocol::DecodedFrame::Application(message) => {
+                let recipient_valid = match message.recipient {
+                    None => received.info.dst_address == BROADCAST_ADDRESS,
+                    Some(recipient) => {
+                        recipient == local_id && received.info.dst_address != BROADCAST_ADDRESS
+                    }
+                };
+                if !recipient_valid {
+                    record_invalid(runtime);
+                    continue;
+                }
+                (message.sender, None)
+            }
+        };
+
+        if sender_id == local_id {
             continue;
         }
 
         diagnostics::record_network_rx_packet();
-        let now = Instant::now();
-        let mac = MacAddress::new(received.info.src_address);
-        let rssi = RssiDbm::from_radio_raw(received.info.rx_control.rssi as u8);
-        let outcome = with_state(|state| state.record_receive(packet, rssi, now.as_millis()));
+        let outcome = with_state(|state| state.record_receive(sender_id, mac, rssi, now.as_millis()));
         let is_new = outcome.is_some_and(|outcome| outcome.is_new);
         if outcome.is_some_and(|outcome| outcome.evicted) {
             diagnostics::record_network_peer_eviction();
@@ -172,17 +236,30 @@ async fn receive_task(
             });
         }
 
-        if is_new {
-            ::log::info!(
-                "ESP-NOW peer: id={} mac={} rssi={} dBm uptime={} ms cap=0x{:08X}",
-                packet.device_id,
-                mac,
-                rssi,
-                packet.uptime_ms,
-                packet.capabilities,
-            );
+        match frame {
+            protocol::DecodedFrame::Beacon(packet) => {
+                if is_new {
+                    ::log::info!(
+                        "ESP-NOW peer: id={} mac={} rssi={} dBm uptime={} ms cap=0x{:08X}",
+                        packet.device_id,
+                        mac,
+                        rssi,
+                        packet.uptime_ms,
+                        packet.capabilities,
+                    );
+                }
+            }
+            protocol::DecodedFrame::Application(message) => {
+                let _ = runtime.push_incoming(message.sender, message.recipient, message.payload);
+            }
         }
 
         publish_snapshot(runtime, now);
     }
+}
+
+fn record_invalid(runtime: Runtime) {
+    diagnostics::record_network_rx_invalid();
+    let _ = with_state(NetworkState::record_invalid_receive);
+    publish_snapshot(runtime, Instant::now());
 }

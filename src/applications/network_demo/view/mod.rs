@@ -1,8 +1,4 @@
-//! ESP-NOW peer overview.
-//!
-//! KDL owns the summary/table regions. Formatting and the dense peer table remain
-//! specific to the Network view and render with a native-resolution font into
-//! those regions.
+//! Typed ESP-NOW network demo view.
 
 use core::fmt::Write as _;
 
@@ -10,16 +6,16 @@ use arrayvec::ArrayString;
 use embedded_gui::prelude::*;
 
 use crate::{
+    app::ui::views::common,
+    applications::network_demo::DisplayState,
     capabilities::{display::Surface, network},
     support::memory::storage,
+    ui::gui::{GuiFramebuffer, GuiSurface},
 };
-
-use super::super::gui::GuiSurface;
-use super::common;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/app/ui/views/network/network.kdl");
+    embedded_gui::include_gui!("src/applications/network_demo/view/network.kdl");
 }
 
 const NODE_CAPACITY: usize = 8;
@@ -83,20 +79,16 @@ impl View {
         &mut self,
         gui_surface: &mut GuiSurface,
         surface: &mut Surface<'_>,
-        snapshot: &network::Snapshot,
+        state: &DisplayState,
     ) {
         let geometry = self.geometry;
         gui_surface.present_with_overlay(surface, self.gui, move |frame| {
-            draw_network(frame, geometry, snapshot);
+            draw_network(frame, geometry, state);
         });
     }
 }
 
-fn draw_network(
-    frame: &mut super::super::gui::GuiFramebuffer,
-    geometry: Geometry,
-    snapshot: &network::Snapshot,
-) {
+fn draw_network(frame: &mut GuiFramebuffer, geometry: Geometry, state: &DisplayState) {
     common::draw_title(
         frame,
         "NETWORK",
@@ -104,6 +96,18 @@ fn draw_network(
         geometry.title.y,
         common::dark_blue(),
     );
+
+    let Some(snapshot) = state.snapshot.as_ref() else {
+        common::draw_body(
+            frame,
+            "ESP-NOW  STARTING",
+            geometry.summary.x,
+            geometry.summary.y,
+            common::black(),
+        );
+        draw_message_activity(frame, geometry.summary, state, None);
+        return;
+    };
 
     let status = match snapshot.status {
         network::Status::Starting => "ESP-NOW  STARTING",
@@ -145,23 +149,7 @@ fn draw_network(
         common::black(),
     );
 
-    line.clear();
-    let _ = write!(
-        &mut line,
-        "TX{} RX{} E{} B{} V{}",
-        snapshot.tx_packets,
-        snapshot.rx_packets,
-        snapshot.tx_errors,
-        snapshot.rx_invalid,
-        snapshot.peer_evictions,
-    );
-    common::draw_body(
-        frame,
-        line.as_str(),
-        geometry.summary.x,
-        geometry.summary.y + common::BODY_LINE_HEIGHT * 3,
-        common::dark_gray(),
-    );
+    draw_message_activity(frame, geometry.summary, state, Some(snapshot));
 
     if snapshot.peer_count() == 0 {
         common::draw_body(
@@ -179,11 +167,12 @@ fn draw_network(
         line.clear();
         let _ = write!(
             &mut line,
-            "P{:02} {} {:>4}dB {:>4}ms",
+            "P{:02} {} {:>4}dB A{} E{}",
             index + 1,
-            peer.device_id,
+            peer.id,
             peer.rssi_dbm,
             peer.age_ms.min(9999),
+            peer.expires_in_ms.min(9999),
         );
         common::draw_body(
             frame,
@@ -193,6 +182,36 @@ fn draw_network(
             common::black(),
         );
     }
+}
+
+fn draw_message_activity(
+    frame: &mut GuiFramebuffer,
+    summary: Rect,
+    state: &DisplayState,
+    snapshot: Option<&network::Snapshot>,
+) {
+    let (tx_full, rx_full) = snapshot
+        .map(|snapshot| (snapshot.tx_queue_full, snapshot.rx_queue_full))
+        .unwrap_or((0, 0));
+    let mut line = ArrayString::<64>::new();
+    let _ = write!(
+        &mut line,
+        "M {}/{}/{} E{}/{} Q{}/{}",
+        state.pings_sent,
+        state.pings_received,
+        state.pongs_received,
+        state.send_errors,
+        state.decode_errors,
+        tx_full,
+        rx_full,
+    );
+    common::draw_body(
+        frame,
+        line.as_str(),
+        summary.x,
+        summary.y + common::BODY_LINE_HEIGHT * 3,
+        common::dark_gray(),
+    );
 }
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {

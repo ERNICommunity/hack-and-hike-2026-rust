@@ -22,6 +22,7 @@ mod app;
     feature = "imu-worldview",
     feature = "mic-waveform",
     feature = "speaker-synth",
+    feature = "network-demo",
 ))]
 mod applications;
 mod capabilities;

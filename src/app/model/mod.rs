@@ -7,8 +7,6 @@
 #[cfg(feature = "log-view")]
 mod log;
 mod navigation;
-#[cfg(feature = "network-demo")]
-mod network;
 #[cfg(feature = "settings")]
 mod settings;
 
@@ -18,6 +16,8 @@ use embassy_time::Instant;
 use crate::applications::imu_worldview;
 #[cfg(feature = "mic-waveform")]
 use crate::applications::mic_waveform;
+#[cfg(feature = "network-demo")]
+use crate::applications::network_demo;
 #[cfg(feature = "speaker-synth")]
 use crate::applications::speaker_synth;
 #[cfg(feature = "settings")]
@@ -44,7 +44,7 @@ pub(crate) use settings::SettingsDisplay;
 
 pub(crate) struct AppModelInputs {
     #[cfg(feature = "network-demo")]
-    pub(crate) network: network_capability::Input,
+    pub(crate) network: network_capability::Network,
     #[cfg(feature = "imu-worldview")]
     pub(crate) imu: imu_capability::Imu,
     #[cfg(feature = "mic-waveform")]
@@ -60,7 +60,7 @@ pub(crate) struct AppModelInputs {
 pub(crate) struct AppModel {
     navigation: navigation::Model,
     #[cfg(feature = "network-demo")]
-    network: network::Model,
+    network: network_demo::Model,
     #[cfg(feature = "imu-worldview")]
     imu: imu_worldview::Model,
     #[cfg(feature = "mic-waveform")]
@@ -78,7 +78,7 @@ impl AppModel {
         Self {
             navigation: navigation::Model::new(),
             #[cfg(feature = "network-demo")]
-            network: network::Model::new(inputs.network),
+            network: network_demo::Model::new(inputs.network),
             #[cfg(feature = "imu-worldview")]
             imu: imu_worldview::Model::new(inputs.imu),
             #[cfg(feature = "mic-waveform")]
@@ -124,14 +124,16 @@ impl AppModel {
     }
 
     pub(crate) fn update(&mut self, now: Instant) {
-        // Audio generation is application behavior, but it must continue while
-        // another view is active just as the pre-PR6 CPU1 synth did.
+        // Continuous application behaviors must keep running while another view
+        // is active: speaker PCM generation and network ping/pong responses.
         #[cfg(feature = "speaker-synth")]
         self.speaker.update();
+        #[cfg(feature = "network-demo")]
+        self.network.update_if_due(now);
 
         match self.navigation.active_view() {
             #[cfg(feature = "network-demo")]
-            ViewId::Network => self.network.update_if_due(now),
+            ViewId::Network => {}
             #[cfg(feature = "imu-worldview")]
             ViewId::Imu => self.imu.update_if_due(now),
             #[cfg(feature = "mic-waveform")]
@@ -178,7 +180,7 @@ impl AppModel {
     }
 
     #[cfg(feature = "network-demo")]
-    pub(crate) fn take_network_display(&mut self) -> Option<network_capability::Snapshot> {
+    pub(crate) fn take_network_display(&mut self) -> Option<network_demo::DisplayState> {
         if self.navigation.active_view() != ViewId::Network {
             return None;
         }

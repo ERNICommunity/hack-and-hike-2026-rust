@@ -8,8 +8,6 @@ mod camera;
 pub(crate) mod common;
 #[cfg(feature = "log-view")]
 mod log;
-#[cfg(feature = "network-demo")]
-mod network;
 #[cfg(feature = "settings")]
 mod settings;
 
@@ -17,12 +15,14 @@ mod settings;
 use crate::applications::imu_worldview;
 #[cfg(feature = "mic-waveform")]
 use crate::applications::mic_waveform;
+#[cfg(feature = "network-demo")]
+use crate::applications::network_demo;
 #[cfg(feature = "speaker-synth")]
 use crate::applications::speaker_synth;
 
 pub(crate) struct Views {
     #[cfg(feature = "network-demo")]
-    pub(crate) network: network::View,
+    pub(crate) network: network_demo::View,
     #[cfg(feature = "imu-worldview")]
     pub(crate) imu: imu_worldview::View,
     #[cfg(feature = "mic-waveform")]
@@ -41,7 +41,7 @@ impl Views {
     pub(crate) fn new() -> Self {
         Self {
             #[cfg(feature = "network-demo")]
-            network: network::View::new(),
+            network: network_demo::View::new(),
             #[cfg(feature = "imu-worldview")]
             imu: imu_worldview::View::new(),
             #[cfg(feature = "mic-waveform")]

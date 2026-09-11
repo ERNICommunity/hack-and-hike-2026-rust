@@ -1,10 +1,11 @@
-//! CPU1-owned ESP-NOW discovery capability.
+//! CPU1-owned ESP-NOW discovery and typed messaging capability.
 //!
-//! CPU0 consumes only semantic snapshots. Peer-state logic, radio adaptation,
-//! cross-core synchronization, and wire-format details remain private to this
-//! capability behind the facade below.
+//! Applications see stable `DeviceId`s, peer health, typed postcard payloads and
+//! bounded send/receive queues. ESP-NOW MAC addresses, explicit wire envelopes,
+//! radio adaptation and cross-core synchronization remain private.
 
 mod channels;
+mod message;
 mod protocol;
 mod radio;
 mod state;
@@ -14,9 +15,9 @@ use core::fmt;
 use embassy_time::Duration;
 use esp_hal::peripherals::WIFI;
 
-pub(crate) use channels::Input;
-pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
-pub(crate) use protocol::DeviceId;
+pub(crate) use channels::{Endpoints, Network, Runtime, init_endpoints};
+pub(crate) use message::{DecodeError, IncomingMessage, SendError};
+pub(crate) use protocol::{DeviceId, MAX_PAYLOAD};
 pub(crate) use radio::start;
 
 pub(crate) const MAX_PEERS: usize = 10;
@@ -74,17 +75,17 @@ pub(crate) enum Status {
     Fault,
 }
 
-/// Signed received-signal strength in dBm.
-///
-/// ESP radio metadata exposes the hardware byte representation. Converting it at
-/// the capability boundary prevents values such as raw `224` from leaking into the
-/// application when that byte actually represents `-32 dBm`.
+/// Signed received-signal strength in dBm kept private to radio/state code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RssiDbm(i8);
+struct RssiDbm(i8);
 
 impl RssiDbm {
-    pub(super) fn from_radio_raw(raw: u8) -> Self {
+    fn from_radio_raw(raw: u8) -> Self {
         Self(raw as i8)
+    }
+
+    const fn get(self) -> i8 {
+        self.0
     }
 }
 
@@ -94,13 +95,18 @@ impl fmt::Display for RssiDbm {
     }
 }
 
-/// ESP-NOW MAC address kept distinct from the stable physical `DeviceId`.
+/// ESP-NOW MAC address kept distinct from the stable physical `DeviceId` and
+/// never exposed through the application-facing capability API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct MacAddress([u8; 6]);
+struct MacAddress([u8; 6]);
 
 impl MacAddress {
-    pub(super) fn new(bytes: [u8; 6]) -> Self {
+    fn new(bytes: [u8; 6]) -> Self {
         Self(bytes)
+    }
+
+    const fn bytes(self) -> [u8; 6] {
+        self.0
     }
 }
 
@@ -114,30 +120,30 @@ impl fmt::Display for MacAddress {
     }
 }
 
-/// Presentation-sized data retained for one currently visible peer.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PeerSnapshot {
-    pub(crate) device_id: DeviceId,
-    pub(crate) rssi_dbm: RssiDbm,
+/// One currently discovered peer. Routing MAC addresses stay private.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Peer {
+    pub(crate) id: DeviceId,
+    pub(crate) rssi_dbm: i8,
     pub(crate) age_ms: u32,
+    pub(crate) expires_in_ms: u32,
 }
 
-/// Replace-latest CPU1→CPU0 network presentation state.
-///
-/// `peers` is fixed-capacity and uses `Option` for occupancy. `peer_count()` is
-/// derived, so count and table contents cannot disagree.
+/// Replace-latest diagnostics/peer snapshot cached by the CPU0 `Network` handle.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Snapshot {
     pub(crate) revision: u32,
     pub(crate) status: Status,
     pub(crate) local_id: DeviceId,
     pub(crate) channel: Channel,
-    pub(crate) peers: [Option<PeerSnapshot>; MAX_PEERS],
+    pub(crate) peers: [Option<Peer>; MAX_PEERS],
     pub(crate) tx_packets: u32,
     pub(crate) rx_packets: u32,
     pub(crate) tx_errors: u32,
     pub(crate) rx_invalid: u32,
     pub(crate) peer_evictions: u32,
+    pub(crate) tx_queue_full: u32,
+    pub(crate) rx_queue_full: u32,
 }
 
 impl Snapshot {
@@ -145,7 +151,7 @@ impl Snapshot {
         self.peers.iter().flatten().count()
     }
 
-    pub(crate) fn peers(&self) -> impl Iterator<Item = &PeerSnapshot> {
+    pub(crate) fn peers(&self) -> impl Iterator<Item = &Peer> {
         self.peers.iter().flatten()
     }
 }

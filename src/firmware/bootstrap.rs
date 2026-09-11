@@ -51,7 +51,7 @@ pub(crate) struct AppInputs {
     #[cfg(feature = "speaker")]
     pub(crate) speaker: speaker::Speaker,
     #[cfg(feature = "network")]
-    pub(crate) network: network::Input,
+    pub(crate) network: network::Network,
     #[cfg(feature = "log-view")]
     pub(crate) log: logger::Input,
 }
@@ -273,7 +273,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
     #[cfg(feature = "network")]
     let network::Endpoints {
         runtime: network_runtime,
-        input: network_input,
+        network: network_input,
     } = network::init_endpoints();
     #[cfg(feature = "touch")]
     let touch::Endpoints {

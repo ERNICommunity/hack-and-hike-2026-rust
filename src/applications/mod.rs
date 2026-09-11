@@ -4,5 +4,7 @@
 pub(crate) mod imu_worldview;
 #[cfg(feature = "mic-waveform")]
 pub(crate) mod mic_waveform;
+#[cfg(feature = "network-demo")]
+pub(crate) mod network_demo;
 #[cfg(feature = "speaker-synth")]
 pub(crate) mod speaker_synth;

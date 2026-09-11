@@ -1,10 +1,11 @@
-//! Runtime-independent peer tracking and network state transitions.
+//! Runtime-independent peer tracking, routing and network state transitions.
 
-use super::{Channel, MAX_PEERS, PeerSnapshot, RssiDbm, Snapshot, Status, protocol};
+use super::{Channel, MAX_PEERS, MacAddress, Peer, RssiDbm, Snapshot, Status, protocol};
 
 #[derive(Clone, Copy)]
 struct PeerState {
     device_id: protocol::DeviceId,
+    mac: MacAddress,
     rssi_dbm: RssiDbm,
     last_seen_ms: u64,
     rx_packets: u32,
@@ -67,10 +68,10 @@ impl NetworkState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    pub(super) fn next_beacon(&mut self, now_ms: u64) -> protocol::Packet {
+    pub(super) fn next_beacon(&mut self, now_ms: u64) -> protocol::BeaconPacket {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
-        protocol::Packet::beacon(self.local_id, sequence, now_ms as u32)
+        protocol::BeaconPacket::new(self.local_id, sequence, now_ms as u32)
     }
 
     pub(super) fn record_send_ok(&mut self) {
@@ -88,9 +89,18 @@ impl NetworkState {
         self.bump_revision();
     }
 
+    pub(super) fn route_for(&self, device_id: protocol::DeviceId) -> Option<MacAddress> {
+        self.peers
+            .iter()
+            .flatten()
+            .find(|peer| peer.device_id == device_id)
+            .map(|peer| peer.mac)
+    }
+
     pub(super) fn record_receive(
         &mut self,
-        packet: protocol::Packet,
+        device_id: protocol::DeviceId,
+        mac: MacAddress,
         rssi_dbm: RssiDbm,
         now_ms: u64,
     ) -> ReceiveOutcome {
@@ -100,8 +110,9 @@ impl NetworkState {
             .peers
             .iter_mut()
             .flatten()
-            .find(|peer| peer.device_id == packet.device_id)
+            .find(|peer| peer.device_id == device_id)
         {
+            peer.mac = mac;
             peer.rssi_dbm = rssi_dbm;
             peer.last_seen_ms = now_ms;
             peer.rx_packets = peer.rx_packets.wrapping_add(1);
@@ -114,7 +125,8 @@ impl NetworkState {
 
         let (index, evicted) = self.slot_for_new_peer();
         self.peers[index] = Some(PeerState {
-            device_id: packet.device_id,
+            device_id,
+            mac,
             rssi_dbm,
             last_seen_ms: now_ms,
             rx_packets: 1,
@@ -166,11 +178,14 @@ impl NetworkState {
         let mut peers = [None; MAX_PEERS];
 
         for (target, source) in peers.iter_mut().zip(self.peers.iter().flatten()) {
-            *target = Some(PeerSnapshot {
-                device_id: source.device_id,
-                rssi_dbm: source.rssi_dbm,
-                age_ms: now_ms
-                    .saturating_sub(source.last_seen_ms)
+            let age_ms = now_ms.saturating_sub(source.last_seen_ms);
+            *target = Some(Peer {
+                id: source.device_id,
+                rssi_dbm: source.rssi_dbm.get(),
+                age_ms: age_ms.min(u32::MAX as u64) as u32,
+                expires_in_ms: self
+                    .peer_timeout_ms
+                    .saturating_sub(age_ms)
                     .min(u32::MAX as u64) as u32,
             });
         }
@@ -194,6 +209,8 @@ impl NetworkState {
             tx_errors: self.tx_errors,
             rx_invalid: self.rx_invalid,
             peer_evictions: self.peer_evictions,
+            tx_queue_full: 0,
+            rx_queue_full: 0,
         }
     }
 }
