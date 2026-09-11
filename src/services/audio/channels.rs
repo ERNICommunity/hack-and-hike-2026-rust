@@ -1,17 +1,28 @@
-//! Cross-core audio input and playback command synchronization.
+//! Cross-core audio synchronization for enabled audio capabilities.
 
+#[cfg(feature = "speaker-synth")]
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex, signal::Signal};
+#[cfg(any(feature = "mic", feature = "speaker-synth"))]
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+#[cfg(feature = "mic")]
+use embassy_sync::mutex::Mutex;
+#[cfg(feature = "speaker-synth")]
+use embassy_sync::signal::Signal;
 use static_cell::StaticCell;
 
-use super::{AudioBlockInfo, BLOCK_SAMPLES, PlaybackSettings};
+#[cfg(feature = "speaker-synth")]
+use super::PlaybackSettings;
+#[cfg(feature = "mic")]
+use super::{AudioBlockInfo, BLOCK_SAMPLES};
 
+#[cfg(feature = "mic")]
 struct LatestAudio {
     samples: [i16; BLOCK_SAMPLES],
     info: AudioBlockInfo,
 }
 
+#[cfg(feature = "mic")]
 impl LatestAudio {
     const fn new() -> Self {
         Self {
@@ -25,20 +36,28 @@ impl LatestAudio {
     }
 }
 
+#[cfg(feature = "mic")]
 type LatestAudioStore = Mutex<CriticalSectionRawMutex, LatestAudio>;
+#[cfg(feature = "speaker-synth")]
 type PlaybackSignal = Signal<CriticalSectionRawMutex, PlaybackSettings>;
 
 struct Service {
+    #[cfg(feature = "mic")]
     latest_audio: LatestAudioStore,
+    #[cfg(feature = "speaker-synth")]
     playback_settings: PlaybackSignal,
+    #[cfg(feature = "speaker-synth")]
     one_shot_sequence: AtomicU32,
 }
 
 impl Service {
     const fn new() -> Self {
         Self {
+            #[cfg(feature = "mic")]
             latest_audio: Mutex::new(LatestAudio::new()),
+            #[cfg(feature = "speaker-synth")]
             playback_settings: Signal::new(),
+            #[cfg(feature = "speaker-synth")]
             one_shot_sequence: AtomicU32::new(0),
         }
     }
@@ -52,18 +71,22 @@ pub(crate) struct Runtime {
 }
 
 /// CPU0 input endpoint for the newest complete stereo microphone block.
+#[cfg(feature = "mic")]
 pub(crate) struct Input {
     service: &'static Service,
 }
 
-/// CPU0 command endpoint for the CPU1 audio-output service.
+/// CPU0 command endpoint used by the stock speaker synth application.
+#[cfg(feature = "speaker-synth")]
 pub(crate) struct PlaybackControl {
     service: &'static Service,
 }
 
 pub(crate) struct Endpoints {
     pub(crate) runtime: Runtime,
+    #[cfg(feature = "mic")]
     pub(crate) input: Input,
+    #[cfg(feature = "speaker-synth")]
     pub(crate) playback: PlaybackControl,
 }
 
@@ -71,11 +94,14 @@ pub(crate) fn init_endpoints() -> Endpoints {
     let service: &'static Service = SERVICE.init(Service::new());
     Endpoints {
         runtime: Runtime { service },
+        #[cfg(feature = "mic")]
         input: Input { service },
+        #[cfg(feature = "speaker-synth")]
         playback: PlaybackControl { service },
     }
 }
 
+#[cfg(feature = "mic")]
 impl Input {
     pub(crate) fn copy_latest_interleaved(
         &mut self,
@@ -90,6 +116,7 @@ impl Input {
     }
 }
 
+#[cfg(feature = "speaker-synth")]
 impl PlaybackControl {
     pub(crate) fn set(&mut self, settings: PlaybackSettings) {
         self.service.playback_settings.signal(settings);
@@ -103,6 +130,7 @@ impl PlaybackControl {
 }
 
 impl Runtime {
+    #[cfg(feature = "mic")]
     pub(super) async fn publish_audio(
         self,
         samples: &[i16; BLOCK_SAMPLES],
@@ -117,10 +145,12 @@ impl Runtime {
         latest.info.sequence
     }
 
+    #[cfg(feature = "speaker-synth")]
     pub(super) fn take_playback_settings(self) -> Option<PlaybackSettings> {
         self.service.playback_settings.try_take()
     }
 
+    #[cfg(feature = "speaker-synth")]
     pub(super) fn one_shot_sequence(self) -> u32 {
         self.service.one_shot_sequence.load(Ordering::Acquire)
     }

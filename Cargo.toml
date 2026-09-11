@@ -10,6 +10,41 @@ path = "./src/main.rs"
 test = false
 bench = false
 
+[features]
+default = ["full"]
+
+# Hardware capabilities. Enabling one owns and initializes the corresponding
+# board hardware without requiring any particular stock application.
+display = []
+touch = []
+imu = []
+mic = []
+speaker = []
+network = []
+camera = []
+
+# Stock applications. These are compositions of capabilities and will move into
+# vertical application modules in the following PRs; PR1 establishes the Cargo
+# composition contract without changing their behavior.
+imu-worldview = ["imu", "display"]
+mic-waveform = ["mic", "display"]
+speaker-synth = ["speaker", "display", "touch"]
+network-demo = ["network", "display"]
+camera-view = ["camera", "display"]
+settings = ["display", "touch"]
+log-view = ["display"]
+
+# Preserve the existing out-of-box firmware.
+full = [
+    "imu-worldview",
+    "mic-waveform",
+    "speaker-synth",
+    "network-demo",
+    "camera-view",
+    "settings",
+    "log-view",
+]
+
 [dependencies]
 esp-hal = { version = "~1.1.0", features = ["esp32s3", "log-04", "unstable"] }
 esp-rtos = { version = "0.3.0", features = ["embassy", "esp-alloc", "esp-radio", "esp32s3", "log-04"] }

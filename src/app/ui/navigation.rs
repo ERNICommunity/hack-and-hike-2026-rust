@@ -1,17 +1,13 @@
-//! Fixed navigation rail input and rendering.
+//! Feature-composed navigation rail input and rendering.
 //!
-//! `NavigationInput` owns the CPU0 touch reader and routes one physical gesture
-//! to either the navigation rail or the active content view. Navigation presses
-//! still commit only when press and release land on the same semantic view;
-//! content gestures are translated into the 276x240 content coordinate space.
+//! When touch is enabled, `NavigationInput` owns the CPU0 touch reader and routes
+//! one physical gesture to either the navigation rail or the active content view.
+//! Without touch, the same application host remains renderable but navigation is
+//! intentionally read-only.
 
-use crate::{
-    app::model::ViewId,
-    services::{
-        display::Display,
-        touch::{Input as TouchInput, TouchEdge, TouchPoint},
-    },
-};
+#[cfg(feature = "touch")]
+use crate::services::touch::{Input as TouchInput, TouchEdge, TouchPoint};
+use crate::{app::model::ViewId, services::display::Display};
 
 use super::design;
 
@@ -32,6 +28,7 @@ pub(crate) struct ContentPointer {
     pub phase: PointerPhase,
 }
 
+#[cfg(feature = "touch")]
 #[derive(Clone, Copy)]
 enum GestureTarget {
     Navigation(Option<ViewId>),
@@ -39,11 +36,14 @@ enum GestureTarget {
 }
 
 pub(crate) struct NavigationInput {
+    #[cfg(feature = "touch")]
     touch: TouchInput,
+    #[cfg(feature = "touch")]
     target: Option<GestureTarget>,
 }
 
 impl NavigationInput {
+    #[cfg(feature = "touch")]
     pub(crate) const fn new(touch: TouchInput) -> Self {
         Self {
             touch,
@@ -51,9 +51,15 @@ impl NavigationInput {
         }
     }
 
+    #[cfg(not(feature = "touch"))]
+    pub(crate) const fn new() -> Self {
+        Self {}
+    }
+
     /// Drain pending touch state, routing content-space pointer events to the
     /// active view and returning a committed navigation destination if one
     /// completes during this poll.
+    #[cfg(feature = "touch")]
     pub(crate) fn poll(&mut self, mut on_content: impl FnMut(ContentPointer)) -> Option<ViewId> {
         let mut selected = None;
 
@@ -94,6 +100,12 @@ impl NavigationInput {
         selected
     }
 
+    #[cfg(not(feature = "touch"))]
+    pub(crate) fn poll(&mut self, _on_content: impl FnMut(ContentPointer)) -> Option<ViewId> {
+        None
+    }
+
+    #[cfg(feature = "touch")]
     fn flush_latest_movement(&mut self, on_content: &mut impl FnMut(ContentPointer)) {
         let Some(point) = self.touch.take_latest_point() else {
             return;
@@ -113,6 +125,7 @@ impl NavigationInput {
     }
 }
 
+#[cfg(feature = "touch")]
 fn content_pointer(point: TouchPoint, phase: PointerPhase) -> ContentPointer {
     ContentPointer {
         x: i32::from(point.x) - design::UI.navigation.width as i32,
@@ -121,6 +134,7 @@ fn content_pointer(point: TouchPoint, phase: PointerPhase) -> ContentPointer {
     }
 }
 
+#[cfg(feature = "touch")]
 fn view_at(point: TouchPoint) -> Option<ViewId> {
     let nav = design::UI.navigation;
     if usize::from(point.x) >= nav.width {
