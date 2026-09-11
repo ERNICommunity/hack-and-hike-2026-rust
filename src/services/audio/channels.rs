@@ -3,10 +3,12 @@
 #[cfg(feature = "speaker-synth")]
 use core::sync::atomic::{AtomicU32, Ordering};
 
+#[cfg(any(feature = "mic", feature = "speaker-synth"))]
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(feature = "mic")]
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
+use embassy_sync::mutex::Mutex;
 #[cfg(feature = "speaker-synth")]
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+use embassy_sync::signal::Signal;
 use static_cell::StaticCell;
 
 #[cfg(feature = "speaker-synth")]
