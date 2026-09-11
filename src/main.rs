@@ -66,7 +66,85 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         feature = "settings",
         feature = "log-view",
     ))]
-    run_applications(bootstrap).await;
+    {
+        // Keep the stock application loop directly in the RTOS main future. In
+        // particular, do not wrap the large concrete Bootstrap owner in a nested
+        // async future: the default/full firmware must retain the proven main-task
+        // frame and linked-image layout while feature gates only change composition.
+        let mut bootstrap = bootstrap;
+        let model = app::model::AppModel::new(app::model::AppModelInputs {
+            #[cfg(feature = "network-demo")]
+            network: bootstrap.inputs.network,
+            #[cfg(feature = "imu-worldview")]
+            imu: bootstrap.inputs.imu,
+            #[cfg(feature = "mic-waveform")]
+            audio: bootstrap.inputs.audio,
+            #[cfg(feature = "speaker-synth")]
+            playback: bootstrap.playback,
+            #[cfg(feature = "settings")]
+            brightness: bootstrap.brightness,
+            #[cfg(feature = "log-view")]
+            log: bootstrap.inputs.log,
+        });
+
+        #[cfg(feature = "touch")]
+        let mut ui = app::ui::Ui::new(model, bootstrap.inputs.touch);
+        #[cfg(not(feature = "touch"))]
+        let mut ui = app::ui::Ui::new(model);
+
+        let display = &mut bootstrap.display;
+        let now = Instant::now();
+        let mut heap_monitor = support::memory::HeapMonitor::new(now);
+        heap_monitor.checkpoint("after model + UI construction");
+
+        ui.render_initial(display);
+        heap_monitor.checkpoint("after initial UI render");
+
+        loop {
+            let now = Instant::now();
+            let transition = ui.prepare_frame(now);
+
+            if let Some(transition) = transition {
+                heap_monitor.begin_activity(transition.to.name());
+                #[cfg(feature = "camera-view")]
+                if transition.from == app::model::ViewId::Camera {
+                    bootstrap.camera.pause();
+                }
+                ui.apply_navigation(transition, display);
+            }
+
+            ui.render(display);
+
+            #[cfg(feature = "camera-view")]
+            let camera_active =
+                bootstrap.camera_ready && ui.presented_view() == app::model::ViewId::Camera;
+            #[cfg(not(feature = "camera-view"))]
+            let camera_active = false;
+
+            #[cfg(feature = "camera-view")]
+            if camera_active {
+                if let Some(mut frame) = bootstrap.camera.begin_frame() {
+                    ui.render_camera(display, &mut frame);
+                    frame.finish();
+                }
+            }
+
+            if let Some(transition) = transition {
+                heap_monitor.end_activity();
+                info!("View {:?} -> {:?}", transition.from, transition.to);
+            }
+            heap_monitor.poll(now);
+
+            #[cfg(feature = "imu-worldview")]
+            let imu_active = ui.presented_view() == app::model::ViewId::Imu;
+            #[cfg(not(feature = "imu-worldview"))]
+            let imu_active = false;
+
+            if !camera_active && !imu_active {
+                Timer::after(UI_IDLE_DELAY).await;
+            }
+        }
+    }
 
     #[cfg(not(any(
         feature = "imu-worldview",
@@ -82,90 +160,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         // Keep the concrete capability owners alive while their CPU1 services run.
         let _bootstrap = bootstrap;
         loop {
-            Timer::after(UI_IDLE_DELAY).await;
-        }
-    }
-}
-
-#[cfg(any(
-    feature = "imu-worldview",
-    feature = "mic-waveform",
-    feature = "speaker-synth",
-    feature = "network-demo",
-    feature = "camera-view",
-    feature = "settings",
-    feature = "log-view",
-))]
-async fn run_applications(mut bootstrap: firmware::Bootstrap) -> ! {
-    let model = app::model::AppModel::new(app::model::AppModelInputs {
-        #[cfg(feature = "network-demo")]
-        network: bootstrap.inputs.network,
-        #[cfg(feature = "imu-worldview")]
-        imu: bootstrap.inputs.imu,
-        #[cfg(feature = "mic-waveform")]
-        audio: bootstrap.inputs.audio,
-        #[cfg(feature = "speaker-synth")]
-        playback: bootstrap.playback,
-        #[cfg(feature = "settings")]
-        brightness: bootstrap.brightness,
-        #[cfg(feature = "log-view")]
-        log: bootstrap.inputs.log,
-    });
-
-    #[cfg(feature = "touch")]
-    let mut ui = app::ui::Ui::new(model, bootstrap.inputs.touch);
-    #[cfg(not(feature = "touch"))]
-    let mut ui = app::ui::Ui::new(model);
-
-    let display = &mut bootstrap.display;
-    let now = Instant::now();
-    let mut heap_monitor = support::memory::HeapMonitor::new(now);
-    heap_monitor.checkpoint("after model + UI construction");
-
-    ui.render_initial(display);
-    heap_monitor.checkpoint("after initial UI render");
-
-    loop {
-        let now = Instant::now();
-        let transition = ui.prepare_frame(now);
-
-        if let Some(transition) = transition {
-            heap_monitor.begin_activity(transition.to.name());
-            #[cfg(feature = "camera-view")]
-            if transition.from == app::model::ViewId::Camera {
-                bootstrap.camera.pause();
-            }
-            ui.apply_navigation(transition, display);
-        }
-
-        ui.render(display);
-
-        #[cfg(feature = "camera-view")]
-        let camera_active =
-            bootstrap.camera_ready && ui.presented_view() == app::model::ViewId::Camera;
-        #[cfg(not(feature = "camera-view"))]
-        let camera_active = false;
-
-        #[cfg(feature = "camera-view")]
-        if camera_active {
-            if let Some(mut frame) = bootstrap.camera.begin_frame() {
-                ui.render_camera(display, &mut frame);
-                frame.finish();
-            }
-        }
-
-        if let Some(transition) = transition {
-            heap_monitor.end_activity();
-            info!("View {:?} -> {:?}", transition.from, transition.to);
-        }
-        heap_monitor.poll(now);
-
-        #[cfg(feature = "imu-worldview")]
-        let imu_active = ui.presented_view() == app::model::ViewId::Imu;
-        #[cfg(not(feature = "imu-worldview"))]
-        let imu_active = false;
-
-        if !camera_active && !imu_active {
             Timer::after(UI_IDLE_DELAY).await;
         }
     }
