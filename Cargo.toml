@@ -36,6 +36,7 @@ log-view = ["display"]
 
 # Preserve the existing out-of-box firmware.
 full = [
+    "touch",
     "imu-worldview",
     "mic-waveform",
     "speaker-synth",

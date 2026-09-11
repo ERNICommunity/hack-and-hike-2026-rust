@@ -15,9 +15,7 @@ use crate::{
 
 use super::{Resources, SAMPLE_RATE_HZ, channels::Runtime, playback};
 
-// The shared esp-hal buffer macro currently creates both descriptor sets. RX is
-// only started and processed when the mic capability is enabled; speaker-only
-// builds do not own the microphone GPIO or initialize the microphone codec.
+#[cfg(feature = "mic")]
 const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
 #[cfg(feature = "mic")]
 const RX_PROCESS_CHUNK_BYTES: usize = FRAMES_PER_BLOCK * CHANNELS * 2;
@@ -59,8 +57,15 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
         data_out,
     } = resources;
 
+    #[cfg(feature = "mic")]
     let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
         esp_hal::dma_circular_buffers!(RX_DMA_BUFFER_BYTES, TX_DMA_BUFFER_BYTES);
+    #[cfg(not(feature = "mic"))]
+    let (_, _, tx_buffer, tx_descriptors) =
+        // esp-hal explicitly supports zero-sized DMA sides as "not needed".
+        // Keep circular TX descriptors for the shared clock domain without
+        // reserving microphone RX storage in speaker-only firmware.
+        esp_hal::dma_circular_buffers!(0, TX_DMA_BUFFER_BYTES);
 
     let i2s = I2s::new(
         i2s0,
@@ -105,7 +110,6 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
 
     #[cfg(not(feature = "mic"))]
     {
-        let _ = (rx_buffer, rx_descriptors);
         core::future::pending::<()>().await;
         return;
     }

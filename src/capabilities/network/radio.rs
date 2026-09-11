@@ -22,6 +22,11 @@ use super::{
 };
 
 const TX_POLL_PERIOD: Duration = Duration::from_millis(10);
+const LOCAL_CAPABILITIES: protocol::Capabilities = protocol::Capabilities::from_enabled(
+    cfg!(feature = "imu"),
+    cfg!(any(feature = "mic", feature = "speaker")),
+    cfg!(feature = "display"),
+);
 
 static STATE: Mutex<RefCell<Option<NetworkState>>> = Mutex::new(RefCell::new(None));
 static WIFI_CONTROLLER: StaticCell<WifiController<'static>> = StaticCell::new();
@@ -154,7 +159,9 @@ async fn transmit_task(
 
         let now = Instant::now();
         if now.as_millis() >= next_beacon_ms {
-            if let Some(packet) = with_state(|state| state.next_beacon(now.as_millis())) {
+            if let Some(packet) = with_state(|state| {
+                state.next_beacon(now.as_millis(), LOCAL_CAPABILITIES)
+            }) {
                 let payload = packet.encode();
                 match sender.send_async(&BROADCAST_ADDRESS, &payload).await {
                     Ok(()) => {

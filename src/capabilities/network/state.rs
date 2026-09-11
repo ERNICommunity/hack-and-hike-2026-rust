@@ -68,10 +68,14 @@ impl NetworkState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    pub(super) fn next_beacon(&mut self, now_ms: u64) -> protocol::BeaconPacket {
+    pub(super) fn next_beacon(
+        &mut self,
+        now_ms: u64,
+        capabilities: protocol::Capabilities,
+    ) -> protocol::BeaconPacket {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
-        protocol::BeaconPacket::new(self.local_id, sequence, now_ms as u32)
+        protocol::BeaconPacket::new(self.local_id, sequence, now_ms as u32, capabilities)
     }
 
     pub(super) fn record_send_ok(&mut self) {

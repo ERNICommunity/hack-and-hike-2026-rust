@@ -82,13 +82,16 @@ mod tests {
     fn explicit_envelopes_roundtrip_and_reject_malformed_frames() {
         let sender = id([1, 2, 3, 4, 5, 6]);
         let recipient = id([6, 5, 4, 3, 2, 1]);
+        let capabilities = protocol::Capabilities::from_enabled(true, false, true);
 
-        let beacon = protocol::BeaconPacket::new(sender, 7, 1234).encode();
+        let beacon = protocol::BeaconPacket::new(sender, 7, 1234, capabilities).encode();
         match protocol::decode_frame(&beacon) {
             Some(DecodedFrame::Beacon(decoded)) => {
                 assert_eq!(decoded.device_id, sender);
                 assert_eq!(decoded.sequence, 7);
                 assert_eq!(decoded.uptime_ms, 1234);
+                assert_eq!(decoded.capabilities, capabilities);
+                assert_eq!(decoded.capabilities.bits(), 0b101);
             }
             other => panic!("unexpected beacon decode: {other:?}"),
         }

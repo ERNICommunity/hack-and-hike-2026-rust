@@ -58,7 +58,20 @@ impl Capabilities {
     pub(super) const IMU: Self = Self(1 << 0);
     pub(super) const AUDIO: Self = Self(1 << 1);
     pub(super) const DISPLAY: Self = Self(1 << 2);
-    pub(super) const LOCAL: Self = Self(Self::IMU.0 | Self::AUDIO.0 | Self::DISPLAY.0);
+
+    pub(super) const fn from_enabled(imu: bool, audio: bool, display: bool) -> Self {
+        let mut bits = 0;
+        if imu {
+            bits |= Self::IMU.0;
+        }
+        if audio {
+            bits |= Self::AUDIO.0;
+        }
+        if display {
+            bits |= Self::DISPLAY.0;
+        }
+        Self(bits)
+    }
 
     pub(super) const fn bits(self) -> u32 {
         self.0
@@ -84,12 +97,17 @@ pub(super) struct BeaconPacket {
 }
 
 impl BeaconPacket {
-    pub(super) const fn new(device_id: DeviceId, sequence: u32, uptime_ms: u32) -> Self {
+    pub(super) const fn new(
+        device_id: DeviceId,
+        sequence: u32,
+        uptime_ms: u32,
+        capabilities: Capabilities,
+    ) -> Self {
         Self {
             device_id,
             sequence,
             uptime_ms,
-            capabilities: Capabilities::LOCAL,
+            capabilities,
         }
     }
 
