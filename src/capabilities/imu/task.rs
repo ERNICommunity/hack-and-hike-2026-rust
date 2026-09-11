@@ -101,7 +101,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
         // closer to 80-90 Hz in the captured trace.
         let mut sample_ticker = Ticker::every(config.sample_period);
 
-        ::log::info!("IMU-TRACE session-start revision={}", revision);
+        ::log::trace!("IMU-TRACE session-start revision={}", revision);
 
         loop {
             sample_ticker.next().await;
@@ -179,7 +179,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
 
                     if trace_samples % IMU_TRACE_EVERY_SAMPLES == 0 {
                         let mag = magnetic_for_fusion.unwrap_or([0.0, 0.0, 0.0]);
-                        ::log::info!(
+                        ::log::trace!(
                             "IMU-TRACE rev={} st={} dt_ms={} acc=[{},{},{}] gyro_raw=[{},{},{}] gyro_corr=[{},{},{}] mag_used={} mag=[{},{},{}] field_ut={} mag_status={:?} cal={} out_rpy=[{},{},{}] g=[{},{},{}] n=[{},{},{}]",
                             revision.wrapping_add(1),
                             sample.sensor_time,
