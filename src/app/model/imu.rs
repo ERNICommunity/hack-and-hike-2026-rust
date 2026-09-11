@@ -27,6 +27,7 @@ pub(super) struct Model {
     display: ImuDisplay,
     last_revision: u32,
     last_update: Instant,
+    logged_calibrated_snapshot: bool,
     dirty: bool,
 }
 
@@ -46,6 +47,7 @@ impl Model {
             },
             last_revision: 0,
             last_update: Instant::now(),
+            logged_calibrated_snapshot: false,
             dirty: true,
         }
     }
@@ -66,6 +68,18 @@ impl Model {
             return;
         }
         self.last_revision = snapshot.revision;
+
+        if snapshot.mag_calibration_percent == 100 && !self.logged_calibrated_snapshot {
+            ::log::info!(
+                "CPU0 received calibrated IMU snapshot: revision={} status={:?} mag_status={:?} field={}uT",
+                snapshot.revision,
+                snapshot.status,
+                snapshot.mag_status,
+                round_units(snapshot.mag_field_ut)
+            );
+            self.logged_calibrated_snapshot = true;
+        }
+
         self.display = ImuDisplay {
             sample_revision: snapshot.revision,
             roll_deg: snapshot.orientation.roll_deg,
