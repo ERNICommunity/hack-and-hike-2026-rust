@@ -27,11 +27,11 @@ fn assert_angle_eq(actual: f32, expected: f32) {
 }
 
 fn positive_pole_observable(roll_deg: f32, yaw_deg: f32) -> f32 {
-    wrap_degrees(roll_deg - yaw_deg)
+    wrap_degrees(yaw_deg + roll_deg)
 }
 
 fn negative_pole_observable(roll_deg: f32, yaw_deg: f32) -> f32 {
-    wrap_degrees(roll_deg + yaw_deg)
+    wrap_degrees(yaw_deg - roll_deg)
 }
 
 #[test]
@@ -115,6 +115,27 @@ fn positive_camera_pole_crossing_is_continuous_in_both_directions() {
     assert_angle_eq(
         positive_pole_observable(-90.0, before_reverse),
         positive_pole_observable(90.0, after_reverse),
+    );
+}
+
+#[test]
+fn pole_compensation_uses_y_down_screen_signs_for_non_half_turn_changes() {
+    let mut negative = Tracker::new();
+    let negative_before = negative.update(1, 10.0, -89.0, 20.0);
+    let negative_after = negative.update(2, 40.0, -89.0, 20.0);
+    assert_angle_eq(negative_after, 50.0);
+    assert_angle_eq(
+        negative_pole_observable(10.0, negative_before),
+        negative_pole_observable(40.0, negative_after),
+    );
+
+    let mut positive = Tracker::new();
+    let positive_before = positive.update(1, 10.0, 89.0, 20.0);
+    let positive_after = positive.update(2, 40.0, 89.0, 20.0);
+    assert_angle_eq(positive_after, -10.0);
+    assert_angle_eq(
+        positive_pole_observable(10.0, positive_before),
+        positive_pole_observable(40.0, positive_after),
     );
 }
 

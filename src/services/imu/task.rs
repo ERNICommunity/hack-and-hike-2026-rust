@@ -135,8 +135,9 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                     );
 
                     let status = match magnetic.status() {
+                        MagStatus::Learning => Status::Starting,
+                        MagStatus::Ready => Status::Running,
                         MagStatus::Missing | MagStatus::Disturbed => Status::Degraded,
-                        MagStatus::Learning | MagStatus::Ready => Status::Running,
                     };
                     channels::publish(
                         runtime,

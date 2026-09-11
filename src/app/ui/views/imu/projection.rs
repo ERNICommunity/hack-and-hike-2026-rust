@@ -21,9 +21,17 @@ pub(super) const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
 // Keep the preferred rectilinear renderer, but narrow only the horizontal field
 // of view to reduce its unavoidable sec(theta)^2 yaw-speed increase toward the
-// edges. tan(50deg) gives a 100deg horizontal FOV at any viewport width. Roll is
-// applied after projection, preserving the preferred horizon angle exactly.
+// edges. tan(50deg) gives a 100deg horizontal FOV at any viewport width.
 const HORIZONTAL_HALF_FOV_TAN: f32 = 1.1917536;
+
+// The historical renderer applies roll after anisotropic perspective projection
+// so screen roll looks exact. That makes roll and yaw non-equivalent at the Euler
+// pole even though they describe the same physical degree of freedom there. Keep
+// the historical projection everywhere below the pole-lock region, then blend to
+// true 3-D camera roll before reaching the singularity. At the pole the grid and
+// compass therefore depend only on the pole invariant maintained by attitude.rs.
+const POLE_SAFE_BLEND_START_DEG: f32 = 80.0;
+const POLE_SAFE_BLEND_END_DEG: f32 = 88.0;
 
 type ScreenLine = ((i32, i32), (i32, i32));
 
@@ -46,6 +54,7 @@ pub(super) struct PerspectiveCamera {
     pub(super) cos_pitch: f32,
     pub(super) sin_roll: f32,
     pub(super) cos_roll: f32,
+    pole_safe_blend: f32,
     pub(super) pitch_offset: i32,
     // Q10 coefficients for the displayed horizon's implicit line:
     // a*x + b*y + c = 0. Perpendicular screen distance from this line is a
@@ -99,6 +108,15 @@ pub(super) fn perspective_camera(
     let sin_roll = sin_approx(roll);
     let cos_roll = cos_approx(roll);
     let (focal_x, focal_y) = perspective_focals(center_x, center_y);
+    let abs_pitch_deg = abs_f32(attitude.pitch_deg);
+    let pole_safe_blend = if abs_pitch_deg <= POLE_SAFE_BLEND_START_DEG {
+        0.0
+    } else if abs_pitch_deg >= POLE_SAFE_BLEND_END_DEG {
+        1.0
+    } else {
+        (abs_pitch_deg - POLE_SAFE_BLEND_START_DEG)
+            / (POLE_SAFE_BLEND_END_DEG - POLE_SAFE_BLEND_START_DEG)
+    };
 
     // Use the exact displayed horizon geometry for fading. This keeps the depth
     // cue attached to the attitude horizon even at high pitch/roll angles.
@@ -122,6 +140,7 @@ pub(super) fn perspective_camera(
         cos_pitch,
         sin_roll,
         cos_roll,
+        pole_safe_blend,
         pitch_offset,
         horizon_a_q10,
         horizon_b_q10,
@@ -135,9 +154,9 @@ pub(super) fn world_to_camera(point: [f32; 3], camera: PerspectiveCamera) -> [f3
     let pitched_y = camera.cos_pitch * point[1] - camera.sin_pitch * yaw_z;
     let pitched_z = camera.sin_pitch * point[1] + camera.cos_pitch * yaw_z;
 
-    // Keep roll out of 3D camera space. Applying it after the anisotropic
-    // perspective projection preserves the exact roll angle of the preferred
-    // renderer while still allowing a narrower horizontal FOV.
+    // Leave roll until projection so the normal view remains pixel-for-pixel
+    // compatible with the existing renderer. project_camera_point blends that
+    // legacy screen roll into a true 3-D roll only near the pitch singularity.
     [yaw_x, pitched_y, pitched_z]
 }
 
@@ -162,15 +181,32 @@ pub(super) fn project_camera_point(
         return None;
     }
 
-    let unrolled_x = camera.focal_x * point[0] / point[2];
-    let unrolled_y = -camera.focal_y * point[1] / point[2];
+    let inverse_z = 1.0 / point[2];
+
+    // Existing path: project first, then rotate pixels. This preserves the exact
+    // historical appearance away from vertical pitch.
+    let unrolled_x = camera.focal_x * point[0] * inverse_z;
+    let unrolled_y = -camera.focal_y * point[1] * inverse_z;
+    let legacy_x = camera.cos_roll * unrolled_x - camera.sin_roll * unrolled_y;
+    let legacy_y = camera.sin_roll * unrolled_x + camera.cos_roll * unrolled_y;
+
+    // Pole-safe path: roll the camera-space vector before anisotropic projection.
+    // At +/-90deg pitch this restores the true Euler equivalence, so a noisy
+    // gravity-derived roll exactly cancels with attitude.rs' yaw compensation
+    // instead of rotating the grid around the screen.
+    let rolled_x = camera.cos_roll * point[0] + camera.sin_roll * point[1];
+    let rolled_y = -camera.sin_roll * point[0] + camera.cos_roll * point[1];
+    let pole_x = camera.focal_x * rolled_x * inverse_z;
+    let pole_y = -camera.focal_y * rolled_y * inverse_z;
+
+    let blend = camera.pole_safe_blend;
+    let legacy_weight = 1.0 - blend;
+    let projected_x = legacy_x * legacy_weight + pole_x * blend;
+    let projected_y = legacy_y * legacy_weight + pole_y * blend;
+
     Some((
-        round_f32(
-            camera.center_x as f32 + camera.cos_roll * unrolled_x - camera.sin_roll * unrolled_y,
-        ),
-        round_f32(
-            camera.center_y as f32 + camera.sin_roll * unrolled_x + camera.cos_roll * unrolled_y,
-        ),
+        round_f32(camera.center_x as f32 + projected_x),
+        round_f32(camera.center_y as f32 + projected_y),
     ))
 }
 

@@ -38,7 +38,7 @@ const MIN_DIRECTION_BINS: u32 = 12;
 const MIN_DIRECTION_FACES: u32 = 6;
 const MAX_SAMPLES_PER_DIRECTION_BIN: u8 = 32;
 const REFIT_INTERVAL_SAMPLES: u16 = 16;
-const MAX_FAILED_FITS_BEFORE_RESTART: u8 = 6;
+const MIN_REFIT_DIRECTION_BINS: u32 = 4;
 
 /// Allocation-free online full-ellipsoid magnetometer calibration.
 ///
@@ -56,10 +56,10 @@ pub(crate) struct Calibration {
     fit_samples: u32,
     weight_sum: f32,
     samples_since_fit: u16,
+    refit_direction_bins: u32,
     direction_bins: u32,
     direction_faces: u8,
     direction_bin_samples: [u8; DIRECTION_BIN_COUNT],
-    failed_fits: u8,
     candidate: Option<Candidate>,
     model: Option<Model>,
 }
@@ -76,10 +76,10 @@ impl Calibration {
             fit_samples: 0,
             weight_sum: 0.0,
             samples_since_fit: 0,
+            refit_direction_bins: 0,
             direction_bins: 0,
             direction_faces: 0,
             direction_bin_samples: [0; DIRECTION_BIN_COUNT],
-            failed_fits: 0,
             candidate: None,
             model: None,
         }
@@ -92,11 +92,11 @@ impl Calibration {
     /// 2. collect a balanced set of samples across the 3-D sphere and fit,
     /// 3. validate the provisional correction on fresh measurements.
     ///
-    /// A repeatedly invalid history is eventually discarded rather than
-    /// remaining indefinitely near completion, but every retry must first learn
-    /// a meaningful batch of genuinely new samples. Once a validated model is
-    /// accepted it is frozen so external magnetic disturbances cannot be learned
-    /// as enclosure hard/soft iron.
+    /// Rejected fits never discard the complete learning history. Instead the
+    /// calibrator opens a fresh balanced per-direction sampling epoch and waits
+    /// for genuinely new, directionally diverse data before fitting again. Once
+    /// a validated model is accepted it is frozen so external magnetic
+    /// disturbances cannot be learned as enclosure hard/soft iron.
     pub(crate) fn observe(&mut self, field_ut: [f32; 3]) {
         if self.model.is_some() || !raw_sample_is_plausible(field_ut) {
             return;
@@ -130,7 +130,7 @@ impl Calibration {
             match fit::validate_candidate(candidate, field_ut) {
                 CandidateValidation::Pending(candidate) => self.candidate = Some(candidate),
                 CandidateValidation::Accepted(model) => self.model = Some(model),
-                CandidateValidation::Rejected => self.record_failed_fit(),
+                CandidateValidation::Rejected => {}
             }
             if self.model.is_some() || self.fit_origin_ut.is_none() {
                 return;
@@ -151,13 +151,16 @@ impl Calibration {
             );
             self.fit_samples = self.fit_samples.saturating_add(1);
             self.samples_since_fit = self.samples_since_fit.saturating_add(1);
+            self.refit_direction_bins |= 1u32 << direction_bin;
         }
 
         if self.candidate.is_none()
             && self.has_minimum_coverage()
             && self.samples_since_fit >= REFIT_INTERVAL_SAMPLES
+            && bit_count_u32(self.refit_direction_bins) >= MIN_REFIT_DIRECTION_BINS
         {
             self.samples_since_fit = 0;
+            self.refit_direction_bins = 0;
             match fit::fit_model(
                 &self.normal,
                 &self.rhs,
@@ -166,8 +169,11 @@ impl Calibration {
                 self.min,
                 self.max,
             ) {
-                Some(model) => self.candidate = Some(Candidate::new(model)),
-                None => self.record_failed_fit(),
+                Some(model) => {
+                    self.candidate = Some(Candidate::new(model));
+                    self.open_balanced_refit_epoch();
+                }
+                None => self.open_balanced_refit_epoch(),
             }
         }
     }
@@ -258,21 +264,14 @@ impl Calibration {
         )
     }
 
-    fn record_failed_fit(&mut self) {
-        self.failed_fits = self.failed_fits.saturating_add(1);
-        if self.failed_fits >= MAX_FAILED_FITS_BEFORE_RESTART {
-            self.restart_learning();
-        } else {
-            // A rejected candidate means the existing fit needs materially more
-            // information. The old code forced another fit on the very next
-            // sample, so six near-identical failures could erase the complete
-            // learning history almost instantly. Require a fresh batch instead.
-            self.samples_since_fit = 0;
-        }
-    }
-
-    fn restart_learning(&mut self) {
-        *self = Self::new();
+    fn open_balanced_refit_epoch(&mut self) {
+        // Keep all accumulated normal equations/extrema, but reopen each
+        // direction's bounded quota so fresh measurements can continue to
+        // improve a rejected or numerically invalid fit. This avoids the old
+        // user-visible 85..99 -> 0 restart while preserving balanced sampling.
+        self.direction_bin_samples = [0; DIRECTION_BIN_COUNT];
+        self.samples_since_fit = 0;
+        self.refit_direction_bins = 0;
     }
 }
 

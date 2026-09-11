@@ -110,15 +110,18 @@ impl Tracker {
         }
 
         let roll_delta_deg = wrap_degrees(roll_deg - previous_roll_deg);
-        // For the renderer's Rz(roll) * Rx(pitch) * Ry(yaw) convention:
-        //   pitch = -90 deg -> only (roll + yaw) is observable
-        //   pitch = +90 deg -> only (roll - yaw) is observable
-        // Counter-rotate yaw by the gravity-derived roll change so a noisy or
-        // branch-flipping Euler roll cannot spin the world at either pole.
+        // Screen Y points downward, so the renderer's visible roll has the
+        // opposite sign from a conventional mathematical camera-Z rotation.
+        // Consequently the actual pole invariants are:
+        //   pitch = -90 deg -> (yaw - roll)
+        //   pitch = +90 deg -> (yaw + roll)
+        // Move presentation yaw with the gravity-derived roll at the negative
+        // pole and against it at the positive pole. The previous signs were
+        // reversed, which doubled a branch jump instead of cancelling it.
         let yaw_compensation_deg = if same_negative_pole {
-            -roll_delta_deg
-        } else {
             roll_delta_deg
+        } else {
+            -roll_delta_deg
         };
         self.yaw_offset_deg = wrap_degrees(self.yaw_offset_deg + yaw_compensation_deg);
     }
