@@ -1,8 +1,8 @@
 //! CPU0 presentation owner.
 //!
-//! `Ui` coordinates semantic application state, touch routing, semantic views,
-//! and one fixed PSRAM embedded-gui surface. KDL owns content-view geometry;
-//! `Display` remains the only LCD transport boundary.
+//! `Ui` coordinates semantic application state, optional touch routing, concrete
+//! enabled views, and one fixed PSRAM embedded-gui surface. KDL owns content-view
+//! geometry; `Display` remains the only LCD transport boundary.
 
 mod design;
 mod gui;
@@ -14,12 +14,18 @@ use embassy_time::Instant;
 
 use crate::{
     app::model::{AppModel, ViewId},
-    services::{camera, display::Display, touch},
+    services::display::Display,
 };
+#[cfg(feature = "camera-view")]
+use crate::services::camera;
+#[cfg(feature = "touch")]
+use crate::services::touch;
 
 use gui::GuiSurface;
 use navigation::NavigationInput;
-use views::{SpeakerAction, Views};
+#[cfg(feature = "speaker-synth")]
+use views::SpeakerAction;
+use views::Views;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ViewTransition {
@@ -36,11 +42,21 @@ pub(crate) struct Ui {
 }
 
 impl Ui {
+    #[cfg(feature = "touch")]
     pub(crate) fn new(model: AppModel, touch: touch::Input) -> Self {
+        Self::with_navigation(model, NavigationInput::new(touch))
+    }
+
+    #[cfg(not(feature = "touch"))]
+    pub(crate) fn new(model: AppModel) -> Self {
+        Self::with_navigation(model, NavigationInput::new())
+    }
+
+    fn with_navigation(model: AppModel, navigation: NavigationInput) -> Self {
         let presented_view = model.active_view();
         Self {
             model,
-            navigation: NavigationInput::new(touch),
+            navigation,
             views: Views::new(),
             gui_surface: GuiSurface::new(),
             presented_view,
@@ -58,21 +74,28 @@ impl Ui {
 
     pub(crate) fn prepare_frame(&mut self, now: Instant) -> Option<ViewTransition> {
         let active_view = self.model.active_view();
+        #[cfg(feature = "settings")]
         let mut settings_action = None;
+        #[cfg(feature = "speaker-synth")]
         let mut speaker_action = None;
+
         let selected = {
             let navigation = &mut self.navigation;
             let views = &mut self.views;
             navigation.poll(|pointer| match active_view {
+                #[cfg(feature = "settings")]
                 ViewId::Settings => settings_action = views.settings.handle_pointer(pointer),
+                #[cfg(feature = "speaker-synth")]
                 ViewId::Speaker => speaker_action = views.speaker.handle_pointer(pointer),
                 _ => {}
             })
         };
 
+        #[cfg(feature = "settings")]
         if let Some(brightness) = settings_action {
             self.model.set_brightness(brightness);
         }
+        #[cfg(feature = "speaker-synth")]
         if let Some(action) = speaker_action {
             match action {
                 SpeakerAction::TogglePlayback => self.model.toggle_speaker_playback(),
@@ -102,6 +125,7 @@ impl Ui {
 
     pub(crate) fn render(&mut self, display: &mut Display) {
         match self.presented_view {
+            #[cfg(feature = "network-demo")]
             ViewId::Network => {
                 if let Some(snapshot) = self.model.take_network_display() {
                     self.views
@@ -109,16 +133,19 @@ impl Ui {
                         .present(&mut self.gui_surface, display, &snapshot);
                 }
             }
+            #[cfg(feature = "imu-worldview")]
             ViewId::Imu => {
                 if let Some(imu) = self.model.take_imu_display() {
                     self.views.imu.present(&mut self.gui_surface, display, &imu);
                 }
             }
+            #[cfg(feature = "mic-waveform")]
             ViewId::Microphone => {
                 if let Some(frame) = self.model.take_waveform_frame() {
                     self.views.microphone.render_waveform(display, &frame);
                 }
             }
+            #[cfg(feature = "speaker-synth")]
             ViewId::Speaker => {
                 if let Some(state) = self.model.take_speaker_display() {
                     self.views
@@ -126,7 +153,9 @@ impl Ui {
                         .present(&mut self.gui_surface, display, state);
                 }
             }
+            #[cfg(feature = "camera-view")]
             ViewId::Camera => {}
+            #[cfg(feature = "settings")]
             ViewId::Settings => {
                 if let Some(settings) = self.model.take_settings_display() {
                     self.views.settings.present(
@@ -136,12 +165,14 @@ impl Ui {
                     );
                 }
             }
+            #[cfg(feature = "log-view")]
             ViewId::Log => {
                 let _ = self.present_log_if_dirty(display);
             }
         }
     }
 
+    #[cfg(feature = "camera-view")]
     pub(crate) fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
         if self.presented_view == ViewId::Camera {
             self.views.camera.render(display, frame);
@@ -150,15 +181,19 @@ impl Ui {
 
     fn present_current_view(&mut self, display: &mut Display) {
         match self.presented_view {
+            #[cfg(feature = "network-demo")]
             ViewId::Network => self
                 .views
                 .network
                 .present_shell(&mut self.gui_surface, display),
+            #[cfg(feature = "imu-worldview")]
             ViewId::Imu => self.views.imu.present_shell(&mut self.gui_surface, display),
+            #[cfg(feature = "mic-waveform")]
             ViewId::Microphone => self
                 .views
                 .microphone
                 .present_shell(&mut self.gui_surface, display),
+            #[cfg(feature = "speaker-synth")]
             ViewId::Speaker => {
                 let state = self
                     .model
@@ -168,7 +203,9 @@ impl Ui {
                     .speaker
                     .present(&mut self.gui_surface, display, state);
             }
+            #[cfg(feature = "camera-view")]
             ViewId::Camera => self.views.camera.present_shell(display),
+            #[cfg(feature = "settings")]
             ViewId::Settings => {
                 let state = self
                     .model
@@ -178,6 +215,7 @@ impl Ui {
                     .settings
                     .present(&mut self.gui_surface, display, state.brightness);
             }
+            #[cfg(feature = "log-view")]
             ViewId::Log => {
                 if !self.present_log_if_dirty(display) {
                     self.views.log.present_shell(&mut self.gui_surface, display);
@@ -186,6 +224,7 @@ impl Ui {
         }
     }
 
+    #[cfg(feature = "log-view")]
     fn present_log_if_dirty(&mut self, display: &mut Display) -> bool {
         let model = &mut self.model;
         let log = &mut self.views.log;
