@@ -5,12 +5,9 @@
 //! Without touch, the same application host remains renderable but navigation is
 //! intentionally read-only.
 
-use crate::{
-    app::model::ViewId,
-    services::display::Display,
-};
 #[cfg(feature = "touch")]
 use crate::services::touch::{Input as TouchInput, TouchEdge, TouchPoint};
+use crate::{app::model::ViewId, services::display::Display};
 
 use super::design;
 
