@@ -18,6 +18,18 @@ const MAX_CONTIGUOUS_REVISION_GAP: u32 = 8;
 // crossing. A genuine branch catch-up is a half-turn in both the fused yaw and
 // the presentation offset; keep some tolerance for approximate embedded math.
 const HALF_TURN_MATCH_TOLERANCE_DEG: f32 = 20.0;
+// A single magnetic/fusion sample can briefly land on the opposite half-turn
+// branch near the Euler pole and then return on the next update. Apply a matching
+// branch correction provisionally so the display stays continuous, but require
+// several consecutive samples before making that correction permanent.
+const REACQUISITION_CONFIRM_SAMPLES: u8 = 4;
+
+#[derive(Clone, Copy)]
+struct PendingReacquisition {
+    base_yaw_deg: f32,
+    provisional_offset_deg: f32,
+    samples: u8,
+}
 
 pub(super) struct Tracker {
     previous_revision: Option<u32>,
@@ -25,6 +37,7 @@ pub(super) struct Tracker {
     previous_pitch_deg: Option<f32>,
     previous_base_yaw_deg: Option<f32>,
     yaw_offset_deg: f32,
+    pending_reacquisition: Option<PendingReacquisition>,
 }
 
 impl Tracker {
@@ -35,6 +48,7 @@ impl Tracker {
             previous_pitch_deg: None,
             previous_base_yaw_deg: None,
             yaw_offset_deg: 0.0,
+            pending_reacquisition: None,
         }
     }
 
@@ -47,6 +61,7 @@ impl Tracker {
         self.previous_pitch_deg = None;
         self.previous_base_yaw_deg = None;
         self.yaw_offset_deg = 0.0;
+        self.pending_reacquisition = None;
     }
 
     /// Return the presentation yaw corresponding to one already-projected
@@ -65,11 +80,11 @@ impl Tracker {
             return base_yaw_deg;
         }
 
-        self.absorb_fused_half_turn(base_yaw_deg);
         self.compensate_euler_pole(roll_deg, pitch_deg);
+        let presentation_offset_deg = self.presentation_offset_for_fused_yaw(base_yaw_deg);
         self.remember(sample_revision, roll_deg, pitch_deg, base_yaw_deg);
 
-        wrap_degrees(base_yaw_deg + self.yaw_offset_deg)
+        wrap_degrees(base_yaw_deg + presentation_offset_deg)
     }
 
     fn is_continuous(&self, sample_revision: u32) -> bool {
@@ -116,8 +131,7 @@ impl Tracker {
         //   pitch = -90 deg -> (yaw - roll)
         //   pitch = +90 deg -> (yaw + roll)
         // Move presentation yaw with the gravity-derived roll at the negative
-        // pole and against it at the positive pole. The previous signs were
-        // reversed, which doubled a branch jump instead of cancelling it.
+        // pole and against it at the positive pole.
         let yaw_compensation_deg = if same_negative_pole {
             roll_delta_deg
         } else {
@@ -126,17 +140,39 @@ impl Tracker {
         self.yaw_offset_deg = wrap_degrees(self.yaw_offset_deg + yaw_compensation_deg);
     }
 
-    fn absorb_fused_half_turn(&mut self, base_yaw_deg: f32) {
+    fn presentation_offset_for_fused_yaw(&mut self, base_yaw_deg: f32) -> f32 {
+        if let Some(mut pending) = self.pending_reacquisition {
+            let remains_on_candidate_branch =
+                abs_f32(wrap_degrees(base_yaw_deg - pending.base_yaw_deg))
+                    <= HALF_TURN_MATCH_TOLERANCE_DEG;
+            if remains_on_candidate_branch {
+                pending.samples = pending.samples.saturating_add(1);
+                let provisional_offset_deg = pending.provisional_offset_deg;
+                if pending.samples >= REACQUISITION_CONFIRM_SAMPLES {
+                    self.yaw_offset_deg = provisional_offset_deg;
+                    self.pending_reacquisition = None;
+                } else {
+                    self.pending_reacquisition = Some(pending);
+                }
+                return provisional_offset_deg;
+            }
+
+            // The fused yaw returned to its old branch before confirmation.
+            // Discard the provisional correction; the persistent pole offset
+            // keeps the compass on the same visible world orientation.
+            self.pending_reacquisition = None;
+        }
+
         let Some(previous_base_yaw_deg) = self.previous_base_yaw_deg else {
-            return;
+            return self.yaw_offset_deg;
         };
 
         // While the forward axis is vertical, fusion intentionally bridges the
         // undefined magnetic heading with gyro yaw. After crossing the pole, a
         // later magnetic reacquisition can move that fused heading onto the new
-        // 180-degree branch. If it exactly matches the half-turn already carried
-        // by this presentation tracker, drop the temporary offset instead of
-        // applying the branch change twice.
+        // 180-degree branch. A one-sample excursion must not permanently consume
+        // the renderer's half-turn offset, so first apply the matching correction
+        // provisionally and commit it only after the branch remains stable.
         let base_delta_deg = wrap_degrees(base_yaw_deg - previous_base_yaw_deg);
         let offset_is_half_turn =
             abs_f32(abs_f32(self.yaw_offset_deg) - 180.0) <= HALF_TURN_MATCH_TOLERANCE_DEG;
@@ -146,8 +182,16 @@ impl Tracker {
             <= HALF_TURN_MATCH_TOLERANCE_DEG;
 
         if offset_is_half_turn && base_delta_is_half_turn && branches_cancel {
-            self.yaw_offset_deg = 0.0;
+            let provisional_offset_deg = wrap_degrees(self.yaw_offset_deg - base_delta_deg);
+            self.pending_reacquisition = Some(PendingReacquisition {
+                base_yaw_deg,
+                provisional_offset_deg,
+                samples: 1,
+            });
+            return provisional_offset_deg;
         }
+
+        self.yaw_offset_deg
     }
 }
 
