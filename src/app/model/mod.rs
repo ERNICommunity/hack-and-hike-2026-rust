@@ -23,7 +23,7 @@ use embassy_time::Instant;
 #[cfg(any(feature = "mic-waveform", feature = "speaker-synth"))]
 use crate::capabilities::audio;
 #[cfg(feature = "settings")]
-use crate::capabilities::display::{BrightnessControl, BrightnessPercent};
+use crate::capabilities::display::{Brightness, BrightnessControl};
 #[cfg(feature = "imu-worldview")]
 use crate::capabilities::imu as imu_capability;
 #[cfg(feature = "network-demo")]
@@ -142,7 +142,7 @@ impl AppModel {
     }
 
     #[cfg(feature = "settings")]
-    pub(crate) fn set_brightness(&mut self, brightness: BrightnessPercent) {
+    pub(crate) fn set_brightness(&mut self, brightness: Brightness) {
         if self.navigation.active_view() == ViewId::Settings {
             self.settings.set_brightness(brightness);
         }

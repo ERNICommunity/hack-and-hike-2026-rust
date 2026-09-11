@@ -14,7 +14,7 @@ use embedded_graphics::{
 use embedded_gui::prelude::*;
 
 use crate::{
-    capabilities::display::{BrightnessPercent, Display},
+    capabilities::display::{Brightness, Surface},
     support::memory::storage,
 };
 
@@ -49,14 +49,14 @@ struct Geometry {
     hint: Rect,
 }
 
-pub(in crate::app::ui) struct View {
+pub(crate) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
     dragging_brightness: bool,
 }
 
 impl View {
-    pub(in crate::app::ui) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
@@ -84,24 +84,21 @@ impl View {
         }
     }
 
-    pub(in crate::app::ui) fn present(
+    pub(crate) fn present(
         &mut self,
-        surface: &mut GuiSurface,
-        display: &mut Display,
-        brightness: BrightnessPercent,
+        gui_surface: &mut GuiSurface,
+        surface: &mut Surface<'_>,
+        brightness: Brightness,
     ) {
         let geometry = self.geometry;
-        surface.present_with_overlay(display, self.gui, move |frame| {
+        gui_surface.present_with_overlay(surface, self.gui, move |frame| {
             draw_settings(frame, geometry, brightness);
         });
     }
 
     /// Handle one content-space pointer event and return the newest semantic
     /// brightness action. Persistent brightness state remains in `AppModel`.
-    pub(in crate::app::ui) fn handle_pointer(
-        &mut self,
-        pointer: ContentPointer,
-    ) -> Option<BrightnessPercent> {
+    pub(crate) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Brightness> {
         match pointer.phase {
             PointerPhase::Pressed if self.pointer_hits_brightness(pointer) => {
                 self.dragging_brightness = true;
@@ -129,19 +126,19 @@ impl View {
         pointer.x >= left && pointer.x < right && pointer.y >= top && pointer.y < bottom
     }
 
-    fn brightness_at(&self, pointer_x: i32) -> BrightnessPercent {
+    fn brightness_at(&self, pointer_x: i32) -> Brightness {
         let (left, right) = slider_track_bounds(self.geometry.slider);
         let span = (right - left).max(1);
         let x = pointer_x.clamp(left, right);
-        let range = i32::from(BrightnessPercent::FULL.get() - BrightnessPercent::MIN.get());
+        let range = i32::from(Brightness::FULL.get() - Brightness::MIN.get());
         let offset = ((x - left) * range + span / 2) / span;
-        let percent = BrightnessPercent::MIN.get() + offset as u8;
-        BrightnessPercent::new(percent)
+        let percent = Brightness::MIN.get() + offset as u8;
+        Brightness::new(percent)
             .expect("slider mapping must produce a visible brightness percentage")
     }
 }
 
-fn draw_settings(frame: &mut GuiFramebuffer, geometry: Geometry, brightness: BrightnessPercent) {
+fn draw_settings(frame: &mut GuiFramebuffer, geometry: Geometry, brightness: Brightness) {
     common::draw_title(
         frame,
         "SETTINGS",
@@ -172,7 +169,7 @@ fn draw_settings(frame: &mut GuiFramebuffer, geometry: Geometry, brightness: Bri
     );
 }
 
-fn draw_brightness_slider(frame: &mut GuiFramebuffer, rect: Rect, brightness: BrightnessPercent) {
+fn draw_brightness_slider(frame: &mut GuiFramebuffer, rect: Rect, brightness: Brightness) {
     common::fill_rect(frame, rect, common::white());
 
     let (left, right) = slider_track_bounds(rect);
@@ -188,8 +185,8 @@ fn draw_brightness_slider(frame: &mut GuiFramebuffer, rect: Rect, brightness: Br
         common::light_gray(),
     );
 
-    let range = i32::from(BrightnessPercent::FULL.get() - BrightnessPercent::MIN.get());
-    let offset = i32::from(brightness.get() - BrightnessPercent::MIN.get());
+    let range = i32::from(Brightness::FULL.get() - Brightness::MIN.get());
+    let offset = i32::from(brightness.get() - Brightness::MIN.get());
     let span = (right - left).max(1);
     let thumb_x = left + (offset * span + range / 2) / range.max(1);
     let active_width = (thumb_x - left + 1).max(1) as u32;

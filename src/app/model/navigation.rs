@@ -37,6 +37,70 @@ impl ViewId {
             Self::Log => "Log",
         }
     }
+
+    const fn initial() -> Self {
+        // Preserve the existing full/default behavior: Log is the preferred
+        // initial view whenever it is enabled. Without Log, select the first
+        // enabled application in navigation order.
+        #[cfg(feature = "log-view")]
+        {
+            Self::Log
+        }
+        #[cfg(all(not(feature = "log-view"), feature = "network-demo"))]
+        {
+            Self::Network
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            feature = "imu-worldview"
+        ))]
+        {
+            Self::Imu
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            not(feature = "imu-worldview"),
+            feature = "mic-waveform"
+        ))]
+        {
+            Self::Microphone
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            not(feature = "imu-worldview"),
+            not(feature = "mic-waveform"),
+            feature = "speaker-synth"
+        ))]
+        {
+            Self::Speaker
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            not(feature = "imu-worldview"),
+            not(feature = "mic-waveform"),
+            not(feature = "speaker-synth"),
+            feature = "camera-view"
+        ))]
+        {
+            Self::Camera
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            not(feature = "imu-worldview"),
+            not(feature = "mic-waveform"),
+            not(feature = "speaker-synth"),
+            not(feature = "camera-view"),
+            feature = "settings"
+        ))]
+        {
+            Self::Settings
+        }
+    }
 }
 
 pub(super) struct Model {
@@ -45,12 +109,9 @@ pub(super) struct Model {
 
 impl Model {
     pub(super) const fn new() -> Self {
-        #[cfg(feature = "log-view")]
-        let active_view = ViewId::Log;
-        #[cfg(not(feature = "log-view"))]
-        let active_view = ENABLED_VIEWS[0];
-
-        Self { active_view }
+        Self {
+            active_view: ViewId::initial(),
+        }
     }
 
     pub(super) const fn active_view(&self) -> ViewId {

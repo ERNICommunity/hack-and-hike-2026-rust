@@ -1,12 +1,16 @@
 //! CPU1 touch-input capability.
 //!
-//! The facade exposes semantic touch points/edges and the CPU0 input endpoint.
-//! FT6336 polling and Embassy synchronization stay private to this capability.
+//! The facade exposes semantic [`TouchPoint`] / [`TouchEdge`] values and a
+//! move-only [`Touch`] reader to applications. FT6336 polling and Embassy
+//! synchronization stay private to this capability.
 
 mod channels;
 mod task;
 
-pub(crate) use channels::Input;
+pub(crate) use channels::Touch;
+// Bootstrap still names its aggregate field `input`; keep this internal alias so
+// composition terminology does not leak into the application-facing API.
+pub(crate) type Input = Touch;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 pub(crate) use task::capture_task;
 

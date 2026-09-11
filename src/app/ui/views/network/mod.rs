@@ -10,7 +10,7 @@ use arrayvec::ArrayString;
 use embedded_gui::prelude::*;
 
 use crate::{
-    capabilities::{display::Display, network},
+    capabilities::{display::Surface, network},
     support::memory::storage,
 };
 
@@ -35,13 +35,13 @@ struct Geometry {
     peers: Rect,
 }
 
-pub(in crate::app::ui) struct View {
+pub(crate) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
 }
 
 impl View {
-    pub(in crate::app::ui) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::NetworkApp::build(gui)
             .expect("network KDL exceeds embedded-gui fixed capacities");
@@ -55,13 +55,13 @@ impl View {
         }
     }
 
-    pub(in crate::app::ui) fn present_shell(
+    pub(crate) fn present_shell(
         &mut self,
-        surface: &mut GuiSurface,
-        display: &mut Display,
+        gui_surface: &mut GuiSurface,
+        surface: &mut Surface<'_>,
     ) {
         let geometry = self.geometry;
-        surface.present_with_overlay(display, self.gui, move |frame| {
+        gui_surface.present_with_overlay(surface, self.gui, move |frame| {
             common::draw_title(
                 frame,
                 "NETWORK",
@@ -79,14 +79,14 @@ impl View {
         });
     }
 
-    pub(in crate::app::ui) fn present(
+    pub(crate) fn present(
         &mut self,
-        surface: &mut GuiSurface,
-        display: &mut Display,
+        gui_surface: &mut GuiSurface,
+        surface: &mut Surface<'_>,
         snapshot: &network::Snapshot,
     ) {
         let geometry = self.geometry;
-        surface.present_with_overlay(display, self.gui, move |frame| {
+        gui_surface.present_with_overlay(surface, self.gui, move |frame| {
             draw_network(frame, geometry, snapshot);
         });
     }

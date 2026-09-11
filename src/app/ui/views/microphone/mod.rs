@@ -9,7 +9,7 @@ use embedded_gui::prelude::*;
 
 use crate::{
     app::model::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame},
-    capabilities::display::Display,
+    capabilities::display::Surface,
     support::memory::storage,
 };
 
@@ -37,7 +37,7 @@ struct Canvas {
     height: usize,
 }
 
-pub(in crate::app::ui) struct View {
+pub(crate) struct View {
     gui: &'static mut Context,
     left_label: Rect,
     right_label: Rect,
@@ -46,7 +46,7 @@ pub(in crate::app::ui) struct View {
 }
 
 impl View {
-    pub(in crate::app::ui) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::MicrophoneApp::build(gui)
             .expect("microphone KDL exceeds embedded-gui fixed capacities");
@@ -76,14 +76,14 @@ impl View {
         }
     }
 
-    pub(in crate::app::ui) fn present_shell(
+    pub(crate) fn present_shell(
         &mut self,
-        surface: &mut GuiSurface,
-        display: &mut Display,
+        gui_surface: &mut GuiSurface,
+        surface: &mut Surface<'_>,
     ) {
         let left_label = self.left_label;
         let right_label = self.right_label;
-        surface.present_with_overlay(display, self.gui, move |frame| {
+        gui_surface.present_with_overlay(surface, self.gui, move |frame| {
             common::draw_title(frame, "MIC L", left_label.x, left_label.y, common::black());
             common::draw_title(
                 frame,
@@ -95,8 +95,8 @@ impl View {
         });
     }
 
-    pub(in crate::app::ui) fn render_waveform(&self, display: &mut Display, frame: &WaveformFrame) {
-        waveform::render(display, self.left, self.right, frame);
+    pub(crate) fn render_waveform(&self, surface: &mut Surface<'_>, frame: &WaveformFrame) {
+        waveform::render(surface, self.left, self.right, frame);
     }
 }
 

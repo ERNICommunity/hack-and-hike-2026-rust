@@ -1,7 +1,7 @@
 //! Concrete semantic view ownership.
 //!
-//! `Ui` owns navigation and coordination. This module only stores the concrete
-//! view instances; each view keeps its own rendering and interaction mechanics.
+//! The top-level UI shell owns navigation and coordination. This module only
+//! stores stock application view instances and their rendering/interaction state.
 
 #[cfg(feature = "camera-view")]
 mod camera;
@@ -20,27 +20,27 @@ mod settings;
 mod speaker;
 
 #[cfg(feature = "speaker-synth")]
-pub(super) use speaker::Action as SpeakerAction;
+pub(crate) use speaker::Action as SpeakerAction;
 
-pub(super) struct Views {
+pub(crate) struct Views {
     #[cfg(feature = "network-demo")]
-    pub(super) network: network::View,
+    pub(crate) network: network::View,
     #[cfg(feature = "imu-worldview")]
-    pub(super) imu: imu::View,
+    pub(crate) imu: imu::View,
     #[cfg(feature = "mic-waveform")]
-    pub(super) microphone: microphone::View,
+    pub(crate) microphone: microphone::View,
     #[cfg(feature = "speaker-synth")]
-    pub(super) speaker: speaker::View,
+    pub(crate) speaker: speaker::View,
     #[cfg(feature = "camera-view")]
-    pub(super) camera: camera::View,
+    pub(crate) camera: camera::View,
     #[cfg(feature = "settings")]
-    pub(super) settings: settings::View,
+    pub(crate) settings: settings::View,
     #[cfg(feature = "log-view")]
-    pub(super) log: log::View,
+    pub(crate) log: log::View,
 }
 
 impl Views {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             #[cfg(feature = "network-demo")]
             network: network::View::new(),

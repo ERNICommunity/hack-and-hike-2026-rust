@@ -22,6 +22,16 @@ mod capabilities;
 mod firmware;
 mod platform;
 mod support;
+#[cfg(any(
+    feature = "imu-worldview",
+    feature = "mic-waveform",
+    feature = "speaker-synth",
+    feature = "network-demo",
+    feature = "camera-view",
+    feature = "settings",
+    feature = "log-view",
+))]
+mod ui;
 
 extern crate alloc;
 
@@ -67,10 +77,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         feature = "log-view",
     ))]
     {
-        // Keep the stock application loop directly in the RTOS main future. In
-        // particular, do not wrap the large concrete Bootstrap owner in a nested
-        // async future: the default/full firmware must retain the proven main-task
-        // frame and linked-image layout while feature gates only change composition.
         let mut bootstrap = bootstrap;
         let model = app::model::AppModel::new(app::model::AppModelInputs {
             #[cfg(feature = "network-demo")]
@@ -88,9 +94,9 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         });
 
         #[cfg(feature = "touch")]
-        let mut ui = app::ui::Ui::new(model, bootstrap.inputs.touch);
+        let mut ui = ui::Ui::new(model, bootstrap.inputs.touch);
         #[cfg(not(feature = "touch"))]
-        let mut ui = app::ui::Ui::new(model);
+        let mut ui = ui::Ui::new(model);
 
         let display = &mut bootstrap.display;
         let now = Instant::now();
@@ -156,8 +162,6 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         feature = "log-view",
     )))]
     {
-        // Capability-only builds intentionally have no stock application host.
-        // Keep the concrete capability owners alive while their CPU1 capabilities run.
         let _bootstrap = bootstrap;
         loop {
             Timer::after(UI_IDLE_DELAY).await;

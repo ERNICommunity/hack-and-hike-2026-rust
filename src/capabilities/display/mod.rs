@@ -1,8 +1,8 @@
 //! Display capability.
 //!
-//! CPU0 exclusively owns the LCD pixel transport, while CPU1 applies semantic
-//! brightness commands over the shared runtime I2C bus. Those ownership paths
-//! remain separate internally but are exposed through one display capability.
+//! `Display` exclusively owns the LCD transport. Applications render through a
+//! borrowed [`Surface`], which permanently bounds every write to one [`Region`].
+//! CPU1 applies semantic brightness commands over the shared runtime I2C bus.
 //! Board-level power/reset sequencing still happens in firmware bootstrap.
 
 mod brightness;
@@ -16,7 +16,7 @@ use esp_hal::{
 
 use crate::platform::board;
 
-pub(crate) use brightness::{BrightnessControl, BrightnessPercent};
+pub(crate) use brightness::{Brightness, BrightnessControl};
 pub(crate) use brightness::{
     Endpoints as BrightnessEndpoints, Runtime as BrightnessRuntime,
     init_endpoints as init_brightness_endpoints, task as brightness_task,
@@ -31,9 +31,8 @@ const RAW_BATCH_BYTES: usize = WIDTH * RGB565_BYTES_PER_PIXEL * transport::RAW_B
 
 /// Valid rectangular region in the physical LCD coordinate space.
 ///
-/// Fields are private and construction checks panel bounds, so every `Region`
-/// value is safe to submit to `Display`. Constant UI regions therefore fail at
-/// compile time if an edited design extends outside the physical panel.
+/// Fields are private and construction checks panel bounds. A `Surface` further
+/// constrains any nested region to stay inside the surface it was borrowed from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Region {
     x: usize,
@@ -54,6 +53,14 @@ impl Region {
         }
     }
 
+    pub(crate) const fn width(self) -> usize {
+        self.width
+    }
+
+    pub(crate) const fn height(self) -> usize {
+        self.height
+    }
+
     const fn end_x(self) -> usize {
         self.x + self.width
     }
@@ -65,12 +72,16 @@ impl Region {
     const fn is_empty(self) -> bool {
         self.width == 0 || self.height == 0
     }
+
+    const fn contains(self, other: Self) -> bool {
+        other.x >= self.x
+            && other.y >= self.y
+            && other.end_x() <= self.end_x()
+            && other.end_y() <= self.end_y()
+    }
 }
 
 /// Raw CPU0 hardware resources consumed exactly once by `init`.
-///
-/// Moving this bundle into `Display` transfers exclusive ownership of SPI2,
-/// DMA_CH1, and the LCD GPIOs to the display capability.
 pub(crate) struct Resources {
     pub(crate) spi2: SPI2<'static>,
     pub(crate) dma: DMA_CH1<'static>,
@@ -87,6 +98,15 @@ pub(crate) struct Display {
     raw_batch_buffer: [u8; RAW_BATCH_BYTES],
 }
 
+/// Borrowed display access permanently restricted to one physical region.
+///
+/// The raw transport is intentionally inaccessible through this type. Nested
+/// surfaces may only be created for regions contained by their parent surface.
+pub(crate) struct Surface<'a> {
+    display: &'a mut Display,
+    region: Region,
+}
+
 pub(crate) fn init(resources: Resources, delay: &mut Delay) -> Display {
     Display {
         transport: transport::init(resources, delay),
@@ -96,13 +116,14 @@ pub(crate) fn init(resources: Resources, delay: &mut Delay) -> Display {
 }
 
 impl Display {
-    /// Render a valid physical region one scanline at a time.
-    ///
-    /// The LCD window is established once for the whole rectangle. Completed
-    /// lines are then streamed consecutively through the existing ping-pong DMA
-    /// buffers, allowing CPU rendering of the next line to overlap the previous
-    /// SPI transfer without repeating controller commands for every scanline.
-    pub(crate) fn render_scanlines(
+    pub(crate) fn surface(&mut self, region: Region) -> Surface<'_> {
+        Surface {
+            display: self,
+            region,
+        }
+    }
+
+    fn render_scanlines_region(
         &mut self,
         region: Region,
         mut render_line: impl FnMut(usize, &mut [Pixel]),
@@ -126,14 +147,7 @@ impl Display {
         transport.finish();
     }
 
-    /// Stream an already big-endian RGB565 region in multi-line DMA batches.
-    ///
-    /// GUI framebuffers use an endian-correcting backend, so their backing bytes
-    /// can be prepared in the LCD's native wire order while drawing. Sending the
-    /// bytes directly removes the old per-frame RGB565 decode/re-encode pass and
-    /// reduces a 240-row content frame from 240 DMA submissions to 35 seven-row
-    /// batches without changing the proven 40 MHz LCD clock.
-    pub(crate) fn render_rgb565_be_bytes(&mut self, region: Region, bytes: &[u8]) {
+    fn render_rgb565_be_bytes_region(&mut self, region: Region, bytes: &[u8]) {
         if region.is_empty() {
             return;
         }
@@ -151,12 +165,7 @@ impl Display {
         transport.finish();
     }
 
-    /// Raw renderer that uses LCD SPI-DMA wait time to make progress on an
-    /// independent context (the next camera frame in practice). All controller
-    /// commands and pixel payloads stay on the same board-proven 40 MHz clock.
-    /// `context` is passed to both callbacks sequentially so callers can borrow a
-    /// single mutable camera-frame object without overlapping closure captures.
-    pub(crate) fn render_rgb565_be_scanlines_pumped<C>(
+    fn render_rgb565_be_scanlines_pumped_region<C>(
         &mut self,
         region: Region,
         context: &mut C,
@@ -199,5 +208,54 @@ impl Display {
 
         transport.finish_pumped(|| pump(context));
         valid
+    }
+}
+
+impl Surface<'_> {
+    pub(crate) const fn region(&self) -> Region {
+        self.region
+    }
+
+    pub(crate) const fn width(&self) -> usize {
+        self.region.width()
+    }
+
+    pub(crate) const fn height(&self) -> usize {
+        self.region.height()
+    }
+
+    /// Borrow a stricter surface inside this one.
+    pub(crate) fn subsurface<'a>(&'a mut self, region: Region) -> Surface<'a> {
+        assert!(self.region.contains(region));
+        Surface {
+            display: &mut *self.display,
+            region,
+        }
+    }
+
+    /// Render this entire surface one scanline at a time.
+    pub(crate) fn render_scanlines(&mut self, render_line: impl FnMut(usize, &mut [Pixel])) {
+        self.display.render_scanlines_region(self.region, render_line);
+    }
+
+    /// Stream one complete big-endian RGB565 frame into this surface.
+    pub(crate) fn render_rgb565_be_bytes(&mut self, bytes: &[u8]) {
+        self.display
+            .render_rgb565_be_bytes_region(self.region, bytes);
+    }
+
+    /// Stream scanlines while using LCD DMA wait time to advance another producer.
+    pub(crate) fn render_rgb565_be_scanlines_pumped<C>(
+        &mut self,
+        context: &mut C,
+        render_line: impl FnMut(&mut C, usize, &mut [u8]) -> bool,
+        pump: impl FnMut(&mut C),
+    ) -> bool {
+        self.display.render_rgb565_be_scanlines_pumped_region(
+            self.region,
+            context,
+            render_line,
+            pump,
+        )
     }
 }

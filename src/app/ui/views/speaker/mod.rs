@@ -17,7 +17,7 @@ use crate::{
     app::model::SpeakerDisplay,
     capabilities::{
         audio::{PitchSemitones, TempoBpm},
-        display::Display,
+        display::Surface,
     },
     support::memory::storage,
 };
@@ -64,21 +64,21 @@ enum Gesture {
     Pitch,
 }
 
-pub(in crate::app::ui) enum Action {
+pub(crate) enum Action {
     TogglePlayback,
     PlayOneShot,
     SetTempo(TempoBpm),
     SetPitch(PitchSemitones),
 }
 
-pub(in crate::app::ui) struct View {
+pub(crate) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
     gesture: Option<Gesture>,
 }
 
 impl View {
-    pub(in crate::app::ui) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SpeakerApp::build(gui)
             .expect("speaker KDL exceeds embedded-gui fixed capacities");
@@ -101,19 +101,19 @@ impl View {
         }
     }
 
-    pub(in crate::app::ui) fn present(
+    pub(crate) fn present(
         &mut self,
-        surface: &mut GuiSurface,
-        display: &mut Display,
+        gui_surface: &mut GuiSurface,
+        surface: &mut Surface<'_>,
         state: SpeakerDisplay,
     ) {
         let geometry = self.geometry;
-        surface.present_with_overlay(display, self.gui, move |frame| {
+        gui_surface.present_with_overlay(surface, self.gui, move |frame| {
             draw_speaker(frame, geometry, state);
         });
     }
 
-    pub(in crate::app::ui) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Action> {
+    pub(crate) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Action> {
         match pointer.phase {
             PointerPhase::Pressed if hits_slider(self.geometry.tempo_slider, pointer) => {
                 self.gesture = Some(Gesture::Tempo);

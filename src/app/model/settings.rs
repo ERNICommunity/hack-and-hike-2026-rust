@@ -1,10 +1,10 @@
 //! Settings presentation model.
 
-use crate::capabilities::display::{BrightnessControl, BrightnessPercent};
+use crate::capabilities::display::{Brightness, BrightnessControl};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SettingsDisplay {
-    pub(crate) brightness: BrightnessPercent,
+    pub(crate) brightness: Brightness,
 }
 
 pub(super) struct Model {
@@ -18,7 +18,7 @@ impl Model {
         Self {
             control,
             display: SettingsDisplay {
-                brightness: BrightnessPercent::FULL,
+                brightness: Brightness::FULL,
             },
             dirty: true,
         }
@@ -28,7 +28,7 @@ impl Model {
         self.dirty = true;
     }
 
-    pub(super) fn set_brightness(&mut self, brightness: BrightnessPercent) {
+    pub(super) fn set_brightness(&mut self, brightness: Brightness) {
         if brightness == self.display.brightness {
             return;
         }

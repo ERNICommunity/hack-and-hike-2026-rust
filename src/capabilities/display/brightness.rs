@@ -16,9 +16,9 @@ use crate::platform::{board, i2c::SystemI2cBus};
 /// Runtime brightness intentionally has no OFF state. The lowest setting keeps
 /// the panel visibly powered; display power policy is separate from dimming.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BrightnessPercent(u8);
+pub(crate) struct Brightness(u8);
 
-impl BrightnessPercent {
+impl Brightness {
     pub(crate) const MIN: Self = Self(1);
     pub(crate) const FULL: Self = Self(100);
 
@@ -35,7 +35,7 @@ impl BrightnessPercent {
     }
 }
 
-type RequestSignal = Signal<CriticalSectionRawMutex, BrightnessPercent>;
+type RequestSignal = Signal<CriticalSectionRawMutex, Brightness>;
 
 struct Service {
     request: RequestSignal,
@@ -76,7 +76,7 @@ pub(crate) fn init_endpoints() -> Endpoints {
 
 impl BrightnessControl {
     /// Replace any pending brightness request with the newest slider value.
-    pub(crate) fn set(&mut self, brightness: BrightnessPercent) {
+    pub(crate) fn set(&mut self, brightness: Brightness) {
         self.service.request.signal(brightness);
     }
 }

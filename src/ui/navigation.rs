@@ -1,13 +1,12 @@
 //! Feature-composed navigation rail input and rendering.
 //!
-//! When touch is enabled, `NavigationInput` owns the CPU0 touch reader and routes
-//! one physical gesture to either the navigation rail or the active content view.
-//! Without touch, the same application host remains renderable but navigation is
-//! intentionally read-only.
+//! The shell owns the physical touch reader and routes one gesture to either the
+//! navigation rail or the active content application. Applications receive only
+//! content-space pointer coordinates and never the navigation surface.
 
 #[cfg(feature = "touch")]
-use crate::capabilities::touch::{Input as TouchInput, TouchEdge, TouchPoint};
-use crate::{app::model::ViewId, capabilities::display::Display};
+use crate::capabilities::touch::{Touch, TouchEdge, TouchPoint};
+use crate::{app::model::ViewId, capabilities::display::Surface};
 
 use super::design;
 
@@ -37,14 +36,14 @@ enum GestureTarget {
 
 pub(crate) struct NavigationInput {
     #[cfg(feature = "touch")]
-    touch: TouchInput,
+    touch: Touch,
     #[cfg(feature = "touch")]
     target: Option<GestureTarget>,
 }
 
 impl NavigationInput {
     #[cfg(feature = "touch")]
-    pub(crate) const fn new(touch: TouchInput) -> Self {
+    pub(crate) const fn new(touch: Touch) -> Self {
         Self {
             touch,
             target: None,
@@ -56,9 +55,6 @@ impl NavigationInput {
         Self {}
     }
 
-    /// Drain pending touch state, routing content-space pointer events to the
-    /// active view and returning a committed navigation destination if one
-    /// completes during this poll.
     #[cfg(feature = "touch")]
     pub(crate) fn poll(&mut self, mut on_content: impl FnMut(ContentPointer)) -> Option<ViewId> {
         let mut selected = None;
@@ -145,9 +141,10 @@ fn view_at(point: TouchPoint) -> Option<ViewId> {
     nav.items.get(index).map(|item| item.view)
 }
 
-pub(crate) fn render(display: &mut Display, active: ViewId) {
+pub(crate) fn render(surface: &mut Surface<'_>, active: ViewId) {
     let nav = design::UI.navigation;
-    display.render_scanlines(design::NAV_REGION, |screen_y, pixels| {
+    debug_assert_eq!(surface.width(), nav.width);
+    surface.render_scanlines(|screen_y, pixels| {
         let button_index = (screen_y / nav.button_height).min(nav.items.len() - 1);
         let item = &nav.items[button_index];
         let selected = item.view == active;

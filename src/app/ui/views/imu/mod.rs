@@ -16,7 +16,7 @@ use embedded_gui::prelude::*;
 
 use crate::{
     app::model::ImuDisplay,
-    capabilities::{display::Display, imu as sensor},
+    capabilities::{display::Surface, imu as sensor},
     support::memory::storage,
 };
 
@@ -48,7 +48,7 @@ struct Geometry {
     attitude: Rect,
 }
 
-pub(in crate::app::ui) struct View {
+pub(crate) struct View {
     geometry: Geometry,
     trace_frames: u32,
     previous_gravity_screen: Option<[f32; 3]>,
@@ -56,7 +56,7 @@ pub(in crate::app::ui) struct View {
 }
 
 impl View {
-    pub(in crate::app::ui) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let gui = storage::leaked_value_with(|| {
             Context::new(Rect::new(0, 0, VIEW_WIDTH as u32, VIEW_HEIGHT as u32))
         });
@@ -72,26 +72,26 @@ impl View {
         }
     }
 
-    pub(in crate::app::ui) fn present_shell(
+    pub(crate) fn present_shell(
         &mut self,
-        surface: &mut GuiSurface,
-        display: &mut Display,
+        gui_surface: &mut GuiSurface,
+        surface: &mut Surface<'_>,
     ) {
         self.previous_gravity_screen = None;
         self.previous_north_screen = None;
         ::log::info!("WORLDVIEW-EVENT basis-history-reset");
 
         let geometry = self.geometry;
-        surface.present_overlay_only(display, move |frame| {
+        gui_surface.present_overlay_only(surface, move |frame| {
             draw_view_gutters(frame, geometry);
             draw_shell(frame, geometry);
         });
     }
 
-    pub(in crate::app::ui) fn present(
+    pub(crate) fn present(
         &mut self,
-        surface: &mut GuiSurface,
-        display: &mut Display,
+        gui_surface: &mut GuiSurface,
+        surface: &mut Surface<'_>,
         imu: &ImuDisplay,
     ) {
         let geometry = self.geometry;
@@ -140,7 +140,7 @@ impl View {
         self.previous_gravity_screen = Some(imu.gravity_screen);
         self.previous_north_screen = Some(imu.north_screen);
 
-        surface.present_overlay_only(display, move |frame| {
+        gui_surface.present_overlay_only(surface, move |frame| {
             draw_view_gutters(frame, geometry);
             draw_header(frame, geometry.header, imu, attitude);
             horizon::draw_attitude(frame, geometry.attitude, attitude);

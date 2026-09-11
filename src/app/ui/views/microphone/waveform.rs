@@ -2,23 +2,29 @@
 
 use crate::{
     app::model::{POINTS, WaveformFrame},
-    capabilities::display::Display,
+    capabilities::display::Surface,
 };
 
 use super::super::super::{design::ContentRect, theme};
 use super::Canvas;
 
-pub(super) fn render(display: &mut Display, left: Canvas, right: Canvas, frame: &WaveformFrame) {
-    render_channel(display, left, &frame.left);
-    render_channel(display, right, &frame.right);
+pub(super) fn render(
+    surface: &mut Surface<'_>,
+    left: Canvas,
+    right: Canvas,
+    frame: &WaveformFrame,
+) {
+    render_channel(surface, left, &frame.left);
+    render_channel(surface, right, &frame.right);
 }
 
-fn render_channel(display: &mut Display, canvas: Canvas, samples: &[i8; POINTS]) {
+fn render_channel(surface: &mut Surface<'_>, canvas: Canvas, samples: &[i8; POINTS]) {
     let center_y = canvas.height as i32 / 2;
     let pixels_per_point = canvas.width / POINTS;
     let region = ContentRect::new(canvas.x, canvas.y, canvas.width, canvas.height).screen_region();
+    let mut channel_surface = surface.subsurface(region);
 
-    display.render_scanlines(region, |local_y, pixels| {
+    channel_surface.render_scanlines(|local_y, pixels| {
         pixels.fill(theme::WHITE_RGB565);
 
         if local_y as i32 == center_y {

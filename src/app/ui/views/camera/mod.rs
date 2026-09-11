@@ -4,7 +4,7 @@
 //! presentation-specific cropping and the LCD scanline-pump strategy used while
 //! the Camera screen is visible.
 
-use crate::capabilities::{camera, display::Display};
+use crate::capabilities::{camera, display::Surface};
 
 use super::super::{design, theme};
 
@@ -20,26 +20,25 @@ const _: () = assert!(CAMERA_CROP_PIXELS % 2 == 0);
 const _: () =
     assert!(CAMERA_SOURCE_END_BYTE - CAMERA_SOURCE_START_BYTE == design::CONTENT_WIDTH * 2);
 
-pub(in crate::app::ui) struct View;
+pub(crate) struct View;
 
 impl View {
-    pub(in crate::app::ui) const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self
     }
 
-    pub(in crate::app::ui) fn present_shell(&self, display: &mut Display) {
-        display.render_scanlines(design::CONTENT_REGION, |_local_y, pixels| {
+    pub(crate) fn present_shell(&self, surface: &mut Surface<'_>) {
+        surface.render_scanlines(|_local_y, pixels| {
             pixels.fill(theme::BLACK_RGB565);
         });
     }
 
-    pub(in crate::app::ui) fn render(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
+    pub(crate) fn render(&self, surface: &mut Surface<'_>, frame: &mut camera::Frame<'_>) {
         // Display the frozen QVGA frame at the original full 276x240 content size
         // while using SPI-DMA wait time to drain the following sensor frame into
         // the second PSRAM buffer. The LCD therefore receives a compact burst
         // rather than being paced by live camera scanlines.
-        let _ = display.render_rgb565_be_scanlines_pumped(
-            design::CONTENT_REGION,
+        let _ = surface.render_rgb565_be_scanlines_pumped(
             frame,
             |frame, local_y, bytes| {
                 let source = frame.scanline(local_y);

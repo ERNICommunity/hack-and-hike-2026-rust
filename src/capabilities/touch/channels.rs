@@ -10,10 +10,6 @@ use super::{TouchEdge, TouchPoint};
 type EdgeChannel = Channel<CriticalSectionRawMutex, TouchEdge, 8>;
 type PointSignal = Signal<CriticalSectionRawMutex, TouchPoint>;
 
-// These outputs cross from CPU1 acquisition to CPU0 presentation, therefore
-// they use CriticalSectionRawMutex. The static storage remains an Embassy
-// implementation detail; bootstrap hands each side an endpoint referencing the
-// concrete service instance.
 struct Service {
     edges: EdgeChannel,
     latest_point: PointSignal,
@@ -35,24 +31,26 @@ pub(crate) struct Runtime {
     service: &'static Service,
 }
 
-pub(crate) struct Input {
+/// CPU0 semantic touch reader. Hardware polling and cross-core synchronization
+/// remain private to the capability.
+pub(crate) struct Touch {
     service: &'static Service,
 }
 
 pub(crate) struct Endpoints {
     pub(crate) runtime: Runtime,
-    pub(crate) input: Input,
+    pub(crate) input: Touch,
 }
 
 pub(crate) fn init_endpoints() -> Endpoints {
     let service: &'static Service = SERVICE.init(Service::new());
     Endpoints {
         runtime: Runtime { service },
-        input: Input { service },
+        input: Touch { service },
     }
 }
 
-impl Input {
+impl Touch {
     pub(crate) fn next_edge(&mut self) -> Option<TouchEdge> {
         self.service.edges.try_receive().ok()
     }

@@ -5,7 +5,7 @@
 
 use embedded_gui::prelude::*;
 
-use crate::{capabilities::display::Display, support::memory::storage};
+use crate::{capabilities::display::Surface, support::memory::storage};
 
 use super::super::gui::GuiSurface;
 use super::common;
@@ -27,13 +27,13 @@ struct Geometry {
     body: Rect,
 }
 
-pub(in crate::app::ui) struct View {
+pub(crate) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
 }
 
 impl View {
-    pub(in crate::app::ui) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::LogApp::build(gui).expect("log KDL exceeds embedded-gui capacities");
         Self {
@@ -45,25 +45,25 @@ impl View {
         }
     }
 
-    pub(in crate::app::ui) fn present_shell(
+    pub(crate) fn present_shell(
         &mut self,
-        surface: &mut GuiSurface,
-        display: &mut Display,
+        gui_surface: &mut GuiSurface,
+        surface: &mut Surface<'_>,
     ) {
         let geometry = self.geometry;
-        surface.present_with_overlay(display, self.gui, move |frame| {
+        gui_surface.present_with_overlay(surface, self.gui, move |frame| {
             draw_title(frame, geometry);
         });
     }
 
-    pub(in crate::app::ui) fn present(
+    pub(crate) fn present(
         &mut self,
-        surface: &mut GuiSurface,
-        display: &mut Display,
+        gui_surface: &mut GuiSurface,
+        surface: &mut Surface<'_>,
         text: &str,
     ) {
         let geometry = self.geometry;
-        surface.present_with_overlay(display, self.gui, move |frame| {
+        gui_surface.present_with_overlay(surface, self.gui, move |frame| {
             draw_title(frame, geometry);
             let line_count = (geometry.body.h as i32 / common::DENSE_LINE_HEIGHT).max(1) as usize;
             let visible = trailing_lines(text, line_count);
