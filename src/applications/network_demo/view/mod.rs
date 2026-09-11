@@ -6,11 +6,13 @@ use arrayvec::ArrayString;
 use embedded_gui::prelude::*;
 
 use crate::{
-    app::ui::views::common,
     applications::network_demo::DisplayState,
     capabilities::{display::Surface, network},
     support::memory::storage,
-    ui::gui::{GuiFramebuffer, GuiSurface},
+    ui::{
+        common,
+        gui::{GuiFramebuffer, GuiSurface},
+    },
 };
 
 mod generated {
