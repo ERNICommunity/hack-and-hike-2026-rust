@@ -14,14 +14,18 @@ const POLE_LOCK_MIN_PITCH_DEG: f32 = 80.0;
 // skip a few revisions, but a gap larger than 80 ms is no longer treated as an
 // observed pole crossing. Reseed instead of inventing motion that was not seen.
 const MAX_CONTIGUOUS_REVISION_GAP: u32 = 8;
-// Fusion can later reacquire the absolute magnetic-heading branch after a pole
-// crossing. A genuine branch catch-up is a half-turn in both the fused yaw and
-// the presentation offset; keep some tolerance for approximate embedded math.
-const HALF_TURN_MATCH_TOLERANCE_DEG: f32 = 20.0;
-// A single magnetic/fusion sample can briefly land on the opposite half-turn
-// branch near the Euler pole and then return on the next update. Apply a matching
-// branch correction provisionally so the display stays continuous, but require
-// several consecutive samples before making that correction permanent.
+// A large single-frame fused-yaw correction while a large pole offset is active
+// is magnetic branch recovery, not physical motion: no real 100 Hz sample can
+// rotate the device this far. Absorb it into the presentation offset so magnetic
+// recovery cannot make the world jump. The correction need not be exactly 180
+// degrees because gyro integration accumulates error while heading is undefined.
+const MIN_POLE_RECOVERY_DELTA_DEG: f32 = 90.0;
+const MIN_ACTIVE_POLE_OFFSET_DEG: f32 = 90.0;
+const RECOVERY_BRANCH_STABILITY_DEG: f32 = 20.0;
+// A single magnetic/fusion sample can briefly land on a different branch and
+// then return on the next update. Apply a matching correction provisionally so
+// the display stays continuous, but require several consecutive samples before
+// making that correction permanent.
 const REACQUISITION_CONFIRM_SAMPLES: u8 = 4;
 
 #[derive(Clone, Copy)]
@@ -144,7 +148,7 @@ impl Tracker {
         if let Some(mut pending) = self.pending_reacquisition {
             let remains_on_candidate_branch =
                 abs_f32(wrap_degrees(base_yaw_deg - pending.base_yaw_deg))
-                    <= HALF_TURN_MATCH_TOLERANCE_DEG;
+                    <= RECOVERY_BRANCH_STABILITY_DEG;
             if remains_on_candidate_branch {
                 pending.samples = pending.samples.saturating_add(1);
                 let provisional_offset_deg = pending.provisional_offset_deg;
@@ -157,10 +161,9 @@ impl Tracker {
                 return provisional_offset_deg;
             }
 
-            // The fused yaw returned to its old branch before confirmation.
-            // This sample has already resolved the pending transition, so do not
-            // compare it with the transient candidate again as though it were a
-            // fresh half-turn. Keep the persistent pole offset for this frame.
+            // This sample disproves the pending recovery and has already been
+            // classified as belonging to the old branch. Do not feed it back
+            // through large-delta detection against the transient sample.
             self.pending_reacquisition = None;
             return self.yaw_offset_deg;
         }
@@ -169,22 +172,14 @@ impl Tracker {
             return self.yaw_offset_deg;
         };
 
-        // While the forward axis is vertical, fusion intentionally bridges the
-        // undefined magnetic heading with gyro yaw. After crossing the pole, a
-        // later magnetic reacquisition can move that fused heading onto the new
-        // 180-degree branch. A one-sample excursion must not permanently consume
-        // the renderer's half-turn offset, so first apply the matching correction
-        // provisionally and commit it only after the branch remains stable.
         let base_delta_deg = wrap_degrees(base_yaw_deg - previous_base_yaw_deg);
-        let offset_is_half_turn =
-            abs_f32(abs_f32(self.yaw_offset_deg) - 180.0) <= HALF_TURN_MATCH_TOLERANCE_DEG;
-        let base_delta_is_half_turn =
-            abs_f32(abs_f32(base_delta_deg) - 180.0) <= HALF_TURN_MATCH_TOLERANCE_DEG;
-        let branches_cancel = abs_f32(wrap_degrees(self.yaw_offset_deg + base_delta_deg))
-            <= HALF_TURN_MATCH_TOLERANCE_DEG;
+        let provisional_offset_deg = wrap_degrees(self.yaw_offset_deg - base_delta_deg);
+        let pole_offset_active = abs_f32(self.yaw_offset_deg) >= MIN_ACTIVE_POLE_OFFSET_DEG;
+        let large_fused_recovery = abs_f32(base_delta_deg) >= MIN_POLE_RECOVERY_DELTA_DEG;
+        let reduces_pole_offset =
+            abs_f32(provisional_offset_deg) < abs_f32(self.yaw_offset_deg);
 
-        if offset_is_half_turn && base_delta_is_half_turn && branches_cancel {
-            let provisional_offset_deg = wrap_degrees(self.yaw_offset_deg - base_delta_deg);
+        if pole_offset_active && large_fused_recovery && reduces_pole_offset {
             self.pending_reacquisition = Some(PendingReacquisition {
                 base_yaw_deg,
                 provisional_offset_deg,
