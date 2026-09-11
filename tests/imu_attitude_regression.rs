@@ -38,10 +38,6 @@ fn negative_pole_observable(roll_deg: f32, yaw_deg: f32) -> f32 {
 fn positive_physical_pitch_sweep_0_through_180_keeps_world_continuous() {
     let mut tracker = Tracker::new();
 
-    // Presentation-space representatives for physical pitch 0, +45, +90,
-    // +135, +179 and the +180 pole approached from the far side. The final
-    // Euler branch flip must move the compass to the opposite symbol while the
-    // pole-observable world orientation stays unchanged.
     let _ = tracker.update(1, 0.0, -90.0, 0.0);
     let _ = tracker.update(2, 90.0, -45.0, 0.0);
     let _ = tracker.update(3, 90.0, 0.0, 0.0);
@@ -60,8 +56,6 @@ fn positive_physical_pitch_sweep_0_through_180_keeps_world_continuous() {
 fn negative_physical_pitch_sweep_0_through_minus_180_keeps_world_continuous() {
     let mut tracker = Tracker::new();
 
-    // Mirror of the positive sweep: physical pitch 0, -45, -90, -135, -179
-    // and the -180 pole. The far-side compass branch must again be opposite.
     let _ = tracker.update(1, 0.0, -90.0, 0.0);
     let _ = tracker.update(2, -90.0, -45.0, 0.0);
     let _ = tracker.update(3, -90.0, 0.0, 0.0);
@@ -145,9 +139,43 @@ fn magnetic_half_turn_reacquisition_does_not_apply_the_branch_twice() {
     let _ = tracker.update(1, 90.0, 89.0, 0.0);
     let crossed_yaw = tracker.update(2, -90.0, 89.0, 0.0);
 
-    // Fusion catches up by the same half-turn already carried by the renderer.
     let reacquired_yaw = tracker.update(3, -90.0, 85.0, 180.0);
     assert_angle_eq(crossed_yaw, reacquired_yaw);
+}
+
+#[test]
+fn transient_magnetic_half_turn_does_not_flip_compass_branch() {
+    let mut tracker = Tracker::new();
+    let _ = tracker.update(1, 90.0, 89.0, 0.0);
+    let crossed_yaw = tracker.update(2, -90.0, 89.0, 0.0);
+
+    // One fused sample briefly lands on the opposite magnetic branch, then the
+    // fusion estimate returns. Neither frame may visibly leave the far-side
+    // compass orientation established by the pole crossing.
+    let transient = tracker.update(3, -90.0, 85.0, 180.0);
+    let recovered = tracker.update(4, -90.0, 82.0, 0.0);
+
+    assert_angle_eq(transient, crossed_yaw);
+    assert_angle_eq(recovered, crossed_yaw);
+}
+
+#[test]
+fn sustained_magnetic_half_turn_is_committed_without_visual_jump() {
+    let mut tracker = Tracker::new();
+    let _ = tracker.update(1, 90.0, 89.0, 0.0);
+    let crossed_yaw = tracker.update(2, -90.0, 89.0, 0.0);
+
+    let candidate_1 = tracker.update(3, -90.0, 85.0, 180.0);
+    let candidate_2 = tracker.update(4, -90.0, 82.0, 179.0);
+    let candidate_3 = tracker.update(5, -90.0, 78.0, 181.0);
+    let committed = tracker.update(6, -90.0, 75.0, 180.0);
+    let stable = tracker.update(7, -90.0, 70.0, 180.0);
+
+    assert_angle_eq(candidate_1, crossed_yaw);
+    assert_angle_eq(candidate_2, crossed_yaw - 1.0);
+    assert_angle_eq(candidate_3, crossed_yaw + 1.0);
+    assert_angle_eq(committed, crossed_yaw);
+    assert_angle_eq(stable, crossed_yaw);
 }
 
 #[test]
@@ -168,8 +196,6 @@ fn leaving_and_reentering_the_imu_view_reseeds_continuity() {
 
     tracker.reset();
 
-    // The device may have moved anywhere while this renderer was hidden. The
-    // first returned frame is authoritative and must not inherit the old offset.
     let returned_yaw = tracker.update(3, 130.0, 88.0, 47.25);
     assert_angle_eq(returned_yaw, 47.25);
 }
@@ -179,8 +205,6 @@ fn long_sample_discontinuity_near_pole_reseeds_instead_of_inferring_crossing() {
     let mut tracker = Tracker::new();
     let _ = tracker.update(10, 90.0, 89.0, 0.0);
 
-    // Nineteen 100 Hz publications were not observed. A roll branch change in
-    // that interval is not evidence that this renderer watched a pole crossing.
     let returned_yaw = tracker.update(29, -90.0, 89.0, 37.5);
     assert_angle_eq(returned_yaw, 37.5);
 }
@@ -190,8 +214,6 @@ fn small_replace_latest_revision_skips_remain_continuous() {
     let mut tracker = Tracker::new();
     let _ = tracker.update(100, 90.0, 89.0, 0.0);
 
-    // A few collapsed 100 Hz samples are expected during normal rendering and
-    // still carry enough temporal locality to preserve pole compensation.
     let yaw = tracker.update(104, -90.0, 89.0, 0.0);
     assert_angle_eq(yaw, 180.0);
 }
