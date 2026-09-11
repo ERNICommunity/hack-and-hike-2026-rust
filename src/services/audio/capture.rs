@@ -10,9 +10,9 @@ use esp_hal::{
 #[cfg(feature = "mic")]
 use crate::support::{diagnostics, memory::storage};
 
-use super::{Resources, SAMPLE_RATE_HZ, channels::Runtime, playback};
 #[cfg(feature = "mic")]
 use super::{BLOCK_FRAMES, BLOCK_SAMPLES, CHANNELS};
+use super::{Resources, SAMPLE_RATE_HZ, channels::Runtime, playback};
 
 // The shared esp-hal buffer macro currently creates both descriptor sets. RX is
 // only started and processed when the mic capability is enabled; speaker-only
