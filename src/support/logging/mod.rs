@@ -7,7 +7,7 @@ use log::{LevelFilter, Metadata, Record};
 use crate::support::memory::storage::{FixedPsramBuffer, PsramByteRing};
 
 /// Maximum number of rows retained by the on-device log model.
-pub(crate) const MAX_LOG_ROWS: usize = 64;
+const MAX_LOG_ROWS: usize = 64;
 
 /// Fixed stack budget for formatting one log record.
 ///
