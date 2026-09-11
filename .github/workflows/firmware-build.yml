@@ -19,7 +19,7 @@ env:
 
 jobs:
   imu-regressions:
-    name: IMU attitude regressions
+    name: IMU regressions
     runs-on: ubuntu-latest
 
     steps:
@@ -29,10 +29,12 @@ jobs:
       - name: Install host Rust toolchain
         run: rustup toolchain install 1.97.0 --profile minimal
 
-      - name: Run IMU attitude regressions
+      - name: Run IMU regressions
         run: |
           rustc +1.97.0 --edition=2024 --test tests/imu_attitude_regression.rs -o /tmp/imu-attitude-regression
           /tmp/imu-attitude-regression
+          rustc +1.97.0 --edition=2024 --test tests/imu_fusion_regression.rs -o /tmp/imu-fusion-regression
+          /tmp/imu-fusion-regression
 
   build:
     name: ESP32-S3 release build
