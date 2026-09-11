@@ -25,14 +25,15 @@ pub(super) struct DisplayAttitude {
     pub(super) roll_deg: f32,
     pub(super) pitch_deg: f32,
     pub(super) yaw_deg: f32,
+    basis: WorldBasis,
 }
 
 /// Complete physical orientation used by the worldview. Screen +X is camera
 /// forward, +Z is screen-down, and +Y completes the right-handed sensor frame.
 #[derive(Clone, Copy)]
-pub(super) struct WorldBasis {
-    pub(super) gravity_screen: [f32; 3],
-    pub(super) north_screen: [f32; 3],
+struct WorldBasis {
+    gravity_screen: [f32; 3],
+    north_screen: [f32; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -41,6 +42,13 @@ pub(super) struct PerspectiveCamera {
     pub(super) center_y: i32,
     pub(super) focal_x: f32,
     pub(super) focal_y: f32,
+    // Compatibility geometry for the existing horizon rasterizer and compass
+    // size normalization. These are derived from gravity, not Euler pose.
+    pub(super) sin_pitch: f32,
+    pub(super) cos_pitch: f32,
+    pub(super) sin_roll: f32,
+    pub(super) cos_roll: f32,
+    pub(super) pitch_offset: i32,
     // Columns of the world->camera rotation. Computing them once per frame keeps
     // every grid/glyph point to nine multiplies + six adds and no trig.
     world_x_camera: [f32; 3],
@@ -56,13 +64,6 @@ pub(super) struct PerspectiveCamera {
     pub(super) horizon_c_q10: i32,
 }
 
-pub(super) fn world_basis(imu: &ImuDisplay) -> WorldBasis {
-    WorldBasis {
-        gravity_screen: imu.gravity_screen,
-        north_screen: imu.north_screen,
-    }
-}
-
 pub(super) fn display_attitude(imu: &ImuDisplay) -> DisplayAttitude {
     let gravity = screen_to_camera(imu.gravity_screen);
     let roll = atan2_approx(-gravity[0], -gravity[1]) * RAD_TO_DEG;
@@ -73,16 +74,20 @@ pub(super) fn display_attitude(imu: &ImuDisplay) -> DisplayAttitude {
         pitch_deg: pitch,
         // Keep the established display-heading sign for the numeric header only.
         yaw_deg: -imu.yaw_deg,
+        basis: WorldBasis {
+            gravity_screen: imu.gravity_screen,
+            north_screen: imu.north_screen,
+        },
     }
 }
 
 pub(super) fn perspective_camera(
-    basis: WorldBasis,
+    attitude: DisplayAttitude,
     center_x: i32,
     center_y: i32,
 ) -> PerspectiveCamera {
-    let gravity_screen = normalize3(basis.gravity_screen).unwrap_or([0.0, 0.0, 1.0]);
-    let north_screen = horizontal_unit(basis.north_screen, gravity_screen)
+    let gravity_screen = normalize3(attitude.basis.gravity_screen).unwrap_or([0.0, 0.0, 1.0]);
+    let north_screen = horizontal_unit(attitude.basis.north_screen, gravity_screen)
         .unwrap_or_else(|| initial_horizontal_reference(gravity_screen));
 
     // Renderer world coordinates use +Y up and -Z north. With gravity=down and
@@ -97,6 +102,35 @@ pub(super) fn perspective_camera(
     let world_z_camera = screen_to_camera(world_z_screen);
     let gravity_camera = screen_to_camera(gravity_screen);
     let (focal_x, focal_y) = perspective_focals(center_x, center_y);
+
+    // Derive the old horizon rasterizer's slope/intercept coefficients directly
+    // from gravity. The focal_x/focal_y term keeps the horizon exact under the
+    // renderer's anisotropic horizontal FOV.
+    let scaled_gravity_x = gravity_camera[0] * focal_y / focal_x;
+    let raster_norm = sqrt_approx(
+        scaled_gravity_x * scaled_gravity_x + gravity_camera[1] * gravity_camera[1],
+    );
+    let (sin_roll, cos_roll, pitch_offset) = if raster_norm > 0.0001 {
+        (
+            -scaled_gravity_x / raster_norm,
+            -gravity_camera[1] / raster_norm,
+            round_f32(-focal_y * gravity_camera[2] / raster_norm),
+        )
+    } else {
+        // Looking straight down puts the horizon above the viewport (all ground);
+        // looking straight up puts it below (all sky). Roll is irrelevant there.
+        let offscreen = center_y.max(1) * 8;
+        (
+            0.0,
+            1.0,
+            if gravity_camera[2] >= 0.0 { -offscreen } else { offscreen },
+        )
+    };
+
+    let cos_pitch = sqrt_approx(
+        gravity_camera[0] * gravity_camera[0] + gravity_camera[1] * gravity_camera[1],
+    );
+    let sin_pitch = -gravity_camera[2];
 
     // A camera ray through pixel offset (dx,dy) is proportional to
     // [dx/fx, -dy/fy, 1]. The horizon is where this ray is perpendicular to
@@ -114,9 +148,6 @@ pub(super) fn perspective_camera(
             (c_center_raw - a_raw * center_x as f32 - b_raw * center_y as f32) * inverse,
         )
     } else {
-        // Looking essentially straight up/down puts the geometric horizon at
-        // infinity. Keep grid fading in its far band rather than manufacturing a
-        // near-screen line.
         (0.0, 0.0, HORIZON_AT_INFINITY_DISTANCE_PX)
     };
 
@@ -125,6 +156,11 @@ pub(super) fn perspective_camera(
         center_y,
         focal_x,
         focal_y,
+        sin_pitch,
+        cos_pitch,
+        sin_roll,
+        cos_roll,
+        pitch_offset,
         world_x_camera,
         world_y_camera,
         world_z_camera,
@@ -147,28 +183,6 @@ pub(super) fn world_to_camera(point: [f32; 3], camera: PerspectiveCamera) -> [f3
             + point[1] * camera.world_y_camera[2]
             + point[2] * camera.world_z_camera[2],
     ]
-}
-
-/// Reference depth for a compass glyph at the horizontal center of view. This
-/// replaces the old pitch-Euler expression with the same geometry derived from
-/// the gravity vector.
-pub(super) fn centered_horizontal_depth(
-    camera: PerspectiveCamera,
-    world_y: f32,
-    horizontal_radius: f32,
-) -> f32 {
-    let gravity = camera.gravity_camera;
-    let horizontal_forward = sqrt_approx(gravity[0] * gravity[0] + gravity[1] * gravity[1]);
-    -gravity[2] * world_y + horizontal_forward * horizontal_radius
-}
-
-/// Signed ground-half-plane value at a local viewport pixel. Positive means the
-/// viewing ray points to the gravity/ground side of the horizon.
-pub(super) fn ground_side_at(camera: PerspectiveCamera, local_x: i32, local_y: i32) -> f32 {
-    let dx = (local_x - camera.center_x) as f32;
-    let dy = (local_y - camera.center_y) as f32;
-    let ray = [dx / camera.focal_x, -dy / camera.focal_y, 1.0];
-    dot3(ray, camera.gravity_camera)
 }
 
 pub(super) fn clip_camera_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
