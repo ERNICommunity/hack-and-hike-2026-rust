@@ -13,18 +13,18 @@ mod codecs;
 mod melody;
 mod playback;
 
-use esp_hal::peripherals::{DMA_CH0, GPIO0, GPIO33, GPIO34, I2S0};
 #[cfg(feature = "speaker")]
 use esp_hal::peripherals::GPIO13;
 #[cfg(feature = "mic")]
 use esp_hal::peripherals::GPIO14;
+use esp_hal::peripherals::{DMA_CH0, GPIO0, GPIO33, GPIO34, I2S0};
 
 pub(crate) use capture::capture_task;
-pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 #[cfg(feature = "mic")]
 pub(crate) use channels::Input;
 #[cfg(feature = "speaker-synth")]
 pub(crate) use channels::PlaybackControl;
+pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 pub(crate) use codecs::{init_aw88298, init_es7210};
 
 pub(crate) const SAMPLE_RATE_HZ: u32 = 16_000;
