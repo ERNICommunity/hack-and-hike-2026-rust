@@ -1,19 +1,22 @@
 //! CPU1 TX DMA owner for the shared audio clock domain.
+//!
+//! Speaker applications enqueue raw PCM through the public capability. This task
+//! only drains that bounded queue into I2S TX and substitutes silence whenever
+//! no complete speaker frames are available. Mic-only builds use the same TX
+//! owner to provide the physical BCLK/WS clock domain without owning a speaker.
 
 use esp_hal::{Async, i2s::master::I2sTx};
 
 use crate::support::diagnostics;
 
 use super::channels::Runtime;
-#[cfg(feature = "speaker-synth")]
-use super::{PlaybackSettings, chime::FlashChime, melody::MelodySynth};
 
-// 1024 bytes is 16 ms of stereo 16-bit audio at 16 kHz. Mic-only builds still
-// run this writer with silence because TX is the physical BCLK/WS master.
+// 1024 bytes is 16 ms of stereo 16-bit audio at 16 kHz.
 const PLAYBACK_FILL_BYTES: usize = 1_024;
+#[cfg(feature = "speaker")]
+const PLAYBACK_FILL_SAMPLES: usize = PLAYBACK_FILL_BYTES / core::mem::size_of::<i16>();
 const _: () = assert!(PLAYBACK_FILL_BYTES % 4 == 0);
 
-#[cfg(feature = "speaker-synth")]
 #[embassy_executor::task]
 pub(super) async fn playback_task(
     i2s_tx: I2sTx<'static, Async>,
@@ -25,122 +28,42 @@ pub(super) async fn playback_task(
     let mut transfer = i2s_tx
         .write_dma_circular_async(tx_buffer)
         .expect("Failed to start circular I2S TX DMA");
-    let mut engine = PlaybackEngine::new();
-    let mut settings = PlaybackSettings::DEFAULT;
-    let mut one_shot_seen = runtime.one_shot_sequence();
     let mut staging = [0u8; PLAYBACK_FILL_BYTES];
     let mut staging_offset = staging.len();
+    #[cfg(feature = "speaker")]
+    let mut pcm = [0i16; PLAYBACK_FILL_SAMPLES];
 
     loop {
         if staging_offset == staging.len() {
-            if let Some(next) = runtime.take_playback_settings() {
-                if next.melody_playing && !settings.melody_playing {
-                    engine.melody.restart();
+            staging.fill(0);
+
+            #[cfg(feature = "speaker")]
+            {
+                let frames = runtime.read_speaker_interleaved(&mut pcm).await;
+                let sample_count = frames * 2;
+                for (encoded, sample) in staging
+                    .chunks_exact_mut(2)
+                    .zip(pcm[..sample_count].iter().copied())
+                {
+                    encoded.copy_from_slice(&sample.to_le_bytes());
                 }
-                settings = next;
             }
+            #[cfg(not(feature = "speaker"))]
+            let _ = runtime;
 
-            let one_shot_sequence = runtime.one_shot_sequence();
-            if one_shot_sequence != one_shot_seen {
-                one_shot_seen = one_shot_sequence;
-                engine.chime.restart();
-            }
-
-            engine.fill(&mut staging, settings);
             staging_offset = 0;
         }
 
         match transfer.push(&staging[staging_offset..]).await {
             Ok(written) if written != 0 => staging_offset += written,
             Ok(_) => {}
-            Err(_) => handle_underrun(),
+            Err(_) => handle_dma_underrun(),
         }
     }
 }
 
-#[cfg(not(feature = "speaker-synth"))]
-#[embassy_executor::task]
-pub(super) async fn playback_task(
-    i2s_tx: I2sTx<'static, Async>,
-    tx_buffer: &'static mut [u8],
-    _runtime: Runtime,
-) {
-    tx_buffer.fill(0);
-
-    let mut transfer = i2s_tx
-        .write_dma_circular_async(tx_buffer)
-        .expect("Failed to start circular I2S TX DMA");
-    let silence = [0u8; PLAYBACK_FILL_BYTES];
-    let mut offset = 0usize;
-
-    loop {
-        match transfer.push(&silence[offset..]).await {
-            Ok(written) if written != 0 => {
-                offset += written;
-                if offset == silence.len() {
-                    offset = 0;
-                }
-            }
-            Ok(_) => {}
-            Err(_) => handle_underrun(),
-        }
-    }
-}
-
-fn handle_underrun() -> ! {
+fn handle_dma_underrun() -> ! {
     diagnostics::record_audio_playback_error();
     ::log::error!("I2S TX DMA underrun; rebooting to recover audio");
     esp_hal::system::software_reset();
-}
-
-#[cfg(feature = "speaker-synth")]
-struct PlaybackEngine {
-    melody: MelodySynth,
-    chime: FlashChime,
-    pending_frame: [u8; 4],
-    pending_offset: usize,
-}
-
-#[cfg(feature = "speaker-synth")]
-impl PlaybackEngine {
-    const fn new() -> Self {
-        Self {
-            melody: MelodySynth::new(),
-            chime: FlashChime::new(),
-            pending_frame: [0; 4],
-            pending_offset: 4,
-        }
-    }
-
-    fn fill(&mut self, bytes: &mut [u8], settings: PlaybackSettings) -> usize {
-        for byte in bytes.iter_mut() {
-            if self.pending_offset == self.pending_frame.len() {
-                self.prepare_frame(settings);
-                self.pending_offset = 0;
-            }
-
-            *byte = self.pending_frame[self.pending_offset];
-            self.pending_offset += 1;
-        }
-
-        bytes.len()
-    }
-
-    fn prepare_frame(&mut self, settings: PlaybackSettings) {
-        let melody = if settings.melody_playing {
-            self.melody.next_sample(settings.tempo, settings.pitch)
-        } else {
-            0
-        };
-        let sample = saturating_mix(melody, self.chime.next_sample());
-        let encoded = sample.to_le_bytes();
-        self.pending_frame = [encoded[0], encoded[1], encoded[0], encoded[1]];
-    }
-}
-
-#[cfg(feature = "speaker-synth")]
-fn saturating_mix(a: i16, b: i16) -> i16 {
-    i32::from(a)
-        .saturating_add(i32::from(b))
-        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }

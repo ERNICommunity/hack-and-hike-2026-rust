@@ -20,8 +20,6 @@ use crate::{
     app::{model::{AppModel, ViewId}, ui::views::Views},
     capabilities::display::Display,
 };
-#[cfg(feature = "speaker-synth")]
-use crate::app::ui::views::SpeakerAction;
 
 use gui::GuiSurface;
 use navigation::NavigationInput;
@@ -99,12 +97,7 @@ impl Ui {
         }
         #[cfg(feature = "speaker-synth")]
         if let Some(action) = speaker_action {
-            match action {
-                SpeakerAction::TogglePlayback => self.model.toggle_speaker_playback(),
-                SpeakerAction::PlayOneShot => self.model.play_speaker_one_shot(),
-                SpeakerAction::SetTempo(tempo) => self.model.set_speaker_tempo(tempo),
-                SpeakerAction::SetPitch(pitch) => self.model.set_speaker_pitch(pitch),
-            }
+            self.model.apply_speaker_action(action);
         }
         if let Some(view) = selected {
             self.model.request_view(view);

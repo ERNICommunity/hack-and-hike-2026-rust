@@ -4,7 +4,7 @@
 //! stereo 48 kHz MP3 -> mono 16 kHz signed-16 PCM -> IMA ADPCM. The resulting
 //! 11,904 samples are about 744 ms at the firmware's native 16 kHz rate.
 //! Keeping only the ADPCM in flash avoids a runtime MP3 decoder and keeps
-//! playback bounded, allocation-free, and cheap enough to mix on CPU1.
+//! playback bounded and allocation-free.
 
 const DATA: &[u8] = include_bytes!("../../../assets/speaker_chime.adpcm");
 const CHIME_SAMPLES: usize = 11_904;
@@ -48,6 +48,10 @@ impl FlashChime {
         self.predictor = 0;
         self.step_index = 0;
         self.playing = true;
+    }
+
+    pub(super) fn is_playing(&self) -> bool {
+        self.playing
     }
 
     pub(super) fn next_sample(&mut self) -> i16 {

@@ -1,8 +1,8 @@
-//! Interactive speaker-output view.
+//! Interactive speaker-synth view.
 //!
-//! KDL owns page geometry. `AppModel` owns persistent playback, tempo, and pitch
-//! state while this view owns only transient pointer interaction and custom
-//! touch-scale presentation inside the KDL control slots.
+//! KDL owns page geometry. The application model owns persistent playback,
+//! tempo and pitch state while this view owns transient pointer interaction and
+//! custom touch-scale presentation inside the KDL control slots.
 
 use core::fmt::Write as _;
 
@@ -14,23 +14,20 @@ use embedded_graphics::{
 use embedded_gui::prelude::*;
 
 use crate::{
-    app::model::SpeakerDisplay,
-    capabilities::{
-        audio::{PitchSemitones, TempoBpm},
-        display::Surface,
-    },
+    app::ui::views::common,
+    capabilities::display::Surface,
     support::memory::storage,
+    ui::{
+        gui::{GuiFramebuffer, GuiSurface},
+        navigation::{ContentPointer, PointerPhase},
+    },
 };
 
-use super::super::{
-    gui::{GuiFramebuffer, GuiSurface},
-    navigation::{ContentPointer, PointerPhase},
-};
-use super::common;
+use super::{Action, PitchSemitones, SpeakerDisplay, TempoBpm};
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/app/ui/views/speaker/speaker.kdl");
+    embedded_gui::include_gui!("src/applications/speaker_synth/view/speaker.kdl");
 }
 
 const NODE_CAPACITY: usize = 16;
@@ -62,13 +59,6 @@ enum Gesture {
     ChimeButton,
     Tempo,
     Pitch,
-}
-
-pub(crate) enum Action {
-    TogglePlayback,
-    PlayOneShot,
-    SetTempo(TempoBpm),
-    SetPitch(PitchSemitones),
 }
 
 pub(crate) struct View {

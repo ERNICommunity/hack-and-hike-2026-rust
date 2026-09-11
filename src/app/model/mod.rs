@@ -11,8 +11,6 @@ mod navigation;
 mod network;
 #[cfg(feature = "settings")]
 mod settings;
-#[cfg(feature = "speaker-synth")]
-mod speaker;
 
 use embassy_time::Instant;
 
@@ -21,7 +19,7 @@ use crate::applications::imu_worldview;
 #[cfg(feature = "mic-waveform")]
 use crate::applications::mic_waveform;
 #[cfg(feature = "speaker-synth")]
-use crate::capabilities::audio;
+use crate::applications::speaker_synth;
 #[cfg(feature = "settings")]
 use crate::capabilities::display::{Brightness, BrightnessControl};
 #[cfg(feature = "imu-worldview")]
@@ -30,6 +28,8 @@ use crate::capabilities::imu as imu_capability;
 use crate::capabilities::mic as mic_capability;
 #[cfg(feature = "network-demo")]
 use crate::capabilities::network as network_capability;
+#[cfg(feature = "speaker-synth")]
+use crate::capabilities::speaker as speaker_capability;
 #[cfg(feature = "log-view")]
 use crate::support::logging;
 
@@ -41,8 +41,6 @@ pub(crate) use crate::applications::mic_waveform::WaveformFrame;
 pub(crate) use navigation::ViewId;
 #[cfg(feature = "settings")]
 pub(crate) use settings::SettingsDisplay;
-#[cfg(feature = "speaker-synth")]
-pub(crate) use speaker::SpeakerDisplay;
 
 pub(crate) struct AppModelInputs {
     #[cfg(feature = "network-demo")]
@@ -52,7 +50,7 @@ pub(crate) struct AppModelInputs {
     #[cfg(feature = "mic-waveform")]
     pub(crate) microphone: mic_capability::Microphone,
     #[cfg(feature = "speaker-synth")]
-    pub(crate) playback: audio::PlaybackControl,
+    pub(crate) speaker: speaker_capability::Speaker,
     #[cfg(feature = "settings")]
     pub(crate) brightness: BrightnessControl,
     #[cfg(feature = "log-view")]
@@ -68,7 +66,7 @@ pub(crate) struct AppModel {
     #[cfg(feature = "mic-waveform")]
     microphone: mic_waveform::Model,
     #[cfg(feature = "speaker-synth")]
-    speaker: speaker::Model,
+    speaker: speaker_synth::Model,
     #[cfg(feature = "settings")]
     settings: settings::Model,
     #[cfg(feature = "log-view")]
@@ -86,7 +84,7 @@ impl AppModel {
             #[cfg(feature = "mic-waveform")]
             microphone: mic_waveform::Model::new(inputs.microphone),
             #[cfg(feature = "speaker-synth")]
-            speaker: speaker::Model::new(inputs.playback),
+            speaker: speaker_synth::Model::new(inputs.speaker),
             #[cfg(feature = "settings")]
             settings: settings::Model::new(inputs.brightness),
             #[cfg(feature = "log-view")]
@@ -126,6 +124,11 @@ impl AppModel {
     }
 
     pub(crate) fn update(&mut self, now: Instant) {
+        // Audio generation is application behavior, but it must continue while
+        // another view is active just as the pre-PR6 CPU1 synth did.
+        #[cfg(feature = "speaker-synth")]
+        self.speaker.update();
+
         match self.navigation.active_view() {
             #[cfg(feature = "network-demo")]
             ViewId::Network => self.network.update_if_due(now),
@@ -152,35 +155,14 @@ impl AppModel {
     }
 
     #[cfg(feature = "speaker-synth")]
-    pub(crate) fn toggle_speaker_playback(&mut self) {
+    pub(crate) fn apply_speaker_action(&mut self, action: speaker_synth::Action) {
         if self.navigation.active_view() == ViewId::Speaker {
-            self.speaker.toggle_playback();
+            self.speaker.apply(action);
         }
     }
 
     #[cfg(feature = "speaker-synth")]
-    pub(crate) fn play_speaker_one_shot(&mut self) {
-        if self.navigation.active_view() == ViewId::Speaker {
-            self.speaker.play_one_shot();
-        }
-    }
-
-    #[cfg(feature = "speaker-synth")]
-    pub(crate) fn set_speaker_tempo(&mut self, tempo: audio::TempoBpm) {
-        if self.navigation.active_view() == ViewId::Speaker {
-            self.speaker.set_tempo(tempo);
-        }
-    }
-
-    #[cfg(feature = "speaker-synth")]
-    pub(crate) fn set_speaker_pitch(&mut self, pitch: audio::PitchSemitones) {
-        if self.navigation.active_view() == ViewId::Speaker {
-            self.speaker.set_pitch(pitch);
-        }
-    }
-
-    #[cfg(feature = "speaker-synth")]
-    pub(crate) fn take_speaker_display(&mut self) -> Option<SpeakerDisplay> {
+    pub(crate) fn take_speaker_display(&mut self) -> Option<speaker_synth::SpeakerDisplay> {
         if self.navigation.active_view() != ViewId::Speaker {
             return None;
         }

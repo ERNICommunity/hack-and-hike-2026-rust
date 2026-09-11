@@ -32,6 +32,8 @@ use crate::capabilities::imu;
 use crate::capabilities::mic;
 #[cfg(feature = "network")]
 use crate::capabilities::network;
+#[cfg(feature = "speaker")]
+use crate::capabilities::speaker;
 #[cfg(feature = "touch")]
 use crate::capabilities::touch;
 use crate::{
@@ -46,6 +48,8 @@ pub(crate) struct AppInputs {
     pub(crate) imu: imu::Imu,
     #[cfg(feature = "mic")]
     pub(crate) microphone: mic::Microphone,
+    #[cfg(feature = "speaker")]
+    pub(crate) speaker: speaker::Speaker,
     #[cfg(feature = "network")]
     pub(crate) network: network::Input,
     #[cfg(feature = "log-view")]
@@ -62,8 +66,6 @@ pub(crate) struct Bootstrap {
     pub(crate) inputs: AppInputs,
     #[cfg(feature = "display")]
     pub(crate) brightness: display::BrightnessControl,
-    #[cfg(feature = "speaker-synth")]
-    pub(crate) playback: audio::PlaybackControl,
 }
 
 #[cfg(feature = "camera")]
@@ -260,8 +262,8 @@ pub(crate) fn bootstrap() -> Bootstrap {
     let audio_runtime = audio_endpoints.runtime;
     #[cfg(feature = "mic")]
     let microphone = mic::from_reader(audio_endpoints.mic);
-    #[cfg(feature = "speaker-synth")]
-    let playback = audio_endpoints.playback;
+    #[cfg(feature = "speaker")]
+    let speaker_output = speaker::from_writer(audio_endpoints.speaker);
 
     #[cfg(feature = "imu")]
     let imu::Endpoints {
@@ -348,6 +350,8 @@ pub(crate) fn bootstrap() -> Bootstrap {
             imu: imu_input,
             #[cfg(feature = "mic")]
             microphone,
+            #[cfg(feature = "speaker")]
+            speaker: speaker_output,
             #[cfg(feature = "network")]
             network: network_input,
             #[cfg(feature = "log-view")]
@@ -355,7 +359,5 @@ pub(crate) fn bootstrap() -> Bootstrap {
         },
         #[cfg(feature = "display")]
         brightness,
-        #[cfg(feature = "speaker-synth")]
-        playback,
     }
 }

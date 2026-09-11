@@ -6,7 +6,9 @@
 //! note-on (or the loop boundary) so each note is as long as possible without
 //! overlapping the following note. Playback is transposed up two octaves.
 
-use super::{PitchSemitones, SAMPLE_RATE_HZ, TempoBpm};
+use crate::capabilities::speaker::SAMPLE_RATE_HZ;
+
+use super::{PitchSemitones, TempoBpm};
 
 const TICKS_PER_BEAT: u32 = 384;
 const LOOP_TICKS: u32 = 3_072;
@@ -215,7 +217,7 @@ fn speaker_safe_wave(phase: u32, fundamental_step: u32) -> i16 {
 ///
 /// The old lookup discarded 24 phase bits. Linear interpolation keeps the DDS
 /// phase resolution high enough that this synth does not add audible table-step
-/// artifacts while still avoiding floating-point work on CPU1.
+/// artifacts while still avoiding floating-point work in the application loop.
 fn sine_wave(phase: u32) -> i16 {
     const QUARTER_TURN: u32 = 1 << 30;
     const SEGMENT_SHIFT: u32 = 24;

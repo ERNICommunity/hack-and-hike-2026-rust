@@ -1,21 +1,19 @@
 //! Cross-core synchronization for the private shared audio runtime.
 
-#[cfg(feature = "speaker-synth")]
-use core::sync::atomic::{AtomicU32, Ordering};
-
-#[cfg(any(feature = "mic", feature = "speaker-synth"))]
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(feature = "mic")]
-use embassy_sync::mutex::Mutex;
-#[cfg(feature = "speaker-synth")]
-use embassy_sync::signal::Signal;
+#[cfg(any(feature = "mic", feature = "speaker"))]
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use static_cell::StaticCell;
 
 #[cfg(feature = "mic")]
 use crate::capabilities::mic::{MicBlockInfo, QUEUE_CAPACITY_BLOCKS, SAMPLES_PER_BLOCK};
 
-#[cfg(feature = "speaker-synth")]
-use super::PlaybackSettings;
+#[cfg(feature = "speaker")]
+const SPEAKER_CHANNELS: usize = 2;
+#[cfg(feature = "speaker")]
+const SPEAKER_QUEUE_CAPACITY_FRAMES: usize = 512;
+#[cfg(feature = "speaker")]
+const SPEAKER_QUEUE_CAPACITY_SAMPLES: usize =
+    SPEAKER_QUEUE_CAPACITY_FRAMES * SPEAKER_CHANNELS;
 
 #[cfg(feature = "mic")]
 #[derive(Clone, Copy)]
@@ -98,18 +96,62 @@ impl MicQueue {
     }
 }
 
+#[cfg(feature = "speaker")]
+struct SpeakerQueue {
+    samples: [i16; SPEAKER_QUEUE_CAPACITY_SAMPLES],
+    read_index: usize,
+    len_samples: usize,
+}
+
+#[cfg(feature = "speaker")]
+impl SpeakerQueue {
+    const fn new() -> Self {
+        Self {
+            samples: [0; SPEAKER_QUEUE_CAPACITY_SAMPLES],
+            read_index: 0,
+            len_samples: 0,
+        }
+    }
+
+    fn available_frames(&self) -> usize {
+        (SPEAKER_QUEUE_CAPACITY_SAMPLES - self.len_samples) / SPEAKER_CHANNELS
+    }
+
+    fn write_interleaved(&mut self, samples: &[i16]) -> usize {
+        let frames = (samples.len() / SPEAKER_CHANNELS).min(self.available_frames());
+        let sample_count = frames * SPEAKER_CHANNELS;
+        let write_index = (self.read_index + self.len_samples) % SPEAKER_QUEUE_CAPACITY_SAMPLES;
+
+        for (offset, sample) in samples[..sample_count].iter().copied().enumerate() {
+            self.samples[(write_index + offset) % SPEAKER_QUEUE_CAPACITY_SAMPLES] = sample;
+        }
+        self.len_samples += sample_count;
+        frames
+    }
+
+    fn read_interleaved(&mut self, out: &mut [i16]) -> usize {
+        let frames = (out.len() / SPEAKER_CHANNELS).min(self.len_samples / SPEAKER_CHANNELS);
+        let sample_count = frames * SPEAKER_CHANNELS;
+
+        for (offset, sample) in out[..sample_count].iter_mut().enumerate() {
+            *sample = self.samples[(self.read_index + offset) % SPEAKER_QUEUE_CAPACITY_SAMPLES];
+        }
+        self.read_index = (self.read_index + sample_count) % SPEAKER_QUEUE_CAPACITY_SAMPLES;
+        self.len_samples -= sample_count;
+        frames
+    }
+}
+
 #[cfg(feature = "mic")]
 type MicQueueStore = Mutex<CriticalSectionRawMutex, MicQueue>;
-#[cfg(feature = "speaker-synth")]
-type PlaybackSignal = Signal<CriticalSectionRawMutex, PlaybackSettings>;
+#[cfg(feature = "speaker")]
+type SpeakerQueueStore = Mutex<CriticalSectionRawMutex, SpeakerQueue>;
 
 struct Service {
     #[cfg(feature = "mic")]
     mic_queue: MicQueueStore,
-    #[cfg(feature = "speaker-synth")]
-    playback_settings: PlaybackSignal,
-    #[cfg(feature = "speaker-synth")]
-    one_shot_sequence: AtomicU32,
+    #[cfg(feature = "speaker")]
+    speaker_queue: SpeakerQueueStore,
 }
 
 impl Service {
@@ -117,10 +159,8 @@ impl Service {
         Self {
             #[cfg(feature = "mic")]
             mic_queue: Mutex::new(MicQueue::new()),
-            #[cfg(feature = "speaker-synth")]
-            playback_settings: Signal::new(),
-            #[cfg(feature = "speaker-synth")]
-            one_shot_sequence: AtomicU32::new(0),
+            #[cfg(feature = "speaker")]
+            speaker_queue: Mutex::new(SpeakerQueue::new()),
         }
     }
 }
@@ -138,9 +178,9 @@ pub(crate) struct MicReader {
     service: &'static Service,
 }
 
-/// CPU0 command endpoint used by the stock speaker synth application.
-#[cfg(feature = "speaker-synth")]
-pub(crate) struct PlaybackControl {
+/// Private CPU0 endpoint wrapped by the public `speaker::Speaker` capability.
+#[cfg(feature = "speaker")]
+pub(crate) struct SpeakerWriter {
     service: &'static Service,
 }
 
@@ -148,8 +188,8 @@ pub(crate) struct Endpoints {
     pub(crate) runtime: Runtime,
     #[cfg(feature = "mic")]
     pub(crate) mic: MicReader,
-    #[cfg(feature = "speaker-synth")]
-    pub(crate) playback: PlaybackControl,
+    #[cfg(feature = "speaker")]
+    pub(crate) speaker: SpeakerWriter,
 }
 
 pub(crate) fn init_endpoints() -> Endpoints {
@@ -158,8 +198,8 @@ pub(crate) fn init_endpoints() -> Endpoints {
         runtime: Runtime { service },
         #[cfg(feature = "mic")]
         mic: MicReader { service },
-        #[cfg(feature = "speaker-synth")]
-        playback: PlaybackControl { service },
+        #[cfg(feature = "speaker")]
+        speaker: SpeakerWriter { service },
     }
 }
 
@@ -174,16 +214,20 @@ impl MicReader {
     }
 }
 
-#[cfg(feature = "speaker-synth")]
-impl PlaybackControl {
-    pub(crate) fn set(&mut self, settings: PlaybackSettings) {
-        self.service.playback_settings.signal(settings);
+#[cfg(feature = "speaker")]
+impl SpeakerWriter {
+    pub(crate) fn try_write_interleaved(&mut self, samples: &[i16]) -> usize {
+        let Ok(mut queue) = self.service.speaker_queue.try_lock() else {
+            return 0;
+        };
+        queue.write_interleaved(samples)
     }
 
-    pub(crate) fn play_one_shot(&mut self) {
-        self.service
-            .one_shot_sequence
-            .fetch_add(1, Ordering::Release);
+    pub(crate) fn available_frames(&self) -> usize {
+        let Ok(queue) = self.service.speaker_queue.try_lock() else {
+            return 0;
+        };
+        queue.available_frames()
     }
 }
 
@@ -199,13 +243,9 @@ impl Runtime {
         queue.push(samples, peak_left, peak_right)
     }
 
-    #[cfg(feature = "speaker-synth")]
-    pub(super) fn take_playback_settings(self) -> Option<PlaybackSettings> {
-        self.service.playback_settings.try_take()
-    }
-
-    #[cfg(feature = "speaker-synth")]
-    pub(super) fn one_shot_sequence(self) -> u32 {
-        self.service.one_shot_sequence.load(Ordering::Acquire)
+    #[cfg(feature = "speaker")]
+    pub(super) async fn read_speaker_interleaved(self, out: &mut [i16]) -> usize {
+        let mut queue = self.service.speaker_queue.lock().await;
+        queue.read_interleaved(out)
     }
 }

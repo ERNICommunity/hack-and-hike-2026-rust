@@ -14,5 +14,7 @@ pub(crate) mod imu;
 pub(crate) mod mic;
 #[cfg(feature = "network")]
 pub(crate) mod network;
+#[cfg(feature = "speaker")]
+pub(crate) mod speaker;
 #[cfg(feature = "touch")]
 pub(crate) mod touch;
