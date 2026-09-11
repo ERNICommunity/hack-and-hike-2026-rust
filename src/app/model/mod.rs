@@ -1,11 +1,9 @@
 //! CPU0 application models.
 //!
 //! `AppModel` is the thin application-level aggregator. Feature-specific state,
-//! refresh cadence, and presentation transformations live in sibling modules so
-//! each model can be understood independently of the other screens.
+//! refresh cadence, and presentation transformations live with each application
+//! as vertical migrations progress.
 
-#[cfg(feature = "imu-worldview")]
-mod imu;
 #[cfg(feature = "log-view")]
 mod log;
 #[cfg(feature = "mic-waveform")]
@@ -20,6 +18,8 @@ mod speaker;
 
 use embassy_time::Instant;
 
+#[cfg(feature = "imu-worldview")]
+use crate::applications::imu_worldview;
 #[cfg(any(feature = "mic-waveform", feature = "speaker-synth"))]
 use crate::capabilities::audio;
 #[cfg(feature = "settings")]
@@ -31,8 +31,10 @@ use crate::capabilities::network as network_capability;
 #[cfg(feature = "log-view")]
 use crate::support::logging;
 
+// Transitional compatibility for renderer helpers that are being migrated out
+// of the horizontal app layer one application at a time.
 #[cfg(feature = "imu-worldview")]
-pub(crate) use imu::ImuDisplay;
+pub(crate) use crate::applications::imu_worldview::DisplayState as ImuDisplay;
 #[cfg(feature = "mic-waveform")]
 pub(crate) use microphone::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame};
 pub(crate) use navigation::ViewId;
@@ -45,7 +47,7 @@ pub(crate) struct AppModelInputs {
     #[cfg(feature = "network-demo")]
     pub(crate) network: network_capability::Input,
     #[cfg(feature = "imu-worldview")]
-    pub(crate) imu: imu_capability::Input,
+    pub(crate) imu: imu_capability::Imu,
     #[cfg(feature = "mic-waveform")]
     pub(crate) audio: audio::Input,
     #[cfg(feature = "speaker-synth")]
@@ -61,7 +63,7 @@ pub(crate) struct AppModel {
     #[cfg(feature = "network-demo")]
     network: network::Model,
     #[cfg(feature = "imu-worldview")]
-    imu: imu::Model,
+    imu: imu_worldview::Model,
     #[cfg(feature = "mic-waveform")]
     microphone: microphone::Model,
     #[cfg(feature = "speaker-synth")]
@@ -79,7 +81,7 @@ impl AppModel {
             #[cfg(feature = "network-demo")]
             network: network::Model::new(inputs.network),
             #[cfg(feature = "imu-worldview")]
-            imu: imu::Model::new(inputs.imu),
+            imu: imu_worldview::Model::new(inputs.imu),
             #[cfg(feature = "mic-waveform")]
             microphone: microphone::Model::new(inputs.audio),
             #[cfg(feature = "speaker-synth")]

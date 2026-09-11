@@ -1,7 +1,8 @@
-//! BMI270 + BMM150 orientation capability.
+//! BMI270 + BMM150 motion/orientation capability.
 //!
-//! CPU1 owns raw sensor access and fusion. CPU0 receives both human-readable
-//! Euler angles and the complete gravity/north basis used by 3-D consumers.
+//! CPU1 owns raw sensor access and fusion. CPU0 receives converted physical
+//! sensor measurements alongside the fused orientation/status state. Sensor-chip
+//! register formats remain private to the capability.
 
 mod bmi270;
 mod bmm150;
@@ -12,7 +13,7 @@ mod task;
 
 use embassy_time::Duration;
 
-pub(crate) use channels::Input;
+pub(crate) use channels::Imu;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 pub(crate) use task::capture_task;
 
@@ -85,12 +86,27 @@ impl Default for Orientation {
     }
 }
 
+/// One coherent latest-value IMU capability sample.
+///
+/// Acceleration is expressed in m/s², angular velocity in degrees/s, and the
+/// optional magnetic vector in microtesla. `None` measurements indicate that no
+/// valid reading for that sensor is available in the current acquisition session.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Snapshot {
+pub(crate) struct Sample {
     pub(crate) revision: u32,
+    pub(crate) acceleration_m_s2: Option<[f32; 3]>,
+    pub(crate) angular_velocity_deg_s: Option<[f32; 3]>,
+    pub(crate) magnetic_field_ut: Option<[f32; 3]>,
     pub(crate) status: Status,
     pub(crate) orientation: Orientation,
     pub(crate) mag_status: MagStatus,
-    pub(crate) mag_field_ut: f32,
+    pub(crate) mag_field_strength_ut: f32,
     pub(crate) mag_calibration_percent: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Measurements {
+    pub(super) acceleration_m_s2: Option<[f32; 3]>,
+    pub(super) angular_velocity_deg_s: Option<[f32; 3]>,
+    pub(super) magnetic_field_ut: Option<[f32; 3]>,
 }

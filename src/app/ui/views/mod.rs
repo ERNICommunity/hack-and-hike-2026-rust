@@ -5,9 +5,7 @@
 
 #[cfg(feature = "camera-view")]
 mod camera;
-mod common;
-#[cfg(feature = "imu-worldview")]
-mod imu;
+pub(crate) mod common;
 #[cfg(feature = "log-view")]
 mod log;
 #[cfg(feature = "mic-waveform")]
@@ -19,6 +17,9 @@ mod settings;
 #[cfg(feature = "speaker-synth")]
 mod speaker;
 
+#[cfg(feature = "imu-worldview")]
+use crate::applications::imu_worldview;
+
 #[cfg(feature = "speaker-synth")]
 pub(crate) use speaker::Action as SpeakerAction;
 
@@ -26,7 +27,7 @@ pub(crate) struct Views {
     #[cfg(feature = "network-demo")]
     pub(crate) network: network::View,
     #[cfg(feature = "imu-worldview")]
-    pub(crate) imu: imu::View,
+    pub(crate) imu: imu_worldview::View,
     #[cfg(feature = "mic-waveform")]
     pub(crate) microphone: microphone::View,
     #[cfg(feature = "speaker-synth")]
@@ -45,7 +46,7 @@ impl Views {
             #[cfg(feature = "network-demo")]
             network: network::View::new(),
             #[cfg(feature = "imu-worldview")]
-            imu: imu::View::new(),
+            imu: imu_worldview::View::new(),
             #[cfg(feature = "mic-waveform")]
             microphone: microphone::View::new(),
             #[cfg(feature = "speaker-synth")]

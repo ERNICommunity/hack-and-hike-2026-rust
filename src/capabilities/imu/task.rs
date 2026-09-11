@@ -5,7 +5,8 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use crate::platform::i2c::SystemI2cBus;
 
 use super::{
-    Config, DEFAULT_FUSION_HZ, DEFAULT_MAG_HZ, DEFAULT_SENSOR_HZ, MagStatus, Orientation, Status,
+    Config, DEFAULT_FUSION_HZ, DEFAULT_MAG_HZ, DEFAULT_SENSOR_HZ, MagStatus, Measurements,
+    Orientation, Status,
     bmi270::{Bmi270, Error, GYRO_SENSOR_ODR_HZ},
     channels::{self, Runtime},
     fusion::{Fusion, GyroBias, max_abs3},
@@ -17,6 +18,7 @@ const SENSOR_TIME_TICK_SECONDS: f32 = 1.0 / 25_600.0;
 const SENSOR_TIME_MASK: u32 = 0x00FF_FFFF;
 const MAX_FUSION_SAMPLE_GAP_TICKS: u32 = 1_280; // 50 ms
 const NOMINAL_FUSION_TICKS: u32 = 25_600 / DEFAULT_SENSOR_HZ; // 10 ms
+const STANDARD_GRAVITY_M_S2: f32 = 9.80665;
 
 const INIT_RETRY: Duration = Duration::from_secs(1);
 const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
@@ -40,10 +42,12 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
     let mut magnetic = MagneticState::new(Instant::now());
 
     loop {
+        let mut measurements = Measurements::default();
         magnetic.rebind(None, Instant::now());
         channels::publish(
             runtime,
             &mut revision,
+            measurements,
             Status::Starting,
             last_orientation,
             magnetic.status(),
@@ -58,6 +62,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                 channels::publish(
                     runtime,
                     &mut revision,
+                    measurements,
                     Status::Fault,
                     last_orientation,
                     magnetic.status(),
@@ -147,6 +152,13 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
 
                     let corrected_gyro = gyro_bias.correct(sample.accel_g, sample.gyro_dps);
                     let magnetic_for_fusion = magnetic.observe(sample.mag_data, now);
+                    measurements = Measurements {
+                        acceleration_m_s2: Some(
+                            sample.accel_g.map(|value| value * STANDARD_GRAVITY_M_S2),
+                        ),
+                        angular_velocity_deg_s: Some(sample.gyro_dps),
+                        magnetic_field_ut: magnetic.vector_ut(),
+                    };
 
                     last_orientation = fusion.update(
                         sample.accel_g,
@@ -214,7 +226,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
 
                     if calibration_percent == 100 && !logged_calibrated_publish {
                         ::log::info!(
-                            "CPU1 publishing calibrated IMU snapshot: status={:?} mag_status={:?} field={}uT revision={}",
+                            "CPU1 publishing calibrated IMU sample: status={:?} mag_status={:?} field={}uT revision={}",
                             status,
                             mag_status,
                             magnetic.field_ut(),
@@ -225,6 +237,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                     channels::publish(
                         runtime,
                         &mut revision,
+                        measurements,
                         status,
                         last_orientation,
                         mag_status,
@@ -242,6 +255,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                     channels::publish(
                         runtime,
                         &mut revision,
+                        measurements,
                         Status::Degraded,
                         last_orientation,
                         magnetic.status(),
@@ -257,6 +271,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                         channels::publish(
                             runtime,
                             &mut revision,
+                            measurements,
                             Status::Fault,
                             last_orientation,
                             magnetic.status(),

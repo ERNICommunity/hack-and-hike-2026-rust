@@ -15,18 +15,18 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_gui::prelude::*;
 
 use crate::{
-    app::model::ImuDisplay,
+    app::ui::views::common,
     capabilities::{display::Surface, imu as sensor},
     support::memory::storage,
+    ui::gui::{GuiFramebuffer, GuiSurface},
 };
 
-use super::super::gui::{GuiFramebuffer, GuiSurface};
-use super::common;
+use super::DisplayState;
 use projection::{DisplayAttitude, display_attitude, round_degrees};
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/app/ui/views/imu/imu.kdl");
+    embedded_gui::include_gui!("src/applications/imu_worldview/view/imu.kdl");
 }
 
 const NODE_CAPACITY: usize = 8;
@@ -92,7 +92,7 @@ impl View {
         &mut self,
         gui_surface: &mut GuiSurface,
         surface: &mut Surface<'_>,
-        imu: &ImuDisplay,
+        imu: &DisplayState,
     ) {
         let geometry = self.geometry;
         let attitude = display_attitude(imu);
@@ -186,7 +186,7 @@ fn draw_shell(frame: &mut GuiFramebuffer, geometry: Geometry) {
     draw_border(frame, geometry.attitude);
 }
 
-fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay, attitude: DisplayAttitude) {
+fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &DisplayState, attitude: DisplayAttitude) {
     common::fill_rect(frame, area, common::dark_blue());
     common::draw_title(frame, "IMU", area.x + 6, area.y + 3, common::white());
     common::draw_body(frame, status_text(imu.status), area.x + 6, area.y + 19, common::white());

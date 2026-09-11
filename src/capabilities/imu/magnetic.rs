@@ -26,6 +26,7 @@ pub(super) struct MagneticState {
     calibration: bmm150::Calibration,
     status: MagStatus,
     field_ut: f32,
+    vector_ut: Option<[f32; 3]>,
     last_frame: Option<[u8; 8]>,
     last_update: Instant,
     last_retry: Instant,
@@ -40,6 +41,7 @@ impl MagneticState {
             calibration: bmm150::Calibration::new(),
             status: MagStatus::Missing,
             field_ut: 0.0,
+            vector_ut: None,
             last_frame: None,
             last_update: now,
             last_retry: now,
@@ -64,6 +66,7 @@ impl MagneticState {
             MagStatus::Missing
         };
         self.field_ut = 0.0;
+        self.vector_ut = None;
         self.last_frame = None;
         self.last_update = now;
         self.last_retry = now;
@@ -92,6 +95,7 @@ impl MagneticState {
     pub(super) fn observe(&mut self, data: [u8; 8], now: Instant) -> Option<[f32; 3]> {
         let Some(trim) = self.trim else {
             self.status = MagStatus::Missing;
+            self.vector_ut = None;
             return None;
         };
 
@@ -103,6 +107,7 @@ impl MagneticState {
 
         if now - self.last_update >= MAG_STALE {
             self.status = MagStatus::Missing;
+            self.vector_ut = None;
             self.good_samples = 0;
             self.bad_samples = 0;
             magnetic_for_fusion = None;
@@ -128,6 +133,9 @@ impl MagneticState {
 
         self.last_update = now;
         let body_field = [mag.field_ut[0], -mag.field_ut[1], -mag.field_ut[2]];
+        // Expose the compensated physical body-frame measurement independently
+        // of whether calibration currently allows it to influence yaw fusion.
+        self.vector_ut = Some(body_field);
         let raw_learnable =
             (MAG_LEARNING_MIN_UT..=MAG_LEARNING_MAX_UT).contains(&mag.field_strength_ut);
 
@@ -189,6 +197,10 @@ impl MagneticState {
 
     pub(super) const fn field_ut(&self) -> f32 {
         self.field_ut
+    }
+
+    pub(super) const fn vector_ut(&self) -> Option<[f32; 3]> {
+        self.vector_ut
     }
 
     pub(super) fn calibration_percent(&self) -> u8 {

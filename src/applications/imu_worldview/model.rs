@@ -1,16 +1,16 @@
-//! IMU presentation model.
+//! IMU worldview application model.
 
 use embassy_time::{Duration, Instant};
 
 use crate::capabilities::imu;
 
 // Match the 100 Hz fusion publisher instead of imposing a separate 25 Hz UI
-// ceiling. The replace-latest input still collapses samples whenever rendering
+// ceiling. The replace-latest capability collapses samples whenever rendering
 // is slower than acquisition, so CPU0 always consumes the freshest attitude.
 const IMU_UPDATE: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ImuDisplay {
+pub(crate) struct DisplayState {
     /// CPU1 publication revision for diagnostics and stale-sample detection.
     pub(crate) sample_revision: u32,
     /// Euler values are for the numeric header only. World rendering consumes
@@ -26,20 +26,20 @@ pub(crate) struct ImuDisplay {
     pub(crate) mag_calibration: u8,
 }
 
-pub(super) struct Model {
-    input: imu::Input,
-    display: ImuDisplay,
+pub(crate) struct Model {
+    imu: imu::Imu,
+    display: DisplayState,
     last_revision: u32,
     last_update: Instant,
-    logged_calibrated_snapshot: bool,
+    logged_calibrated_sample: bool,
     dirty: bool,
 }
 
 impl Model {
-    pub(super) fn new(input: imu::Input) -> Self {
+    pub(crate) fn new(imu: imu::Imu) -> Self {
         Self {
-            input,
-            display: ImuDisplay {
+            imu,
+            display: DisplayState {
                 sample_revision: 0,
                 roll_deg: 0.0,
                 pitch_deg: 0.0,
@@ -53,55 +53,55 @@ impl Model {
             },
             last_revision: 0,
             last_update: Instant::now(),
-            logged_calibrated_snapshot: false,
+            logged_calibrated_sample: false,
             dirty: true,
         }
     }
 
-    pub(super) fn mark_dirty(&mut self) {
+    pub(crate) fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
-    pub(super) fn update_if_due(&mut self, now: Instant) {
+    pub(crate) fn update_if_due(&mut self, now: Instant) {
         if now - self.last_update < IMU_UPDATE {
             return;
         }
         self.last_update = now;
-        let Some(snapshot) = self.input.take_latest() else {
+        let Some(sample) = self.imu.latest() else {
             return;
         };
-        if snapshot.revision == self.last_revision {
+        if sample.revision == self.last_revision {
             return;
         }
-        self.last_revision = snapshot.revision;
+        self.last_revision = sample.revision;
 
-        if snapshot.mag_calibration_percent == 100 && !self.logged_calibrated_snapshot {
+        if sample.mag_calibration_percent == 100 && !self.logged_calibrated_sample {
             ::log::info!(
-                "CPU0 received calibrated IMU snapshot: revision={} status={:?} mag_status={:?} field={}uT",
-                snapshot.revision,
-                snapshot.status,
-                snapshot.mag_status,
-                round_units(snapshot.mag_field_ut)
+                "CPU0 received calibrated IMU sample: revision={} status={:?} mag_status={:?} field={}uT",
+                sample.revision,
+                sample.status,
+                sample.mag_status,
+                round_units(sample.mag_field_strength_ut)
             );
-            self.logged_calibrated_snapshot = true;
+            self.logged_calibrated_sample = true;
         }
 
-        self.display = ImuDisplay {
-            sample_revision: snapshot.revision,
-            roll_deg: snapshot.orientation.roll_deg,
-            pitch_deg: snapshot.orientation.pitch_deg,
-            yaw_deg: snapshot.orientation.yaw_deg,
-            gravity_screen: snapshot.orientation.gravity_screen,
-            north_screen: snapshot.orientation.north_screen,
-            status: snapshot.status,
-            mag_status: snapshot.mag_status,
-            mag_field_ut: round_units(snapshot.mag_field_ut),
-            mag_calibration: snapshot.mag_calibration_percent,
+        self.display = DisplayState {
+            sample_revision: sample.revision,
+            roll_deg: sample.orientation.roll_deg,
+            pitch_deg: sample.orientation.pitch_deg,
+            yaw_deg: sample.orientation.yaw_deg,
+            gravity_screen: sample.orientation.gravity_screen,
+            north_screen: sample.orientation.north_screen,
+            status: sample.status,
+            mag_status: sample.mag_status,
+            mag_field_ut: round_units(sample.mag_field_strength_ut),
+            mag_calibration: sample.mag_calibration_percent,
         };
         self.dirty = true;
     }
 
-    pub(super) fn take_display(&mut self) -> Option<ImuDisplay> {
+    pub(crate) fn take_display(&mut self) -> Option<DisplayState> {
         if !self.dirty {
             return None;
         }

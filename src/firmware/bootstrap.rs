@@ -41,7 +41,7 @@ pub(crate) struct AppInputs {
     #[cfg(feature = "touch")]
     pub(crate) touch: touch::Input,
     #[cfg(feature = "imu")]
-    pub(crate) imu: imu::Input,
+    pub(crate) imu: imu::Imu,
     #[cfg(feature = "mic")]
     pub(crate) audio: audio::Input,
     #[cfg(feature = "network")]

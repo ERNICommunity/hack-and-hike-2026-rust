@@ -18,6 +18,8 @@
     feature = "log-view",
 ))]
 mod app;
+#[cfg(feature = "imu-worldview")]
+mod applications;
 mod capabilities;
 mod firmware;
 mod platform;
