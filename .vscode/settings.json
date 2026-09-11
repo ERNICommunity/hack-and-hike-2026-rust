@@ -1,0 +1,39 @@
+{
+    // do not scroll beyond last line because it could confuse beginners
+    "editor.scrollBeyondLastLine": false,
+    // automatically save after 1 second
+    "editor.formatOnSave": true,
+    // automatically save files after 1 second
+    "files.autoSave": "afterDelay",
+    // scale the minimap to the window height
+    "editor.minimap.size": "fill",
+    // do not show the right sidebar because we need the screen space for a two column editor layout
+    "workbench.secondarySideBar.defaultVisibility": "hidden",
+    "chat.disableAIFeatures": true,
+    "workbench.auxiliaryBar.visible": false,
+    // Keep rust-analyzer snappy by using a separate target dir inside the cargo target dir
+    "rust-analyzer.cargo.targetDir": true,
+    // adjust explorer view to show tasks
+    "explorer.openEditors.visible": 1,
+    "outline.collapseItems": "alwaysCollapse",
+    "timeline.excludeSources": [
+        "git-history"
+    ],
+    // Keep Cargo.toml dependencies on one line
+    "evenBetterToml.formatter.inlineTableExpand": false,
+    "evenBetterToml.formatter.arrayAutoExpand": false,
+    "evenBetterToml.formatter.arrayAutoCollapse": true,
+    "evenBetterToml.formatter.columnWidth": 10000,
+    // open readme on startup and use markdown preview for it
+    "workbench.startupEditor": "readme",
+    "workbench.editorAssociations": {
+        "README.md": "vscode.markdown.preview.editor"
+    },
+    // show spaces as dots and tabs as arrows
+    "editor.renderWhitespace": "all",
+    "[rust]": {
+        "editor.defaultFormatter": "rust-lang.rust-analyzer",
+        "editor.formatOnSave": true
+    },
+    "rust-analyzer.server.path": "/usr/local/rustup/toolchains/1.93.0-aarch64-unknown-linux-gnu/bin/rust-analyzer"
+}
