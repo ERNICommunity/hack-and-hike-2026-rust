@@ -22,17 +22,9 @@ pub(crate) const GOOD_FIELD_MIN_UT: f32 = 25.0;
 pub(crate) const GOOD_FIELD_MAX_UT: f32 = 80.0;
 
 const CALIBRATION_TARGET_SPAN_UT: f32 = 35.0;
-// The evolving-extrema coverage origin corrects an imperfect early midpoint, so
-// a full two seconds of warm-up is unnecessary. The independent span condition
-// still prevents choosing an origin before the device has moved in 3-D.
 const ORIGIN_WARMUP_SAMPLES: u32 = 36;
 const ORIGIN_MIN_SPAN_UT: f32 = 20.0;
 
-// Divide the sphere into six dominant-axis faces, each split into four
-// quadrants. Twelve well-distributed sectors plus all six +/-axis faces are
-// enough to condition a nine-parameter ellipsoid. A fresh-sample validation
-// phase still has to accept every provisional fit before it can be used for
-// heading.
 const DIRECTION_BIN_COUNT: usize = 24;
 const MIN_DIRECTION_BINS: u32 = 12;
 const MIN_DIRECTION_FACES: u32 = 6;
@@ -40,12 +32,6 @@ const MAX_SAMPLES_PER_DIRECTION_BIN: u8 = 32;
 const REFIT_INTERVAL_SAMPLES: u16 = 16;
 const MIN_REFIT_DIRECTION_BINS: u32 = 4;
 
-/// Allocation-free online full-ellipsoid magnetometer calibration.
-///
-/// The fitter accumulates 9x9 normal equations for the general quadratic terms
-/// `x^2, y^2, z^2, 2xy, 2xz, 2yz, x, y, z`, but only up to a bounded number of
-/// samples per 3-D direction sector. A candidate model is then checked against
-/// fresh, directionally diverse samples before it is frozen.
 pub(crate) struct Calibration {
     normal: [[f32; PARAMS]; PARAMS],
     rhs: [f32; PARAMS],
@@ -85,18 +71,6 @@ impl Calibration {
         }
     }
 
-    /// Learn one Bosch-compensated body-frame vector while calibration is not
-    /// ready. Calibration deliberately has three phases:
-    ///
-    /// 1. establish a numerically safe local origin,
-    /// 2. collect a balanced set of samples across the 3-D sphere and fit,
-    /// 3. validate the provisional correction on fresh measurements.
-    ///
-    /// Rejected fits never discard the complete learning history. Instead the
-    /// calibrator opens a fresh balanced per-direction sampling epoch and waits
-    /// for genuinely new, directionally diverse data before fitting again. Once
-    /// a validated model is accepted it is frozen so external magnetic
-    /// disturbances cannot be learned as enclosure hard/soft iron.
     pub(crate) fn observe(&mut self, field_ut: [f32; 3]) {
         if self.model.is_some() || !raw_sample_is_plausible(field_ut) {
             return;
@@ -110,29 +84,29 @@ impl Calibration {
 
         if self.fit_origin_ut.is_none() {
             if self.samples >= ORIGIN_WARMUP_SAMPLES && self.minimum_span() >= ORIGIN_MIN_SPAN_UT {
-                self.fit_origin_ut = Some([
-                    0.5 * (self.min[0] + self.max[0]),
-                    0.5 * (self.min[1] + self.max[1]),
-                    0.5 * (self.min[2] + self.max[2]),
-                ]);
+                self.fit_origin_ut = Some(self.coverage_origin());
             }
             return;
         }
 
-        // The fit origin stays fixed for numerical conditioning, but coverage
-        // classification follows the evolving extrema midpoint. The early
-        // warm-up midpoint can be biased if the user has not yet explored the
-        // opposite side of the field sphere; freezing that midpoint for sector
-        // classification was the main reason real devices could park near 70%.
         let direction_bin = fit::direction_bin(field_ut, self.coverage_origin());
 
         if let Some(candidate) = self.candidate.take() {
             match fit::validate_candidate(candidate, field_ut) {
                 CandidateValidation::Pending(candidate) => self.candidate = Some(candidate),
-                CandidateValidation::Accepted(model) => self.model = Some(model),
-                CandidateValidation::Rejected => {}
+                CandidateValidation::Accepted(model) => {
+                    ::log::info!("BMM150 calibration candidate accepted");
+                    self.model = Some(model);
+                }
+                CandidateValidation::Rejected => {
+                    ::log::warn!(
+                        "BMM150 calibration candidate rejected; restarting balanced fit epoch"
+                    );
+                    self.restart_fit_epoch();
+                    return;
+                }
             }
-            if self.model.is_some() || self.fit_origin_ut.is_none() {
+            if self.model.is_some() {
                 return;
             }
         }
@@ -159,6 +133,10 @@ impl Calibration {
             && self.samples_since_fit >= REFIT_INTERVAL_SAMPLES
             && bit_count_u32(self.refit_direction_bins) >= MIN_REFIT_DIRECTION_BINS
         {
+            let refit_bins = bit_count_u32(self.refit_direction_bins);
+            let total_bins = bit_count_u32(self.direction_bins);
+            let total_faces = bit_count_u8(self.direction_faces);
+            let span = self.minimum_span();
             self.samples_since_fit = 0;
             self.refit_direction_bins = 0;
             match fit::fit_model(
@@ -170,10 +148,29 @@ impl Calibration {
                 self.max,
             ) {
                 Some(model) => {
+                    ::log::info!(
+                        "BMM150 calibration fit produced candidate: fit_samples={}, weight={}, bins={}, faces={}, refit_bins={}, min_span={}",
+                        self.fit_samples,
+                        self.weight_sum,
+                        total_bins,
+                        total_faces,
+                        refit_bins,
+                        span
+                    );
                     self.candidate = Some(Candidate::new(model));
-                    self.open_balanced_refit_epoch();
                 }
-                None => self.open_balanced_refit_epoch(),
+                None => {
+                    ::log::warn!(
+                        "BMM150 calibration fit rejected: fit_samples={}, weight={}, bins={}, faces={}, refit_bins={}, min_span={}; restarting balanced fit epoch",
+                        self.fit_samples,
+                        self.weight_sum,
+                        total_bins,
+                        total_faces,
+                        refit_bins,
+                        span
+                    );
+                    self.restart_fit_epoch();
+                }
             }
         }
     }
@@ -182,12 +179,6 @@ impl Calibration {
         self.model.is_some()
     }
 
-    /// Report meaningful phase progress rather than sample-count optimism.
-    ///
-    /// 0..20: origin warm-up
-    /// 20..85: balanced 3-D fitting coverage
-    /// 85..99: fresh-sample candidate validation
-    /// 100: validated and frozen
     pub(crate) fn progress_percent(&self) -> u8 {
         if self.model.is_some() {
             return 100;
@@ -264,14 +255,24 @@ impl Calibration {
         )
     }
 
-    fn open_balanced_refit_epoch(&mut self) {
-        // Keep all accumulated normal equations/extrema, but reopen each
-        // direction's bounded quota so fresh measurements can continue to
-        // improve a rejected or numerically invalid fit. This avoids the old
-        // user-visible 85..99 -> 0 restart while preserving balanced sampling.
-        self.direction_bin_samples = [0; DIRECTION_BIN_COUNT];
+    fn restart_fit_epoch(&mut self) {
+        // A rejected fit says the current normal equations do not describe a
+        // physically acceptable ellipsoid. Do not keep adding a small subset of
+        // directions to that same history: doing so can progressively unbalance
+        // the matrix and trap calibration at 85% forever. Preserve the raw
+        // extrema already learned, recenter on their latest midpoint, and build
+        // the next fit from a fresh, independently balanced 3-D sample set.
+        self.normal = [[0.0; PARAMS]; PARAMS];
+        self.rhs = [0.0; PARAMS];
+        self.fit_origin_ut = Some(self.coverage_origin());
+        self.fit_samples = 0;
+        self.weight_sum = 0.0;
         self.samples_since_fit = 0;
         self.refit_direction_bins = 0;
+        self.direction_bins = 0;
+        self.direction_faces = 0;
+        self.direction_bin_samples = [0; DIRECTION_BIN_COUNT];
+        self.candidate = None;
     }
 }
 

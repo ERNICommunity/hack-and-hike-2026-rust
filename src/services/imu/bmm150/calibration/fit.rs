@@ -15,13 +15,22 @@ pub(super) const CALIBRATION_MIN_FIT_SAMPLES: u32 = 96;
 // need another 48-sample collection after an already balanced full-ellipsoid fit.
 const CANDIDATE_VALIDATION_MIN_SAMPLES: u16 = 24;
 const CANDIDATE_VALIDATION_MIN_BINS: u32 = 6;
-const CANDIDATE_VALIDATION_MAX_SAMPLES: u16 = 72;
+// At 30 Hz, the previous 72-sample ceiling gave the user only about 2.4 seconds
+// to cover six validation directions. Slow, deliberate calibration motion could
+// therefore discard a geometrically good candidate before directional coverage
+// caught up. Keep a finite escape hatch, but allow roughly ten seconds.
+const CANDIDATE_VALIDATION_MAX_SAMPLES: u16 = 300;
 const MAX_CANDIDATE_RMS_RELATIVE_ERROR: f32 = 0.15;
 const MAX_CANDIDATE_SINGLE_RELATIVE_ERROR: f32 = 0.35;
 const MAX_CANDIDATE_BAD_SAMPLES: u8 = 6;
 
 const CALIBRATED_FIELD_RADIUS_UT: f32 = 50.0;
-const FIT_INPUT_SCALE_UT: f32 = 1024.0;
+// The fit operates after subtracting a local hard-iron origin, so the useful
+// variation is normally tens to a few hundred microtesla. Scaling by 1024 uT
+// made the quadratic columns much smaller than the linear columns and needlessly
+// ill-conditioned the f32 normal equations. 256 uT preserves ample headroom for
+// the full learning window while keeping linear/quadratic terms closer in scale.
+const FIT_INPUT_SCALE_UT: f32 = 256.0;
 const QUADRIC_SCALE_EPSILON: f32 = 1.0e-6;
 const SHAPE_EIGEN_EPSILON: f32 = 1.0e-6;
 const MAX_SHAPE_EIGEN_RATIO: f32 = 400.0;

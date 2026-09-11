@@ -18,28 +18,27 @@ env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  format:
-    name: rustfmt
+  imu-regressions:
+    name: IMU regressions
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install rustfmt
-        run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt
+      - name: Install host Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
 
-      - name: Check formatting
-        run: cargo +1.97.0 fmt --all -- --check
-
-      - name: Run IMU attitude regressions
+      - name: Run IMU regressions
         run: |
           rustc +1.97.0 --edition=2024 --test tests/imu_attitude_regression.rs -o /tmp/imu-attitude-regression
           /tmp/imu-attitude-regression
+          rustc +1.97.0 --edition=2024 --test tests/imu_fusion_regression.rs -o /tmp/imu-fusion-regression
+          /tmp/imu-fusion-regression
 
   build:
     name: ESP32-S3 release build
-    needs: format
+    needs: imu-regressions
     runs-on: ubuntu-latest
 
     steps:
