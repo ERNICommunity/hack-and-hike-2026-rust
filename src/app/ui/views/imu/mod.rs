@@ -36,6 +36,9 @@ const TEXT_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 2;
 const VIEW_WIDTH: i32 = 276;
 const VIEW_HEIGHT: i32 = 240;
+const WORLDVIEW_TRACE_EVERY_FRAMES: u32 = 20;
+const WORLDVIEW_JUMP_DEG: f32 = 45.0;
+const WORLDVIEW_POLE_DEG: f32 = 80.0;
 
 type Context = GuiContext<'static, NODE_CAPACITY, TEXT_CAPACITY, EVENT_CAPACITY>;
 
@@ -48,6 +51,10 @@ struct Geometry {
 pub(in crate::app::ui) struct View {
     geometry: Geometry,
     attitude: AttitudeTracker,
+    trace_frames: u32,
+    previous_fused_yaw_deg: Option<f32>,
+    previous_display_yaw_deg: Option<f32>,
+    previous_display_pitch_deg: Option<f32>,
 }
 
 impl View {
@@ -62,6 +69,10 @@ impl View {
                 attitude: required_rect(gui, app.widgets.attitude_slot, "IMU attitude"),
             },
             attitude: AttitudeTracker::new(),
+            trace_frames: 0,
+            previous_fused_yaw_deg: None,
+            previous_display_yaw_deg: None,
+            previous_display_pitch_deg: None,
         }
     }
 
@@ -70,10 +81,11 @@ impl View {
         surface: &mut GuiSurface,
         display: &mut Display,
     ) {
-        // No renderer sample was observed while this view was hidden. Always
-        // seed the next frame from its own attitude instead of carrying a pole
-        // branch decision across navigation.
         self.attitude.reset();
+        self.previous_fused_yaw_deg = None;
+        self.previous_display_yaw_deg = None;
+        self.previous_display_pitch_deg = None;
+        ::log::info!("WORLDVIEW-EVENT tracker-reset");
 
         let geometry = self.geometry;
         surface.present_overlay_only(display, move |frame| {
@@ -89,19 +101,94 @@ impl View {
         imu: &ImuDisplay,
     ) {
         let geometry = self.geometry;
-        let mut attitude = display_attitude(imu);
+        let raw_attitude = display_attitude(imu);
+        let mut attitude = raw_attitude;
         attitude.yaw_deg = self.attitude.update(
             imu.sample_revision,
             attitude.roll_deg,
             attitude.pitch_deg,
             attitude.yaw_deg,
         );
+
+        self.trace_frames = self.trace_frames.wrapping_add(1);
+        let fused_delta = self
+            .previous_fused_yaw_deg
+            .map(|previous| angular_delta(imu.yaw_deg, previous));
+        let display_delta = self
+            .previous_display_yaw_deg
+            .map(|previous| angular_delta(attitude.yaw_deg, previous));
+        let crossed_pole_band = self
+            .previous_display_pitch_deg
+            .map(|previous| {
+                (previous.abs() < WORLDVIEW_POLE_DEG && attitude.pitch_deg.abs() >= WORLDVIEW_POLE_DEG)
+                    || (previous.abs() >= WORLDVIEW_POLE_DEG
+                        && attitude.pitch_deg.abs() < WORLDVIEW_POLE_DEG)
+            })
+            .unwrap_or(false);
+
+        if crossed_pole_band {
+            ::log::warn!(
+                "WORLDVIEW-EVENT pole-band rev={} fused_rpy=[{},{},{}] raw_display=[{},{},{}] tracked_yaw={}",
+                imu.sample_revision,
+                imu.roll_deg,
+                imu.pitch_deg,
+                imu.yaw_deg,
+                raw_attitude.roll_deg,
+                raw_attitude.pitch_deg,
+                raw_attitude.yaw_deg,
+                attitude.yaw_deg
+            );
+        }
+        if fused_delta.map(|delta| delta.abs() >= WORLDVIEW_JUMP_DEG).unwrap_or(false)
+            || display_delta.map(|delta| delta.abs() >= WORLDVIEW_JUMP_DEG).unwrap_or(false)
+        {
+            ::log::warn!(
+                "WORLDVIEW-EVENT jump rev={} fused_yaw={} fused_delta={} raw_display_yaw={} tracked_yaw={} display_delta={} pitch={} roll={}",
+                imu.sample_revision,
+                imu.yaw_deg,
+                fused_delta.unwrap_or(0.0),
+                raw_attitude.yaw_deg,
+                attitude.yaw_deg,
+                display_delta.unwrap_or(0.0),
+                attitude.pitch_deg,
+                attitude.roll_deg
+            );
+        }
+        if self.trace_frames % WORLDVIEW_TRACE_EVERY_FRAMES == 0 {
+            ::log::info!(
+                "WORLDVIEW-TRACE rev={} sensor_rpy=[{},{},{}] projected_rpy=[{},{},{}] tracked_yaw={} fused_dyaw={} display_dyaw={} mag_status={:?} field_ut={} cal={}",
+                imu.sample_revision,
+                imu.roll_deg,
+                imu.pitch_deg,
+                imu.yaw_deg,
+                raw_attitude.roll_deg,
+                raw_attitude.pitch_deg,
+                raw_attitude.yaw_deg,
+                attitude.yaw_deg,
+                fused_delta.unwrap_or(0.0),
+                display_delta.unwrap_or(0.0),
+                imu.mag_status,
+                imu.mag_field_ut,
+                imu.mag_calibration
+            );
+        }
+        self.previous_fused_yaw_deg = Some(imu.yaw_deg);
+        self.previous_display_yaw_deg = Some(attitude.yaw_deg);
+        self.previous_display_pitch_deg = Some(attitude.pitch_deg);
+
         surface.present_overlay_only(display, move |frame| {
             draw_view_gutters(frame, geometry);
             draw_header(frame, geometry.header, imu, attitude);
             horizon::draw_attitude(frame, geometry.attitude, attitude);
         });
     }
+}
+
+fn angular_delta(value: f32, previous: f32) -> f32 {
+    let mut delta = value - previous;
+    while delta > 180.0 { delta -= 360.0; }
+    while delta < -180.0 { delta += 360.0; }
+    delta
 }
 
 fn draw_view_gutters(frame: &mut GuiFramebuffer, geometry: Geometry) {
@@ -112,58 +199,16 @@ fn draw_view_gutters(frame: &mut GuiFramebuffer, geometry: Geometry) {
     let attitude_bottom = (geometry.attitude.y + geometry.attitude.h as i32).clamp(0, VIEW_HEIGHT);
 
     fill_band(frame, 0, 0, VIEW_WIDTH, header_y, white);
-    fill_band(
-        frame,
-        0,
-        header_bottom,
-        VIEW_WIDTH,
-        attitude_y - header_bottom,
-        white,
-    );
-    fill_band(
-        frame,
-        0,
-        attitude_bottom,
-        VIEW_WIDTH,
-        VIEW_HEIGHT - attitude_bottom,
-        white,
-    );
+    fill_band(frame, 0, header_bottom, VIEW_WIDTH, attitude_y - header_bottom, white);
+    fill_band(frame, 0, attitude_bottom, VIEW_WIDTH, VIEW_HEIGHT - attitude_bottom, white);
 
     let header_right = (geometry.header.x + geometry.header.w as i32).clamp(0, VIEW_WIDTH);
-    fill_band(
-        frame,
-        0,
-        header_y,
-        geometry.header.x.max(0),
-        geometry.header.h as i32,
-        white,
-    );
-    fill_band(
-        frame,
-        header_right,
-        header_y,
-        VIEW_WIDTH - header_right,
-        geometry.header.h as i32,
-        white,
-    );
+    fill_band(frame, 0, header_y, geometry.header.x.max(0), geometry.header.h as i32, white);
+    fill_band(frame, header_right, header_y, VIEW_WIDTH - header_right, geometry.header.h as i32, white);
 
     let attitude_right = (geometry.attitude.x + geometry.attitude.w as i32).clamp(0, VIEW_WIDTH);
-    fill_band(
-        frame,
-        0,
-        attitude_y,
-        geometry.attitude.x.max(0),
-        geometry.attitude.h as i32,
-        white,
-    );
-    fill_band(
-        frame,
-        attitude_right,
-        attitude_y,
-        VIEW_WIDTH - attitude_right,
-        geometry.attitude.h as i32,
-        white,
-    );
+    fill_band(frame, 0, attitude_y, geometry.attitude.x.max(0), geometry.attitude.h as i32, white);
+    fill_band(frame, attitude_right, attitude_y, VIEW_WIDTH - attitude_right, geometry.attitude.h as i32, white);
 }
 
 fn fill_band(frame: &mut GuiFramebuffer, x: i32, y: i32, width: i32, height: i32, color: Rgb565) {
@@ -174,84 +219,31 @@ fn fill_band(frame: &mut GuiFramebuffer, x: i32, y: i32, width: i32, height: i32
 
 fn draw_shell(frame: &mut GuiFramebuffer, geometry: Geometry) {
     common::fill_rect(frame, geometry.header, common::dark_blue());
-    common::draw_title(
-        frame,
-        "IMU",
-        geometry.header.x + 6,
-        geometry.header.y + 3,
-        common::white(),
-    );
-    common::draw_body(
-        frame,
-        "WAITING",
-        geometry.header.x + 6,
-        geometry.header.y + 20,
-        common::white(),
-    );
+    common::draw_title(frame, "IMU", geometry.header.x + 6, geometry.header.y + 3, common::white());
+    common::draw_body(frame, "WAITING", geometry.header.x + 6, geometry.header.y + 20, common::white());
     common::fill_rect(frame, geometry.attitude, common::light_blue());
     draw_border(frame, geometry.attitude);
 }
 
-fn draw_header(
-    frame: &mut GuiFramebuffer,
-    area: Rect,
-    imu: &ImuDisplay,
-    attitude: DisplayAttitude,
-) {
+fn draw_header(frame: &mut GuiFramebuffer, area: Rect, imu: &ImuDisplay, attitude: DisplayAttitude) {
     common::fill_rect(frame, area, common::dark_blue());
     common::draw_title(frame, "IMU", area.x + 6, area.y + 3, common::white());
-    common::draw_body(
-        frame,
-        status_text(imu.status),
-        area.x + 6,
-        area.y + 19,
-        common::white(),
-    );
+    common::draw_body(frame, status_text(imu.status), area.x + 6, area.y + 19, common::white());
 
     let mut mag = ArrayString::<24>::new();
     match imu.mag_status {
-        sensor::MagStatus::Ready => {
-            let _ = write!(&mut mag, "MAG {}uT", imu.mag_field_ut);
-        }
-        sensor::MagStatus::Learning => {
-            let _ = write!(&mut mag, "CAL {}%", imu.mag_calibration);
-        }
-        sensor::MagStatus::Disturbed => {
-            let _ = write!(&mut mag, "DIST {}uT", imu.mag_field_ut);
-        }
+        sensor::MagStatus::Ready => { let _ = write!(&mut mag, "MAG {}uT", imu.mag_field_ut); }
+        sensor::MagStatus::Learning => { let _ = write!(&mut mag, "CAL {}%", imu.mag_calibration); }
+        sensor::MagStatus::Disturbed => { let _ = write!(&mut mag, "DIST {}uT", imu.mag_field_ut); }
         sensor::MagStatus::Missing => mag.push_str("MAG MISSING"),
     }
-    common::draw_body(
-        frame,
-        mag.as_str(),
-        area.x + 6,
-        area.y + 35,
-        common::light_gray(),
-    );
+    common::draw_body(frame, mag.as_str(), area.x + 6, area.y + 35, common::light_gray());
 
     let first_x = area.x + 78;
     let column_width = ((area.w as i32 - 78) / 3).max(1);
-    draw_header_value(
-        frame,
-        "ROLL",
-        round_degrees(attitude.roll_deg),
-        first_x,
-        area.y,
-    );
-    draw_header_value(
-        frame,
-        "PITCH",
-        round_degrees(attitude.pitch_deg),
-        first_x + column_width,
-        area.y,
-    );
-    draw_header_value(
-        frame,
-        "YAW",
-        round_degrees(attitude.yaw_deg),
-        first_x + column_width * 2,
-        area.y,
-    );
+    draw_header_value(frame, "ROLL", round_degrees(attitude.roll_deg), first_x, area.y);
+    draw_header_value(frame, "PITCH", round_degrees(attitude.pitch_deg), first_x + column_width, area.y);
+    draw_header_value(frame, "YAW", round_degrees(attitude.yaw_deg), first_x + column_width * 2, area.y);
 }
 
 fn draw_header_value(frame: &mut GuiFramebuffer, label: &str, degrees: i32, x: i32, y: i32) {
@@ -265,21 +257,9 @@ fn draw_border(frame: &mut GuiFramebuffer, area: Rect) {
     let width = area.w as u32;
     let height = area.h as u32;
     common::hline(frame, area.x, area.y, width, common::light_gray());
-    common::hline(
-        frame,
-        area.x,
-        area.y + area.h as i32 - 1,
-        width,
-        common::light_gray(),
-    );
+    common::hline(frame, area.x, area.y + area.h as i32 - 1, width, common::light_gray());
     common::vline(frame, area.x, area.y, height, common::light_gray());
-    common::vline(
-        frame,
-        area.x + area.w as i32 - 1,
-        area.y,
-        height,
-        common::light_gray(),
-    );
+    common::vline(frame, area.x + area.w as i32 - 1, area.y, height, common::light_gray());
 }
 
 fn status_text(status: sensor::Status) -> &'static str {
@@ -292,6 +272,5 @@ fn status_text(status: sensor::Status) -> &'static str {
 }
 
 fn required_rect(gui: &Context, id: WidgetId, name: &'static str) -> Rect {
-    gui.absolute_rect(id)
-        .unwrap_or_else(|| panic!("{name} layout missing"))
+    gui.absolute_rect(id).unwrap_or_else(|| panic!("{name} layout missing"))
 }

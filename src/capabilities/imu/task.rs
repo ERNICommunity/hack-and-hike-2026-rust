@@ -24,6 +24,11 @@ const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
 // scale or a long sample gap), explicitly mark absolute yaw untrusted.
 const GYRO_NEAR_SATURATION_DPS: f32 = 1950.0;
 
+// The steady-state trace is intentionally much slower than the 100 Hz fusion
+// loop. Five lines per second is dense enough to reconstruct motion while not
+// making serial logging itself a meaningful source of sample jitter.
+const IMU_TRACE_EVERY_SAMPLES: u32 = 20;
+
 #[embassy_executor::task]
 pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
     let sensor = Bmi270::new(bus);
@@ -89,6 +94,10 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
         magnetic.rebind(initial_mag_trim, now);
         let mut last_sensor_time: Option<u32> = None;
         let mut consecutive_errors = 0u8;
+        let mut trace_samples = 0u32;
+        let mut previous_mag_status = magnetic.status();
+
+        ::log::info!("IMU-TRACE session-start revision={}", revision);
 
         loop {
             Timer::after(config.sample_period).await;
@@ -98,6 +107,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
             match sensor.read_sample().await {
                 Ok(sample) => {
                     consecutive_errors = 0;
+                    trace_samples = trace_samples.wrapping_add(1);
 
                     let delta_ticks = last_sensor_time
                         .map(|previous| {
@@ -112,8 +122,19 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                         delta_ticks
                     };
                     let dt_seconds = integration_ticks as f32 * SENSOR_TIME_TICK_SECONDS;
+                    let raw_gyro_max = max_abs3(sample.gyro_dps);
+                    let near_saturation = raw_gyro_max >= GYRO_NEAR_SATURATION_DPS;
 
-                    if timing_gap || max_abs3(sample.gyro_dps) >= GYRO_NEAR_SATURATION_DPS {
+                    if timing_gap || near_saturation {
+                        ::log::warn!(
+                            "IMU-EVENT integration-invalid sensor_time={} delta_ticks={} dt_ms={} gyro_max_dps={} timing_gap={} saturation={}",
+                            sample.sensor_time,
+                            delta_ticks,
+                            dt_seconds * 1000.0,
+                            raw_gyro_max,
+                            timing_gap,
+                            near_saturation
+                        );
                         fusion.invalidate_absolute_heading();
                     }
                     if timing_gap {
@@ -139,6 +160,40 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                         MagStatus::Ready => Status::Running,
                         MagStatus::Missing | MagStatus::Disturbed => Status::Degraded,
                     };
+
+                    if mag_status != previous_mag_status {
+                        ::log::warn!(
+                            "IMU-EVENT mag-status {:?}->{:?} field_ut={} cal={} revision={}",
+                            previous_mag_status,
+                            mag_status,
+                            magnetic.field_ut(),
+                            calibration_percent,
+                            revision.wrapping_add(1)
+                        );
+                        previous_mag_status = mag_status;
+                    }
+
+                    if trace_samples % IMU_TRACE_EVERY_SAMPLES == 0 {
+                        let mag = magnetic_for_fusion.unwrap_or([0.0, 0.0, 0.0]);
+                        ::log::info!(
+                            "IMU-TRACE rev={} st={} dt_ms={} acc=[{},{},{}] gyro_raw=[{},{},{}] gyro_corr=[{},{},{}] mag_used={} mag=[{},{},{}] field_ut={} mag_status={:?} cal={} out_rpy=[{},{},{}]",
+                            revision.wrapping_add(1),
+                            sample.sensor_time,
+                            dt_seconds * 1000.0,
+                            sample.accel_g[0], sample.accel_g[1], sample.accel_g[2],
+                            sample.gyro_dps[0], sample.gyro_dps[1], sample.gyro_dps[2],
+                            corrected_gyro[0], corrected_gyro[1], corrected_gyro[2],
+                            magnetic_for_fusion.is_some(),
+                            mag[0], mag[1], mag[2],
+                            magnetic.field_ut(),
+                            mag_status,
+                            calibration_percent,
+                            last_orientation.roll_deg,
+                            last_orientation.pitch_deg,
+                            last_orientation.yaw_deg
+                        );
+                    }
+
                     if calibration_percent == 100 && !logged_calibrated_publish {
                         ::log::info!(
                             "CPU1 publishing calibrated IMU snapshot: status={:?} mag_status={:?} field={}uT revision={}",
@@ -161,6 +216,11 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                 }
                 Err(_) => {
                     consecutive_errors = consecutive_errors.saturating_add(1);
+                    ::log::warn!(
+                        "IMU-EVENT read-error consecutive={} revision={}",
+                        consecutive_errors,
+                        revision
+                    );
                     channels::publish(
                         runtime,
                         &mut revision,
