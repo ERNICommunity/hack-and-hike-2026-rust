@@ -84,11 +84,7 @@ impl Calibration {
 
         if self.fit_origin_ut.is_none() {
             if self.samples >= ORIGIN_WARMUP_SAMPLES && self.minimum_span() >= ORIGIN_MIN_SPAN_UT {
-                self.fit_origin_ut = Some([
-                    0.5 * (self.min[0] + self.max[0]),
-                    0.5 * (self.min[1] + self.max[1]),
-                    0.5 * (self.min[2] + self.max[2]),
-                ]);
+                self.fit_origin_ut = Some(self.coverage_origin());
             }
             return;
         }
@@ -103,10 +99,14 @@ impl Calibration {
                     self.model = Some(model);
                 }
                 CandidateValidation::Rejected => {
-                    ::log::warn!("BMM150 calibration candidate rejected; collecting a fresh refit batch");
+                    ::log::warn!(
+                        "BMM150 calibration candidate rejected; restarting balanced fit epoch"
+                    );
+                    self.restart_fit_epoch();
+                    return;
                 }
             }
-            if self.model.is_some() || self.fit_origin_ut.is_none() {
+            if self.model.is_some() {
                 return;
             }
         }
@@ -158,11 +158,10 @@ impl Calibration {
                         span
                     );
                     self.candidate = Some(Candidate::new(model));
-                    self.open_balanced_refit_epoch();
                 }
                 None => {
                     ::log::warn!(
-                        "BMM150 calibration fit rejected: fit_samples={}, weight={}, bins={}, faces={}, refit_bins={}, min_span={}",
+                        "BMM150 calibration fit rejected: fit_samples={}, weight={}, bins={}, faces={}, refit_bins={}, min_span={}; restarting balanced fit epoch",
                         self.fit_samples,
                         self.weight_sum,
                         total_bins,
@@ -170,7 +169,7 @@ impl Calibration {
                         refit_bins,
                         span
                     );
-                    self.open_balanced_refit_epoch();
+                    self.restart_fit_epoch();
                 }
             }
         }
@@ -256,10 +255,24 @@ impl Calibration {
         )
     }
 
-    fn open_balanced_refit_epoch(&mut self) {
-        self.direction_bin_samples = [0; DIRECTION_BIN_COUNT];
+    fn restart_fit_epoch(&mut self) {
+        // A rejected fit says the current normal equations do not describe a
+        // physically acceptable ellipsoid. Do not keep adding a small subset of
+        // directions to that same history: doing so can progressively unbalance
+        // the matrix and trap calibration at 85% forever. Preserve the raw
+        // extrema already learned, recenter on their latest midpoint, and build
+        // the next fit from a fresh, independently balanced 3-D sample set.
+        self.normal = [[0.0; PARAMS]; PARAMS];
+        self.rhs = [0.0; PARAMS];
+        self.fit_origin_ut = Some(self.coverage_origin());
+        self.fit_samples = 0;
+        self.weight_sum = 0.0;
         self.samples_since_fit = 0;
         self.refit_direction_bins = 0;
+        self.direction_bins = 0;
+        self.direction_faces = 0;
+        self.direction_bin_samples = [0; DIRECTION_BIN_COUNT];
+        self.candidate = None;
     }
 }
 
