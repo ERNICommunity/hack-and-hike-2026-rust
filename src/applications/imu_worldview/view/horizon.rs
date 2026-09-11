@@ -3,7 +3,7 @@
 use embedded_graphics::{pixelcolor::Rgb565, prelude::Point};
 use embedded_gui::prelude::Rect;
 
-use crate::app::ui::gui::GuiFramebuffer;
+use crate::ui::gui::GuiFramebuffer;
 
 use super::{
     common, compass,
