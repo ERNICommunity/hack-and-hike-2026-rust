@@ -1,8 +1,7 @@
 //! Compile-time presentation specification for firmware-owned UI chrome.
 //!
 //! KDL owns all content-view geometry. This module retains only the physical
-//! content/navigation partition, typed content-to-screen conversion used by
-//! specialized direct renderers, and navigation-rail styling/order.
+//! content/navigation partition and navigation-rail styling/order.
 
 use crate::{
     app::model::ViewId,
@@ -36,36 +35,6 @@ impl UiColor {
 
     pub(crate) const fn raw(self) -> u16 {
         self.0
-    }
-}
-
-/// Valid non-empty rectangle in content coordinates.
-///
-/// KDL determines these coordinates; this type only performs the explicit
-/// conversion required by direct display paths such as the microphone waveform.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ContentRect {
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-}
-
-impl ContentRect {
-    pub(crate) const fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
-        assert!(width > 0 && height > 0);
-        assert!(x <= CONTENT_WIDTH && width <= CONTENT_WIDTH - x);
-        assert!(y <= CONTENT_HEIGHT && height <= CONTENT_HEIGHT - y);
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    pub(crate) const fn screen_region(self) -> Region {
-        Region::new(NAV_WIDTH + self.x, self.y, self.width, self.height)
     }
 }
 

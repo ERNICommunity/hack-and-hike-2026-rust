@@ -31,8 +31,9 @@ const RAW_BATCH_BYTES: usize = WIDTH * RGB565_BYTES_PER_PIXEL * transport::RAW_B
 
 /// Valid rectangular region in the physical LCD coordinate space.
 ///
-/// Fields are private and construction checks panel bounds. A `Surface` further
-/// constrains any nested region to stay inside the surface it was borrowed from.
+/// Fields are private and construction checks panel bounds. Applications normally
+/// see a borrowed `Surface` and use coordinates local to that surface instead of
+/// constructing nested physical regions themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Region {
     x: usize,
@@ -72,13 +73,6 @@ impl Region {
     const fn is_empty(self) -> bool {
         self.width == 0 || self.height == 0
     }
-
-    const fn contains(self, other: Self) -> bool {
-        other.x >= self.x
-            && other.y >= self.y
-            && other.end_x() <= self.end_x()
-            && other.end_y() <= self.end_y()
-    }
 }
 
 /// Raw CPU0 hardware resources consumed exactly once by `init`.
@@ -101,7 +95,7 @@ pub(crate) struct Display {
 /// Borrowed display access permanently restricted to one physical region.
 ///
 /// The raw transport is intentionally inaccessible through this type. Nested
-/// surfaces may only be created for regions contained by their parent surface.
+/// surfaces are addressed relative to their parent surface and cannot escape it.
 pub(crate) struct Surface<'a> {
     display: &'a mut Display,
     region: Region,
@@ -224,12 +218,25 @@ impl Surface<'_> {
         self.region.height()
     }
 
-    /// Borrow a stricter surface inside this one.
-    pub(crate) fn subsurface<'a>(&'a mut self, region: Region) -> Surface<'a> {
-        assert!(self.region.contains(region));
+    /// Borrow a stricter surface using coordinates local to this surface.
+    pub(crate) fn subsurface<'a>(
+        &'a mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> Surface<'a> {
+        assert!(x <= self.region.width && width <= self.region.width - x);
+        assert!(y <= self.region.height && height <= self.region.height - y);
+
         Surface {
             display: &mut *self.display,
-            region,
+            region: Region {
+                x: self.region.x + x,
+                y: self.region.y + y,
+                width,
+                height,
+            },
         }
     }
 

@@ -54,12 +54,63 @@ where
     i2c.write(AW9523_ADDR, &[register, next])
 }
 
+fn reset_pin(
+    i2c: &mut impl embedded_hal::i2c::I2c,
+    output_register: u8,
+    direction_register: u8,
+    mode_register: u8,
+    reset_mask: u8,
+    delay: &mut Delay,
+) {
+    // Make a single reset line self-contained without rewriting unrelated
+    // expander pins owned by disabled capabilities.
+    let _ = update_register_bits(i2c, mode_register, reset_mask, reset_mask);
+    let _ = update_register_bits(i2c, output_register, reset_mask, 0);
+    let _ = update_register_bits(i2c, direction_register, reset_mask, 0);
+    delay.delay_millis(20u32);
+
+    let _ = update_register_bits(i2c, output_register, reset_mask, reset_mask);
+    delay.delay_millis(300u32);
+}
+
+/// Reset only the onboard LCD controller.
+///
+/// This path is used by display-only firmware so the disabled touch capability's
+/// reset line is never manipulated.
+pub(crate) fn reset_display(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
+    reset_pin(
+        i2c,
+        PORT1_OUTPUT_REGISTER,
+        PORT1_DIRECTION_REGISTER,
+        PORT1_MODE_REGISTER,
+        LCD_RESET,
+        delay,
+    );
+}
+
+/// Reset only the onboard touch controller.
+///
+/// This path is used by touch-only firmware so the disabled display capability's
+/// reset line is never manipulated.
+pub(crate) fn reset_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
+    // Match the board's push-pull policy for port 0 before driving TOUCH_RESET.
+    let _ = i2c.write(AW9523_ADDR, &[GLOBAL_CONTROL_REGISTER, PORT0_PUSH_PULL]);
+    reset_pin(
+        i2c,
+        PORT0_OUTPUT_REGISTER,
+        PORT0_DIRECTION_REGISTER,
+        PORT0_MODE_REGISTER,
+        TOUCH_RESET,
+        delay,
+    );
+}
+
 /// Establish the CoreS3-Lite AW9523 GPIO policy and reset LCD + touch.
 ///
-/// This runs once during bootstrap before CPU1 starts. The display/touch path
-/// historically treated expander setup as best-effort, so keep that behavior
-/// while putting the expander into the same GPIO/push-pull mode used by the
-/// board reference implementation. The speaker reset line remains asserted.
+/// This runs once during bootstrap before CPU1 starts when both capabilities are
+/// enabled. Keep the historical combined sequence for the full/default firmware
+/// so this composition fix does not alter its board bring-up behavior. The
+/// speaker reset line remains asserted.
 pub(crate) fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
     let _ = i2c.write(AW9523_ADDR, &[PORT0_OUTPUT_REGISTER, PORT0_BOOT_OUTPUTS]);
     let _ = i2c.write(AW9523_ADDR, &[PORT1_OUTPUT_REGISTER, PORT1_BOOT_OUTPUTS]);

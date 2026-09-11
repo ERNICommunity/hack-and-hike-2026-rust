@@ -208,8 +208,12 @@ pub(crate) fn bootstrap() -> Bootstrap {
     let mut bootstrap_i2c = system_i2c::init(system_i2c_resources.reborrow());
     #[cfg(feature = "display")]
     board::power::enable_lcd_backlight(&mut bootstrap_i2c);
-    #[cfg(any(feature = "display", feature = "touch"))]
+    #[cfg(all(feature = "display", feature = "touch"))]
     board::io_expander::reset_display_and_touch(&mut bootstrap_i2c, &mut delay);
+    #[cfg(all(feature = "display", not(feature = "touch")))]
+    board::io_expander::reset_display(&mut bootstrap_i2c, &mut delay);
+    #[cfg(all(feature = "touch", not(feature = "display")))]
+    board::io_expander::reset_touch(&mut bootstrap_i2c, &mut delay);
     #[cfg(feature = "camera")]
     let camera_powered_and_reset = power_and_reset_camera(&mut bootstrap_i2c, &mut delay);
     #[cfg(any(feature = "display", feature = "touch", feature = "camera"))]

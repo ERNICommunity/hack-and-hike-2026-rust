@@ -5,7 +5,7 @@ use crate::{
     capabilities::display::Surface,
 };
 
-use super::super::super::{design::ContentRect, theme};
+use super::super::super::theme;
 use super::Canvas;
 
 pub(super) fn render(
@@ -21,8 +21,7 @@ pub(super) fn render(
 fn render_channel(surface: &mut Surface<'_>, canvas: Canvas, samples: &[i8; POINTS]) {
     let center_y = canvas.height as i32 / 2;
     let pixels_per_point = canvas.width / POINTS;
-    let region = ContentRect::new(canvas.x, canvas.y, canvas.width, canvas.height).screen_region();
-    let mut channel_surface = surface.subsurface(region);
+    let mut channel_surface = surface.subsurface(canvas.x, canvas.y, canvas.width, canvas.height);
 
     channel_surface.render_scanlines(|local_y, pixels| {
         pixels.fill(theme::WHITE_RGB565);
