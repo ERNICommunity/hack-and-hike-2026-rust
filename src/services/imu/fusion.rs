@@ -23,12 +23,13 @@ const MAX_MAG_INITIAL_OFFSET_JITTER_DEG: f32 = 6.0;
 const MAG_RECOVERY_MIN_INNOVATION_DEG: f32 = 30.0;
 const MAG_RECOVERY_SAMPLES: u8 = 8;
 const MAX_MAG_RECOVERY_OFFSET_JITTER_DEG: f32 = 6.0;
-// The horizontal magnetic component must be measurable, and the device heading
-// axis itself must have a meaningful horizontal projection. When the latter is
-// nearly vertical, compass heading is physically undefined; gyro yaw bridges
-// that region instead of allowing a tilt singularity to flip north.
+// The horizontal magnetic component must be measurable, and the camera-forward
+// heading axis must have a meaningful horizontal projection. When that axis is
+// nearly vertical, its azimuth is singular. Gyro yaw bridges the singularity and
+// the magnetic branch is reselected on the far side instead of snapping by 180°.
 const MIN_MAG_HORIZONTAL_FIELD_UT: f32 = 2.0;
 const MIN_HEADING_AXIS_HORIZONTAL_SQ: f32 = 0.04;
+const HALF_TURN_DEG: f32 = 180.0;
 
 #[derive(Clone, Copy)]
 pub(super) struct GyroBias {
@@ -79,6 +80,8 @@ pub(super) struct Fusion {
     gravity_body: [f32; 3],
     previous_yaw_rate_dps: Option<f32>,
     magnetic_heading_locked: bool,
+    magnetic_heading_branch_offset_deg: f32,
+    reselect_magnetic_heading_branch: bool,
     quiet_mag_samples: u8,
     recovery_armed: bool,
     pending_mag_offset: Option<f32>,
@@ -99,6 +102,8 @@ impl Fusion {
             gravity_body: [0.0, 0.0, 1.0],
             previous_yaw_rate_dps: None,
             magnetic_heading_locked: false,
+            magnetic_heading_branch_offset_deg: 0.0,
+            reselect_magnetic_heading_branch: false,
             quiet_mag_samples: 0,
             recovery_armed: false,
             pending_mag_offset: None,
@@ -111,6 +116,8 @@ impl Fusion {
 
     pub(super) fn invalidate_absolute_heading(&mut self) {
         self.magnetic_heading_locked = false;
+        self.magnetic_heading_branch_offset_deg = 0.0;
+        self.reselect_magnetic_heading_branch = false;
         self.quiet_mag_samples = 0;
         self.recovery_armed = true;
         self.clear_pending_magnetic_candidate();
@@ -203,6 +210,18 @@ impl Fusion {
         let predicted_yaw =
             wrap_degrees(self.orientation.yaw_deg + integrated_yaw_rate * dt_seconds);
 
+        // The renderer's vertical-looking poses correspond to the magnetic
+        // heading axis itself becoming vertical. Raw tilt-compensated heading
+        // changes by 180° when that projected axis emerges on the opposite side.
+        // Remember that the singularity was traversed and choose the magnetic
+        // branch closest to gyro yaw once heading is observable again.
+        let heading_axis_horizontal_sq = 1.0 - screen_gravity[0] * screen_gravity[0];
+        if self.magnetic_heading_locked
+            && heading_axis_horizontal_sq < MIN_HEADING_AXIS_HORIZONTAL_SQ
+        {
+            self.reselect_magnetic_heading_branch = true;
+        }
+
         let total_rate_dps = max_abs3(gyro_dps);
         if total_rate_dps > MAG_FUSION_MAX_RATE_DPS {
             // Never mix delayed 30 Hz magnetic observations into active motion.
@@ -213,7 +232,8 @@ impl Fusion {
 
         let magnetic_heading = magnetic_field_ut
             .map(screen_vector_from_body)
-            .and_then(|field| gravity_compensated_heading(field, screen_gravity));
+            .and_then(|field| gravity_compensated_heading(field, screen_gravity))
+            .map(|heading| self.select_magnetic_heading_branch(predicted_yaw, heading));
 
         self.orientation.yaw_deg = if let Some(heading) = magnetic_heading {
             self.fuse_magnetic_yaw(predicted_yaw, heading, yaw_alpha)
@@ -222,6 +242,27 @@ impl Fusion {
         };
 
         self.orientation
+    }
+
+    fn select_magnetic_heading_branch(&mut self, predicted_yaw: f32, heading: f32) -> f32 {
+        if !self.magnetic_heading_locked {
+            return heading;
+        }
+
+        if self.reselect_magnetic_heading_branch {
+            let current = wrap_degrees(heading + self.magnetic_heading_branch_offset_deg);
+            let alternate = wrap_degrees(current + HALF_TURN_DEG);
+            let current_error = abs_f32(wrap_degrees(current - predicted_yaw));
+            let alternate_error = abs_f32(wrap_degrees(alternate - predicted_yaw));
+
+            if alternate_error < current_error {
+                self.magnetic_heading_branch_offset_deg =
+                    wrap_degrees(self.magnetic_heading_branch_offset_deg + HALF_TURN_DEG);
+            }
+            self.reselect_magnetic_heading_branch = false;
+        }
+
+        wrap_degrees(heading + self.magnetic_heading_branch_offset_deg)
     }
 
     fn fuse_magnetic_yaw(&mut self, predicted_yaw: f32, heading: f32, yaw_alpha: f32) -> f32 {
@@ -420,9 +461,11 @@ fn attitude_from_gravity(gravity: [f32; 3]) -> (f32, f32) {
 
 /// Compute magnetic heading without inventing a leveling rotation.
 ///
-/// Project both magnetic north and the fixed screen +X heading axis onto the
-/// plane perpendicular to gravity, then measure their signed angle around
-/// gravity. This is tilt-invariant wherever heading is physically defined.
+/// Project both magnetic north and the fixed camera-forward (+X) heading axis
+/// onto the plane perpendicular to gravity, then measure their signed angle
+/// around gravity. This is tilt-invariant wherever camera-forward azimuth is
+/// physically defined. Fusion explicitly unwraps the branch across its vertical
+/// singularity so the far side cannot trigger a 180-degree magnetic recovery.
 fn gravity_compensated_heading(field: [f32; 3], gravity: [f32; 3]) -> Option<f32> {
     let field_along_gravity = dot3(field, gravity);
     let horizontal_field = [
