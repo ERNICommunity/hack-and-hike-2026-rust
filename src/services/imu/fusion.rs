@@ -32,7 +32,6 @@ const MAX_MAG_RECOVERY_OFFSET_JITTER_DEG: f32 = 6.0;
 // substantially better short-term heading reference than amplified MAG noise.
 const MIN_MAG_HORIZONTAL_FIELD_UT: f32 = 8.0;
 const MIN_HEADING_AXIS_HORIZONTAL_SQ: f32 = 0.25;
-const HALF_TURN_DEG: f32 = 180.0;
 
 #[derive(Clone, Copy)]
 pub(super) struct GyroBias {
@@ -83,9 +82,7 @@ pub(super) struct Fusion {
     gravity_body: [f32; 3],
     previous_yaw_rate_dps: Option<f32>,
     magnetic_heading_locked: bool,
-    magnetic_heading_branch_offset_deg: f32,
     filtered_magnetic_heading_deg: Option<f32>,
-    reselect_magnetic_heading_branch: bool,
     quiet_mag_samples: u8,
     recovery_armed: bool,
     pending_mag_offset: Option<f32>,
@@ -106,9 +103,7 @@ impl Fusion {
             gravity_body: [0.0, 0.0, 1.0],
             previous_yaw_rate_dps: None,
             magnetic_heading_locked: false,
-            magnetic_heading_branch_offset_deg: 0.0,
             filtered_magnetic_heading_deg: None,
-            reselect_magnetic_heading_branch: false,
             quiet_mag_samples: 0,
             recovery_armed: false,
             pending_mag_offset: None,
@@ -121,9 +116,7 @@ impl Fusion {
 
     pub(super) fn invalidate_absolute_heading(&mut self) {
         self.magnetic_heading_locked = false;
-        self.magnetic_heading_branch_offset_deg = 0.0;
         self.filtered_magnetic_heading_deg = None;
-        self.reselect_magnetic_heading_branch = false;
         self.quiet_mag_samples = 0;
         self.recovery_armed = true;
         self.clear_pending_magnetic_candidate();
@@ -144,12 +137,16 @@ impl Fusion {
         self.recovery_mag_samples = 0;
     }
 
-    fn note_motion(&mut self) {
+    fn reset_magnetic_observation_window(&mut self) {
         self.quiet_mag_samples = 0;
         self.filtered_magnetic_heading_deg = None;
         self.recovery_armed = true;
         self.clear_pending_magnetic_candidate();
         self.clear_recovery_candidate();
+    }
+
+    fn note_motion(&mut self) {
+        self.reset_magnetic_observation_window();
     }
 
     pub(super) fn update(
@@ -217,17 +214,15 @@ impl Fusion {
         let predicted_yaw =
             wrap_degrees(self.orientation.yaw_deg + integrated_yaw_rate * dt_seconds);
 
-        // The renderer's vertical-looking poses correspond to the magnetic
-        // heading axis itself becoming vertical. Raw tilt-compensated heading
-        // changes by 180° when that projected axis emerges on the opposite side.
-        // Remember that the singularity was traversed and choose the magnetic
-        // branch closest to gyro yaw once heading is observable again.
         let heading_axis_horizontal_sq = 1.0 - screen_gravity[0] * screen_gravity[0];
-        if self.magnetic_heading_locked
-            && heading_axis_horizontal_sq < MIN_HEADING_AXIS_HORIZONTAL_SQ
-        {
-            self.reselect_magnetic_heading_branch = true;
-            self.filtered_magnetic_heading_deg = None;
+        if heading_axis_horizontal_sq < MIN_HEADING_AXIS_HORIZONTAL_SQ {
+            // Camera-forward azimuth is undefined here. Treat this exactly like a
+            // magnetic observation discontinuity even during a slow crossing:
+            // throw away the pre-pole filter state and require a fresh, stable
+            // magnetic recovery once the heading axis is well-conditioned again.
+            self.reset_magnetic_observation_window();
+            self.orientation.yaw_deg = predicted_yaw;
+            return self.orientation;
         }
 
         let total_rate_dps = max_abs3(gyro_dps);
@@ -241,7 +236,6 @@ impl Fusion {
         let magnetic_heading = magnetic_field_ut
             .map(screen_vector_from_body)
             .and_then(|field| gravity_compensated_heading(field, screen_gravity))
-            .map(|heading| self.select_magnetic_heading_branch(predicted_yaw, heading))
             .map(|heading| self.filter_magnetic_heading(heading));
 
         self.orientation.yaw_deg = if let Some(heading) = magnetic_heading {
@@ -251,27 +245,6 @@ impl Fusion {
         };
 
         self.orientation
-    }
-
-    fn select_magnetic_heading_branch(&mut self, predicted_yaw: f32, heading: f32) -> f32 {
-        if !self.magnetic_heading_locked {
-            return heading;
-        }
-
-        if self.reselect_magnetic_heading_branch {
-            let current = wrap_degrees(heading + self.magnetic_heading_branch_offset_deg);
-            let alternate = wrap_degrees(current + HALF_TURN_DEG);
-            let current_error = abs_f32(wrap_degrees(current - predicted_yaw));
-            let alternate_error = abs_f32(wrap_degrees(alternate - predicted_yaw));
-
-            if alternate_error < current_error {
-                self.magnetic_heading_branch_offset_deg =
-                    wrap_degrees(self.magnetic_heading_branch_offset_deg + HALF_TURN_DEG);
-            }
-            self.reselect_magnetic_heading_branch = false;
-        }
-
-        wrap_degrees(heading + self.magnetic_heading_branch_offset_deg)
     }
 
     fn filter_magnetic_heading(&mut self, heading: f32) -> f32 {
@@ -326,9 +299,10 @@ impl Fusion {
             return predicted_yaw;
         }
 
-        // Large recovery is only legal after actual motion (or explicit timing/
-        // saturation invalidation). Once MAG and gyro agree after a turn, disarm
-        // it so a later stationary magnetic disturbance cannot redefine north.
+        // Large recovery is only legal after actual motion (or a magnetic
+        // geometry discontinuity such as the flat-pose singularity). Once MAG
+        // and gyro agree after a turn, disarm it so a later stationary magnetic
+        // disturbance cannot redefine north.
         if abs_f32(offset) >= MAG_RECOVERY_MIN_INNOVATION_DEG {
             if !self.recovery_armed {
                 self.clear_recovery_candidate();
@@ -490,8 +464,8 @@ fn attitude_from_gravity(gravity: [f32; 3]) -> (f32, f32) {
 /// Project both magnetic north and the fixed camera-forward (+X) heading axis
 /// onto the plane perpendicular to gravity, then measure their signed angle
 /// around gravity. This is tilt-invariant wherever camera-forward azimuth is
-/// physically defined. Fusion explicitly unwraps the branch across its vertical
-/// singularity so the far side cannot trigger a 180-degree magnetic recovery.
+/// physically defined. The presentation layer owns visual Euler-branch
+/// continuity when this raw heading changes branch across the vertical pole.
 fn gravity_compensated_heading(field: [f32; 3], gravity: [f32; 3]) -> Option<f32> {
     let field_along_gravity = dot3(field, gravity);
     let horizontal_field = [
