@@ -12,14 +12,14 @@ mod views;
 
 use embassy_time::Instant;
 
-use crate::{
-    app::model::{AppModel, ViewId},
-    services::display::Display,
-};
 #[cfg(feature = "camera-view")]
 use crate::services::camera;
 #[cfg(feature = "touch")]
 use crate::services::touch;
+use crate::{
+    app::model::{AppModel, ViewId},
+    services::display::Display,
+};
 
 use gui::GuiSurface;
 use navigation::NavigationInput;
