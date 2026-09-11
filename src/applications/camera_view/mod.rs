@@ -1,12 +1,13 @@
-//! Camera presentation view.
+//! Stock camera presentation application.
 //!
-//! The camera capability owns capture and frame lifetime. This module owns only
-//! presentation-specific cropping and the LCD scanline-pump strategy used while
-//! the Camera screen is visible.
+//! The camera capability owns capture and frame lifetime. This application owns
+//! only presentation-specific cropping and the LCD scanline-pump strategy used
+//! while the Camera screen is visible.
 
-use crate::capabilities::{camera, display::Surface};
-
-use super::super::{design, theme};
+use crate::{
+    capabilities::{camera, display::Surface},
+    ui::{design, theme},
+};
 
 const CAMERA_CROP_PIXELS: usize = camera::WIDTH - design::CONTENT_WIDTH;
 const CAMERA_CROP_LEFT: usize = CAMERA_CROP_PIXELS / 2;
@@ -34,6 +35,8 @@ impl View {
     }
 
     pub(crate) fn render(&self, surface: &mut Surface<'_>, frame: &mut camera::Frame<'_>) {
+        debug_assert_eq!(frame.pixel_format(), camera::PixelFormat::Rgb565Be);
+
         // Display the frozen QVGA frame at the original full 276x240 content size
         // while using SPI-DMA wait time to drain the following sensor frame into
         // the second PSRAM buffer. The LCD therefore receives a compact burst

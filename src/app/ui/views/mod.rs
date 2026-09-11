@@ -3,14 +3,14 @@
 //! The top-level UI shell owns navigation and coordination. This module only
 //! stores stock application view instances and their rendering/interaction state.
 
-#[cfg(feature = "camera-view")]
-mod camera;
 pub(crate) mod common;
 #[cfg(feature = "log-view")]
 mod log;
 #[cfg(feature = "settings")]
 mod settings;
 
+#[cfg(feature = "camera-view")]
+use crate::applications::camera_view;
 #[cfg(feature = "imu-worldview")]
 use crate::applications::imu_worldview;
 #[cfg(feature = "mic-waveform")]
@@ -30,7 +30,7 @@ pub(crate) struct Views {
     #[cfg(feature = "speaker-synth")]
     pub(crate) speaker: speaker_synth::View,
     #[cfg(feature = "camera-view")]
-    pub(crate) camera: camera::View,
+    pub(crate) camera: camera_view::View,
     #[cfg(feature = "settings")]
     pub(crate) settings: settings::View,
     #[cfg(feature = "log-view")]
@@ -49,7 +49,7 @@ impl Views {
             #[cfg(feature = "speaker-synth")]
             speaker: speaker_synth::View::new(),
             #[cfg(feature = "camera-view")]
-            camera: camera::View::new(),
+            camera: camera_view::View::new(),
             #[cfg(feature = "settings")]
             settings: settings::View::new(),
             #[cfg(feature = "log-view")]

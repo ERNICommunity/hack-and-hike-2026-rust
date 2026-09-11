@@ -1,5 +1,7 @@
 //! Stock applications built from hardware capabilities.
 
+#[cfg(feature = "camera-view")]
+pub(crate) mod camera_view;
 #[cfg(feature = "imu-worldview")]
 pub(crate) mod imu_worldview;
 #[cfg(feature = "mic-waveform")]

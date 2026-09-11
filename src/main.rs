@@ -23,6 +23,7 @@ mod app;
     feature = "mic-waveform",
     feature = "speaker-synth",
     feature = "network-demo",
+    feature = "camera-view",
 ))]
 mod applications;
 mod capabilities;

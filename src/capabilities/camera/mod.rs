@@ -11,6 +11,24 @@ use esp_hal::delay::Delay;
 
 pub(crate) use capture::{Camera, Frame, HEIGHT, Resources, WIDTH, init};
 
+/// Byte ordering and pixel encoding exposed by camera frames.
+///
+/// The GC0308 is configured to emit RGB565 with the most-significant byte first.
+/// Applications can therefore pass scanline bytes directly to an RGB565-BE
+/// display path without conversion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PixelFormat {
+    Rgb565Be,
+}
+
+pub(crate) const PIXEL_FORMAT: PixelFormat = PixelFormat::Rgb565Be;
+
+impl Frame<'_> {
+    pub(crate) const fn pixel_format(&self) -> PixelFormat {
+        PIXEL_FORMAT
+    }
+}
+
 /// Program the GC0308 over a startup-only hardware SCCB/I2C owner.
 ///
 /// GPIO12/GPIO11 are shared with the board's normal system I2C bus. Bootstrap
