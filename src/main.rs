@@ -17,14 +17,6 @@
     feature = "settings",
     feature = "log-view",
 ))]
-mod app;
-#[cfg(any(
-    feature = "imu-worldview",
-    feature = "mic-waveform",
-    feature = "speaker-synth",
-    feature = "network-demo",
-    feature = "camera-view",
-))]
 mod applications;
 mod capabilities;
 mod firmware;
@@ -86,7 +78,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
     ))]
     {
         let mut bootstrap = bootstrap;
-        let model = app::model::AppModel::new(app::model::AppModelInputs {
+        let applications = applications::Applications::new(applications::Inputs {
             #[cfg(feature = "network-demo")]
             network: bootstrap.inputs.network,
             #[cfg(feature = "imu-worldview")]
@@ -102,14 +94,14 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
         });
 
         #[cfg(feature = "touch")]
-        let mut ui = ui::Ui::new(model, bootstrap.inputs.touch);
+        let mut ui = ui::Ui::new(applications, bootstrap.inputs.touch);
         #[cfg(not(feature = "touch"))]
-        let mut ui = ui::Ui::new(model);
+        let mut ui = ui::Ui::new(applications);
 
         let display = &mut bootstrap.display;
         let now = Instant::now();
         let mut heap_monitor = support::memory::HeapMonitor::new(now);
-        heap_monitor.checkpoint("after model + UI construction");
+        heap_monitor.checkpoint("after applications + UI construction");
 
         ui.render_initial(display);
         heap_monitor.checkpoint("after initial UI render");
@@ -121,7 +113,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             if let Some(transition) = transition {
                 heap_monitor.begin_activity(transition.to.name());
                 #[cfg(feature = "camera-view")]
-                if transition.from == app::model::ViewId::Camera {
+                if transition.from == ui::ViewId::Camera {
                     bootstrap.camera.pause();
                 }
                 ui.apply_navigation(transition, display);
@@ -131,7 +123,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
 
             #[cfg(feature = "camera-view")]
             let camera_active =
-                bootstrap.camera_ready && ui.presented_view() == app::model::ViewId::Camera;
+                bootstrap.camera_ready && ui.presented_view() == ui::ViewId::Camera;
             #[cfg(not(feature = "camera-view"))]
             let camera_active = false;
 
@@ -150,7 +142,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             heap_monitor.poll(now);
 
             #[cfg(feature = "imu-worldview")]
-            let imu_active = ui.presented_view() == app::model::ViewId::Imu;
+            let imu_active = ui.presented_view() == ui::ViewId::Imu;
             #[cfg(not(feature = "imu-worldview"))]
             let imu_active = false;
 
