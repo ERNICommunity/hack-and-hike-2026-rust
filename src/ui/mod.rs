@@ -1,10 +1,11 @@
 //! Firmware application shell.
 //!
-//! The shell owns navigation chrome, touch routing, and the one reusable PSRAM
-//! embedded-gui framebuffer. Stock applications receive only the bounded content
-//! `Surface`; the navigation rail is rendered through a separate shell-owned
-//! surface and raw `Display` access never crosses into application views.
+//! The shell owns navigation state/chrome, touch routing, and the one reusable
+//! PSRAM embedded-gui framebuffer. Concrete applications own all application
+//! behavior, state, and Views. Dispatch stays explicit; there is no common
+//! Application or View trait.
 
+pub(crate) mod common;
 pub(crate) mod design;
 pub(crate) mod gui;
 pub(crate) mod navigation;
@@ -17,12 +18,13 @@ use crate::capabilities::camera;
 #[cfg(feature = "touch")]
 use crate::capabilities::touch;
 use crate::{
-    app::{model::{AppModel, ViewId}, ui::views::Views},
+    applications::Applications,
     capabilities::display::Display,
 };
 
 use gui::GuiSurface;
 use navigation::NavigationInput;
+pub(crate) use navigation::ViewId;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ViewTransition {
@@ -31,32 +33,32 @@ pub(crate) struct ViewTransition {
 }
 
 pub(crate) struct Ui {
-    model: AppModel,
+    applications: Applications,
     navigation: NavigationInput,
-    views: Views,
     gui_surface: GuiSurface,
+    active_view: ViewId,
     presented_view: ViewId,
 }
 
 impl Ui {
     #[cfg(feature = "touch")]
-    pub(crate) fn new(model: AppModel, touch: touch::Touch) -> Self {
-        Self::with_navigation(model, NavigationInput::new(touch))
+    pub(crate) fn new(applications: Applications, touch: touch::Touch) -> Self {
+        Self::with_navigation(applications, NavigationInput::new(touch))
     }
 
     #[cfg(not(feature = "touch"))]
-    pub(crate) fn new(model: AppModel) -> Self {
-        Self::with_navigation(model, NavigationInput::new())
+    pub(crate) fn new(applications: Applications) -> Self {
+        Self::with_navigation(applications, NavigationInput::new())
     }
 
-    fn with_navigation(model: AppModel, navigation: NavigationInput) -> Self {
-        let presented_view = model.active_view();
+    fn with_navigation(applications: Applications, navigation: NavigationInput) -> Self {
+        let active_view = ViewId::initial();
         Self {
-            model,
+            applications,
             navigation,
-            views: Views::new(),
             gui_surface: GuiSurface::new(),
-            presented_view,
+            active_view,
+            presented_view: active_view,
         }
     }
 
@@ -73,46 +75,78 @@ impl Ui {
     }
 
     pub(crate) fn prepare_frame(&mut self, now: Instant) -> Option<ViewTransition> {
-        let active_view = self.model.active_view();
-        #[cfg(feature = "settings")]
-        let mut settings_action = None;
-        #[cfg(feature = "speaker-synth")]
-        let mut speaker_action = None;
-
+        let active_view = self.active_view;
         let selected = {
             let navigation = &mut self.navigation;
-            let views = &mut self.views;
+            let applications = &mut self.applications;
             navigation.poll(|pointer| match active_view {
                 #[cfg(feature = "settings")]
-                ViewId::Settings => settings_action = views.settings.handle_pointer(pointer),
+                ViewId::Settings => applications.settings.handle_pointer(pointer),
                 #[cfg(feature = "speaker-synth")]
-                ViewId::Speaker => speaker_action = views.speaker.handle_pointer(pointer),
+                ViewId::Speaker => applications.speaker_synth.handle_pointer(pointer),
                 _ => {}
             })
         };
 
-        #[cfg(feature = "settings")]
-        if let Some(brightness) = settings_action {
-            self.model.set_brightness(brightness);
-        }
-        #[cfg(feature = "speaker-synth")]
-        if let Some(action) = speaker_action {
-            self.model.apply_speaker_action(action);
-        }
         if let Some(view) = selected {
-            self.model.request_view(view);
+            if view != self.active_view {
+                self.active_view = view;
+                self.mark_active_dirty();
+            }
         }
-        self.model.update(now);
 
-        let requested = self.model.active_view();
-        (requested != self.presented_view).then_some(ViewTransition {
+        // Continuous application behaviors keep running while another view is
+        // active, matching the existing speaker and network semantics.
+        #[cfg(feature = "speaker-synth")]
+        self.applications.speaker_synth.update();
+        #[cfg(feature = "network-demo")]
+        self.applications.network_demo.update_if_due(now);
+
+        match self.active_view {
+            #[cfg(feature = "network-demo")]
+            ViewId::Network => {}
+            #[cfg(feature = "imu-worldview")]
+            ViewId::Imu => self.applications.imu_worldview.update_if_due(now),
+            #[cfg(feature = "mic-waveform")]
+            ViewId::Microphone => self.applications.mic_waveform.update_if_due(now),
+            #[cfg(feature = "speaker-synth")]
+            ViewId::Speaker => {}
+            #[cfg(feature = "camera-view")]
+            ViewId::Camera => {}
+            #[cfg(feature = "settings")]
+            ViewId::Settings => {}
+            #[cfg(feature = "log-view")]
+            ViewId::Log => self.applications.log_view.update_if_due(now),
+        }
+
+        (self.active_view != self.presented_view).then_some(ViewTransition {
             from: self.presented_view,
-            to: requested,
+            to: self.active_view,
         })
+    }
+
+    fn mark_active_dirty(&mut self) {
+        match self.active_view {
+            #[cfg(feature = "network-demo")]
+            ViewId::Network => self.applications.network_demo.mark_dirty(),
+            #[cfg(feature = "imu-worldview")]
+            ViewId::Imu => self.applications.imu_worldview.mark_dirty(),
+            #[cfg(feature = "mic-waveform")]
+            ViewId::Microphone => self.applications.mic_waveform.mark_dirty(),
+            #[cfg(feature = "speaker-synth")]
+            ViewId::Speaker => self.applications.speaker_synth.mark_dirty(),
+            #[cfg(feature = "camera-view")]
+            ViewId::Camera => {}
+            #[cfg(feature = "settings")]
+            ViewId::Settings => self.applications.settings.mark_dirty(),
+            #[cfg(feature = "log-view")]
+            ViewId::Log => self.applications.log_view.mark_dirty(),
+        }
     }
 
     pub(crate) fn apply_navigation(&mut self, transition: ViewTransition, display: &mut Display) {
         debug_assert_eq!(transition.from, self.presented_view);
+        debug_assert_eq!(transition.to, self.active_view);
         self.presented_view = transition.to;
         {
             let mut navigation_surface = display.surface(design::NAV_REGION);
@@ -122,47 +156,48 @@ impl Ui {
     }
 
     pub(crate) fn render(&mut self, display: &mut Display) {
+        let mut content = display.surface(design::CONTENT_REGION);
         match self.presented_view {
             #[cfg(feature = "network-demo")]
             ViewId::Network => {
-                if let Some(snapshot) = self.model.take_network_display() {
-                    let mut content = display.surface(design::CONTENT_REGION);
-                    self.views.network.present(&mut self.gui_surface, &mut content, &snapshot);
-                }
+                let _ = self
+                    .applications
+                    .network_demo
+                    .present_if_dirty(&mut self.gui_surface, &mut content);
             }
             #[cfg(feature = "imu-worldview")]
             ViewId::Imu => {
-                if let Some(imu) = self.model.take_imu_display() {
-                    let mut content = display.surface(design::CONTENT_REGION);
-                    self.views.imu.present(&mut self.gui_surface, &mut content, &imu);
-                }
+                let _ = self
+                    .applications
+                    .imu_worldview
+                    .present_if_dirty(&mut self.gui_surface, &mut content);
             }
             #[cfg(feature = "mic-waveform")]
             ViewId::Microphone => {
-                if let Some(frame) = self.model.take_waveform_frame() {
-                    let mut content = display.surface(design::CONTENT_REGION);
-                    self.views.microphone.render_waveform(&mut content, &frame);
-                }
+                let _ = self.applications.mic_waveform.render_if_dirty(&mut content);
             }
             #[cfg(feature = "speaker-synth")]
             ViewId::Speaker => {
-                if let Some(state) = self.model.take_speaker_display() {
-                    let mut content = display.surface(design::CONTENT_REGION);
-                    self.views.speaker.present(&mut self.gui_surface, &mut content, state);
-                }
+                let _ = self
+                    .applications
+                    .speaker_synth
+                    .present_if_dirty(&mut self.gui_surface, &mut content);
             }
             #[cfg(feature = "camera-view")]
             ViewId::Camera => {}
             #[cfg(feature = "settings")]
             ViewId::Settings => {
-                if let Some(settings) = self.model.take_settings_display() {
-                    let mut content = display.surface(design::CONTENT_REGION);
-                    self.views.settings.present(&mut self.gui_surface, &mut content, settings.brightness);
-                }
+                let _ = self
+                    .applications
+                    .settings
+                    .present_if_dirty(&mut self.gui_surface, &mut content);
             }
             #[cfg(feature = "log-view")]
             ViewId::Log => {
-                let _ = self.present_log_if_dirty(display);
+                let _ = self
+                    .applications
+                    .log_view
+                    .present_if_dirty(&mut self.gui_surface, &mut content);
             }
         }
     }
@@ -171,7 +206,7 @@ impl Ui {
     pub(crate) fn render_camera(&self, display: &mut Display, frame: &mut camera::Frame<'_>) {
         if self.presented_view == ViewId::Camera {
             let mut content = display.surface(design::CONTENT_REGION);
-            self.views.camera.render(&mut content, frame);
+            self.applications.camera_view.render(&mut content, frame);
         }
     }
 
@@ -179,46 +214,43 @@ impl Ui {
         let mut content = display.surface(design::CONTENT_REGION);
         match self.presented_view {
             #[cfg(feature = "network-demo")]
-            ViewId::Network => self.views.network.present_shell(&mut self.gui_surface, &mut content),
+            ViewId::Network => self
+                .applications
+                .network_demo
+                .present_shell(&mut self.gui_surface, &mut content),
             #[cfg(feature = "imu-worldview")]
-            ViewId::Imu => self.views.imu.present_shell(&mut self.gui_surface, &mut content),
+            ViewId::Imu => self
+                .applications
+                .imu_worldview
+                .present_shell(&mut self.gui_surface, &mut content),
             #[cfg(feature = "mic-waveform")]
-            ViewId::Microphone => self.views.microphone.present_shell(&mut self.gui_surface, &mut content),
+            ViewId::Microphone => self
+                .applications
+                .mic_waveform
+                .present_shell(&mut self.gui_surface, &mut content),
             #[cfg(feature = "speaker-synth")]
             ViewId::Speaker => {
-                let state = self.model.take_speaker_display().expect("speaker state must be dirty when entering Speaker");
-                self.views.speaker.present(&mut self.gui_surface, &mut content, state);
+                let presented = self
+                    .applications
+                    .speaker_synth
+                    .present_if_dirty(&mut self.gui_surface, &mut content);
+                debug_assert!(presented, "speaker state must be dirty when entering Speaker");
             }
             #[cfg(feature = "camera-view")]
-            ViewId::Camera => self.views.camera.present_shell(&mut content),
+            ViewId::Camera => self.applications.camera_view.present_shell(&mut content),
             #[cfg(feature = "settings")]
             ViewId::Settings => {
-                let state = self.model.take_settings_display().expect("settings state must be dirty when entering Settings");
-                self.views.settings.present(&mut self.gui_surface, &mut content, state.brightness);
+                let presented = self
+                    .applications
+                    .settings
+                    .present_if_dirty(&mut self.gui_surface, &mut content);
+                debug_assert!(presented, "settings state must be dirty when entering Settings");
             }
             #[cfg(feature = "log-view")]
-            ViewId::Log => {
-                if !self.present_log_if_dirty_on_surface(&mut content) {
-                    self.views.log.present_shell(&mut self.gui_surface, &mut content);
-                }
-            }
+            ViewId::Log => self
+                .applications
+                .log_view
+                .present_current(&mut self.gui_surface, &mut content),
         }
-    }
-
-    #[cfg(feature = "log-view")]
-    fn present_log_if_dirty(&mut self, display: &mut Display) -> bool {
-        let mut content = display.surface(design::CONTENT_REGION);
-        self.present_log_if_dirty_on_surface(&mut content)
-    }
-
-    #[cfg(feature = "log-view")]
-    fn present_log_if_dirty_on_surface(
-        &mut self,
-        content: &mut crate::capabilities::display::Surface<'_>,
-    ) -> bool {
-        let model = &mut self.model;
-        let log = &mut self.views.log;
-        let gui = &mut self.gui_surface;
-        model.with_log_text(|text| log.present(gui, content, text)).is_some()
     }
 }

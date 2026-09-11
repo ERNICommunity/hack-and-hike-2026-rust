@@ -10,10 +10,9 @@ use embedded_gui::prelude::*;
 use crate::{
     capabilities::display::Surface,
     support::memory::storage,
-    ui::gui::GuiSurface,
+    ui::{common, gui::GuiSurface},
 };
 
-use crate::app::ui::views::common;
 use super::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame};
 
 mod waveform;

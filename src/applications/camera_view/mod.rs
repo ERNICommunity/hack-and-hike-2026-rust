@@ -1,8 +1,7 @@
 //! Stock camera presentation application.
 //!
 //! The camera capability owns capture and frame lifetime. This application owns
-//! only presentation-specific cropping and the LCD scanline-pump strategy used
-//! while the Camera screen is visible.
+//! only presentation-specific cropping and the concrete LCD scanline-pump view.
 
 use crate::{
     capabilities::{camera, display::Surface},
@@ -21,26 +20,25 @@ const _: () = assert!(CAMERA_CROP_PIXELS % 2 == 0);
 const _: () =
     assert!(CAMERA_SOURCE_END_BYTE - CAMERA_SOURCE_START_BYTE == design::CONTENT_WIDTH * 2);
 
-pub(crate) struct View;
+struct View;
 
 impl View {
-    pub(crate) const fn new() -> Self {
+    const fn new() -> Self {
         Self
     }
 
-    pub(crate) fn present_shell(&self, surface: &mut Surface<'_>) {
+    fn present_shell(&self, surface: &mut Surface<'_>) {
         surface.render_scanlines(|_local_y, pixels| {
             pixels.fill(theme::BLACK_RGB565);
         });
     }
 
-    pub(crate) fn render(&self, surface: &mut Surface<'_>, frame: &mut camera::Frame<'_>) {
+    fn render(&self, surface: &mut Surface<'_>, frame: &mut camera::Frame<'_>) {
         debug_assert_eq!(frame.pixel_format(), camera::PixelFormat::Rgb565Be);
 
-        // Display the frozen QVGA frame at the original full 276x240 content size
-        // while using SPI-DMA wait time to drain the following sensor frame into
-        // the second PSRAM buffer. The LCD therefore receives a compact burst
-        // rather than being paced by live camera scanlines.
+        // Preserve the proven direct QVGA RGB565 path. While LCD DMA transmits
+        // the current batch, the callback pumps the following camera frame into
+        // the capability's second PSRAM buffer.
         let _ = surface.render_rgb565_be_scanlines_pumped(
             frame,
             |frame, local_y, bytes| {
@@ -51,5 +49,23 @@ impl View {
             },
             |frame| frame.pump(),
         );
+    }
+}
+
+pub(crate) struct Application {
+    view: View,
+}
+
+impl Application {
+    pub(crate) const fn new() -> Self {
+        Self { view: View::new() }
+    }
+
+    pub(crate) fn present_shell(&self, surface: &mut Surface<'_>) {
+        self.view.present_shell(surface);
+    }
+
+    pub(crate) fn render(&self, surface: &mut Surface<'_>, frame: &mut camera::Frame<'_>) {
+        self.view.render(surface, frame);
     }
 }

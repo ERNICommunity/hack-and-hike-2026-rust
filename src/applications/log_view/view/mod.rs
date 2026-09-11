@@ -1,18 +1,22 @@
-//! Device log view.
+//! Device log application view.
 //!
 //! KDL owns the title/body geometry. The scrolling log remains a specialized
 //! dense-text component and uses a native 6x12 font rather than a scaled glyph.
 
 use embedded_gui::prelude::*;
 
-use crate::{capabilities::display::Surface, support::memory::storage};
-
-use super::super::gui::GuiSurface;
-use super::common;
+use crate::{
+    capabilities::display::Surface,
+    support::memory::storage,
+    ui::{
+        common,
+        gui::{GuiFramebuffer, GuiSurface},
+    },
+};
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/app/ui/views/log/log.kdl");
+    embedded_gui::include_gui!("src/applications/log_view/view/log.kdl");
 }
 
 const NODE_CAPACITY: usize = 6;
@@ -27,13 +31,13 @@ struct Geometry {
     body: Rect,
 }
 
-pub(crate) struct View {
+pub(super) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
 }
 
 impl View {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::LogApp::build(gui).expect("log KDL exceeds embedded-gui capacities");
         Self {
@@ -45,7 +49,7 @@ impl View {
         }
     }
 
-    pub(crate) fn present_shell(
+    pub(super) fn present_shell(
         &mut self,
         gui_surface: &mut GuiSurface,
         surface: &mut Surface<'_>,
@@ -56,7 +60,7 @@ impl View {
         });
     }
 
-    pub(crate) fn present(
+    pub(super) fn present(
         &mut self,
         gui_surface: &mut GuiSurface,
         surface: &mut Surface<'_>,
@@ -80,7 +84,7 @@ impl View {
     }
 }
 
-fn draw_title(frame: &mut super::super::gui::GuiFramebuffer, geometry: Geometry) {
+fn draw_title(frame: &mut GuiFramebuffer, geometry: Geometry) {
     common::draw_title(
         frame,
         "LOG",

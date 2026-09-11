@@ -6,7 +6,7 @@
 
 use embedded_gui::prelude::Rect;
 
-use crate::app::model::ImuDisplay;
+use super::super::DisplayState;
 
 pub(super) const TAN_SCALE: i32 = 1024;
 pub(super) const PERSPECTIVE_NEAR_Z: f32 = 0.45;
@@ -61,7 +61,7 @@ pub(super) struct PerspectiveCamera {
     pub(super) horizon_c_q10: i32,
 }
 
-pub(super) fn display_attitude(imu: &ImuDisplay) -> DisplayAttitude {
+pub(super) fn display_attitude(imu: &DisplayState) -> DisplayAttitude {
     let gravity = screen_to_camera(imu.gravity_screen);
     let roll = atan2_approx(-gravity[0], -gravity[1]) * RAD_TO_DEG;
     let horizontal = sqrt_approx(gravity[0] * gravity[0] + gravity[1] * gravity[1]);
@@ -161,7 +161,6 @@ pub(super) fn perspective_camera(
         world_x_camera,
         world_y_camera,
         world_z_camera,
-        
         horizon_a_q10: round_f32(horizon_a * TAN_SCALE as f32),
         horizon_b_q10: round_f32(horizon_b * TAN_SCALE as f32),
         horizon_c_q10: round_f32(horizon_c * TAN_SCALE as f32),

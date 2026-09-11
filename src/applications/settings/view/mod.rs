@@ -1,8 +1,8 @@
-//! Interactive Settings view.
+//! Interactive settings application view.
 //!
-//! KDL owns page geometry. `AppModel` owns the semantic brightness value while
-//! this view owns only transient pointer interaction and the custom touch-scale
-//! presentation inside the KDL slider slot.
+//! KDL owns page geometry. The application owns the semantic brightness value
+//! and transient pointer interaction; the shell supplies shared GUI/display
+//! presentation infrastructure.
 
 use core::fmt::Write as _;
 
@@ -16,17 +16,16 @@ use embedded_gui::prelude::*;
 use crate::{
     capabilities::display::{Brightness, Surface},
     support::memory::storage,
+    ui::{
+        common,
+        gui::{GuiFramebuffer, GuiSurface},
+        navigation::{ContentPointer, PointerPhase},
+    },
 };
-
-use super::super::{
-    gui::{GuiFramebuffer, GuiSurface},
-    navigation::{ContentPointer, PointerPhase},
-};
-use super::common;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/app/ui/views/settings/settings.kdl");
+    embedded_gui::include_gui!("src/applications/settings/view/settings.kdl");
 }
 
 const NODE_CAPACITY: usize = 16;
@@ -49,14 +48,14 @@ struct Geometry {
     hint: Rect,
 }
 
-pub(crate) struct View {
+pub(super) struct View {
     gui: &'static mut Context,
     geometry: Geometry,
     dragging_brightness: bool,
 }
 
 impl View {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         let gui = storage::leaked_value_with(|| Context::new(Rect::new(0, 0, 276, 240)));
         let app = generated::SettingsApp::build(gui)
             .expect("settings KDL exceeds embedded-gui fixed capacities");
@@ -84,7 +83,7 @@ impl View {
         }
     }
 
-    pub(crate) fn present(
+    pub(super) fn present(
         &mut self,
         gui_surface: &mut GuiSurface,
         surface: &mut Surface<'_>,
@@ -96,9 +95,7 @@ impl View {
         });
     }
 
-    /// Handle one content-space pointer event and return the newest semantic
-    /// brightness action. Persistent brightness state remains in `AppModel`.
-    pub(crate) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Brightness> {
+    pub(super) fn handle_pointer(&mut self, pointer: ContentPointer) -> Option<Brightness> {
         match pointer.phase {
             PointerPhase::Pressed if self.pointer_hits_brightness(pointer) => {
                 self.dragging_brightness = true;

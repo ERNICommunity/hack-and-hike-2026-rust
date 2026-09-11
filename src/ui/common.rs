@@ -1,4 +1,4 @@
-//! Reusable drawing primitives shared by semantic views.
+//! Reusable drawing primitives shared by application views.
 //!
 //! KDL owns geometry. These helpers deliberately use native-resolution bitmap
 //! fonts instead of scaling tiny glyphs: at 320x240 this gives crisper text with
@@ -16,7 +16,7 @@ use embedded_graphics::{
 };
 use embedded_gui::Rect;
 
-use super::super::{gui::GuiFramebuffer, theme};
+use super::{gui::GuiFramebuffer, theme};
 
 pub(crate) const BODY_LINE_HEIGHT: i32 = 13;
 pub(crate) const DENSE_LINE_HEIGHT: i32 = 12;

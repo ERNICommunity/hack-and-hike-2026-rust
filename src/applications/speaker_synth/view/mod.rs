@@ -14,10 +14,10 @@ use embedded_graphics::{
 use embedded_gui::prelude::*;
 
 use crate::{
-    app::ui::views::common,
     capabilities::display::Surface,
     support::memory::storage,
     ui::{
+        common,
         gui::{GuiFramebuffer, GuiSurface},
         navigation::{ContentPointer, PointerPhase},
     },

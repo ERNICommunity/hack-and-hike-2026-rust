@@ -10,7 +10,7 @@ use super::{
         world_to_camera,
     },
 };
-use crate::app::ui::gui::GuiFramebuffer;
+use crate::ui::gui::GuiFramebuffer;
 
 // Compass labels stay at the original 256-unit world radius. Each glyph is a
 // small vector sign standing on the ground plane and tangent to that compass

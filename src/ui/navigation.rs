@@ -1,14 +1,116 @@
-//! Feature-composed navigation rail input and rendering.
+//! Feature-composed navigation state, input, and rail rendering.
 //!
-//! The shell owns the physical touch reader and routes one gesture to either the
-//! navigation rail or the active content application. Applications receive only
-//! content-space pointer coordinates and never the navigation surface.
+//! The shell owns the active destination and physical touch reader, routing one
+//! gesture to either the navigation rail or the active content application.
+//! Applications receive only content-space pointer coordinates.
 
 #[cfg(feature = "touch")]
 use crate::capabilities::touch::{Touch, TouchEdge, TouchPoint};
-use crate::{app::model::ViewId, capabilities::display::Surface};
+use crate::capabilities::display::Surface;
 
 use super::design;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ViewId {
+    #[cfg(feature = "network-demo")]
+    Network,
+    #[cfg(feature = "imu-worldview")]
+    Imu,
+    #[cfg(feature = "mic-waveform")]
+    Microphone,
+    #[cfg(feature = "speaker-synth")]
+    Speaker,
+    #[cfg(feature = "camera-view")]
+    Camera,
+    #[cfg(feature = "settings")]
+    Settings,
+    #[cfg(feature = "log-view")]
+    Log,
+}
+
+impl ViewId {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            #[cfg(feature = "network-demo")]
+            Self::Network => "Network",
+            #[cfg(feature = "imu-worldview")]
+            Self::Imu => "Imu",
+            #[cfg(feature = "mic-waveform")]
+            Self::Microphone => "Microphone",
+            #[cfg(feature = "speaker-synth")]
+            Self::Speaker => "Speaker",
+            #[cfg(feature = "camera-view")]
+            Self::Camera => "Camera",
+            #[cfg(feature = "settings")]
+            Self::Settings => "Settings",
+            #[cfg(feature = "log-view")]
+            Self::Log => "Log",
+        }
+    }
+
+    pub(crate) const fn initial() -> Self {
+        // Preserve existing stock behavior: Log is preferred whenever enabled;
+        // otherwise select the first enabled application in navigation order.
+        #[cfg(feature = "log-view")]
+        {
+            Self::Log
+        }
+        #[cfg(all(not(feature = "log-view"), feature = "network-demo"))]
+        {
+            Self::Network
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            feature = "imu-worldview"
+        ))]
+        {
+            Self::Imu
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            not(feature = "imu-worldview"),
+            feature = "mic-waveform"
+        ))]
+        {
+            Self::Microphone
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            not(feature = "imu-worldview"),
+            not(feature = "mic-waveform"),
+            feature = "speaker-synth"
+        ))]
+        {
+            Self::Speaker
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            not(feature = "imu-worldview"),
+            not(feature = "mic-waveform"),
+            not(feature = "speaker-synth"),
+            feature = "camera-view"
+        ))]
+        {
+            Self::Camera
+        }
+        #[cfg(all(
+            not(feature = "log-view"),
+            not(feature = "network-demo"),
+            not(feature = "imu-worldview"),
+            not(feature = "mic-waveform"),
+            not(feature = "speaker-synth"),
+            not(feature = "camera-view"),
+            feature = "settings"
+        ))]
+        {
+            Self::Settings
+        }
+    }
+}
 
 const ICON_X: usize = (design::UI.navigation.width - design::NAV_ICON_SIZE) / 2;
 const ICON_Y_IN_BUTTON: usize = (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;

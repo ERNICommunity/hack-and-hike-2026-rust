@@ -1,15 +1,15 @@
-//! Settings presentation model.
+//! Settings application state.
 
 use crate::capabilities::display::{Brightness, BrightnessControl};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SettingsDisplay {
-    pub(crate) brightness: Brightness,
+pub(super) struct DisplayState {
+    pub(super) brightness: Brightness,
 }
 
 pub(super) struct Model {
     control: BrightnessControl,
-    display: SettingsDisplay,
+    display: DisplayState,
     dirty: bool,
 }
 
@@ -17,7 +17,7 @@ impl Model {
     pub(super) fn new(control: BrightnessControl) -> Self {
         Self {
             control,
-            display: SettingsDisplay {
+            display: DisplayState {
                 brightness: Brightness::FULL,
             },
             dirty: true,
@@ -37,7 +37,7 @@ impl Model {
         self.dirty = true;
     }
 
-    pub(super) fn take_display(&mut self) -> Option<SettingsDisplay> {
+    pub(super) fn take_display(&mut self) -> Option<DisplayState> {
         if !self.dirty {
             return None;
         }

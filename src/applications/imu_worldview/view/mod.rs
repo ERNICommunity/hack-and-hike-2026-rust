@@ -15,10 +15,12 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_gui::prelude::*;
 
 use crate::{
-    app::ui::views::common,
     capabilities::{display::Surface, imu as sensor},
     support::memory::storage,
-    ui::gui::{GuiFramebuffer, GuiSurface},
+    ui::{
+        common,
+        gui::{GuiFramebuffer, GuiSurface},
+    },
 };
 
 use super::DisplayState;

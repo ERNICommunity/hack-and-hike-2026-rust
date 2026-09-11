@@ -1,4 +1,4 @@
-//! Log presentation model.
+//! Log-view application state.
 
 use embassy_time::{Duration, Instant};
 
