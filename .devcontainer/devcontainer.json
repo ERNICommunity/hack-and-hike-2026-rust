@@ -15,6 +15,8 @@
     "customizations": {
         "vscode": {
             "settings": {
+                // we do not want to update rust-analyzer because it is not compatible with the esp toolchain
+                "extensions.autoUpdate": false,
                 // do not scroll beyond last line because it could confuse beginners
                 "editor.scrollBeyondLastLine": false,
                 // automatically save after 1 second
@@ -51,7 +53,7 @@
                     "editor.defaultFormatter": "rust-lang.rust-analyzer",
                     "editor.formatOnSave": true
                 },
-                "rust-analyzer.server.path": "/usr/local/rustup/toolchains/1.93.0-aarch64-unknown-linux-gnu/bin/rust-analyzer"
+                "rust-analyzer.cargo.target": "xtensa-esp32s3-none-elf"
             },
             "extensions": [
                 "rust-lang.rust-analyzer",
