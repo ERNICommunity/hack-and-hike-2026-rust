@@ -1,26 +1,26 @@
-//! Microphone view.
+//! Microphone waveform view.
 //!
 //! KDL owns the static page structure and reserves the label/waveform regions.
 //! The labels are drawn with a native-resolution firmware font after the KDL
 //! layout pass. The realtime waveform remains a view-specific direct renderer so
-//! audio-rate updates never rebuild or repaint the GUI tree.
+//! PCM-rate updates never rebuild or repaint the GUI tree.
 
 use embedded_gui::prelude::*;
 
 use crate::{
-    app::model::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame},
     capabilities::display::Surface,
     support::memory::storage,
+    ui::gui::GuiSurface,
 };
 
-use super::super::gui::GuiSurface;
-use super::common;
+use crate::app::ui::views::common;
+use super::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame};
 
 mod waveform;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/app/ui/views/microphone/microphone.kdl");
+    embedded_gui::include_gui!("src/applications/mic_waveform/view/microphone.kdl");
 }
 
 const NODE_CAPACITY: usize = 12;

@@ -21,19 +21,14 @@ use esp_hal::peripherals::{DMA_CH0, GPIO0, GPIO33, GPIO34, I2S0};
 
 pub(crate) use capture::capture_task;
 #[cfg(feature = "mic")]
-pub(crate) use channels::Input;
+pub(crate) use channels::MicReader;
 #[cfg(feature = "speaker-synth")]
 pub(crate) use channels::PlaybackControl;
 pub(crate) use channels::{Runtime, init_endpoints};
 pub(crate) use codecs::{init_aw88298, init_es7210};
 
+/// Physical sample rate shared by the I2S0 clock domain.
 pub(crate) const SAMPLE_RATE_HZ: u32 = 16_000;
-#[cfg(feature = "mic")]
-pub(crate) const BLOCK_FRAMES: usize = 512;
-#[cfg(feature = "mic")]
-pub(crate) const CHANNELS: usize = 2;
-#[cfg(feature = "mic")]
-pub(crate) const BLOCK_SAMPLES: usize = BLOCK_FRAMES * CHANNELS;
 
 /// Valid melody tempo in quarter-note beats per minute.
 #[cfg(feature = "speaker-synth")]
@@ -112,12 +107,4 @@ pub(crate) struct Resources {
     pub(crate) data_in: GPIO14<'static>,
     #[cfg(feature = "speaker")]
     pub(crate) data_out: GPIO13<'static>,
-}
-
-#[cfg(feature = "mic")]
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct AudioBlockInfo {
-    pub(crate) sequence: u32,
-    pub(crate) peak_left: u16,
-    pub(crate) peak_right: u16,
 }

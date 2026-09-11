@@ -6,8 +6,6 @@
 
 #[cfg(feature = "log-view")]
 mod log;
-#[cfg(feature = "mic-waveform")]
-mod microphone;
 mod navigation;
 #[cfg(feature = "network-demo")]
 mod network;
@@ -20,23 +18,26 @@ use embassy_time::Instant;
 
 #[cfg(feature = "imu-worldview")]
 use crate::applications::imu_worldview;
-#[cfg(any(feature = "mic-waveform", feature = "speaker-synth"))]
+#[cfg(feature = "mic-waveform")]
+use crate::applications::mic_waveform;
+#[cfg(feature = "speaker-synth")]
 use crate::capabilities::audio;
 #[cfg(feature = "settings")]
 use crate::capabilities::display::{Brightness, BrightnessControl};
 #[cfg(feature = "imu-worldview")]
 use crate::capabilities::imu as imu_capability;
+#[cfg(feature = "mic-waveform")]
+use crate::capabilities::mic as mic_capability;
 #[cfg(feature = "network-demo")]
 use crate::capabilities::network as network_capability;
 #[cfg(feature = "log-view")]
 use crate::support::logging;
 
-// Transitional compatibility for renderer helpers that are being migrated out
-// of the horizontal app layer one application at a time.
+// Transitional compatibility for shell code while vertical migrations proceed.
 #[cfg(feature = "imu-worldview")]
 pub(crate) use crate::applications::imu_worldview::DisplayState as ImuDisplay;
 #[cfg(feature = "mic-waveform")]
-pub(crate) use microphone::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame};
+pub(crate) use crate::applications::mic_waveform::WaveformFrame;
 pub(crate) use navigation::ViewId;
 #[cfg(feature = "settings")]
 pub(crate) use settings::SettingsDisplay;
@@ -49,7 +50,7 @@ pub(crate) struct AppModelInputs {
     #[cfg(feature = "imu-worldview")]
     pub(crate) imu: imu_capability::Imu,
     #[cfg(feature = "mic-waveform")]
-    pub(crate) audio: audio::Input,
+    pub(crate) microphone: mic_capability::Microphone,
     #[cfg(feature = "speaker-synth")]
     pub(crate) playback: audio::PlaybackControl,
     #[cfg(feature = "settings")]
@@ -65,7 +66,7 @@ pub(crate) struct AppModel {
     #[cfg(feature = "imu-worldview")]
     imu: imu_worldview::Model,
     #[cfg(feature = "mic-waveform")]
-    microphone: microphone::Model,
+    microphone: mic_waveform::Model,
     #[cfg(feature = "speaker-synth")]
     speaker: speaker::Model,
     #[cfg(feature = "settings")]
@@ -83,7 +84,7 @@ impl AppModel {
             #[cfg(feature = "imu-worldview")]
             imu: imu_worldview::Model::new(inputs.imu),
             #[cfg(feature = "mic-waveform")]
-            microphone: microphone::Model::new(inputs.audio),
+            microphone: mic_waveform::Model::new(inputs.microphone),
             #[cfg(feature = "speaker-synth")]
             speaker: speaker::Model::new(inputs.playback),
             #[cfg(feature = "settings")]

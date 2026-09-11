@@ -28,6 +28,8 @@ use crate::capabilities::camera;
 use crate::capabilities::display;
 #[cfg(feature = "imu")]
 use crate::capabilities::imu;
+#[cfg(feature = "mic")]
+use crate::capabilities::mic;
 #[cfg(feature = "network")]
 use crate::capabilities::network;
 #[cfg(feature = "touch")]
@@ -43,7 +45,7 @@ pub(crate) struct AppInputs {
     #[cfg(feature = "imu")]
     pub(crate) imu: imu::Imu,
     #[cfg(feature = "mic")]
-    pub(crate) audio: audio::Input,
+    pub(crate) microphone: mic::Microphone,
     #[cfg(feature = "network")]
     pub(crate) network: network::Input,
     #[cfg(feature = "log-view")]
@@ -113,8 +115,7 @@ where
         Ok(pid) => {
             warn!(
                 "Camera disabled: unexpected GC0308 PID 0x{:02x} (expected 0x{:02x})",
-                pid,
-                camera::EXPECTED_SENSOR_PID
+                pid, camera::EXPECTED_SENSOR_PID
             );
             false
         }
@@ -258,7 +259,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
     #[cfg(any(feature = "mic", feature = "speaker"))]
     let audio_runtime = audio_endpoints.runtime;
     #[cfg(feature = "mic")]
-    let audio_input = audio_endpoints.input;
+    let microphone = mic::from_reader(audio_endpoints.mic);
     #[cfg(feature = "speaker-synth")]
     let playback = audio_endpoints.playback;
 
@@ -346,7 +347,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
             #[cfg(feature = "imu")]
             imu: imu_input,
             #[cfg(feature = "mic")]
-            audio: audio_input,
+            microphone,
             #[cfg(feature = "network")]
             network: network_input,
             #[cfg(feature = "log-view")]

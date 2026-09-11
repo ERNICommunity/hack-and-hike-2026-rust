@@ -8,10 +8,11 @@ use esp_hal::{
 };
 
 #[cfg(feature = "mic")]
-use crate::support::{diagnostics, memory::storage};
+use crate::{
+    capabilities::mic::{CHANNELS, FRAMES_PER_BLOCK, SAMPLES_PER_BLOCK},
+    support::{diagnostics, memory::storage},
+};
 
-#[cfg(feature = "mic")]
-use super::{BLOCK_FRAMES, BLOCK_SAMPLES, CHANNELS};
 use super::{Resources, SAMPLE_RATE_HZ, channels::Runtime, playback};
 
 // The shared esp-hal buffer macro currently creates both descriptor sets. RX is
@@ -19,7 +20,7 @@ use super::{Resources, SAMPLE_RATE_HZ, channels::Runtime, playback};
 // builds do not own the microphone GPIO or initialize the microphone codec.
 const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
 #[cfg(feature = "mic")]
-const RX_PROCESS_CHUNK_BYTES: usize = BLOCK_FRAMES * CHANNELS * 2;
+const RX_PROCESS_CHUNK_BYTES: usize = FRAMES_PER_BLOCK * CHANNELS * 2;
 const TX_DMA_BUFFER_BYTES: usize = 8_184;
 #[cfg(feature = "mic")]
 const _: () = assert!(RX_PROCESS_CHUNK_BYTES % 4 == 0);
@@ -121,7 +122,7 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
         );
 
         let mut dma_drain = storage::FixedPsramBuffer::filled(RX_DMA_BUFFER_BYTES, 0u8);
-        let mut samples = [0i16; BLOCK_SAMPLES];
+        let mut samples = [0i16; SAMPLES_PER_BLOCK];
         let mut frame_index = 0usize;
         let mut peak_left = 0u16;
         let mut peak_right = 0u16;
@@ -151,7 +152,7 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
                     peak_right = peak_right.max(right.unsigned_abs());
                     frame_index += 1;
 
-                    if frame_index == BLOCK_FRAMES {
+                    if frame_index == FRAMES_PER_BLOCK {
                         let sequence = runtime.publish_audio(&samples, peak_left, peak_right).await;
                         if first_block {
                             first_block = false;

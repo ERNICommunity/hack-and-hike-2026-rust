@@ -1,8 +1,8 @@
-//! Microphone presentation model and fixed-size waveform contract.
+//! Microphone waveform application model.
 
 use embassy_time::{Duration, Instant};
 
-use crate::capabilities::audio;
+use crate::capabilities::mic;
 
 pub(crate) const POINTS: usize = 128;
 pub(crate) const MAX_AMPLITUDE_PIXELS: i32 = 42;
@@ -25,50 +25,67 @@ impl WaveformFrame {
     }
 }
 
-pub(super) struct Model {
-    input: audio::Input,
+pub(crate) struct Model {
+    microphone: mic::Microphone,
     frame: WaveformFrame,
-    samples: [i16; audio::BLOCK_SAMPLES],
+    samples: [i16; mic::SAMPLES_PER_BLOCK],
     last_sequence: u32,
+    last_dropped_blocks: u32,
     last_update: Instant,
     dirty: bool,
 }
 
 impl Model {
-    pub(super) fn new(input: audio::Input) -> Self {
+    pub(crate) fn new(microphone: mic::Microphone) -> Self {
         Self {
-            input,
+            microphone,
             frame: WaveformFrame::silent(),
-            samples: [0; audio::BLOCK_SAMPLES],
+            samples: [0; mic::SAMPLES_PER_BLOCK],
             last_sequence: 0,
+            last_dropped_blocks: 0,
             last_update: Instant::now(),
             dirty: true,
         }
     }
 
-    pub(super) fn mark_dirty(&mut self) {
+    pub(crate) fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
-    pub(super) fn update_if_due(&mut self, now: Instant) {
+    pub(crate) fn update_if_due(&mut self, now: Instant) {
         if now - self.last_update < WAVEFORM_UPDATE {
             return;
         }
         self.last_update = now;
-        let Some(info) = self.input.copy_latest_interleaved(&mut self.samples) else {
+
+        // The capability is a real bounded PCM stream. This visualization keeps
+        // the old realtime behavior by draining any backlog and rendering only
+        // the newest complete block available for this frame.
+        let mut latest = None;
+        while let Some(info) = self.microphone.try_read(&mut self.samples) {
+            latest = Some(info);
+        }
+        let Some(info) = latest else {
             return;
         };
-        if info.sequence == self.last_sequence {
-            return;
+
+        if info.dropped_blocks != self.last_dropped_blocks {
+            ::log::warn!(
+                "Microphone PCM queue dropped blocks: total={} latest_sequence={}",
+                info.dropped_blocks,
+                info.sequence
+            );
+            self.last_dropped_blocks = info.dropped_blocks;
         }
         self.last_sequence = info.sequence;
+
         if self.update_frame(info) {
             self.dirty = true;
         }
     }
 
-    fn update_frame(&mut self, info: audio::AudioBlockInfo) -> bool {
-        const FRAMES_PER_POINT: usize = audio::BLOCK_FRAMES / POINTS;
+    fn update_frame(&mut self, info: mic::MicBlockInfo) -> bool {
+        const FRAMES_PER_POINT: usize = mic::FRAMES_PER_BLOCK / POINTS;
         let left_scale = i32::from(info.peak_left.max(WAVEFORM_PEAK_FLOOR));
         let right_scale = i32::from(info.peak_right.max(WAVEFORM_PEAK_FLOOR));
         let mut changed = false;
@@ -82,7 +99,7 @@ impl Model {
             let mut right_magnitude = 0u16;
 
             for frame in first_frame..last_frame {
-                let sample_index = frame * audio::CHANNELS;
+                let sample_index = frame * mic::CHANNELS;
                 let left = self.samples[sample_index];
                 let right = self.samples[sample_index + 1];
                 let left_abs = left.unsigned_abs();
@@ -111,7 +128,7 @@ impl Model {
         changed
     }
 
-    pub(super) fn take_frame(&mut self) -> Option<WaveformFrame> {
+    pub(crate) fn take_frame(&mut self) -> Option<WaveformFrame> {
         if !self.dirty {
             return None;
         }

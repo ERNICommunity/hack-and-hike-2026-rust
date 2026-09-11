@@ -10,6 +10,8 @@ pub(crate) mod camera;
 pub(crate) mod display;
 #[cfg(feature = "imu")]
 pub(crate) mod imu;
+#[cfg(feature = "mic")]
+pub(crate) mod mic;
 #[cfg(feature = "network")]
 pub(crate) mod network;
 #[cfg(feature = "touch")]

@@ -2,3 +2,5 @@
 
 #[cfg(feature = "imu-worldview")]
 pub(crate) mod imu_worldview;
+#[cfg(feature = "mic-waveform")]
+pub(crate) mod mic_waveform;

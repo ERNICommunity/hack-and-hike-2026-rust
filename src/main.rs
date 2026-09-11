@@ -18,7 +18,7 @@
     feature = "log-view",
 ))]
 mod app;
-#[cfg(feature = "imu-worldview")]
+#[cfg(any(feature = "imu-worldview", feature = "mic-waveform"))]
 mod applications;
 mod capabilities;
 mod firmware;
@@ -86,7 +86,7 @@ async fn main(_cpu0_spawner: Spawner) -> ! {
             #[cfg(feature = "imu-worldview")]
             imu: bootstrap.inputs.imu,
             #[cfg(feature = "mic-waveform")]
-            audio: bootstrap.inputs.audio,
+            microphone: bootstrap.inputs.microphone,
             #[cfg(feature = "speaker-synth")]
             playback: bootstrap.playback,
             #[cfg(feature = "settings")]
