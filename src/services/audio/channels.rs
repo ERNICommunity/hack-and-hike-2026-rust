@@ -9,10 +9,10 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use static_cell::StaticCell;
 
-#[cfg(feature = "mic")]
-use super::{AudioBlockInfo, BLOCK_SAMPLES};
 #[cfg(feature = "speaker-synth")]
 use super::PlaybackSettings;
+#[cfg(feature = "mic")]
+use super::{AudioBlockInfo, BLOCK_SAMPLES};
 
 #[cfg(feature = "mic")]
 struct LatestAudio {
