@@ -4,15 +4,18 @@
 
 use super::Orientation;
 
-// Quiet-state magnetic correction remains deliberately slow for small drift.
-const MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG: f32 = 0.20;
-// Magnetometer observations are not fused while the device is rotating faster
-// than this on any axis. The BMM150 is slower and delayed relative to gyro; it
-// is much more reliable as an absolute reference after motion settles.
-const MAG_FUSION_MAX_RATE_DPS: f32 = 45.0;
-// Require fresh low-motion MAG frames before using the compass after any turn.
-// At 30 Hz this provides roughly 100 ms for BMM150/AUX pipeline latency to clear.
-const MAG_QUIET_SAMPLES_BEFORE_FUSION: u8 = 3;
+// Magnetic yaw is a long-term absolute reference. Keep its per-frame authority
+// deliberately small so residual hard/soft-iron and tilt errors cannot make the
+// compass hunt while the gyro already provides a smooth short-term heading.
+const MAX_MAG_YAW_CORRECTION_PER_SAMPLE_DEG: f32 = 0.08;
+const MAG_YAW_DEADBAND_DEG: f32 = 1.5;
+const MAG_HEADING_FILTER_ALPHA: f32 = 0.18;
+// The 30 Hz BMM150 is delayed relative to the gyro. Only fuse it once hand motion
+// is genuinely slow; faster motion is carried by gyro yaw and corrected later.
+const MAG_FUSION_MAX_RATE_DPS: f32 = 20.0;
+// Require several fresh low-motion MAG frames before using the compass after a
+// turn. At 30 Hz this is roughly 170 ms, enough for the AUX pipeline to settle.
+const MAG_QUIET_SAMPLES_BEFORE_FUSION: u8 = 5;
 // Initial/reacquired north must be consistent over multiple independent BMM150
 // frames. Compare heading-minus-gyro offsets so small residual motion cancels.
 const MAG_INITIAL_LOCK_SAMPLES: u8 = 5;
@@ -23,12 +26,12 @@ const MAX_MAG_INITIAL_OFFSET_JITTER_DEG: f32 = 6.0;
 const MAG_RECOVERY_MIN_INNOVATION_DEG: f32 = 30.0;
 const MAG_RECOVERY_SAMPLES: u8 = 8;
 const MAX_MAG_RECOVERY_OFFSET_JITTER_DEG: f32 = 6.0;
-// The horizontal magnetic component must be measurable, and the camera-forward
-// heading axis must have a meaningful horizontal projection. When that axis is
-// nearly vertical, its azimuth is singular. Gyro yaw bridges the singularity and
-// the magnetic branch is reselected on the far side instead of snapping by 180°.
-const MIN_MAG_HORIZONTAL_FIELD_UT: f32 = 2.0;
-const MIN_HEADING_AXIS_HORIZONTAL_SQ: f32 = 0.04;
+// Reject poorly conditioned tilt compensation. The horizontal geomagnetic field
+// should be comfortably above sensor noise, and the camera-forward heading axis
+// must be at least 50% horizontal. Near its vertical singularity gyro yaw is a
+// substantially better short-term heading reference than amplified MAG noise.
+const MIN_MAG_HORIZONTAL_FIELD_UT: f32 = 8.0;
+const MIN_HEADING_AXIS_HORIZONTAL_SQ: f32 = 0.25;
 const HALF_TURN_DEG: f32 = 180.0;
 
 #[derive(Clone, Copy)]
@@ -81,6 +84,7 @@ pub(super) struct Fusion {
     previous_yaw_rate_dps: Option<f32>,
     magnetic_heading_locked: bool,
     magnetic_heading_branch_offset_deg: f32,
+    filtered_magnetic_heading_deg: Option<f32>,
     reselect_magnetic_heading_branch: bool,
     quiet_mag_samples: u8,
     recovery_armed: bool,
@@ -103,6 +107,7 @@ impl Fusion {
             previous_yaw_rate_dps: None,
             magnetic_heading_locked: false,
             magnetic_heading_branch_offset_deg: 0.0,
+            filtered_magnetic_heading_deg: None,
             reselect_magnetic_heading_branch: false,
             quiet_mag_samples: 0,
             recovery_armed: false,
@@ -117,6 +122,7 @@ impl Fusion {
     pub(super) fn invalidate_absolute_heading(&mut self) {
         self.magnetic_heading_locked = false;
         self.magnetic_heading_branch_offset_deg = 0.0;
+        self.filtered_magnetic_heading_deg = None;
         self.reselect_magnetic_heading_branch = false;
         self.quiet_mag_samples = 0;
         self.recovery_armed = true;
@@ -140,6 +146,7 @@ impl Fusion {
 
     fn note_motion(&mut self) {
         self.quiet_mag_samples = 0;
+        self.filtered_magnetic_heading_deg = None;
         self.recovery_armed = true;
         self.clear_pending_magnetic_candidate();
         self.clear_recovery_candidate();
@@ -220,6 +227,7 @@ impl Fusion {
             && heading_axis_horizontal_sq < MIN_HEADING_AXIS_HORIZONTAL_SQ
         {
             self.reselect_magnetic_heading_branch = true;
+            self.filtered_magnetic_heading_deg = None;
         }
 
         let total_rate_dps = max_abs3(gyro_dps);
@@ -233,7 +241,8 @@ impl Fusion {
         let magnetic_heading = magnetic_field_ut
             .map(screen_vector_from_body)
             .and_then(|field| gravity_compensated_heading(field, screen_gravity))
-            .map(|heading| self.select_magnetic_heading_branch(predicted_yaw, heading));
+            .map(|heading| self.select_magnetic_heading_branch(predicted_yaw, heading))
+            .map(|heading| self.filter_magnetic_heading(heading));
 
         self.orientation.yaw_deg = if let Some(heading) = magnetic_heading {
             self.fuse_magnetic_yaw(predicted_yaw, heading, yaw_alpha)
@@ -263,6 +272,19 @@ impl Fusion {
         }
 
         wrap_degrees(heading + self.magnetic_heading_branch_offset_deg)
+    }
+
+    fn filter_magnetic_heading(&mut self, heading: f32) -> f32 {
+        let filtered = self
+            .filtered_magnetic_heading_deg
+            .map(|previous| {
+                wrap_degrees(
+                    previous + MAG_HEADING_FILTER_ALPHA * wrap_degrees(heading - previous),
+                )
+            })
+            .unwrap_or(heading);
+        self.filtered_magnetic_heading_deg = Some(filtered);
+        filtered
     }
 
     fn fuse_magnetic_yaw(&mut self, predicted_yaw: f32, heading: f32, yaw_alpha: f32) -> f32 {
@@ -343,6 +365,10 @@ impl Fusion {
 
         self.recovery_armed = false;
         self.clear_recovery_candidate();
+        if abs_f32(offset) <= MAG_YAW_DEADBAND_DEG {
+            return predicted_yaw;
+        }
+
         let requested = (1.0 - clamp_f32(yaw_alpha, 0.0, 1.0)) * offset;
         let applied = clamp_f32(
             requested,
