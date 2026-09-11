@@ -36,7 +36,6 @@ extern crate alloc;
 ))]
 use ::log::info;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
 #[cfg(any(
     feature = "imu-worldview",
     feature = "mic-waveform",
@@ -47,6 +46,7 @@ use embassy_time::{Duration, Timer};
     feature = "log-view",
 ))]
 use embassy_time::Instant;
+use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 
 const UI_IDLE_DELAY: Duration = Duration::from_millis(5);
@@ -141,8 +141,8 @@ async fn run_applications(mut bootstrap: firmware::Bootstrap) -> ! {
         ui.render(display);
 
         #[cfg(feature = "camera-view")]
-        let camera_active = bootstrap.camera_ready
-            && ui.presented_view() == app::model::ViewId::Camera;
+        let camera_active =
+            bootstrap.camera_ready && ui.presented_view() == app::model::ViewId::Camera;
         #[cfg(not(feature = "camera-view"))]
         let camera_active = false;
 
