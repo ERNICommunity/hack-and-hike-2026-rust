@@ -9,7 +9,6 @@ use ::log::info;
 use ::log::warn;
 use esp_hal::{clock::CpuClock, delay::Delay, timer::timg::TimerGroup};
 
-use crate::{firmware::cpu1, support::{logging as logger, memory}};
 #[cfg(any(feature = "display", feature = "touch", feature = "camera"))]
 use crate::platform::board;
 #[cfg(any(
@@ -33,6 +32,10 @@ use crate::services::imu;
 use crate::services::network;
 #[cfg(feature = "touch")]
 use crate::services::touch;
+use crate::{
+    firmware::cpu1,
+    support::{logging as logger, memory},
+};
 
 pub(crate) struct AppInputs {
     #[cfg(feature = "touch")]
