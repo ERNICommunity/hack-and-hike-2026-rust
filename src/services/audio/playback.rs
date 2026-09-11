@@ -1,29 +1,25 @@
-//! CPU1 speaker TX DMA and playback synthesis.
+//! CPU1 TX DMA owner for the shared audio clock domain.
 
 use esp_hal::{Async, i2s::master::I2sTx};
 
 use crate::support::diagnostics;
 
-use super::{PlaybackSettings, channels::Runtime, chime::FlashChime, melody::MelodySynth};
+use super::channels::Runtime;
+#[cfg(feature = "speaker-synth")]
+use super::{PlaybackSettings, chime::FlashChime, melody::MelodySynth};
 
-// Render speaker data into a small staging block and feed it through `push`,
-// whose esp-hal 1.1.x implementation correctly propagates TX-underrun errors.
-// 1024 bytes is 16 ms of stereo 16-bit audio at 16 kHz, keeping controls snappy.
+// 1024 bytes is 16 ms of stereo 16-bit audio at 16 kHz. Mic-only builds still
+// run this writer with silence because TX is the physical BCLK/WS master.
 const PLAYBACK_FILL_BYTES: usize = 1_024;
 const _: () = assert!(PLAYBACK_FILL_BYTES % 4 == 0);
 
-// The one-shot is derived offline from the user-supplied MP3 and stored as
-// flash-resident IMA ADPCM; decoding is incremental and allocation-free.
-
+#[cfg(feature = "speaker-synth")]
 #[embassy_executor::task]
 pub(super) async fn playback_task(
     i2s_tx: I2sTx<'static, Async>,
     tx_buffer: &'static mut [u8],
     runtime: Runtime,
 ) {
-    // Circular TX starts reading immediately. Silence the complete ring first
-    // so startup can never replay uninitialized/stale bytes before the task's
-    // first refill.
     tx_buffer.fill(0);
 
     let mut transfer = i2s_tx
@@ -57,19 +53,47 @@ pub(super) async fn playback_task(
         match transfer.push(&staging[staging_offset..]).await {
             Ok(written) if written != 0 => staging_offset += written,
             Ok(_) => {}
-            Err(_) => {
-                // `push` propagates esp-hal's DmaError::Late, unlike `push_with`
-                // in the pinned 1.1.x HAL. A late ring cannot be repaired through
-                // this API because the transfer owns I2sTx, so fail closed with a
-                // controlled reboot instead of replaying stale samples forever.
-                diagnostics::record_audio_playback_error();
-                ::log::error!("I2S TX DMA underrun; rebooting to recover audio");
-                esp_hal::system::software_reset();
-            }
+            Err(_) => handle_underrun(),
         }
     }
 }
 
+#[cfg(not(feature = "speaker-synth"))]
+#[embassy_executor::task]
+pub(super) async fn playback_task(
+    i2s_tx: I2sTx<'static, Async>,
+    tx_buffer: &'static mut [u8],
+    _runtime: Runtime,
+) {
+    tx_buffer.fill(0);
+
+    let mut transfer = i2s_tx
+        .write_dma_circular_async(tx_buffer)
+        .expect("Failed to start circular I2S TX DMA");
+    let silence = [0u8; PLAYBACK_FILL_BYTES];
+    let mut offset = 0usize;
+
+    loop {
+        match transfer.push(&silence[offset..]).await {
+            Ok(written) if written != 0 => {
+                offset += written;
+                if offset == silence.len() {
+                    offset = 0;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => handle_underrun(),
+        }
+    }
+}
+
+fn handle_underrun() -> ! {
+    diagnostics::record_audio_playback_error();
+    ::log::error!("I2S TX DMA underrun; rebooting to recover audio");
+    esp_hal::system::software_reset();
+}
+
+#[cfg(feature = "speaker-synth")]
 struct PlaybackEngine {
     melody: MelodySynth,
     chime: FlashChime,
@@ -77,6 +101,7 @@ struct PlaybackEngine {
     pending_offset: usize,
 }
 
+#[cfg(feature = "speaker-synth")]
 impl PlaybackEngine {
     const fn new() -> Self {
         Self {
@@ -87,10 +112,6 @@ impl PlaybackEngine {
         }
     }
 
-    /// Fill every byte handed to the playback staging buffer.
-    ///
-    /// Keeping a partially emitted stereo frame makes this helper byte-safe and
-    /// independent of the current staging size.
     fn fill(&mut self, bytes: &mut [u8], settings: PlaybackSettings) -> usize {
         for byte in bytes.iter_mut() {
             if self.pending_offset == self.pending_frame.len() {
@@ -117,6 +138,7 @@ impl PlaybackEngine {
     }
 }
 
+#[cfg(feature = "speaker-synth")]
 fn saturating_mix(a: i16, b: i16) -> i16 {
     i32::from(a)
         .saturating_add(i32::from(b))
