@@ -164,6 +164,7 @@ impl Transport {
         byte_len
     }
 
+    #[allow(dead_code, reason = "used only by optional raw RGB565 display streaming paths")]
     fn copy_bytes(buffer: &mut DmaTxBuf, bytes: &[u8]) -> usize {
         let byte_len = bytes.len();
         debug_assert!(byte_len <= PIXEL_DMA_BYTES);
@@ -225,6 +226,7 @@ impl Transport {
     /// Queue one raw RGB565 byte batch. While the prior SPI-DMA transfer is
     /// shifting pixels to the panel, `pump` can advance an independent producer
     /// such as the next camera frame.
+    #[allow(dead_code, reason = "used only by optional raw RGB565 display streaming paths")]
     pub(super) fn queue_bytes_pumped(&mut self, bytes: &[u8], mut pump: impl FnMut()) {
         if bytes.is_empty() {
             return;
@@ -275,6 +277,7 @@ impl Transport {
 
     /// Finish the final LCD transfer while continuing to pump an independent
     /// producer until the last SPI byte of the current region has left the panel.
+    #[allow(dead_code, reason = "used only by optional pumped RGB565 display streaming paths")]
     pub(super) fn finish_pumped(&mut self, mut pump: impl FnMut()) {
         let Some(state) = self.state.take() else {
             return;
