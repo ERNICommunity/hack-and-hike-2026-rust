@@ -219,10 +219,6 @@ impl Display {
 }
 
 impl Surface<'_> {
-    pub(crate) const fn region(&self) -> Region {
-        self.region
-    }
-
     pub(crate) const fn width(&self) -> usize {
         self.region.width()
     }

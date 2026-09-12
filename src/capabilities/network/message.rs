@@ -56,6 +56,7 @@ impl IncomingMessage {
         postcard::from_bytes(self.payload.as_slice()).map_err(|_| DecodeError)
     }
 
+    #[allow(dead_code, reason = "part of the typed network message capability API")]
     pub(crate) fn payload_len(&self) -> usize {
         self.payload.len()
     }

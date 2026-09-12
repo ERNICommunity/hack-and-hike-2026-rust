@@ -54,6 +54,10 @@ where
     i2c.write(AW9523_ADDR, &[register, next])
 }
 
+#[cfg(any(
+    all(feature = "display", not(feature = "touch")),
+    all(feature = "touch", not(feature = "display")),
+))]
 fn reset_pin(
     i2c: &mut impl embedded_hal::i2c::I2c,
     output_register: u8,
@@ -77,6 +81,7 @@ fn reset_pin(
 ///
 /// This path is used by display-only firmware so the disabled touch capability's
 /// reset line is never manipulated.
+#[cfg(all(feature = "display", not(feature = "touch")))]
 pub(crate) fn reset_display(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
     reset_pin(
         i2c,
@@ -92,6 +97,7 @@ pub(crate) fn reset_display(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut D
 ///
 /// This path is used by touch-only firmware so the disabled display capability's
 /// reset line is never manipulated.
+#[cfg(all(feature = "touch", not(feature = "display")))]
 pub(crate) fn reset_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
     // Match the board's push-pull policy for port 0 before driving TOUCH_RESET.
     let _ = i2c.write(AW9523_ADDR, &[GLOBAL_CONTROL_REGISTER, PORT0_PUSH_PULL]);

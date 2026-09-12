@@ -203,8 +203,8 @@ async fn receive_task(
         let rssi = RssiDbm::from_radio_raw(received.info.rx_control.rssi as u8);
         let now = Instant::now();
 
-        let (sender_id, beacon) = match frame {
-            protocol::DecodedFrame::Beacon(packet) => (packet.device_id, Some(packet)),
+        let sender_id = match frame {
+            protocol::DecodedFrame::Beacon(packet) => packet.device_id,
             protocol::DecodedFrame::Application(message) => {
                 let recipient_valid = match message.recipient {
                     None => received.info.dst_address == BROADCAST_ADDRESS,
@@ -216,7 +216,7 @@ async fn receive_task(
                     record_invalid(runtime);
                     continue;
                 }
-                (message.sender, None)
+                message.sender
             }
         };
 

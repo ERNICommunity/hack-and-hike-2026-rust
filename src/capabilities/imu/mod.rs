@@ -94,8 +94,11 @@ impl Default for Orientation {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Sample {
     pub(crate) revision: u32,
+    #[allow(dead_code, reason = "raw physical measurements are part of the IMU capability contract")]
     pub(crate) acceleration_m_s2: Option<[f32; 3]>,
+    #[allow(dead_code, reason = "raw physical measurements are part of the IMU capability contract")]
     pub(crate) angular_velocity_deg_s: Option<[f32; 3]>,
+    #[allow(dead_code, reason = "raw physical measurements are part of the IMU capability contract")]
     pub(crate) magnetic_field_ut: Option<[f32; 3]>,
     pub(crate) status: Status,
     pub(crate) orientation: Orientation,

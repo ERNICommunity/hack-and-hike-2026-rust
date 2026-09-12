@@ -16,7 +16,7 @@ use embassy_time::Duration;
 use esp_hal::peripherals::WIFI;
 
 pub(crate) use channels::{Endpoints, Network, Runtime, init_endpoints};
-pub(crate) use message::{DecodeError, IncomingMessage, SendError};
+pub(crate) use message::{IncomingMessage, SendError};
 pub(crate) use protocol::{DeviceId, MAX_PAYLOAD};
 pub(crate) use radio::start;
 
@@ -132,15 +132,21 @@ pub(crate) struct Peer {
 /// Replace-latest diagnostics/peer snapshot cached by the CPU0 `Network` handle.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Snapshot {
+    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
     pub(crate) revision: u32,
     pub(crate) status: Status,
     pub(crate) local_id: DeviceId,
     pub(crate) channel: Channel,
     pub(crate) peers: [Option<Peer>; MAX_PEERS],
+    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
     pub(crate) tx_packets: u32,
+    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
     pub(crate) rx_packets: u32,
+    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
     pub(crate) tx_errors: u32,
+    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
     pub(crate) rx_invalid: u32,
+    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
     pub(crate) peer_evictions: u32,
     pub(crate) tx_queue_full: u32,
     pub(crate) rx_queue_full: u32,
