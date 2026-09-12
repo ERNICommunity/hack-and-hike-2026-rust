@@ -2,7 +2,12 @@
 target = "xtensa-esp32s3-none-elf"
 
 [target.xtensa-esp32s3-none-elf]
-rustflags = ["-C", "link-arg=-Tlinkall.x"]
+rustflags = [
+    "-C",
+    "link-arg=-Tlinkall.x",
+    "-C",
+    "link-arg=-Wl,--no-warn-rwx-segments",
+]
 
 [unstable]
 build-std = ["core", "alloc"]
