@@ -107,7 +107,7 @@ where
             "Camera reset readback: AW9523 P1 out=0x{:02x} dir=0x{:02x} mode=0x{:02x}",
             output, direction, mode
         ),
-        Err(error) => warn!("Camera PMIC readback failed: {:?}", error),
+        Err(error) => warn!("Camera reset readback failed: {:?}", error),
     }
 
     true
@@ -140,12 +140,6 @@ where
 
 pub(crate) fn bootstrap() -> Bootstrap {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
-    // The main heap and CPU0 stack share the remaining RWDATA region. The
-    // no-LTO full application build measured a sub-1 KiB historical CPU0 stack
-    // margin during by-value application/UI construction, while internal heap
-    // peak usage stayed around 45 KiB out of 160 KiB. Reserve another 16 KiB
-    // for CPU0 here: the resulting ~144 KiB internal heap still leaves roughly
-    // 99 KiB free at the observed peak, well above the pressure thresholds.
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
     logger::init(::log::LevelFilter::Info);
