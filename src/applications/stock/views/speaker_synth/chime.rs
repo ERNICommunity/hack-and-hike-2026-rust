@@ -6,7 +6,7 @@
 //! Keeping only the ADPCM in flash avoids a runtime MP3 decoder and keeps
 //! playback bounded and allocation-free.
 
-const DATA: &[u8] = include_bytes!("../../../assets/speaker_chime.adpcm");
+const DATA: &[u8] = include_bytes!("../../../../../assets/speaker_chime.adpcm");
 const CHIME_SAMPLES: usize = 11_904;
 const _: () = assert!(DATA.len() * 2 == CHIME_SAMPLES);
 
