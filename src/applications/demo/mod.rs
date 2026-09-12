@@ -1,7 +1,7 @@
-//! Default Hack & Hike application.
+//! Full Hack & Hike demo application.
 //!
-//! This one application owns every capability enabled by `app-stock`, its
-//! navigation, all stock screens, and the policy for scheduling/rendering them.
+//! This one application owns every capability enabled by `app-demo`, its
+//! navigation, all demo screens, and the policy for scheduling/rendering them.
 //! Shared UI code only provides drawing primitives; no firmware-global shell
 //! knows about these destinations.
 
@@ -94,8 +94,8 @@ impl Ui {
             }
         }
 
-        // These behaviors intentionally continue while another stock screen is
-        // visible. The scheduling policy now belongs to this application.
+        // These behaviors intentionally continue while another demo screen is
+        // visible. The scheduling policy belongs to this application.
         self.views.speaker_synth.update();
         self.views.network_demo.update_if_due(now);
 
@@ -250,10 +250,10 @@ pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
 
     let now = Instant::now();
     let mut heap_monitor = HeapMonitor::new(now);
-    heap_monitor.checkpoint("after stock application construction");
+    heap_monitor.checkpoint("after demo application construction");
 
     ui.render_initial(&mut display);
-    heap_monitor.checkpoint("after initial stock render");
+    heap_monitor.checkpoint("after initial demo render");
 
     loop {
         let now = Instant::now();
