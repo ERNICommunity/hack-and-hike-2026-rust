@@ -21,7 +21,10 @@ pub(crate) use channels::MicReader;
 #[cfg(feature = "speaker")]
 pub(crate) use channels::SpeakerWriter;
 pub(crate) use channels::{Runtime, init_endpoints};
-pub(crate) use codecs::{init_aw88298, init_es7210};
+#[cfg(feature = "speaker")]
+pub(crate) use codecs::init_aw88298;
+#[cfg(feature = "mic")]
+pub(crate) use codecs::init_es7210;
 
 /// Physical sample rate shared by the I2S0 clock domain.
 pub(crate) const SAMPLE_RATE_HZ: u32 = 16_000;
