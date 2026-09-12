@@ -18,7 +18,7 @@ use super::DisplayState;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/applications/stock/views/network_demo/view/network.kdl");
+    embedded_gui::include_gui!("src/applications/demo/views/network_demo/view/network.kdl");
 }
 
 const NODE_CAPACITY: usize = 8;
