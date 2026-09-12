@@ -24,7 +24,7 @@ network = ["dep:serde", "dep:postcard"]
 camera = []
 
 # Optional reusable presentation helpers. Applications can render directly with
-# `display` or opt into the shared GUI layer independently of stock navigation.
+# `display` or opt into the shared GUI layer independently of demo navigation.
 ui = ["display"]
 
 # Firmware applications. A build runs one application. Applications own the
@@ -33,7 +33,7 @@ ui = ["display"]
 # feature falls back to the same idle behavior so capabilities remain testable
 # independently.
 app-idle = []
-app-stock = [
+app-demo = [
     "ui",
     "touch",
     "imu",
@@ -42,9 +42,11 @@ app-stock = [
     "network",
     "camera",
 ]
+app-imu-color = ["display", "imu"]
+app-color-ping = ["display", "touch", "network", "speaker"]
 
-# Preserve the complete out-of-box firmware.
-full = ["app-stock"]
+# Preserve the complete out-of-box demo firmware.
+full = ["app-demo"]
 
 [dependencies]
 # Keep the ESP crates on one coherent monorepo snapshot. The published
