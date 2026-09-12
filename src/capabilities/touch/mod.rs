@@ -17,11 +17,15 @@ pub(crate) use task::capture_task;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TouchPoint {
     pub(crate) x: u16,
+    #[allow(dead_code, reason = "coordinate is part of the application-facing touch capability contract")]
     pub(crate) y: u16,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum TouchEdge {
     Pressed(TouchPoint),
-    Released(TouchPoint),
+    Released(
+        #[allow(dead_code, reason = "release position is part of the application-facing touch capability contract")]
+        TouchPoint,
+    ),
 }
