@@ -8,27 +8,44 @@ use esp_hal::delay::Delay;
 
 const AW9523_ADDR: u8 = 0x58;
 
+#[cfg(any(feature = "touch", feature = "speaker", all(feature = "display", feature = "touch")))]
 const PORT0_OUTPUT_REGISTER: u8 = 0x02;
+#[cfg(any(feature = "display", feature = "camera"))]
 const PORT1_OUTPUT_REGISTER: u8 = 0x03;
+#[cfg(any(feature = "touch", feature = "speaker", all(feature = "display", feature = "touch")))]
 const PORT0_DIRECTION_REGISTER: u8 = 0x04;
+#[cfg(any(feature = "display", feature = "camera"))]
 const PORT1_DIRECTION_REGISTER: u8 = 0x05;
+#[cfg(any(feature = "touch", feature = "speaker"))]
 const GLOBAL_CONTROL_REGISTER: u8 = 0x11;
+#[cfg(any(feature = "touch", feature = "speaker"))]
 const PORT0_MODE_REGISTER: u8 = 0x12;
+#[cfg(any(feature = "display", feature = "camera"))]
 const PORT1_MODE_REGISTER: u8 = 0x13;
 
+#[cfg(feature = "touch")]
 const TOUCH_RESET: u8 = 1 << 0;
+#[cfg(feature = "speaker")]
 const SPEAKER_RESET: u8 = 1 << 2;
+#[cfg(feature = "camera")]
 const CAMERA_RESET: u8 = 1 << 0;
+#[cfg(feature = "display")]
 const LCD_RESET: u8 = 1 << 1;
 
 // M5Stack's CoreS3 AW9523 bootstrap values. P0_2 normally appears high in the
 // reference value (0x07); we deliberately hold it low here until the AW88298
 // rail has been enabled and the speaker reset sequence is executed.
+#[cfg(all(feature = "display", feature = "touch"))]
 const PORT0_BOOT_OUTPUTS: u8 = 0b0000_0011;
+#[cfg(all(feature = "display", feature = "touch"))]
 const PORT1_BOOT_OUTPUTS: u8 = 0b1000_1111;
+#[cfg(all(feature = "display", feature = "touch"))]
 const PORT0_DIRECTIONS: u8 = 0b0001_1000;
+#[cfg(all(feature = "display", feature = "touch"))]
 const PORT1_DIRECTIONS: u8 = 0b0000_1100;
+#[cfg(any(feature = "touch", feature = "speaker"))]
 const PORT0_PUSH_PULL: u8 = 0b0001_0000;
+#[cfg(all(feature = "display", feature = "touch"))]
 const GPIO_MODE_ALL: u8 = 0xFF;
 
 fn read_register<I2C>(i2c: &mut I2C, register: u8) -> Result<u8, I2C::Error>
@@ -117,6 +134,7 @@ pub(crate) fn reset_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Del
 /// enabled. Keep the historical combined sequence for the full/default firmware
 /// so this composition fix does not alter its board bring-up behavior. The
 /// speaker reset line remains asserted.
+#[cfg(all(feature = "display", feature = "touch"))]
 pub(crate) fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: &mut Delay) {
     let _ = i2c.write(AW9523_ADDR, &[PORT0_OUTPUT_REGISTER, PORT0_BOOT_OUTPUTS]);
     let _ = i2c.write(AW9523_ADDR, &[PORT1_OUTPUT_REGISTER, PORT1_BOOT_OUTPUTS]);
@@ -137,6 +155,7 @@ pub(crate) fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, del
 }
 
 /// Pulse the onboard GC0308 reset line on AW9523 P1_0.
+#[cfg(feature = "camera")]
 pub(crate) fn reset_camera<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
@@ -160,6 +179,7 @@ where
 ///
 /// For P1_0 to release GC0308 RESETB, output bit 0 should be high, direction
 /// bit 0 should be 0 (output), and mode bit 0 should be 1 (GPIO mode).
+#[cfg(feature = "camera")]
 pub(crate) fn camera_reset_registers<I2C>(i2c: &mut I2C) -> Result<(u8, u8, u8), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
@@ -177,6 +197,7 @@ where
 /// supplies the amplifier at 1.8 V, then AW9523 P0_2 is pulsed low -> high.
 /// M5Stack's CoreS3 implementation holds reset low for 10 ms and waits 50 ms
 /// after release before accessing AW88298 over I2C.
+#[cfg(feature = "speaker")]
 pub(crate) fn release_audio_amplifier<I2C>(
     i2c: &mut I2C,
     delay: &mut Delay,
