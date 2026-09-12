@@ -13,7 +13,7 @@ mod capabilities;
 mod firmware;
 mod platform;
 mod support;
-#[cfg(feature = "display")]
+#[cfg(feature = "ui")]
 mod ui;
 
 extern crate alloc;
