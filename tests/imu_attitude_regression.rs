@@ -1,4 +1,4 @@
-#[path = "../src/applications/stock/views/imu_worldview/view/attitude.rs"]
+#[path = "../src/applications/demo/views/imu_worldview/view/attitude.rs"]
 mod attitude;
 
 use attitude::Tracker;
@@ -149,8 +149,6 @@ fn non_half_turn_magnetic_recovery_does_not_jump_compass() {
     let _ = tracker.update(1, 90.0, 89.0, 0.0);
     let crossed_yaw = tracker.update(2, -90.0, 89.0, 0.0);
 
-    // Gyro integration can leave the magnetic recovery short of an exact 180
-    // degree branch change. The visible world must still remain continuous.
     let candidate_1 = tracker.update(3, -90.0, 85.0, 160.0);
     let candidate_2 = tracker.update(4, -90.0, 82.0, 159.0);
     let candidate_3 = tracker.update(5, -90.0, 78.0, 161.0);
@@ -168,9 +166,6 @@ fn transient_magnetic_half_turn_does_not_flip_compass_branch() {
     let _ = tracker.update(1, 90.0, 89.0, 0.0);
     let crossed_yaw = tracker.update(2, -90.0, 89.0, 0.0);
 
-    // One fused sample briefly lands on the opposite magnetic branch, then the
-    // fusion estimate returns. Neither frame may visibly leave the far-side
-    // compass orientation established by the pole crossing.
     let transient = tracker.update(3, -90.0, 85.0, 180.0);
     let recovered = tracker.update(4, -90.0, 82.0, 0.0);
 
