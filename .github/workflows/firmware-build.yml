@@ -56,7 +56,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .ci-cache/firmware-build-ok
-          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v8-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
+          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v9-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
 
       - name: Reuse successful build result
         if: steps.build-proof.outputs.cache-hit == 'true'
@@ -149,9 +149,13 @@ jobs:
               -D warnings -A dead_code -A unused_imports
           done
 
-          # The stock application consumes the complete semantic API surface and
-          # therefore has no reason to suppress liveness warnings.
-          cargo rustc --locked --release --no-default-features --features app-stock -- -D warnings
+          # Every real application consumes the capabilities it selects, so these
+          # builds stay fully strict with no liveness-warning exceptions.
+          for app in app-demo app-imu-color app-color-ping
+          do
+            echo "Checking --no-default-features --features ${app}"
+            cargo rustc --locked --release --no-default-features --features "${app}" -- -D warnings
+          done
 
       - name: Build default firmware without warnings
         if: steps.build-proof.outputs.cache-hit != 'true'
@@ -169,4 +173,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .ci-cache/firmware-build-ok
-          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v8-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
+          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v9-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
