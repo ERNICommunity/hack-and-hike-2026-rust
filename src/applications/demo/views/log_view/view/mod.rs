@@ -16,7 +16,7 @@ use crate::{
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/applications/stock/views/log_view/view/log.kdl");
+    embedded_gui::include_gui!("src/applications/demo/views/log_view/view/log.kdl");
 }
 
 const NODE_CAPACITY: usize = 6;
