@@ -35,6 +35,7 @@ pub(crate) struct Model {
     samples: &'static mut [i16; mic::SAMPLES_PER_BLOCK],
     last_sequence: u32,
     last_dropped_blocks: u32,
+    drop_baseline_pending: bool,
     last_update: Instant,
     dirty: bool,
 }
@@ -53,6 +54,12 @@ impl Model {
             samples,
             last_sequence: 0,
             last_dropped_blocks: 0,
+            // Capture runs continuously on CPU1 while this view is inactive, but
+            // the visualization intentionally does not drain the bounded stream.
+            // The first block consumed after activation establishes a new drop
+            // baseline; only additional loss while the active consumer is
+            // running is actionable.
+            drop_baseline_pending: true,
             last_update: Instant::now(),
             dirty: true,
         }
@@ -60,6 +67,7 @@ impl Model {
 
     pub(crate) fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.drop_baseline_pending = true;
     }
 
     pub(crate) fn update_if_due(&mut self, now: Instant) {
@@ -79,9 +87,12 @@ impl Model {
             return;
         };
 
-        if info.dropped_blocks != self.last_dropped_blocks {
+        if self.drop_baseline_pending {
+            self.last_dropped_blocks = info.dropped_blocks;
+            self.drop_baseline_pending = false;
+        } else if info.dropped_blocks != self.last_dropped_blocks {
             ::log::warn!(
-                "Microphone PCM queue dropped blocks: total={} latest_sequence={}",
+                "Microphone PCM queue dropped blocks while active: total={} latest_sequence={}",
                 info.dropped_blocks,
                 info.sequence
             );

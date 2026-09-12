@@ -99,7 +99,7 @@ impl Calibration {
                     self.model = Some(model);
                 }
                 CandidateValidation::Rejected => {
-                    ::log::warn!(
+                    ::log::info!(
                         "BMM150 calibration candidate rejected; restarting balanced fit epoch"
                     );
                     self.restart_fit_epoch();
@@ -160,7 +160,7 @@ impl Calibration {
                     self.candidate = Some(Candidate::new(model));
                 }
                 None => {
-                    ::log::warn!(
+                    ::log::info!(
                         "BMM150 calibration fit rejected: fit_samples={}, weight={}, bins={}, faces={}, refit_bins={}, min_span={}; restarting balanced fit epoch",
                         self.fit_samples,
                         self.weight_sum,

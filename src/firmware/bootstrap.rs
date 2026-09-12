@@ -130,11 +130,13 @@ where
 
 pub(crate) fn bootstrap() -> Bootstrap {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
-    // The main heap and CPU0 stack share the remaining RWDATA region. With
-    // esp-hal 1.2 built without fat LTO, early PSRAM setup needs more call-stack
-    // headroom than the previous build. Runtime measurements show ample heap
-    // margin, so reserve 16 KiB less here and leave it available to CPU0 stack.
-    esp_alloc::heap_allocator!(size: 88 * 1024);
+    // The main heap and CPU0 stack share the remaining RWDATA region. The
+    // no-LTO full application build measured a sub-1 KiB historical CPU0 stack
+    // margin during by-value application/UI construction, while internal heap
+    // peak usage stayed around 45 KiB out of 160 KiB. Reserve another 16 KiB
+    // for CPU0 here: the resulting ~144 KiB internal heap still leaves roughly
+    // 99 KiB free at the observed peak, well above the pressure thresholds.
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     logger::init(::log::LevelFilter::Info);
     memory::init_cpu0_stack_watermark();

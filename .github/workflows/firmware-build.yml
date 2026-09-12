@@ -35,6 +35,8 @@ jobs:
           /tmp/imu-attitude-regression
           rustc +1.97.0 --edition=2024 --test tests/imu_fusion_regression.rs -o /tmp/imu-fusion-regression
           /tmp/imu-fusion-regression
+          rustc +1.97.0 --edition=2024 --test tests/imu_magnetic_math_regression.rs -o /tmp/imu-magnetic-math-regression
+          /tmp/imu-magnetic-math-regression
           cargo +1.97.0 test --manifest-path tests/network_regression/Cargo.toml --target x86_64-unknown-linux-gnu
 
   build:

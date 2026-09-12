@@ -245,12 +245,5 @@ pub(super) fn abs_f32(value: f32) -> f32 {
 }
 
 pub(super) fn sqrt_approx(value: f32) -> f32 {
-    if value <= 0.0 {
-        return 0.0;
-    }
-    let mut estimate = if value > 1.0 { value } else { 1.0 };
-    for _ in 0..10 {
-        estimate = 0.5 * (estimate + value / estimate);
-    }
-    estimate
+    super::super::sqrt::sqrt_approx(value)
 }

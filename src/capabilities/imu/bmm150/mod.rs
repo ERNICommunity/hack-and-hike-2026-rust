@@ -7,6 +7,7 @@
 //! BMM150 SensorAPI v2.0.0.
 
 mod calibration;
+mod sqrt;
 
 pub(super) use calibration::{Calibration, GOOD_FIELD_MAX_UT, GOOD_FIELD_MIN_UT, vector_length};
 
@@ -95,7 +96,7 @@ pub(super) fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
     let x = compensate_xy(raw_x, rhall, trim.dig_x1, trim.dig_x2, trim)?;
     let y = compensate_xy(raw_y, rhall, trim.dig_y1, trim.dig_y2, trim)?;
     let z = compensate_z(raw_z, rhall, trim)?;
-    let field_strength_ut = sqrt_approx(x * x + y * y + z * z);
+    let field_strength_ut = sqrt::sqrt_approx(x * x + y * y + z * z);
 
     Some(Sample {
         field_ut: [x, y, z],
@@ -134,16 +135,4 @@ fn compensate_z(raw: i16, rhall: u16, trim: Trim) -> Option<f32> {
     }
     let z5 = z0 * 131072.0 - z2;
     Some((z5 / (z4 * 4.0)) / 16.0)
-}
-
-fn sqrt_approx(value: f32) -> f32 {
-    if value <= 0.0 {
-        return 0.0;
-    }
-
-    let mut estimate = if value > 1.0 { value } else { 1.0 };
-    for _ in 0..6 {
-        estimate = 0.5 * (estimate + value / estimate);
-    }
-    estimate
 }

@@ -149,9 +149,24 @@ impl HeapMonitor {
             .saturating_sub(probe.before.internal_total_freed);
         let live_delta = after.internal_used as isize - probe.before.internal_used as isize;
 
-        if allocated != 0 || freed != 0 || live_delta != 0 {
+        if live_delta > 0 {
+            // A positive live delta means the operation retained internal heap;
+            // unlike balanced scratch allocation, that can accumulate across
+            // repeated navigation and is worth surfacing as a warning.
             ::log::warn!(
-                "Internal heap activity overlapped {}: alloc={} B free={} B live_delta={} B",
+                "Internal heap retained growth during {}: alloc={} B free={} B live_delta={} B",
+                probe.label,
+                allocated,
+                freed,
+                live_delta,
+            );
+        } else if allocated != 0 || freed != 0 || live_delta != 0 {
+            // embedded-gui legitimately uses short-lived allocator-backed
+            // scratch storage while constructing some views. If live usage is
+            // unchanged (or lower) when the operation completes, that activity
+            // is not a leak or memory-pressure event.
+            ::log::trace!(
+                "Internal heap transient activity during {}: alloc={} B free={} B live_delta={} B",
                 probe.label,
                 allocated,
                 freed,
