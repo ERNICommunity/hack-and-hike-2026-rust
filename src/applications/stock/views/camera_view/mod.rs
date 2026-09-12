@@ -1,12 +1,14 @@
-//! Stock camera presentation application.
+//! Stock camera presentation screen.
 //!
-//! The camera capability owns capture and frame lifetime. This application owns
-//! only presentation-specific cropping and the concrete LCD scanline-pump view.
+//! The camera capability owns capture and frame lifetime. This screen owns only
+//! presentation-specific cropping and the concrete LCD scanline-pump view.
 
 use crate::{
     capabilities::{camera, display::Surface},
-    ui::{design, theme},
+    ui::theme,
 };
+
+use super::super::design;
 
 const CAMERA_CROP_PIXELS: usize = camera::WIDTH - design::CONTENT_WIDTH;
 const CAMERA_CROP_LEFT: usize = CAMERA_CROP_PIXELS / 2;

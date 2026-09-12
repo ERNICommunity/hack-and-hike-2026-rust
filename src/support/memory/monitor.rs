@@ -1,14 +1,19 @@
 //! Heap snapshots, pressure policy, and runtime memory diagnostics.
 
+#[cfg(feature = "app-stock")]
 use embassy_time::{Duration, Instant};
 use esp_alloc::HEAP;
 
+#[cfg(feature = "app-stock")]
 use crate::support::diagnostics;
 
 use super::{psram, stack};
 
+#[cfg(feature = "app-stock")]
 const PERIODIC_REPORT_INTERVAL: Duration = Duration::from_secs(10);
+#[cfg(feature = "app-stock")]
 const INTERNAL_WARN_FREE_BYTES: usize = 32 * 1024;
+#[cfg(feature = "app-stock")]
 const INTERNAL_CRITICAL_FREE_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug)]
@@ -17,7 +22,9 @@ struct HeapSnapshot {
     internal_used: usize,
     internal_free: usize,
     internal_peak_used: usize,
+    #[cfg(feature = "app-stock")]
     internal_total_allocated: u64,
+    #[cfg(feature = "app-stock")]
     internal_total_freed: u64,
     psram_size: usize,
     psram_used: usize,
@@ -41,7 +48,9 @@ impl HeapSnapshot {
             internal_used: internal.current_usage,
             internal_free: internal.size.saturating_sub(internal.current_usage),
             internal_peak_used: internal.max_usage,
+            #[cfg(feature = "app-stock")]
             internal_total_allocated: internal.total_allocated,
+            #[cfg(feature = "app-stock")]
             internal_total_freed: internal.total_freed,
             psram_size: external.size,
             psram_used: external.current_usage,
@@ -79,6 +88,7 @@ pub(crate) fn report(label: &str) {
 }
 
 /// Snapshot window used to detect allocator activity overlapping a named CPU0 operation.
+#[cfg(feature = "app-stock")]
 #[derive(Clone, Copy, Debug)]
 struct HeapActivityProbe {
     label: &'static str,
@@ -86,6 +96,7 @@ struct HeapActivityProbe {
 }
 
 /// Long-lived internal-memory monitor.
+#[cfg(feature = "app-stock")]
 pub(crate) struct HeapMonitor {
     min_internal_free: usize,
     last_periodic_report: Instant,
@@ -95,6 +106,7 @@ pub(crate) struct HeapMonitor {
     pressure: HeapPressure,
 }
 
+#[cfg(feature = "app-stock")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeapPressure {
     Normal,
@@ -102,6 +114,7 @@ enum HeapPressure {
     Critical,
 }
 
+#[cfg(feature = "app-stock")]
 impl HeapMonitor {
     pub(crate) fn new(now: Instant) -> Self {
         stack::update_cpu0_stack_watermark();
@@ -251,6 +264,7 @@ impl HeapMonitor {
     }
 }
 
+#[cfg(feature = "app-stock")]
 fn pressure_for(free_bytes: usize) -> HeapPressure {
     if free_bytes <= INTERNAL_CRITICAL_FREE_BYTES {
         HeapPressure::Critical

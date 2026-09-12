@@ -1,4 +1,4 @@
-#[path = "../src/applications/imu_worldview/view/attitude.rs"]
+#[path = "../src/applications/stock/views/imu_worldview/view/attitude.rs"]
 mod attitude;
 
 use attitude::Tracker;

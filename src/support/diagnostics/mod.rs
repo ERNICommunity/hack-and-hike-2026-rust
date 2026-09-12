@@ -5,18 +5,30 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+#[cfg(feature = "touch")]
 static TOUCH_READ_ERRORS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "touch")]
 static TOUCH_EDGE_DROPS: AtomicU32 = AtomicU32::new(0);
+#[cfg(any(feature = "mic", feature = "speaker"))]
 static AUDIO_CAPTURE_ERRORS: AtomicU32 = AtomicU32::new(0);
+#[cfg(any(feature = "mic", feature = "speaker"))]
 static AUDIO_PLAYBACK_ERRORS: AtomicU32 = AtomicU32::new(0);
+#[cfg(any(feature = "mic", feature = "speaker"))]
 static AUDIO_FULL_DRAINS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "network")]
 static NETWORK_INIT_ERRORS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "network")]
 static NETWORK_TX_PACKETS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "network")]
 static NETWORK_RX_PACKETS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "network")]
 static NETWORK_TX_ERRORS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "network")]
 static NETWORK_RX_INVALID: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "network")]
 static NETWORK_PEER_EVICTIONS: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(feature = "app-stock")]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RuntimeCounters {
     pub(crate) touch_read_errors: u32,
@@ -35,50 +47,62 @@ pub(crate) struct RuntimeCounters {
     pub(crate) network_peer_evictions: u32,
 }
 
+#[cfg(feature = "touch")]
 pub(crate) fn record_touch_read_error() {
     TOUCH_READ_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "touch")]
 pub(crate) fn record_touch_edge_drop() {
     TOUCH_EDGE_DROPS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(any(feature = "mic", feature = "speaker"))]
 pub(crate) fn record_audio_capture_error() {
     AUDIO_CAPTURE_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(any(feature = "mic", feature = "speaker"))]
 pub(crate) fn record_audio_playback_error() {
     AUDIO_PLAYBACK_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(any(feature = "mic", feature = "speaker"))]
 pub(crate) fn record_audio_full_drain() {
     AUDIO_FULL_DRAINS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "network")]
 pub(crate) fn record_network_init_error() {
     NETWORK_INIT_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "network")]
 pub(crate) fn record_network_tx_packet() {
     NETWORK_TX_PACKETS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "network")]
 pub(crate) fn record_network_rx_packet() {
     NETWORK_RX_PACKETS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "network")]
 pub(crate) fn record_network_tx_error() {
     NETWORK_TX_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "network")]
 pub(crate) fn record_network_rx_invalid() {
     NETWORK_RX_INVALID.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "network")]
 pub(crate) fn record_network_peer_eviction() {
     NETWORK_PEER_EVICTIONS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "app-stock")]
 pub(crate) fn snapshot() -> RuntimeCounters {
     RuntimeCounters {
         touch_read_errors: TOUCH_READ_ERRORS.load(Ordering::Relaxed),

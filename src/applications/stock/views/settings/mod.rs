@@ -1,20 +1,17 @@
-//! Stock display-settings application.
+//! Stock display-settings screen.
 //!
-//! This application owns brightness state, pointer interaction, and its concrete
-//! view. It consumes only the display brightness control supplied by firmware
-//! composition plus shell-owned presentation surfaces.
+//! This screen owns brightness state, pointer interaction, and its concrete view.
+//! It consumes only the display brightness control owned by the stock application.
 
 mod model;
 mod view;
 
 use crate::{
     capabilities::display::{BrightnessControl, Surface},
-    ui::{
-        gui::GuiSurface,
-        navigation::ContentPointer,
-    },
+    ui::gui::GuiSurface,
 };
 
+use super::super::navigation::ContentPointer;
 use model::Model;
 use view::View;
 

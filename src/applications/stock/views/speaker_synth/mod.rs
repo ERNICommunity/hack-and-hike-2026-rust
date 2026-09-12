@@ -1,8 +1,8 @@
-//! Stock speaker synth application.
+//! Stock speaker-synth screen and behavior.
 //!
-//! This application owns melody/chime synthesis, tempo/pitch state, controls,
+//! This stock component owns melody/chime synthesis, tempo/pitch state, controls,
 //! and its concrete view. It continuously feeds only the generic speaker PCM
-//! capability supplied by firmware composition.
+//! capability owned by the stock application.
 
 mod chime;
 mod melody;
@@ -11,11 +11,10 @@ mod view;
 
 use crate::{
     capabilities::{display::Surface, speaker::Speaker},
-    ui::{
-        gui::GuiSurface,
-        navigation::ContentPointer,
-    },
+    ui::gui::GuiSurface,
 };
+
+use super::super::navigation::ContentPointer;
 
 pub(crate) use model::{PitchSemitones, SpeakerDisplay, TempoBpm};
 use model::Model;

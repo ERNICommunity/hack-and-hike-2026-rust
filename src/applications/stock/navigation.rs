@@ -1,119 +1,50 @@
-//! Feature-composed navigation state, input, and rail rendering.
+//! Stock-application navigation state, touch routing, and rail rendering.
 //!
-//! The shell owns the active destination and physical touch reader, routing one
-//! gesture to either the navigation rail or the active content application.
-//! Applications receive only content-space pointer coordinates.
+//! Navigation is application policy rather than shared UI infrastructure. It
+//! owns the active destination and physical touch reader, routing one gesture to
+//! either the navigation rail or the active content screen.
 
-#[cfg(feature = "touch")]
-use crate::capabilities::touch::{Touch, TouchEdge, TouchPoint};
-use crate::capabilities::display::Surface;
+use crate::{
+    capabilities::{
+        display::Surface,
+        touch::{Touch, TouchEdge, TouchPoint},
+    },
+};
 
 use super::design;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ViewId {
-    #[cfg(feature = "network-demo")]
+pub(super) enum ViewId {
     Network,
-    #[cfg(feature = "imu-worldview")]
     Imu,
-    #[cfg(feature = "mic-waveform")]
     Microphone,
-    #[cfg(feature = "speaker-synth")]
     Speaker,
-    #[cfg(feature = "camera-view")]
     Camera,
-    #[cfg(feature = "settings")]
     Settings,
-    #[cfg(feature = "log-view")]
     Log,
 }
 
 impl ViewId {
-    pub(crate) const fn name(self) -> &'static str {
+    pub(super) const fn name(self) -> &'static str {
         match self {
-            #[cfg(feature = "network-demo")]
             Self::Network => "Network",
-            #[cfg(feature = "imu-worldview")]
             Self::Imu => "Imu",
-            #[cfg(feature = "mic-waveform")]
             Self::Microphone => "Microphone",
-            #[cfg(feature = "speaker-synth")]
             Self::Speaker => "Speaker",
-            #[cfg(feature = "camera-view")]
             Self::Camera => "Camera",
-            #[cfg(feature = "settings")]
             Self::Settings => "Settings",
-            #[cfg(feature = "log-view")]
             Self::Log => "Log",
         }
     }
 
-    pub(crate) const fn initial() -> Self {
-        // Preserve existing stock behavior: Log is preferred whenever enabled;
-        // otherwise select the first enabled application in navigation order.
-        #[cfg(feature = "log-view")]
-        {
-            Self::Log
-        }
-        #[cfg(all(not(feature = "log-view"), feature = "network-demo"))]
-        {
-            Self::Network
-        }
-        #[cfg(all(
-            not(feature = "log-view"),
-            not(feature = "network-demo"),
-            feature = "imu-worldview"
-        ))]
-        {
-            Self::Imu
-        }
-        #[cfg(all(
-            not(feature = "log-view"),
-            not(feature = "network-demo"),
-            not(feature = "imu-worldview"),
-            feature = "mic-waveform"
-        ))]
-        {
-            Self::Microphone
-        }
-        #[cfg(all(
-            not(feature = "log-view"),
-            not(feature = "network-demo"),
-            not(feature = "imu-worldview"),
-            not(feature = "mic-waveform"),
-            feature = "speaker-synth"
-        ))]
-        {
-            Self::Speaker
-        }
-        #[cfg(all(
-            not(feature = "log-view"),
-            not(feature = "network-demo"),
-            not(feature = "imu-worldview"),
-            not(feature = "mic-waveform"),
-            not(feature = "speaker-synth"),
-            feature = "camera-view"
-        ))]
-        {
-            Self::Camera
-        }
-        #[cfg(all(
-            not(feature = "log-view"),
-            not(feature = "network-demo"),
-            not(feature = "imu-worldview"),
-            not(feature = "mic-waveform"),
-            not(feature = "speaker-synth"),
-            not(feature = "camera-view"),
-            feature = "settings"
-        ))]
-        {
-            Self::Settings
-        }
+    pub(super) const fn initial() -> Self {
+        Self::Log
     }
 }
 
 const ICON_X: usize = (design::UI.navigation.width - design::NAV_ICON_SIZE) / 2;
-const ICON_Y_IN_BUTTON: usize = (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;
+const ICON_Y_IN_BUTTON: usize =
+    (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PointerPhase {
@@ -129,36 +60,29 @@ pub(crate) struct ContentPointer {
     pub phase: PointerPhase,
 }
 
-#[cfg(feature = "touch")]
 #[derive(Clone, Copy)]
 enum GestureTarget {
     Navigation(Option<ViewId>),
     Content,
 }
 
-pub(crate) struct NavigationInput {
-    #[cfg(feature = "touch")]
+pub(super) struct NavigationInput {
     touch: Touch,
-    #[cfg(feature = "touch")]
     target: Option<GestureTarget>,
 }
 
 impl NavigationInput {
-    #[cfg(feature = "touch")]
-    pub(crate) const fn new(touch: Touch) -> Self {
+    pub(super) const fn new(touch: Touch) -> Self {
         Self {
             touch,
             target: None,
         }
     }
 
-    #[cfg(not(feature = "touch"))]
-    pub(crate) const fn new() -> Self {
-        Self {}
-    }
-
-    #[cfg(feature = "touch")]
-    pub(crate) fn poll(&mut self, mut on_content: impl FnMut(ContentPointer)) -> Option<ViewId> {
+    pub(super) fn poll(
+        &mut self,
+        mut on_content: impl FnMut(ContentPointer),
+    ) -> Option<ViewId> {
         let mut selected = None;
 
         while let Some(edge) = self.touch.next_edge() {
@@ -198,12 +122,6 @@ impl NavigationInput {
         selected
     }
 
-    #[cfg(not(feature = "touch"))]
-    pub(crate) fn poll(&mut self, _on_content: impl FnMut(ContentPointer)) -> Option<ViewId> {
-        None
-    }
-
-    #[cfg(feature = "touch")]
     fn flush_latest_movement(&mut self, on_content: &mut impl FnMut(ContentPointer)) {
         let Some(point) = self.touch.take_latest_point() else {
             return;
@@ -223,7 +141,6 @@ impl NavigationInput {
     }
 }
 
-#[cfg(feature = "touch")]
 fn content_pointer(point: TouchPoint, phase: PointerPhase) -> ContentPointer {
     ContentPointer {
         x: i32::from(point.x) - design::UI.navigation.width as i32,
@@ -232,7 +149,6 @@ fn content_pointer(point: TouchPoint, phase: PointerPhase) -> ContentPointer {
     }
 }
 
-#[cfg(feature = "touch")]
 fn view_at(point: TouchPoint) -> Option<ViewId> {
     let nav = design::UI.navigation;
     if usize::from(point.x) >= nav.width {
@@ -243,7 +159,7 @@ fn view_at(point: TouchPoint) -> Option<ViewId> {
     nav.items.get(index).map(|item| item.view)
 }
 
-pub(crate) fn render(surface: &mut Surface<'_>, active: ViewId) {
+pub(super) fn render(surface: &mut Surface<'_>, active: ViewId) {
     let nav = design::UI.navigation;
     debug_assert_eq!(surface.width(), nav.width);
     surface.render_scanlines(|screen_y, pixels| {

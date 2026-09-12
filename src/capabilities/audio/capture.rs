@@ -1,8 +1,9 @@
 //! CPU1 shared I2S setup and optional microphone RX acquisition.
 
 use embassy_executor::Spawner;
+#[cfg(feature = "mic")]
+use esp_hal::gpio::NoPin;
 use esp_hal::{
-    gpio::NoPin,
     i2s::master::{Channels, DataFormat, I2s, TdmConfig},
     time::Rate,
 };

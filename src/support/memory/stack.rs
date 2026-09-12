@@ -2,9 +2,33 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 use embassy_time::{Duration, Timer};
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 use esp_hal::system::Stack;
 
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 const PERIODIC_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const STACK_WATERMARK_PATTERN: u32 = 0xA5A5_A5A5;
 // ESP-RTOS currently places its guard near the bottom of each main-task stack.
@@ -22,7 +46,23 @@ static CPU0_MIN_HEADROOM: AtomicUsize = AtomicUsize::new(0);
 
 static CPU1_STACK_BOTTOM: AtomicUsize = AtomicUsize::new(0);
 static CPU1_STACK_TOP: AtomicUsize = AtomicUsize::new(0);
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 static CPU1_WATERMARK_START: AtomicUsize = AtomicUsize::new(0);
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 static CPU1_WATERMARK_END: AtomicUsize = AtomicUsize::new(0);
 static CPU1_MIN_HEADROOM: AtomicUsize = AtomicUsize::new(0);
 
@@ -128,12 +168,28 @@ pub(crate) fn init_cpu0_stack_watermark() {
 }
 
 /// Record the statically allocated CPU1 stack before it is handed to ESP-RTOS.
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 pub(crate) fn register_cpu1_stack<const SIZE: usize>(stack: &mut Stack<SIZE>) {
     CPU1_STACK_BOTTOM.store(stack.bottom() as usize, Ordering::Release);
     CPU1_STACK_TOP.store(stack.top() as usize, Ordering::Release);
 }
 
 /// Paint CPU1's currently-unused stack. Call this from the CPU1 entry closure.
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 pub(crate) fn init_cpu1_stack_watermark() {
     let bottom = CPU1_STACK_BOTTOM.load(Ordering::Acquire);
     let top = CPU1_STACK_TOP.load(Ordering::Acquire);
@@ -161,6 +217,14 @@ pub(super) fn update_cpu0_stack_watermark() {
     }
 }
 
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 fn update_cpu1_stack_watermark() {
     let bottom = CPU1_STACK_BOTTOM.load(Ordering::Acquire);
     if let Some(headroom) = scan_stack_watermark(
@@ -173,6 +237,14 @@ fn update_cpu1_stack_watermark() {
 }
 
 /// CPU1 scans its own watermark so CPU0 never reads a stack CPU1 may be using.
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 #[embassy_executor::task]
 pub(crate) async fn cpu1_stack_monitor_task() {
     loop {

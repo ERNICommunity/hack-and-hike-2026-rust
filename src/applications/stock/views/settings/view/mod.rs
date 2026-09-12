@@ -19,13 +19,14 @@ use crate::{
     ui::{
         common,
         gui::{GuiFramebuffer, GuiSurface},
-        navigation::{ContentPointer, PointerPhase},
     },
 };
 
+use crate::applications::stock::navigation::{ContentPointer, PointerPhase};
+
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/applications/settings/view/settings.kdl");
+    embedded_gui::include_gui!("src/applications/stock/views/settings/view/settings.kdl");
 }
 
 const NODE_CAPACITY: usize = 16;

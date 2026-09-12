@@ -56,11 +56,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .ci-cache/firmware-build-ok
-          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v5-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
+          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v8-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
 
       - name: Reuse successful build result
         if: steps.build-proof.outputs.cache-hit == 'true'
-        run: echo "Identical firmware inputs already passed feature composition and the warning-free full ESP32-S3 release build."
+        run: echo "Identical firmware inputs already passed warning-free feature composition and the full ESP32-S3 release build."
 
       - name: Restore Cargo dependency cache
         if: steps.build-proof.outputs.cache-hit != 'true'
@@ -117,14 +117,19 @@ jobs:
             ${{ runner.os }}-esp32s3-release-1.97.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-
             ${{ runner.os }}-esp32s3-target-1.97.0.0-${{ hashFiles('Cargo.lock') }}-
 
-      - name: Check feature composition
+      - name: Check feature composition without warnings
         if: steps.build-proof.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          cargo check --locked --release --no-default-features
+          # Empty firmware must remain completely clean.
+          cargo rustc --locked --release --no-default-features -- -D warnings
 
+          # Capability-only and app-idle compositions intentionally have no
+          # application consumer for their semantic endpoints. Ignore only the
+          # lints that describe that deliberate idleness; every other compiler
+          # warning remains fatal so cfg/type/composition regressions still fail.
           for features in \
             display \
             touch \
@@ -134,19 +139,21 @@ jobs:
             network \
             camera \
             mic,speaker \
-            imu-worldview \
-            mic-waveform \
-            speaker-synth \
-            network-demo \
-            camera-view \
-            settings \
-            log-view
+            app-idle \
+            app-idle,imu \
+            app-idle,network \
+            app-idle,imu,network
           do
             echo "Checking --no-default-features --features ${features}"
-            cargo check --locked --release --no-default-features --features "${features}"
+            cargo rustc --locked --release --no-default-features --features "${features}" -- \
+              -D warnings -A dead_code -A unused_imports
           done
 
-      - name: Build firmware without warnings
+          # The stock application consumes the complete semantic API surface and
+          # therefore has no reason to suppress liveness warnings.
+          cargo rustc --locked --release --no-default-features --features app-stock -- -D warnings
+
+      - name: Build default firmware without warnings
         if: steps.build-proof.outputs.cache-hit != 'true'
         run: cargo rustc --locked --release -- -D warnings
 
@@ -162,4 +169,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .ci-cache/firmware-build-ok
-          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v5-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
+          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v8-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}

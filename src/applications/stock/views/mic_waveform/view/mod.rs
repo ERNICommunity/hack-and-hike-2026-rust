@@ -19,7 +19,7 @@ mod waveform;
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/applications/mic_waveform/view/microphone.kdl");
+    embedded_gui::include_gui!("src/applications/stock/views/mic_waveform/view/microphone.kdl");
 }
 
 const NODE_CAPACITY: usize = 12;

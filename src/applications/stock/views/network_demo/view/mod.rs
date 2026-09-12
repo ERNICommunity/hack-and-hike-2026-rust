@@ -6,7 +6,6 @@ use arrayvec::ArrayString;
 use embedded_gui::prelude::*;
 
 use crate::{
-    applications::network_demo::DisplayState,
     capabilities::{display::Surface, network},
     support::memory::storage,
     ui::{
@@ -15,9 +14,11 @@ use crate::{
     },
 };
 
+use super::DisplayState;
+
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/applications/network_demo/view/network.kdl");
+    embedded_gui::include_gui!("src/applications/stock/views/network_demo/view/network.kdl");
 }
 
 const NODE_CAPACITY: usize = 8;

@@ -1,12 +1,16 @@
+#[cfg(feature = "app-stock")]
 use core::cell::RefCell;
 use core::fmt::Write;
 
+#[cfg(feature = "app-stock")]
 use critical_section::Mutex;
 use log::{LevelFilter, Metadata, Record};
 
+#[cfg(feature = "app-stock")]
 use crate::support::memory::storage::{FixedPsramBuffer, PsramByteRing};
 
 /// Maximum number of rows retained by the on-device log model.
+#[cfg(feature = "app-stock")]
 const MAX_LOG_ROWS: usize = 64;
 
 /// Fixed stack budget for formatting one log record.
@@ -18,17 +22,22 @@ const LOG_RECORD_BYTES: usize = 512;
 
 /// PSRAM byte budget per retained row. Log lines may be longer or shorter than
 /// this; this constant only sizes the byte ring from the row-count policy.
+#[cfg(feature = "app-stock")]
 const LOG_BYTES_PER_ROW_BUDGET: usize = 256;
 
+#[cfg(feature = "app-stock")]
 const HISTORY_BYTES: usize = MAX_LOG_ROWS * LOG_BYTES_PER_ROW_BUDGET;
+#[cfg(feature = "app-stock")]
 const SNAPSHOT_CHUNK_BYTES: usize = 512;
 const TRUNCATION_SUFFIX: &str = "...\n";
 
+#[cfg(feature = "app-stock")]
 struct LogStore {
     history: PsramByteRing,
     revision: u32,
 }
 
+#[cfg(feature = "app-stock")]
 impl LogStore {
     fn new() -> Self {
         Self {
@@ -44,15 +53,18 @@ impl LogStore {
     }
 }
 
+#[cfg(feature = "app-stock")]
 type Store = Mutex<RefCell<Option<LogStore>>>;
 
 // The logger must exist before PSRAM history is enabled, so its service storage
 // starts empty and is populated during bootstrap. The static lifetime is an
 // implementation detail; application code receives only `Input`.
+#[cfg(feature = "app-stock")]
 struct Service {
     store: Store,
 }
 
+#[cfg(feature = "app-stock")]
 impl Service {
     const fn new() -> Self {
         Self {
@@ -61,12 +73,15 @@ impl Service {
     }
 }
 
+#[cfg(feature = "app-stock")]
 static SERVICE: Service = Service::new();
 
+#[cfg(feature = "app-stock")]
 pub(crate) struct Input {
     service: &'static Service,
 }
 
+#[cfg(feature = "app-stock")]
 impl Input {
     fn revision(&self) -> u32 {
         critical_section::with(|cs| {
@@ -125,12 +140,14 @@ impl Input {
 ///
 /// The concrete PSRAM allocation remains a logging implementation detail. The
 /// app model only asks this buffer to refresh from `Input` and borrow its text.
+#[cfg(feature = "app-stock")]
 pub(crate) struct HistoryBuffer {
     bytes: FixedPsramBuffer<u8>,
     len: usize,
     revision: u32,
 }
 
+#[cfg(feature = "app-stock")]
 impl HistoryBuffer {
     pub(crate) fn new() -> Self {
         Self {
@@ -196,6 +213,7 @@ impl log::Log for Logger {
 
         esp_println::print!("{}\r\n", line.trim_end_matches('\n'));
 
+        #[cfg(feature = "app-stock")]
         critical_section::with(|cs| {
             if let Some(store) = SERVICE.store.borrow(cs).borrow_mut().as_mut() {
                 store.push_back(line.as_bytes());
@@ -214,6 +232,7 @@ pub(crate) fn init(level: LevelFilter) {
         .expect("Failed to initialize logger");
 }
 
+#[cfg(feature = "app-stock")]
 pub(crate) fn enable_psram_history() -> Input {
     let store = LogStore::new();
 
