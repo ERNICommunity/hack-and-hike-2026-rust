@@ -3,7 +3,9 @@ mod psram;
 mod stack;
 pub(crate) mod storage;
 
-pub(crate) use monitor::{HeapMonitor, report};
+#[cfg(feature = "app-stock")]
+pub(crate) use monitor::HeapMonitor;
+pub(crate) use monitor::report;
 pub(crate) use psram::enable as enable_psram;
 pub(crate) use stack::{
     cpu1_stack_monitor_task, init_cpu0_stack_watermark, init_cpu1_stack_watermark,
