@@ -46,7 +46,23 @@ static CPU0_MIN_HEADROOM: AtomicUsize = AtomicUsize::new(0);
 
 static CPU1_STACK_BOTTOM: AtomicUsize = AtomicUsize::new(0);
 static CPU1_STACK_TOP: AtomicUsize = AtomicUsize::new(0);
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 static CPU1_WATERMARK_START: AtomicUsize = AtomicUsize::new(0);
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
 static CPU1_WATERMARK_END: AtomicUsize = AtomicUsize::new(0);
 static CPU1_MIN_HEADROOM: AtomicUsize = AtomicUsize::new(0);
 
