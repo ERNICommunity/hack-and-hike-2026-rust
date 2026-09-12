@@ -3,7 +3,7 @@
 use embassy_executor::Spawner;
 use esp_hal::{
     gpio::NoPin,
-    i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s},
+    i2s::master::{Channels, DataFormat, I2s, TdmConfig},
     time::Rate,
 };
 
@@ -19,7 +19,10 @@ use super::{Resources, SAMPLE_RATE_HZ, channels::Runtime, playback};
 const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
 #[cfg(feature = "mic")]
 const RX_PROCESS_CHUNK_BYTES: usize = FRAMES_PER_BLOCK * CHANNELS * 2;
-const TX_DMA_BUFFER_BYTES: usize = 8_184;
+// esp-hal 1.2's streaming TX buffer currently requires at least four DMA
+// descriptors. Keep the proven default 4092-byte descriptor geometry and
+// deepen only the stream ring rather than shrinking descriptor chunks.
+const TX_DMA_BUFFER_BYTES: usize = 4 * esp_hal::dma::CHUNK_SIZE;
 #[cfg(feature = "mic")]
 const _: () = assert!(RX_PROCESS_CHUNK_BYTES % 4 == 0);
 const _: () = assert!(TX_DMA_BUFFER_BYTES % 4 == 0);
@@ -58,19 +61,15 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
     } = resources;
 
     #[cfg(feature = "mic")]
-    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
-        esp_hal::dma_circular_buffers!(RX_DMA_BUFFER_BYTES, TX_DMA_BUFFER_BYTES);
-    #[cfg(not(feature = "mic"))]
-    let (_, _, tx_buffer, tx_descriptors) =
-        // esp-hal explicitly supports zero-sized DMA sides as "not needed".
-        // Keep circular TX descriptors for the shared clock domain without
-        // reserving microphone RX storage in speaker-only firmware.
-        esp_hal::dma_circular_buffers!(0, TX_DMA_BUFFER_BYTES);
+    let rx_buffer =
+        esp_hal::dma_rx_stream_buffer!(RX_DMA_BUFFER_BYTES, esp_hal::dma::CHUNK_SIZE);
+    let tx_buffer =
+        esp_hal::dma_tx_stream_buffer!(TX_DMA_BUFFER_BYTES, esp_hal::dma::CHUNK_SIZE);
 
     let i2s = I2s::new(
         i2s0,
         dma,
-        I2sConfig::new_tdm_philips()
+        TdmConfig::new_tdm_philips()
             .with_signal_loopback(true)
             .with_sample_rate(Rate::from_hz(SAMPLE_RATE_HZ))
             .with_data_format(DataFormat::Data16Channel16)
@@ -86,14 +85,14 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
         .with_bclk(bclk)
         .with_ws(word_select)
         .with_dout(data_out)
-        .build(tx_descriptors);
+        .build();
     #[cfg(not(feature = "speaker"))]
     let i2s_tx = i2s
         .i2s_tx
         .with_bclk(bclk)
         .with_ws(word_select)
         .with_dout(NoPin)
-        .build(tx_descriptors);
+        .build();
 
     #[cfg(feature = "mic")]
     let i2s_rx = i2s
@@ -101,7 +100,7 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
         .with_bclk(NoPin)
         .with_ws(NoPin)
         .with_din(data_in)
-        .build(rx_descriptors);
+        .build();
 
     spawner.spawn(
         playback::playback_task(i2s_tx, tx_buffer, runtime)
@@ -117,7 +116,8 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
     #[cfg(feature = "mic")]
     {
         let mut transfer = i2s_rx
-            .read_dma_circular_async(rx_buffer)
+            .read(rx_buffer)
+            .ok()
             .expect("Failed to start circular I2S RX DMA");
 
         ::log::info!(
@@ -133,13 +133,16 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
         let mut first_block = true;
 
         loop {
-            let count = match transfer.pop(dma_drain.as_mut_slice()).await {
-                Ok(count) => count,
-                Err(_) => {
-                    diagnostics::record_audio_capture_error();
-                    panic!("I2S circular DMA read failed");
-                }
-            };
+            if transfer.wait_for_available_async().await.is_err() {
+                diagnostics::record_audio_capture_error();
+                panic!("I2S circular DMA read failed");
+            }
+
+            let available = transfer.available_bytes().min(RX_DMA_BUFFER_BYTES);
+            if available == 0 {
+                continue;
+            }
+            let count = transfer.pop(&mut dma_drain.as_mut_slice()[..available]);
 
             if count == RX_DMA_BUFFER_BYTES {
                 diagnostics::record_audio_full_drain();

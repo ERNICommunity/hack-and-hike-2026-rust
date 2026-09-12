@@ -11,9 +11,8 @@ use embedded_hal_bus::spi::DeviceError;
 use esp_hal::{
     Blocking,
     delay::Delay,
-    dma::{DmaRxBuf, DmaTxBuf},
     gpio::Output,
-    spi::master::{SpiDma, SpiDmaBus},
+    spi::master::SpiDma,
 };
 use mipidsi::options::{
     HorizontalRefreshOrder, Orientation, RefreshOrder, Rotation, VerticalRefreshOrder,
@@ -22,12 +21,9 @@ use mipidsi::options::{
 use crate::platform::board;
 
 type DisplaySpiDma = SpiDma<'static, Blocking>;
-type DisplaySpiDmaBus = SpiDmaBus<'static, Blocking>;
 
 pub(super) struct Initialized {
     pub(super) spi: DisplaySpiDma,
-    pub(super) control_rx: DmaRxBuf,
-    pub(super) control_tx: DmaTxBuf,
     pub(super) cs: Output<'static>,
     pub(super) dc: Output<'static>,
 }
@@ -106,7 +102,7 @@ where
 }
 
 pub(super) fn initialize(
-    dma_bus: DisplaySpiDmaBus,
+    dma_bus: DisplaySpiDma,
     cs: Output<'static>,
     dc: Output<'static>,
     delay: &mut Delay,
@@ -145,14 +141,7 @@ pub(super) fn initialize(
 
     let (di, _model, _reset) = display.release();
     let (spi_device, dc) = di.release();
-    let (dma_bus, cs) = spi_device.release();
-    let (spi, control_rx, control_tx) = dma_bus.split();
+    let (spi, cs) = spi_device.release();
 
-    Initialized {
-        spi,
-        control_rx,
-        control_tx,
-        cs,
-        dc,
-    }
+    Initialized { spi, cs, dc }
 }

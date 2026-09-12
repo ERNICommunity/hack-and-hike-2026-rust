@@ -130,7 +130,11 @@ where
 
 pub(crate) fn bootstrap() -> Bootstrap {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
-    esp_alloc::heap_allocator!(size: 104 * 1024);
+    // The main heap and CPU0 stack share the remaining RWDATA region. With
+    // esp-hal 1.2 built without fat LTO, early PSRAM setup needs more call-stack
+    // headroom than the previous build. Runtime measurements show ample heap
+    // margin, so reserve 16 KiB less here and leave it available to CPU0 stack.
+    esp_alloc::heap_allocator!(size: 88 * 1024);
 
     logger::init(::log::LevelFilter::Info);
     memory::init_cpu0_stack_watermark();
@@ -144,9 +148,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
     memory::report("PSRAM/storage ready");
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let sw_interrupt =
-        esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     #[cfg(feature = "display")]
     let display_resources = display::Resources {
@@ -314,7 +316,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
         let cpu1_stack = cpu1::init_stack();
         esp_rtos::start_second_core(
             peripherals.CPU_CTRL,
-            sw_interrupt.software_interrupt1,
+            peripherals.FROM_CPU_INTR1,
             cpu1_stack,
             move || {
                 cpu1::run(

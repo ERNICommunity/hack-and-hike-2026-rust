@@ -13,6 +13,7 @@ use esp_hal::{
     delay::Delay,
     peripherals::{DMA_CH1, GPIO3, GPIO35, GPIO36, GPIO37, SPI2},
 };
+use static_cell::StaticCell;
 
 use crate::platform::board;
 
@@ -28,6 +29,14 @@ pub(crate) const WIDTH: usize = board::DISPLAY_WIDTH;
 pub(crate) const HEIGHT: usize = board::DISPLAY_HEIGHT;
 const RGB565_BYTES_PER_PIXEL: usize = 2;
 const RAW_BATCH_BYTES: usize = WIDTH * RGB565_BYTES_PER_PIXEL * transport::RAW_BATCH_LINES;
+
+// These fixed scratch buffers are large enough to materially affect the CPU0
+// bootstrap stack (~5 KiB together). Keep their storage in internal static RAM
+// and let the concrete `Display` retain exclusive mutable ownership through
+// `'static` references. `init_with` constructs them in place instead of creating
+// another temporary array on the already-tight main stack.
+static LINE_BUFFER: StaticCell<[Pixel; WIDTH]> = StaticCell::new();
+static RAW_BATCH_BUFFER: StaticCell<[u8; RAW_BATCH_BYTES]> = StaticCell::new();
 
 /// Valid rectangular region in the physical LCD coordinate space.
 ///
@@ -88,8 +97,8 @@ pub(crate) struct Resources {
 /// Exclusive CPU0 owner of the LCD transport and reusable scanline scratch.
 pub(crate) struct Display {
     transport: transport::Transport,
-    line_buffer: [Pixel; WIDTH],
-    raw_batch_buffer: [u8; RAW_BATCH_BYTES],
+    line_buffer: &'static mut [Pixel; WIDTH],
+    raw_batch_buffer: &'static mut [u8; RAW_BATCH_BYTES],
 }
 
 /// Borrowed display access permanently restricted to one physical region.
@@ -102,10 +111,14 @@ pub(crate) struct Surface<'a> {
 }
 
 pub(crate) fn init(resources: Resources, delay: &mut Delay) -> Display {
+    let transport = transport::init(resources, delay);
+    let line_buffer = LINE_BUFFER.init_with(|| [0; WIDTH]);
+    let raw_batch_buffer = RAW_BATCH_BUFFER.init_with(|| [0; RAW_BATCH_BYTES]);
+
     Display {
-        transport: transport::init(resources, delay),
-        line_buffer: [0; WIDTH],
-        raw_batch_buffer: [0; RAW_BATCH_BYTES],
+        transport,
+        line_buffer,
+        raw_batch_buffer,
     }
 }
 
@@ -129,7 +142,7 @@ impl Display {
         let x_start = region.x;
         let x_end = region.end_x();
         let transport = &mut self.transport;
-        let line_buffer = &mut self.line_buffer;
+        let line_buffer = &mut *self.line_buffer;
 
         transport.begin_region(x_start..x_end, region.y..region.end_y());
         for local_y in 0..region.height {
@@ -172,7 +185,7 @@ impl Display {
 
         let row_bytes = region.width * RGB565_BYTES_PER_PIXEL;
         let transport = &mut self.transport;
-        let raw_batch_buffer = &mut self.raw_batch_buffer;
+        let raw_batch_buffer = &mut *self.raw_batch_buffer;
         let mut valid = true;
         let mut local_y = 0usize;
 

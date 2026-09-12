@@ -10,7 +10,11 @@ use crate::capabilities::mic::{MicBlockInfo, QUEUE_CAPACITY_BLOCKS, SAMPLES_PER_
 #[cfg(feature = "speaker")]
 const SPEAKER_CHANNELS: usize = 2;
 #[cfg(feature = "speaker")]
-const SPEAKER_QUEUE_CAPACITY_FRAMES: usize = 512;
+// Buffer one complete DMA descriptor refill. esp-hal's default DMA descriptor
+// payload is 4092 bytes; 1024 stereo i16 frames are 4096 bytes. The old
+// 512-frame queue was smaller than one refill burst, so playback could drain it
+// and zero-pad the remainder before CPU0 generated more PCM.
+const SPEAKER_QUEUE_CAPACITY_FRAMES: usize = 1_024;
 #[cfg(feature = "speaker")]
 const SPEAKER_QUEUE_CAPACITY_SAMPLES: usize =
     SPEAKER_QUEUE_CAPACITY_FRAMES * SPEAKER_CHANNELS;
@@ -193,7 +197,10 @@ pub(crate) struct Endpoints {
 }
 
 pub(crate) fn init_endpoints() -> Endpoints {
-    let service: &'static Service = SERVICE.init(Service::new());
+    // `Service` contains the speaker PCM ring and can be several KiB. Construct it
+    // directly in the `StaticCell` so bootstrap does not need a same-sized stack
+    // temporary before moving the value into static storage.
+    let service: &'static Service = SERVICE.init_with(Service::new);
     Endpoints {
         runtime: Runtime { service },
         #[cfg(feature = "mic")]

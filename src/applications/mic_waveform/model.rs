@@ -1,6 +1,7 @@
 //! Microphone waveform application model.
 
 use embassy_time::{Duration, Instant};
+use static_cell::ConstStaticCell;
 
 use crate::capabilities::mic;
 
@@ -9,6 +10,9 @@ pub(crate) const MAX_AMPLITUDE_PIXELS: i32 = 42;
 
 const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
+
+static SAMPLES: ConstStaticCell<[i16; mic::SAMPLES_PER_BLOCK]> =
+    ConstStaticCell::new([0; mic::SAMPLES_PER_BLOCK]);
 
 #[derive(Clone, Copy)]
 pub(crate) struct WaveformFrame {
@@ -28,7 +32,7 @@ impl WaveformFrame {
 pub(crate) struct Model {
     microphone: mic::Microphone,
     frame: WaveformFrame,
-    samples: [i16; mic::SAMPLES_PER_BLOCK],
+    samples: &'static mut [i16; mic::SAMPLES_PER_BLOCK],
     last_sequence: u32,
     last_dropped_blocks: u32,
     last_update: Instant,
@@ -37,10 +41,16 @@ pub(crate) struct Model {
 
 impl Model {
     pub(crate) fn new(microphone: mic::Microphone) -> Self {
+        // One full stereo PCM block is 2048 bytes. Keep that persistent scratch
+        // storage out of the by-value application/UI construction path. A
+        // ConstStaticCell guarantees the zeroed buffer itself is initialized in
+        // static storage rather than materialized as a CPU0 stack temporary.
+        let samples = SAMPLES.take();
+
         Self {
             microphone,
             frame: WaveformFrame::silent(),
-            samples: [0; mic::SAMPLES_PER_BLOCK],
+            samples,
             last_sequence: 0,
             last_dropped_blocks: 0,
             last_update: Instant::now(),
@@ -62,7 +72,7 @@ impl Model {
         // the old realtime behavior by draining any backlog and rendering only
         // the newest complete block available for this frame.
         let mut latest = None;
-        while let Some(info) = self.microphone.try_read(&mut self.samples) {
+        while let Some(info) = self.microphone.try_read(&mut *self.samples) {
             latest = Some(info);
         }
         let Some(info) = latest else {

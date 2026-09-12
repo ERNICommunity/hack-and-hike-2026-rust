@@ -47,15 +47,18 @@ full = [
 ]
 
 [dependencies]
-esp-hal = { version = "~1.1.0", features = ["esp32s3", "log-04", "unstable"] }
-esp-rtos = { version = "0.3.0", features = ["embassy", "esp-alloc", "esp-radio", "esp32s3", "log-04"] }
-esp-radio = { version = "0.18.0", default-features = false, features = ["esp32s3", "esp-now", "esp-alloc", "log-04", "unstable"] }
-esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3", "log-04"] }
+# Keep the ESP crates on one coherent monorepo snapshot. The published
+# esp-radio 1.0.0-beta.0 crate still targets esp-hal 1.1, while the esp-hal
+# 1.2.0 release tag contains its 1.2-compatible source alongside esp-rtos 0.4.0.
+esp-hal = { version = "1.2.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "log-04", "unstable"] }
+esp-rtos = { version = "0.4.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["embassy", "esp-alloc", "esp-radio", "esp32s3", "log-04"] }
+esp-radio = { version = "=1.0.0-beta.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", default-features = false, features = ["esp32s3", "esp-now", "esp-alloc", "log-04", "unstable"] }
+esp-bootloader-esp-idf = { version = "0.6.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "log-04"] }
 log = "0.4.27"
-esp-alloc = { version = "0.10.0", features = ["internal-heap-stats"] }
+esp-alloc = { version = "0.11.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["internal-heap-stats"] }
 allocator-api2 = { version = "0.3", default-features = false, features = ["alloc"] }
-esp-backtrace = { version = "0.19.0", features = ["esp32s3", "panic-handler", "println"] }
-esp-println = { version = "0.17.0", features = ["esp32s3", "log-04", "jtag-serial"], default-features = false }
+esp-backtrace = { version = "0.20.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "panic-handler", "println"] }
+esp-println = { version = "0.18.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "log-04", "jtag-serial"], default-features = false }
 embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-time = { version = "0.5.0", features = ["log"] }
 embassy-sync = { version = "0.8.0" }
@@ -85,5 +88,8 @@ opt-level = "s"
 [profile.release]
 codegen-units = 1
 debug = false
-lto = 'fat'
+# esp-hal 1.2's GDMA metadata triggers an LLVM 21 Xtensa PCREL_WRAPPER
+# instruction-selection bug when fat LTO inlines concrete DMA channel metadata
+# into downstream code. Keep release optimization but disable cross-crate LTO.
+lto = false
 opt-level = 3

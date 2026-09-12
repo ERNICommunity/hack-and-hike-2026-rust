@@ -11,7 +11,7 @@ use esp_radio::{
         BROADCAST_ADDRESS, EspNowManager, EspNowReceiver, EspNowSender, EspNowWifiInterface,
         PeerInfo,
     },
-    wifi::{self, WifiController},
+    wifi::WifiController,
 };
 use static_cell::StaticCell;
 
@@ -66,8 +66,8 @@ pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, run
     });
     publish_snapshot(runtime, Instant::now());
 
-    let (controller, interfaces) = match wifi::new(resources.wifi, Default::default()) {
-        Ok(result) => result,
+    let controller = match WifiController::new(resources.wifi, Default::default()) {
+        Ok(controller) => controller,
         Err(error) => {
             diagnostics::record_network_init_error();
             let _ = with_state(NetworkState::mark_fault);
@@ -76,9 +76,9 @@ pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, run
             return;
         }
     };
-    let _controller = WIFI_CONTROLLER.init(controller);
+    let controller = WIFI_CONTROLLER.init(controller);
 
-    let esp_now = interfaces.esp_now;
+    let esp_now = controller.esp_now();
     if let Err(error) = esp_now.set_channel(config.channel.number()) {
         diagnostics::record_network_init_error();
         let _ = with_state(NetworkState::mark_fault);

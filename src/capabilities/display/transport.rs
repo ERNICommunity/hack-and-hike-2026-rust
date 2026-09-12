@@ -9,9 +9,9 @@ use embedded_hal::spi::SpiBus as _;
 use esp_hal::{
     Blocking,
     delay::Delay,
-    dma::{DmaRxBuf, DmaTxBuf},
+    dma::DmaTxBuf,
     gpio::{Level, Output, OutputConfig},
-    spi::master::{Config as SpiConfig, Spi, SpiDma, SpiDmaBus, SpiDmaTransfer},
+    spi::master::{Config as SpiConfig, Spi, SpiDma, SpiDmaTransfer},
     time::Rate,
 };
 
@@ -27,7 +27,6 @@ const DCS_PAGE_ADDRESS_SET: u8 = 0x2B;
 const DCS_MEMORY_WRITE: u8 = 0x2C;
 
 type DisplaySpiDma = SpiDma<'static, Blocking>;
-type DisplaySpiDmaBus = SpiDmaBus<'static, Blocking>;
 type PixelTransfer = SpiDmaTransfer<'static, Blocking, DmaTxBuf>;
 
 enum PipelineState {
@@ -46,8 +45,6 @@ enum PipelineState {
 /// the next chunk in the second static DMA buffer.
 pub(super) struct Transport {
     state: Option<PipelineState>,
-    control_rx: Option<DmaRxBuf>,
-    control_tx: Option<DmaTxBuf>,
     cs: Output<'static>,
     dc: Output<'static>,
 }
@@ -71,21 +68,14 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
     .with_mosi(mosi)
     .with_dma(dma);
 
-    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
-        esp_hal::dma_buffers!(CONTROL_DMA_BYTES);
-    let control_rx = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
-    let control_tx = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
+    let control_rx = esp_hal::dma_rx_buffer!(CONTROL_DMA_BYTES).unwrap();
+    let control_tx = esp_hal::dma_tx_buffer!(CONTROL_DMA_BYTES).unwrap();
     let dma_bus = spi.with_buffers(control_rx, control_tx);
 
     let dc = Output::new(dc, Level::Low, OutputConfig::default());
     let cs = Output::new(cs, Level::High, OutputConfig::default());
-    let controller::Initialized {
-        spi,
-        control_rx,
-        control_tx,
-        cs,
-        dc,
-    } = controller::initialize(dma_bus, cs, dc, delay);
+    let controller::Initialized { spi, cs, dc } =
+        controller::initialize(dma_bus, cs, dc, delay);
 
     // Seven rows cut Camera pixel submissions from 60 to 35 per 240-row frame.
     // The centered 276-pixel Camera region is 3,864 bytes per full batch, below
@@ -97,15 +87,13 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
 
     Transport {
         state: Some(PipelineState::Idle { spi, first, second }),
-        control_rx: Some(control_rx),
-        control_tx: Some(control_tx),
         cs,
         dc,
     }
 }
 
 impl Transport {
-    fn write_command(&mut self, bus: &mut DisplaySpiDmaBus, command: u8, data: &[u8]) {
+    fn write_command(&mut self, bus: &mut DisplaySpiDma, command: u8, data: &[u8]) {
         self.cs.set_low();
         self.dc.set_low();
 
@@ -123,22 +111,12 @@ impl Transport {
 
     fn set_window(
         &mut self,
-        spi: DisplaySpiDma,
+        mut spi: DisplaySpiDma,
         columns: Range<usize>,
         pages: Range<usize>,
     ) -> DisplaySpiDma {
         debug_assert!(!columns.is_empty());
         debug_assert!(!pages.is_empty());
-
-        let control_rx = self
-            .control_rx
-            .take()
-            .expect("missing LCD control RX DMA buffer");
-        let control_tx = self
-            .control_tx
-            .take()
-            .expect("missing LCD control TX DMA buffer");
-        let mut bus = DisplaySpiDmaBus::new(spi, control_rx, control_tx);
 
         let x0 = columns.start as u16;
         let x1 = (columns.end - 1) as u16;
@@ -148,13 +126,10 @@ impl Transport {
         let columns = [(x0 >> 8) as u8, x0 as u8, (x1 >> 8) as u8, x1 as u8];
         let pages = [(y0 >> 8) as u8, y0 as u8, (y1 >> 8) as u8, y1 as u8];
 
-        self.write_command(&mut bus, DCS_COLUMN_ADDRESS_SET, &columns);
-        self.write_command(&mut bus, DCS_PAGE_ADDRESS_SET, &pages);
-        self.write_command(&mut bus, DCS_MEMORY_WRITE, &[]);
+        self.write_command(&mut spi, DCS_COLUMN_ADDRESS_SET, &columns);
+        self.write_command(&mut spi, DCS_PAGE_ADDRESS_SET, &pages);
+        self.write_command(&mut spi, DCS_MEMORY_WRITE, &[]);
 
-        let (spi, control_rx, control_tx) = bus.split();
-        self.control_rx = Some(control_rx);
-        self.control_tx = Some(control_tx);
         spi
     }
 
@@ -207,7 +182,7 @@ impl Transport {
         self.dc.set_high();
         self.cs.set_low();
 
-        match spi.write(byte_len, buffer) {
+        match spi.write_buffer(byte_len, buffer) {
             Ok(transfer) => {
                 self.state = Some(PipelineState::InFlight { transfer, free });
             }

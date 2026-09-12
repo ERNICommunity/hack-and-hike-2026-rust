@@ -5,7 +5,7 @@
 //! no complete speaker frames are available. Mic-only builds use the same TX
 //! owner to provide the physical BCLK/WS clock domain without owning a speaker.
 
-use esp_hal::{Async, i2s::master::I2sTx};
+use esp_hal::{Async, dma::DmaTxStreamBuf, i2s::master::I2sTx};
 
 use crate::support::diagnostics;
 
@@ -20,13 +20,17 @@ const _: () = assert!(PLAYBACK_FILL_BYTES % 4 == 0);
 #[embassy_executor::task]
 pub(super) async fn playback_task(
     i2s_tx: I2sTx<'static, Async>,
-    tx_buffer: &'static mut [u8],
+    mut tx_buffer: DmaTxStreamBuf,
     runtime: Runtime,
 ) {
-    tx_buffer.fill(0);
+    tx_buffer.push_with(|buffer| {
+        buffer.fill(0);
+        buffer.len()
+    });
 
     let mut transfer = i2s_tx
-        .write_dma_circular_async(tx_buffer)
+        .write(tx_buffer)
+        .ok()
         .expect("Failed to start circular I2S TX DMA");
     let mut staging = [0u8; PLAYBACK_FILL_BYTES];
     let mut staging_offset = staging.len();
@@ -34,6 +38,18 @@ pub(super) async fn playback_task(
     let mut pcm = [0i16; PLAYBACK_FILL_SAMPLES];
 
     loop {
+        // A TX descriptor EOF frees roughly one descriptor (4092 bytes). Refill
+        // all currently writable stream capacity before waiting for another EOF;
+        // otherwise a 1024-byte staging chunk would replenish only one quarter
+        // of what DMA consumed and the descriptor ring would inevitably drain to
+        // TotalEof.
+        if transfer.available_bytes() == 0 {
+            if transfer.wait_for_available_async().await.is_err() {
+                handle_dma_underrun();
+            }
+            continue;
+        }
+
         if staging_offset == staging.len() {
             staging.fill(0);
 
@@ -54,10 +70,9 @@ pub(super) async fn playback_task(
             staging_offset = 0;
         }
 
-        match transfer.push(&staging[staging_offset..]).await {
-            Ok(written) if written != 0 => staging_offset += written,
-            Ok(_) => {}
-            Err(_) => handle_dma_underrun(),
+        let written = transfer.push(&staging[staging_offset..]);
+        if written != 0 {
+            staging_offset += written;
         }
     }
 }
