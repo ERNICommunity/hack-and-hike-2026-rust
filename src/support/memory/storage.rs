@@ -19,7 +19,7 @@ pub(crate) fn vec_with_capacity<T>(capacity: usize) -> PsramVec<T> {
     Vec::with_capacity_in(capacity, psram::heap())
 }
 
-#[cfg(feature = "app-stock")]
+#[cfg(feature = "app-demo")]
 pub(crate) fn zeroed_bytes(len: usize) -> PsramVec<u8> {
     let mut bytes = vec_with_capacity(len);
     bytes.resize(len, 0);
@@ -63,12 +63,12 @@ pub(crate) fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'stati
 
 /// Fixed-size PSRAM-backed storage. Capacity is established once and never
 /// changes afterwards.
-#[cfg(any(feature = "mic", feature = "app-stock"))]
+#[cfg(any(feature = "mic", feature = "app-demo"))]
 pub(crate) struct FixedPsramBuffer<T> {
     storage: PsramVec<T>,
 }
 
-#[cfg(any(feature = "mic", feature = "app-stock"))]
+#[cfg(any(feature = "mic", feature = "app-demo"))]
 impl<T: Clone> FixedPsramBuffer<T> {
     pub(crate) fn filled(len: usize, value: T) -> Self {
         let mut storage = vec_with_capacity(len);
@@ -77,7 +77,7 @@ impl<T: Clone> FixedPsramBuffer<T> {
     }
 }
 
-#[cfg(any(feature = "mic", feature = "app-stock"))]
+#[cfg(any(feature = "mic", feature = "app-demo"))]
 impl<T> FixedPsramBuffer<T> {
     pub(crate) fn as_slice(&self) -> &[T] {
         &self.storage
@@ -89,14 +89,14 @@ impl<T> FixedPsramBuffer<T> {
 }
 
 /// Fixed-capacity byte ring whose backing bytes live in PSRAM.
-#[cfg(feature = "app-stock")]
+#[cfg(feature = "app-demo")]
 pub(crate) struct PsramByteRing {
     storage: PsramVec<u8>,
     start: usize,
     len: usize,
 }
 
-#[cfg(feature = "app-stock")]
+#[cfg(feature = "app-demo")]
 impl PsramByteRing {
     pub(crate) fn new(capacity: usize) -> Self {
         assert!(capacity > 0);
