@@ -1,7 +1,7 @@
 mod monitor;
 mod psram;
 mod stack;
-#[cfg(feature = "ui")]
+#[cfg(any(feature = "ui", feature = "mic"))]
 pub(crate) mod storage;
 
 #[cfg(feature = "app-stock")]
