@@ -28,7 +28,7 @@ static NETWORK_RX_INVALID: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "network")]
 static NETWORK_PEER_EVICTIONS: AtomicU32 = AtomicU32::new(0);
 
-#[cfg(feature = "app-stock")]
+#[cfg(feature = "app-demo")]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RuntimeCounters {
     pub(crate) touch_read_errors: u32,
@@ -102,7 +102,7 @@ pub(crate) fn record_network_peer_eviction() {
     NETWORK_PEER_EVICTIONS.fetch_add(1, Ordering::Relaxed);
 }
 
-#[cfg(feature = "app-stock")]
+#[cfg(feature = "app-demo")]
 pub(crate) fn snapshot() -> RuntimeCounters {
     RuntimeCounters {
         touch_read_errors: TOUCH_READ_ERRORS.load(Ordering::Relaxed),
