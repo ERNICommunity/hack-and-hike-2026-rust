@@ -28,7 +28,7 @@ use projection::{DisplayAttitude, display_attitude, round_degrees};
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/applications/stock/views/imu_worldview/view/imu.kdl");
+    embedded_gui::include_gui!("src/applications/demo/views/imu_worldview/view/imu.kdl");
 }
 
 const NODE_CAPACITY: usize = 8;
