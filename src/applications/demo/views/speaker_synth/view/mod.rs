@@ -22,12 +22,12 @@ use crate::{
     },
 };
 
-use crate::applications::stock::navigation::{ContentPointer, PointerPhase};
+use crate::applications::demo::navigation::{ContentPointer, PointerPhase};
 use super::{Action, PitchSemitones, SpeakerDisplay, TempoBpm};
 
 mod generated {
     use embedded_gui::prelude::*;
-    embedded_gui::include_gui!("src/applications/stock/views/speaker_synth/view/speaker.kdl");
+    embedded_gui::include_gui!("src/applications/demo/views/speaker_synth/view/speaker.kdl");
 }
 
 const NODE_CAPACITY: usize = 16;
