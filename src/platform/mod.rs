@@ -1,4 +1,10 @@
-#[cfg(any(feature = "display", feature = "touch", feature = "camera"))]
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "mic",
+    feature = "speaker",
+    feature = "camera",
+))]
 pub(crate) mod board;
 #[cfg(any(
     feature = "display",
