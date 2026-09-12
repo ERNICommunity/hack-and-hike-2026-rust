@@ -31,7 +31,7 @@ pub(crate) fn zeroed_bytes(len: usize) -> PsramVec<u8> {
 /// This is for APIs such as framebuffer/DMA abstractions that require a static
 /// backing slice. The allocation happens once during bootstrap and is never
 /// replaced or resized afterwards.
-#[cfg(feature = "ui")]
+#[cfg(any(feature = "ui", feature = "camera"))]
 pub(crate) fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
     let mut storage = vec_with_capacity(len);
     storage.resize(len, value);
