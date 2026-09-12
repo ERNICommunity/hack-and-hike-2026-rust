@@ -8,7 +8,14 @@
 use ::log::info;
 #[cfg(feature = "camera")]
 use ::log::warn;
-use esp_hal::{clock::CpuClock, delay::Delay, timer::timg::TimerGroup};
+use esp_hal::{clock::CpuClock, timer::timg::TimerGroup};
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "speaker",
+    feature = "camera",
+))]
+use esp_hal::delay::Delay;
 
 #[cfg(any(feature = "display", feature = "touch", feature = "camera"))]
 use crate::platform::board;
@@ -37,10 +44,16 @@ use crate::capabilities::network;
 use crate::capabilities::speaker;
 #[cfg(feature = "touch")]
 use crate::capabilities::touch;
-use crate::{
-    firmware::cpu1,
-    support::{logging as logger, memory},
-};
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "network",
+))]
+use crate::firmware::cpu1;
+use crate::support::{logging as logger, memory};
 
 pub(crate) struct Bootstrap {
     #[cfg(feature = "display")]
@@ -183,11 +196,13 @@ pub(crate) fn bootstrap() -> Bootstrap {
         feature = "speaker",
         feature = "camera",
     ))]
-    let mut system_i2c_resources = system_i2c::Resources {
+    let system_i2c_resources = system_i2c::Resources {
         i2c0: peripherals.I2C0,
         sda: peripherals.GPIO12,
         scl: peripherals.GPIO11,
     };
+    #[cfg(any(feature = "display", feature = "touch", feature = "camera"))]
+    let mut system_i2c_resources = system_i2c_resources;
 
     #[cfg(any(feature = "mic", feature = "speaker"))]
     let audio_resources = audio::Resources {
@@ -206,6 +221,12 @@ pub(crate) fn bootstrap() -> Bootstrap {
         wifi: peripherals.WIFI,
     };
 
+    #[cfg(any(
+        feature = "display",
+        feature = "touch",
+        feature = "speaker",
+        feature = "camera",
+    ))]
     let mut delay = Delay::new();
 
     #[cfg(any(feature = "display", feature = "touch", feature = "camera"))]
@@ -240,7 +261,9 @@ pub(crate) fn bootstrap() -> Bootstrap {
         feature = "mic",
         feature = "speaker",
     ))]
-    let mut system_i2c = system_i2c::init(system_i2c_resources);
+    let system_i2c = system_i2c::init(system_i2c_resources);
+    #[cfg(any(feature = "mic", feature = "speaker"))]
+    let mut system_i2c = system_i2c;
 
     #[cfg(feature = "display")]
     let display = display::init(display_resources, &mut delay);
