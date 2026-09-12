@@ -1,42 +1,38 @@
-//! Shared `embedded-gui` presentation surface owned by the application shell.
+//! Shared `embedded-gui` presentation surface for graphical applications.
 //!
-//! KDL-generated views render into one fixed PSRAM RGB565 framebuffer. Every
-//! application shares this same allocation; presentation then copies the frame
-//! through the bounded content [`Surface`] supplied by the shell.
+//! KDL-generated views render into one fixed PSRAM RGB565 framebuffer per
+//! `GuiSurface`. The owning application chooses its dimensions; presentation
+//! then copies the frame through a bounded display [`Surface`].
 
 use embedded_graphics::{pixelcolor::Rgb565, prelude::DrawTarget as _, prelude::RgbColor as _};
 use embedded_gui::{
-    DMACapableFrameBufferBackend, DisplayBackend, DmaTransfer, EndianCorrectedBuffer,
-    EndianCorrection, FrameBuf, GuiContext, TransferError,
+    DMACapableFrameBufferBackend, EndianCorrectedBuffer, EndianCorrection, FrameBuf, GuiContext,
 };
 
 use crate::{capabilities::display::Surface, support::memory::storage};
-
-use super::design;
 
 pub(crate) type GuiFramebufferBackend = EndianCorrectedBuffer<'static, Rgb565>;
 pub(crate) type GuiFramebuffer = FrameBuf<Rgb565, GuiFramebufferBackend>;
 
 const _: () = assert!(core::mem::size_of::<Rgb565>() == 2);
 
-/// One reusable fixed-size content surface for every KDL-backed application.
+/// One reusable fixed-size framebuffer whose dimensions are chosen by the
+/// owning graphical application.
 pub(crate) struct GuiSurface {
     framebuffer: Option<GuiFramebuffer>,
+    width: usize,
+    height: usize,
 }
 
 impl GuiSurface {
-    pub(crate) fn new() -> Self {
-        let pixels = storage::leaked_filled_slice(
-            design::CONTENT_WIDTH * design::CONTENT_HEIGHT,
-            Rgb565::WHITE,
-        );
+    pub(crate) fn new(width: usize, height: usize) -> Self {
+        assert!(width != 0 && height != 0);
+        let pixels = storage::leaked_filled_slice(width * height, Rgb565::WHITE);
         let backend = EndianCorrectedBuffer::new(pixels, EndianCorrection::ToBigEndian);
         Self {
-            framebuffer: Some(FrameBuf::new(
-                backend,
-                design::CONTENT_WIDTH,
-                design::CONTENT_HEIGHT,
-            )),
+            framebuffer: Some(FrameBuf::new(backend, width, height)),
+            width,
+            height,
         }
     }
 
@@ -70,70 +66,33 @@ impl GuiSurface {
         surface: &mut Surface<'_>,
         draw: impl FnOnce(&mut GuiFramebuffer),
     ) {
-        debug_assert_eq!(surface.width(), design::CONTENT_WIDTH);
-        debug_assert_eq!(surface.height(), design::CONTENT_HEIGHT);
+        debug_assert_eq!(surface.width(), self.width);
+        debug_assert_eq!(surface.height(), self.height);
 
         let mut framebuffer = self
             .framebuffer
             .take()
             .expect("embedded-gui framebuffer missing");
         draw(&mut framebuffer);
-
-        let mut backend = CoreS3DisplayBackend { surface };
-        let transfer = backend
-            .start_dma_transfer(framebuffer)
-            .expect("embedded-gui display transfer failed");
-        self.framebuffer = Some(transfer.wait());
+        present_framebuffer(surface, &framebuffer, self.width, self.height);
+        self.framebuffer = Some(framebuffer);
     }
 }
 
-struct CoreS3DisplayBackend<'surface, 'display> {
-    surface: &'surface mut Surface<'display>,
-}
-
-struct CoreS3Transfer {
-    framebuffer: Option<GuiFramebuffer>,
-}
-
-impl DmaTransfer for CoreS3Transfer {
-    type Buffer = GuiFramebuffer;
-
-    fn is_done(&self) -> bool {
-        true
-    }
-
-    fn wait(mut self) -> Self::Buffer {
-        self.framebuffer
-            .take()
-            .expect("embedded-gui transfer already consumed")
-    }
-}
-
-impl DisplayBackend<{ design::CONTENT_WIDTH }, { design::CONTENT_HEIGHT }, GuiFramebufferBackend>
-    for CoreS3DisplayBackend<'_, '_>
-{
-    type Transfer = CoreS3Transfer;
-
-    fn start_dma_transfer(
-        &mut self,
-        framebuffer: GuiFramebuffer,
-    ) -> Result<Self::Transfer, TransferError<GuiFramebufferBackend>> {
-        present_framebuffer(self.surface, &framebuffer);
-        Ok(CoreS3Transfer {
-            framebuffer: Some(framebuffer),
-        })
-    }
-}
-
-fn present_framebuffer(surface: &mut Surface<'_>, framebuffer: &GuiFramebuffer) {
-    let pixel_count = design::CONTENT_WIDTH * design::CONTENT_HEIGHT;
+fn present_framebuffer(
+    surface: &mut Surface<'_>,
+    framebuffer: &GuiFramebuffer,
+    width: usize,
+    height: usize,
+) {
+    let pixel_count = width * height;
     let byte_count = pixel_count * core::mem::size_of::<Rgb565>();
     let data = &framebuffer.data;
 
     // SAFETY: `EndianCorrectedBuffer` owns one contiguous array of exactly
-    // `CONTENT_WIDTH * CONTENT_HEIGHT` `Rgb565` values. The compile-time size
-    // assertion proves two bytes per pixel, and this borrowed byte view is read
-    // only for the synchronous LCD transfer.
+    // `width * height` `Rgb565` values. The compile-time size assertion proves
+    // two bytes per pixel, and this borrowed byte view is read only for the
+    // synchronous LCD transfer.
     let bytes = unsafe { core::slice::from_raw_parts(data.data_ptr().cast::<u8>(), byte_count) };
     surface.render_rgb565_be_bytes(bytes);
 }

@@ -57,7 +57,7 @@ impl Ui {
         Self {
             views,
             navigation: NavigationInput::new(touch),
-            gui_surface: GuiSurface::new(),
+            gui_surface: GuiSurface::new(design::CONTENT_WIDTH, design::CONTENT_HEIGHT),
             active_view,
             presented_view: active_view,
         }
