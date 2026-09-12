@@ -81,12 +81,14 @@ impl<T> FixedPsramBuffer<T> {
 }
 
 /// Fixed-capacity byte ring whose backing bytes live in PSRAM.
+#[cfg(feature = "app-stock")]
 pub(crate) struct PsramByteRing {
     storage: PsramVec<u8>,
     start: usize,
     len: usize,
 }
 
+#[cfg(feature = "app-stock")]
 impl PsramByteRing {
     pub(crate) fn new(capacity: usize) -> Self {
         assert!(capacity > 0);
