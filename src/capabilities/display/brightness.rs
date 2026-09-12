@@ -19,9 +19,12 @@ use crate::platform::{board, i2c::SystemI2cBus};
 pub(crate) struct Brightness(u8);
 
 impl Brightness {
+    #[allow(dead_code, reason = "part of the application-facing display brightness capability contract")]
     pub(crate) const MIN: Self = Self(1);
+    #[allow(dead_code, reason = "part of the application-facing display brightness capability contract")]
     pub(crate) const FULL: Self = Self(100);
 
+    #[allow(dead_code, reason = "part of the application-facing display brightness capability contract")]
     pub(crate) const fn new(value: u8) -> Option<Self> {
         if value >= Self::MIN.0 && value <= Self::FULL.0 {
             Some(Self(value))
@@ -58,6 +61,7 @@ pub(crate) struct Runtime {
 
 /// Move-only CPU0 command handle for LCD brightness.
 pub(crate) struct BrightnessControl {
+    #[allow(dead_code, reason = "display applications may intentionally keep the boot brightness")]
     service: &'static Service,
 }
 
@@ -76,6 +80,7 @@ pub(crate) fn init_endpoints() -> Endpoints {
 
 impl BrightnessControl {
     /// Replace any pending brightness request with the newest slider value.
+    #[allow(dead_code, reason = "part of the application-facing display brightness capability contract")]
     pub(crate) fn set(&mut self, brightness: Brightness) {
         self.service.request.signal(brightness);
     }
