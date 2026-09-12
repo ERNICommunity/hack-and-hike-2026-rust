@@ -23,6 +23,10 @@ speaker = []
 network = ["dep:serde", "dep:postcard"]
 camera = []
 
+# Optional reusable presentation helpers. Applications can render directly with
+# `display` or opt into the shared GUI layer independently of stock navigation.
+ui = ["display"]
+
 # Firmware applications. A build runs one application. Applications own the
 # enabled capability handles and may be graphical or headless. `app-idle` is a
 # minimal headless application used explicitly in CI/examples; selecting no app
@@ -30,7 +34,7 @@ camera = []
 # independently.
 app-idle = []
 app-stock = [
-    "display",
+    "ui",
     "touch",
     "imu",
     "mic",
@@ -77,15 +81,3 @@ postcard = { version = "1.1", default-features = false, optional = true }
 
 [build-dependencies]
 embedded-gui-codegen = "=0.2.6"
-
-[profile.dev]
-opt-level = "s"
-
-[profile.release]
-codegen-units = 1
-debug = false
-# esp-hal 1.2's GDMA metadata triggers an LLVM 21 Xtensa PCREL_WRAPPER
-# instruction-selection bug when fat LTO inlines concrete DMA channel metadata
-# into downstream code. Keep release optimization but disable cross-crate LTO.
-lto = false
-opt-level = 3
