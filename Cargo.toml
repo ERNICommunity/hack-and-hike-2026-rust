@@ -14,7 +14,7 @@ bench = false
 default = ["full"]
 
 # Hardware capabilities. Enabling one owns and initializes the corresponding
-# board hardware without requiring any particular stock application.
+# board hardware without requiring any particular application.
 display = []
 touch = []
 imu = []
@@ -23,28 +23,24 @@ speaker = []
 network = ["dep:serde", "dep:postcard"]
 camera = []
 
-# Stock applications. These are compositions of capabilities and will move into
-# vertical application modules in the following PRs; PR1 establishes the Cargo
-# composition contract without changing their behavior.
-imu-worldview = ["imu", "display"]
-mic-waveform = ["mic", "display"]
-speaker-synth = ["speaker", "display", "touch"]
-network-demo = ["network", "display"]
-camera-view = ["camera", "display"]
-settings = ["display", "touch"]
-log-view = ["display"]
-
-# Preserve the existing out-of-box firmware.
-full = [
+# Firmware applications. A build runs one application. Applications own the
+# enabled capability handles and may be graphical or headless. `app-idle` is a
+# minimal headless application used explicitly in CI/examples; selecting no app
+# feature falls back to the same idle behavior so capabilities remain testable
+# independently.
+app-idle = []
+app-stock = [
+    "display",
     "touch",
-    "imu-worldview",
-    "mic-waveform",
-    "speaker-synth",
-    "network-demo",
-    "camera-view",
-    "settings",
-    "log-view",
+    "imu",
+    "mic",
+    "speaker",
+    "network",
+    "camera",
 ]
+
+# Preserve the complete out-of-box firmware.
+full = ["app-stock"]
 
 [dependencies]
 # Keep the ESP crates on one coherent monorepo snapshot. The published

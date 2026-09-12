@@ -1,98 +1,94 @@
-//! Compile-time presentation specification for firmware-owned UI chrome.
+//! Compile-time presentation specification for the stock application's chrome.
 //!
-//! KDL owns all content-view geometry. This module retains only the physical
-//! content/navigation partition and navigation-rail styling/order.
+//! KDL owns all content-screen geometry. This module retains only the physical
+//! content/navigation partition and stock navigation-rail styling/order.
 
-use crate::capabilities::display::{self, Region};
+use crate::{
+    capabilities::display::{self, Region},
+    ui::theme,
+};
 
-use super::{navigation::ViewId, theme};
+use super::navigation::ViewId;
 
 const NAV_WIDTH: usize = 44;
-pub(crate) const NAV_ICON_SIZE: usize = 16;
+pub(super) const NAV_ICON_SIZE: usize = 16;
 
-pub(crate) const CONTENT_WIDTH: usize = display::WIDTH - NAV_WIDTH;
-pub(crate) const CONTENT_HEIGHT: usize = display::HEIGHT;
-pub(crate) const NAV_REGION: Region = Region::new(0, 0, NAV_WIDTH, display::HEIGHT);
-pub(crate) const CONTENT_REGION: Region = Region::new(NAV_WIDTH, 0, CONTENT_WIDTH, CONTENT_HEIGHT);
+pub(super) const CONTENT_WIDTH: usize = display::WIDTH - NAV_WIDTH;
+pub(super) const CONTENT_HEIGHT: usize = display::HEIGHT;
+pub(super) const NAV_REGION: Region = Region::new(0, 0, NAV_WIDTH, display::HEIGHT);
+pub(super) const CONTENT_REGION: Region =
+    Region::new(NAV_WIDTH, 0, CONTENT_WIDTH, CONTENT_HEIGHT);
 
-pub(crate) type NavIcon = [u16; NAV_ICON_SIZE];
-#[cfg(feature = "camera-view")]
-pub(crate) const CAMERA_ICON: NavIcon = [
-    0x0000, 0x0000, 0x0F00, 0x1980, 0x7FFE, 0x4002, 0x43C2, 0x4662, 0x4C32, 0x4C32, 0x4662, 0x43C2,
-    0x4002, 0x7FFE, 0x0000, 0x0000,
+pub(super) type NavIcon = [u16; NAV_ICON_SIZE];
+pub(super) const CAMERA_ICON: NavIcon = [
+    0x0000, 0x0000, 0x0F00, 0x1980, 0x7FFE, 0x4002, 0x43C2, 0x4662, 0x4C32, 0x4C32, 0x4662,
+    0x43C2, 0x4002, 0x7FFE, 0x0000, 0x0000,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct UiColor(u16);
+pub(super) struct UiColor(u16);
 
 impl UiColor {
-    pub(crate) const fn from_rgb565(raw: u16) -> Self {
+    pub(super) const fn from_rgb565(raw: u16) -> Self {
         Self(raw)
     }
 
-    pub(crate) const fn raw(self) -> u16 {
+    pub(super) const fn raw(self) -> u16 {
         self.0
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct NavigationItemSpec {
+pub(super) struct NavigationItemSpec {
     pub view: ViewId,
     pub icon: NavIcon,
 }
 
 const NAV_ITEMS: &[NavigationItemSpec] = &[
-    #[cfg(feature = "network-demo")]
     NavigationItemSpec {
         view: ViewId::Network,
         icon: [
-            0x0000, 0x0000, 0x0180, 0x03C0, 0x0660, 0x0C30, 0x1818, 0x0180, 0x0180, 0x1818, 0x0C30,
-            0x0660, 0x03C0, 0x0180, 0x0000, 0x0000,
+            0x0000, 0x0000, 0x0180, 0x03C0, 0x0660, 0x0C30, 0x1818, 0x0180, 0x0180, 0x1818,
+            0x0C30, 0x0660, 0x03C0, 0x0180, 0x0000, 0x0000,
         ],
     },
-    #[cfg(feature = "imu-worldview")]
     NavigationItemSpec {
         view: ViewId::Imu,
         icon: [
-            0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x7FFE, 0x0180, 0x0180, 0x0180, 0x0180, 0x07E0,
-            0x0DB0, 0x198C, 0x0180, 0x0180, 0x0000,
+            0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x7FFE, 0x0180, 0x0180, 0x0180, 0x0180,
+            0x07E0, 0x0DB0, 0x198C, 0x0180, 0x0180, 0x0000,
         ],
     },
-    #[cfg(feature = "mic-waveform")]
     NavigationItemSpec {
         view: ViewId::Microphone,
         icon: [
-            0x03C0, 0x0660, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0660, 0x03C0, 0x0180,
-            0x1FF8, 0x0180, 0x0180, 0x07E0, 0x0000,
+            0x03C0, 0x0660, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0660, 0x03C0,
+            0x0180, 0x1FF8, 0x0180, 0x0180, 0x07E0, 0x0000,
         ],
     },
-    #[cfg(feature = "speaker-synth")]
     NavigationItemSpec {
         view: ViewId::Speaker,
         icon: [
-            0x0000, 0x0300, 0x0700, 0x0F18, 0x7F0C, 0x7F06, 0x7F06, 0x7F06, 0x7F06, 0x7F06, 0x7F0C,
-            0x0F18, 0x0700, 0x0300, 0x0000, 0x0000,
+            0x0000, 0x0300, 0x0700, 0x0F18, 0x7F0C, 0x7F06, 0x7F06, 0x7F06, 0x7F06, 0x7F06,
+            0x7F0C, 0x0F18, 0x0700, 0x0300, 0x0000, 0x0000,
         ],
     },
-    #[cfg(feature = "camera-view")]
     NavigationItemSpec {
         view: ViewId::Camera,
         icon: CAMERA_ICON,
     },
-    #[cfg(feature = "settings")]
     NavigationItemSpec {
         view: ViewId::Settings,
         icon: [
-            0x0000, 0x0180, 0x0DB0, 0x1FF8, 0x319C, 0x6186, 0x6786, 0x6606, 0x6606, 0x6786, 0x6186,
-            0x319C, 0x1FF8, 0x0DB0, 0x0180, 0x0000,
+            0x0000, 0x0180, 0x0DB0, 0x1FF8, 0x319C, 0x6186, 0x6786, 0x6606, 0x6606, 0x6786,
+            0x6186, 0x319C, 0x1FF8, 0x0DB0, 0x0180, 0x0000,
         ],
     },
-    #[cfg(feature = "log-view")]
     NavigationItemSpec {
         view: ViewId::Log,
         icon: [
-            0x0000, 0x0000, 0x3FFC, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x2FF4,
-            0x2004, 0x3FFC, 0x0000, 0x0000, 0x0000,
+            0x0000, 0x0000, 0x3FFC, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004,
+            0x2FF4, 0x2004, 0x3FFC, 0x0000, 0x0000, 0x0000,
         ],
     },
 ];
@@ -101,7 +97,7 @@ const NAV_ITEM_COUNT: usize = NAV_ITEMS.len();
 const NAV_BUTTON_HEIGHT: usize = display::HEIGHT / NAV_ITEM_COUNT;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct NavigationSpec {
+pub(super) struct NavigationSpec {
     pub width: usize,
     pub button_height: usize,
     pub items: &'static [NavigationItemSpec],
@@ -113,7 +109,7 @@ pub(crate) struct NavigationSpec {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct UiDesign {
+pub(super) struct UiDesign {
     pub navigation: NavigationSpec,
 }
 
@@ -122,7 +118,7 @@ const DARK_BLUE: UiColor = UiColor::from_rgb565(theme::DARK_BLUE_RGB565);
 const LIGHT_BLUE: UiColor = UiColor::from_rgb565(theme::LIGHT_BLUE_RGB565);
 const DARK_GRAY: UiColor = UiColor::from_rgb565(theme::DARK_GRAY_RGB565);
 
-pub(crate) const UI: UiDesign = UiDesign {
+pub(super) const UI: UiDesign = UiDesign {
     navigation: NavigationSpec {
         width: NAV_WIDTH,
         button_height: NAV_BUTTON_HEIGHT,

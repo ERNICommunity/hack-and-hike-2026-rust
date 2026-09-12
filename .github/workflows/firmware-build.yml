@@ -56,7 +56,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .ci-cache/firmware-build-ok
-          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v5-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
+          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v6-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
 
       - name: Reuse successful build result
         if: steps.build-proof.outputs.cache-hit == 'true'
@@ -134,13 +134,11 @@ jobs:
             network \
             camera \
             mic,speaker \
-            imu-worldview \
-            mic-waveform \
-            speaker-synth \
-            network-demo \
-            camera-view \
-            settings \
-            log-view
+            app-idle \
+            app-idle,imu \
+            app-idle,network \
+            app-idle,imu,network \
+            app-stock
           do
             echo "Checking --no-default-features --features ${features}"
             cargo check --locked --release --no-default-features --features "${features}"
@@ -162,4 +160,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .ci-cache/firmware-build-ok
-          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v5-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
+          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v6-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}

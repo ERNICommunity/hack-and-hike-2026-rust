@@ -2,7 +2,8 @@
 //!
 //! Enabled capabilities own their hardware. Shared-I2C ordering remains explicit:
 //! optional board setup, optional camera SCCB, then the final runtime bus used by
-//! enabled I2C-backed capabilities.
+//! enabled I2C-backed capabilities. The returned [`Bootstrap`] contains the
+//! application-facing handles; the selected application takes ownership of it.
 
 use ::log::info;
 #[cfg(feature = "camera")]
@@ -41,7 +42,9 @@ use crate::{
     support::{logging as logger, memory},
 };
 
-pub(crate) struct AppInputs {
+pub(crate) struct Bootstrap {
+    #[cfg(feature = "display")]
+    pub(crate) display: display::Display,
     #[cfg(feature = "touch")]
     pub(crate) touch: touch::Input,
     #[cfg(feature = "imu")]
@@ -52,20 +55,14 @@ pub(crate) struct AppInputs {
     pub(crate) speaker: speaker::Speaker,
     #[cfg(feature = "network")]
     pub(crate) network: network::Network,
-    #[cfg(feature = "log-view")]
-    pub(crate) log: logger::Input,
-}
-
-pub(crate) struct Bootstrap {
-    #[cfg(feature = "display")]
-    pub(crate) display: display::Display,
     #[cfg(feature = "camera")]
     pub(crate) camera: camera::Camera,
     #[cfg(feature = "camera")]
     pub(crate) camera_ready: bool,
-    pub(crate) inputs: AppInputs,
     #[cfg(feature = "display")]
     pub(crate) brightness: display::BrightnessControl,
+    #[cfg(feature = "app-stock")]
+    pub(crate) log: logger::Input,
 }
 
 #[cfg(feature = "camera")]
@@ -145,7 +142,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
     let peripherals = esp_hal::init(config);
 
     memory::enable_psram(peripherals.PSRAM);
-    #[cfg(feature = "log-view")]
+    #[cfg(feature = "app-stock")]
     let log_input = logger::enable_psram_history();
     memory::report("PSRAM/storage ready");
 
@@ -343,25 +340,23 @@ pub(crate) fn bootstrap() -> Bootstrap {
     Bootstrap {
         #[cfg(feature = "display")]
         display,
+        #[cfg(feature = "touch")]
+        touch: touch_input,
+        #[cfg(feature = "imu")]
+        imu: imu_input,
+        #[cfg(feature = "mic")]
+        microphone,
+        #[cfg(feature = "speaker")]
+        speaker: speaker_output,
+        #[cfg(feature = "network")]
+        network: network_input,
         #[cfg(feature = "camera")]
         camera,
         #[cfg(feature = "camera")]
         camera_ready,
-        inputs: AppInputs {
-            #[cfg(feature = "touch")]
-            touch: touch_input,
-            #[cfg(feature = "imu")]
-            imu: imu_input,
-            #[cfg(feature = "mic")]
-            microphone,
-            #[cfg(feature = "speaker")]
-            speaker: speaker_output,
-            #[cfg(feature = "network")]
-            network: network_input,
-            #[cfg(feature = "log-view")]
-            log: log_input,
-        },
         #[cfg(feature = "display")]
         brightness,
+        #[cfg(feature = "app-stock")]
+        log: log_input,
     }
 }
