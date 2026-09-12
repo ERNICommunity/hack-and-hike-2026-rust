@@ -74,7 +74,7 @@ pub(crate) struct Bootstrap {
     pub(crate) camera_ready: bool,
     #[cfg(feature = "display")]
     pub(crate) brightness: display::BrightnessControl,
-    #[cfg(feature = "app-stock")]
+    #[cfg(feature = "app-demo")]
     pub(crate) log: logger::Input,
 }
 
@@ -107,7 +107,7 @@ where
             "Camera reset readback: AW9523 P1 out=0x{:02x} dir=0x{:02x} mode=0x{:02x}",
             output, direction, mode
         ),
-        Err(error) => warn!("Camera reset readback failed: {:?}", error),
+        Err(error) => warn!("Camera PMIC readback failed: {:?}", error),
     }
 
     true
@@ -155,7 +155,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
     let peripherals = esp_hal::init(config);
 
     memory::enable_psram(peripherals.PSRAM);
-    #[cfg(feature = "app-stock")]
+    #[cfg(feature = "app-demo")]
     let log_input = logger::enable_psram_history();
     memory::report("PSRAM/storage ready");
 
@@ -379,7 +379,7 @@ pub(crate) fn bootstrap() -> Bootstrap {
         camera_ready,
         #[cfg(feature = "display")]
         brightness,
-        #[cfg(feature = "app-stock")]
+        #[cfg(feature = "app-demo")]
         log: log_input,
     }
 }
