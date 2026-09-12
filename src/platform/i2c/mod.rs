@@ -1,13 +1,18 @@
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use esp_hal::{
-    Async, Blocking,
+    Blocking,
     i2c::master::{Config as I2cConfig, I2c},
     peripherals::{GPIO11, GPIO12, I2C0},
     time::Rate,
 };
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
+use esp_hal::Async;
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 use static_cell::StaticCell;
 
 const SYSTEM_I2C_FREQUENCY_KHZ: u32 = 400;
+#[cfg(feature = "camera")]
 const CAMERA_SCCB_FREQUENCY_KHZ: u32 = 100;
 
 /// Physical resources for the board's runtime system-I2C service.
@@ -21,6 +26,7 @@ pub(crate) struct Resources<'d> {
     pub(crate) scl: GPIO11<'d>,
 }
 
+#[cfg(any(feature = "display", feature = "touch", feature = "camera"))]
 impl Resources<'static> {
     /// Borrow all three singleton resources without giving up their final
     /// `'static` ownership. Dropping a temporary driver releases the I2C/GPIO
@@ -35,16 +41,21 @@ impl Resources<'static> {
 }
 
 /// CPU0 startup form that is ultimately moved to CPU1.
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 pub(crate) type SystemI2cBlocking = I2c<'static, Blocking>;
 
 /// CPU1 runtime form. ESP-HAL async drivers are core-affine because their
 /// interrupt handler is installed on the core that calls `into_async()`.
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 type SystemI2c = I2c<'static, Async>;
 
 /// Runtime I2C is intentionally local to the CPU1 Embassy executor.
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 type SystemI2cMutex = Mutex<NoopRawMutex, SystemI2c>;
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 pub(crate) type SystemI2cBus = &'static SystemI2cMutex;
 
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 static SYSTEM_I2C: StaticCell<SystemI2cMutex> = StaticCell::new();
 
 fn init_with_frequency<'d>(resources: Resources<'d>, frequency_khz: u32) -> I2c<'d, Blocking> {
@@ -74,6 +85,7 @@ pub(crate) fn init<'d>(resources: Resources<'d>) -> I2c<'d, Blocking> {
 /// the camera create a fresh SCCB/I2C owner on GPIO12/GPIO11. Recreating the
 /// ESP32-S3 hardware driver here mirrors that ownership boundary while keeping
 /// the persistent runtime bus completely separate.
+#[cfg(feature = "camera")]
 pub(crate) fn init_camera_sccb<'d>(resources: Resources<'d>) -> I2c<'d, Blocking> {
     init_with_frequency(resources, CAMERA_SCCB_FREQUENCY_KHZ)
 }
@@ -83,6 +95,7 @@ pub(crate) fn init_camera_sccb<'d>(resources: Resources<'d>) -> I2c<'d, Blocking
 ///
 /// This function must be called on CPU1. `I2c<Async>` is intentionally !Send:
 /// ESP-HAL installs the driver's interrupt handler on the calling core.
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 pub(crate) fn into_async(i2c: SystemI2cBlocking) -> SystemI2cBus {
     let i2c = i2c.into_async();
     SYSTEM_I2C.init(Mutex::new(i2c))
