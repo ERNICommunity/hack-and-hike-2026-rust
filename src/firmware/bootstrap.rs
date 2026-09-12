@@ -73,6 +73,10 @@ pub(crate) struct Bootstrap {
     #[cfg(feature = "camera")]
     pub(crate) camera_ready: bool,
     #[cfg(feature = "display")]
+    #[allow(
+        dead_code,
+        reason = "display capability includes brightness control even when an application keeps the boot brightness"
+    )]
     pub(crate) brightness: display::BrightnessControl,
     #[cfg(feature = "app-demo")]
     pub(crate) log: logger::Input,
