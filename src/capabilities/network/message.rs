@@ -1,52 +1,52 @@
-//! Typed application-message serialization at the network capability boundary.
+//! Typed application messages at the network capability boundary.
 
 use arrayvec::ArrayVec;
 use serde::{Serialize, de::DeserializeOwned};
 
-use super::{DeviceId, MAX_PAYLOAD};
+use super::protocol::{DeviceId, MAX_PAYLOAD};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SendError {
+    /// The serialized message does not fit one radio frame ([`MAX_PAYLOAD`]).
     MessageTooLarge,
+    /// The send queue is full; try again on the next loop iteration.
     QueueFull,
+    /// `send_to` named a device that is not currently a peer.
     UnknownPeer,
 }
 
+/// The payload was not a valid encoding of the requested type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeError;
 
-pub(super) fn serialize_payload<T: Serialize>(
-    value: &T,
-) -> Result<ArrayVec<u8, MAX_PAYLOAD>, SendError> {
+pub(super) type Payload = ArrayVec<u8, MAX_PAYLOAD>;
+
+pub(super) fn serialize_payload<T: Serialize>(value: &T) -> Result<Payload, SendError> {
     let mut storage = [0u8; MAX_PAYLOAD];
     let encoded =
         postcard::to_slice(value, &mut storage).map_err(|_| SendError::MessageTooLarge)?;
-    let mut payload = ArrayVec::new();
-    payload
-        .try_extend_from_slice(encoded)
-        .map_err(|_| SendError::MessageTooLarge)?;
-    Ok(payload)
+    Payload::try_from(&*encoded).map_err(|_| SendError::MessageTooLarge)
 }
 
+/// A message waiting to be transmitted by CPU1.
+pub(super) struct OutgoingMessage {
+    /// `None` broadcasts to every peer.
+    pub(super) recipient: Option<DeviceId>,
+    pub(super) payload: Payload,
+}
+
+/// A message received from another device. Decode it into your own type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IncomingMessage {
     pub sender: DeviceId,
-    pub recipient: Option<DeviceId>,
-    payload: ArrayVec<u8, MAX_PAYLOAD>,
+    payload: Payload,
 }
 
 impl IncomingMessage {
-    pub(super) fn from_bytes(
-        sender: DeviceId,
-        recipient: Option<DeviceId>,
-        bytes: &[u8],
-    ) -> Option<Self> {
-        let mut payload = ArrayVec::new();
-        payload.try_extend_from_slice(bytes).ok()?;
+    pub(super) fn from_bytes(sender: DeviceId, bytes: &[u8]) -> Option<Self> {
         Some(Self {
             sender,
-            recipient,
-            payload,
+            payload: Payload::try_from(bytes).ok()?,
         })
     }
 
@@ -55,9 +55,5 @@ impl IncomingMessage {
         T: DeserializeOwned,
     {
         postcard::from_bytes(self.payload.as_slice()).map_err(|_| DecodeError)
-    }
-
-    pub fn payload_len(&self) -> usize {
-        self.payload.len()
     }
 }

@@ -152,7 +152,7 @@ fn handle_touch(touch: &mut Touch, network: &mut Network, selected: &mut Color, 
             *selected = Color::from_x(point.x);
             *redraw = true;
 
-            if network.send(None, &ColorPing { color: *selected }).is_err() {
+            if network.broadcast(&ColorPing { color: *selected }).is_err() {
                 log::warn!("Color Ping send queue is full");
             }
         }

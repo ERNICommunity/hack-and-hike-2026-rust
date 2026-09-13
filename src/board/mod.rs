@@ -161,9 +161,9 @@ impl Board {
             runtime: imu_runtime,
         } = imu::init_endpoints();
         let network::Endpoints {
-            network,
+            handle: network,
             runtime: network_runtime,
-        } = network::init_endpoints();
+        } = network::endpoints();
         let touch::Endpoints {
             handle: touch,
             runtime: touch_runtime,

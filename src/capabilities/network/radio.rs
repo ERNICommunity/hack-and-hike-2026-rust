@@ -1,10 +1,11 @@
-//! CPU1 ESP-NOW adapter translating radio events into network capability operations.
+//! CPU1 ESP-NOW driver: beacons, sending, receiving and the peer table.
 
 use core::cell::RefCell;
 
-use critical_section::Mutex;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Instant, Ticker};
+use embassy_futures::select::{Either, select};
+use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
+use embassy_time::{Instant, Ticker};
 use esp_hal::efuse;
 use esp_radio::{
     esp_now::{
@@ -13,246 +14,238 @@ use esp_radio::{
     },
     wifi::WifiController,
 };
+use log::{error, info};
 use static_cell::StaticCell;
 
 use super::{
-    Config, MacAddress, Resources, RssiDbm, channels::Runtime, protocol, state::NetworkState,
+    Config, Resources,
+    channels::Runtime,
+    message::{IncomingMessage, OutgoingMessage},
+    protocol::{self, DeviceId, MacAddress, RssiDbm},
+    state::NetworkState,
 };
 
-const TX_POLL_PERIOD: Duration = Duration::from_millis(10);
-const LOCAL_CAPABILITIES: protocol::Capabilities =
-    protocol::Capabilities::from_enabled(true, true, true);
+type SharedState = Mutex<CriticalSectionRawMutex, RefCell<NetworkState>>;
 
-static STATE: Mutex<RefCell<Option<NetworkState>>> = Mutex::new(RefCell::new(None));
+static STATE: StaticCell<SharedState> = StaticCell::new();
 static WIFI_CONTROLLER: StaticCell<WifiController<'static>> = StaticCell::new();
+static MANAGER: StaticCell<EspNowManager<'static>> = StaticCell::new();
 
-fn with_state<R>(f: impl FnOnce(&mut NetworkState) -> R) -> Option<R> {
-    critical_section::with(|cs| {
-        let mut state = STATE.borrow(cs).borrow_mut();
-        state.as_mut().map(f)
-    })
+/// Everything the send and receive tasks share.
+#[derive(Clone, Copy)]
+struct Radio {
+    state: &'static SharedState,
+    runtime: Runtime,
+    local_id: DeviceId,
+    config: Config,
 }
 
-fn publish_snapshot(runtime: Runtime, now: Instant) {
-    if let Some(snapshot) = with_state(|state| state.snapshot(now.as_millis())) {
-        runtime.publish(snapshot);
+impl Radio {
+    fn with_state<R>(self, f: impl FnOnce(&mut NetworkState) -> R) -> R {
+        self.state.lock(|state| f(&mut state.borrow_mut()))
+    }
+
+    fn publish(self, now: Instant) {
+        let counters = self.runtime.queue_counters();
+        let snapshot = self.with_state(|state| state.snapshot(now.as_millis(), counters));
+        self.runtime.publish(snapshot);
     }
 }
 
-fn physical_device_id() -> protocol::DeviceId {
+fn physical_device_id() -> DeviceId {
     let mac = efuse::base_mac_address();
-    let mut bytes = [0u8; 6];
-    bytes.copy_from_slice(mac.as_bytes());
-    protocol::DeviceId::try_from(bytes).expect("factory eFuse MAC must not be all zero")
+    let bytes = <[u8; 6]>::try_from(mac.as_bytes()).expect("a MAC address is six bytes");
+    DeviceId::try_from(bytes).expect("the factory MAC address is not all zero")
 }
 
-/// Initialize ESP-NOW and spawn its CPU1-owned send/receive tasks.
+/// Initialize ESP-NOW and spawn the CPU1 send and receive tasks.
 ///
-/// Initialization failure is reported as a network fault instead of panicking
-/// the rest of the firmware, so audio/IMU/UI can keep running for diagnostics.
+/// A radio that fails to initialize is reported as [`super::Status::Fault`]
+/// instead of panicking, so the rest of the board keeps working.
 pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, runtime: Runtime) {
     let local_id = physical_device_id();
-    critical_section::with(|cs| {
-        *STATE.borrow(cs).borrow_mut() = Some(NetworkState::new(
-            local_id,
-            config.channel,
-            config.peer_timeout.as_millis(),
-        ));
-    });
-    publish_snapshot(runtime, Instant::now());
+    let state = STATE.init(Mutex::new(RefCell::new(NetworkState::new(
+        local_id,
+        config.channel,
+        config.peer_timeout.as_millis(),
+    ))));
+    let radio = Radio {
+        state,
+        runtime,
+        local_id,
+        config,
+    };
+    radio.publish(Instant::now());
 
     let controller = match WifiController::new(resources.wifi, Default::default()) {
-        Ok(controller) => controller,
-        Err(error) => {
-            let _ = with_state(NetworkState::mark_fault);
-            publish_snapshot(runtime, Instant::now());
-            ::log::error!("ESP-NOW radio init failed: {:?}", error);
+        Ok(controller) => WIFI_CONTROLLER.init(controller),
+        Err(err) => {
+            error!("ESP-NOW radio init failed: {:?}", err);
+            radio.with_state(NetworkState::mark_fault);
+            radio.publish(Instant::now());
             return;
         }
     };
-    let controller = WIFI_CONTROLLER.init(controller);
 
     let esp_now = controller.esp_now();
-    if let Err(error) = esp_now.set_channel(config.channel.number()) {
-        let _ = with_state(NetworkState::mark_fault);
-        publish_snapshot(runtime, Instant::now());
-        ::log::error!("ESP-NOW channel {} failed: {:?}", config.channel, error);
+    if let Err(err) = esp_now.set_channel(config.channel.number()) {
+        error!("ESP-NOW channel {} failed: {:?}", config.channel, err);
+        radio.with_state(NetworkState::mark_fault);
+        radio.publish(Instant::now());
         return;
     }
-
     let version = esp_now.version().unwrap_or(0);
     let (manager, sender, receiver) = esp_now.split();
-    let _ = with_state(NetworkState::mark_ready);
-    publish_snapshot(runtime, Instant::now());
+    let manager = MANAGER.init(manager);
+
+    radio.with_state(NetworkState::mark_ready);
+    radio.publish(Instant::now());
 
     spawner.spawn(
-        receive_task(manager, receiver, config, local_id, runtime)
-            .expect("Failed to allocate CPU1 ESP-NOW receive task"),
+        receive_task(manager, receiver, radio).expect("ESP-NOW receive task already spawned"),
     );
     spawner.spawn(
-        transmit_task(sender, config, local_id, runtime)
-            .expect("Failed to allocate CPU1 ESP-NOW transmit task"),
+        transmit_task(manager, sender, radio).expect("ESP-NOW transmit task already spawned"),
     );
 
-    ::log::info!(
+    info!(
         "ESP-NOW started: id={} channel={} version={}",
-        local_id,
-        config.channel,
-        version
+        local_id, config.channel, version
     );
 }
 
+/// Send queued application messages as they arrive and a beacon on every tick.
 #[embassy_executor::task]
 async fn transmit_task(
+    manager: &'static EspNowManager<'static>,
     mut sender: EspNowSender<'static>,
-    config: Config,
-    local_id: protocol::DeviceId,
-    runtime: Runtime,
+    radio: Radio,
 ) {
-    let mut ticker = Ticker::every(TX_POLL_PERIOD);
-    let mut next_beacon_ms = 0u64;
-    let mut encoded = [0u8; protocol::MAX_RADIO_PACKET_BYTES];
+    let mut beacons = Ticker::every(radio.config.beacon_period);
+    let mut frame = [0u8; protocol::MAX_RADIO_PACKET_BYTES];
 
     loop {
-        while let Some(message) = runtime.try_take_outgoing() {
-            let destination = match message.recipient {
-                None => Some(BROADCAST_ADDRESS),
-                Some(device_id) => with_state(|state| state.route_for(device_id))
-                    .flatten()
-                    .map(MacAddress::bytes),
-            };
-
-            let Some(destination) = destination else {
-                let _ = with_state(NetworkState::record_send_error);
-                continue;
-            };
-            let Some(encoded_len) = protocol::encode_application(
-                local_id,
-                message.recipient,
-                &message.payload[..message.len],
-                &mut encoded,
-            ) else {
-                let _ = with_state(NetworkState::record_send_error);
-                continue;
-            };
-
-            match sender
-                .send_async(&destination, &encoded[..encoded_len])
-                .await
-            {
-                Ok(()) => {
-                    let _ = with_state(NetworkState::record_send_ok);
-                }
-                Err(_) => {
-                    let _ = with_state(NetworkState::record_send_error);
-                }
-            }
-        }
-
         let now = Instant::now();
-        if now.as_millis() >= next_beacon_ms {
-            if let Some(packet) =
-                with_state(|state| state.next_beacon(now.as_millis(), LOCAL_CAPABILITIES))
-            {
-                let payload = packet.encode();
-                match sender.send_async(&BROADCAST_ADDRESS, &payload).await {
-                    Ok(()) => {
-                        let _ = with_state(NetworkState::record_send_ok);
-                    }
-                    Err(_) => {
-                        let _ = with_state(NetworkState::record_send_error);
-                    }
+        match select(radio.runtime.next_outgoing(), beacons.next()).await {
+            Either::First(message) => send_message(&mut sender, radio, &message, &mut frame).await,
+            Either::Second(()) => {
+                let beacon = radio.with_state(|state| state.next_beacon(now.as_millis()));
+                let result = sender
+                    .send_async(&BROADCAST_ADDRESS, &beacon.encode())
+                    .await;
+                radio.with_state(|state| record_send(state, result.is_ok()));
+
+                let expired = radio.with_state(|state| state.expire_peers(now.as_millis()));
+                for mac in expired {
+                    forget_radio_peer(manager, mac);
                 }
             }
-            next_beacon_ms = now
-                .as_millis()
-                .saturating_add(config.beacon_period.as_millis());
         }
-
-        publish_snapshot(runtime, Instant::now());
-        ticker.next().await;
+        radio.publish(Instant::now());
     }
 }
 
+async fn send_message(
+    sender: &mut EspNowSender<'static>,
+    radio: Radio,
+    message: &OutgoingMessage,
+    frame: &mut [u8; protocol::MAX_RADIO_PACKET_BYTES],
+) {
+    let destination = match message.recipient {
+        None => Some(BROADCAST_ADDRESS),
+        Some(peer) => radio
+            .with_state(|state| state.route_for(peer))
+            .map(|mac| mac.0),
+    };
+    let encoded_len =
+        protocol::encode_application(radio.local_id, message.recipient, &message.payload, frame);
+
+    let sent = match (destination, encoded_len) {
+        (Some(destination), Some(len)) => {
+            sender.send_async(&destination, &frame[..len]).await.is_ok()
+        }
+        _ => false,
+    };
+    radio.with_state(|state| record_send(state, sent));
+}
+
+fn record_send(state: &mut NetworkState, ok: bool) {
+    if ok {
+        state.record_send_ok();
+    } else {
+        state.record_send_error();
+    }
+}
+
+fn forget_radio_peer(manager: &EspNowManager<'static>, mac: MacAddress) {
+    if manager.peer_exists(&mac.0)
+        && let Err(err) = manager.remove_peer(&mac.0)
+    {
+        error!("ESP-NOW could not remove peer {}: {:?}", mac, err);
+    }
+}
+
+/// Decode received frames, maintain the peer table and hand application
+/// messages to CPU0.
 #[embassy_executor::task]
 async fn receive_task(
-    manager: EspNowManager<'static>,
+    manager: &'static EspNowManager<'static>,
     mut receiver: EspNowReceiver<'static>,
-    config: Config,
-    local_id: protocol::DeviceId,
-    runtime: Runtime,
+    radio: Radio,
 ) {
     loop {
         let received = receiver.receive_async().await;
-        let Some(frame) = protocol::decode_frame(received.data()) else {
-            record_invalid(runtime);
+        let now = Instant::now();
+        let broadcast = received.info.dst_address == BROADCAST_ADDRESS;
+
+        let (sender_id, application) = match protocol::decode_frame(received.data()) {
+            Some(protocol::DecodedFrame::Beacon(beacon)) => (Some(beacon.device_id), None),
+            Some(protocol::DecodedFrame::Application(packet)) => {
+                let addressed_correctly = match packet.recipient {
+                    None => broadcast,
+                    Some(recipient) => recipient == radio.local_id && !broadcast,
+                };
+                (addressed_correctly.then_some(packet.sender), Some(packet))
+            }
+            None => (None, None),
+        };
+        let Some(sender_id) = sender_id else {
+            radio.with_state(NetworkState::record_invalid_receive);
+            radio.publish(now);
             continue;
         };
-
-        let mac = MacAddress::new(received.info.src_address);
-        let rssi = RssiDbm::from_radio_raw(received.info.rx_control.rssi as u8);
-        let now = Instant::now();
-
-        let sender_id = match frame {
-            protocol::DecodedFrame::Beacon(packet) => packet.device_id,
-            protocol::DecodedFrame::Application(message) => {
-                let recipient_valid = match message.recipient {
-                    None => received.info.dst_address == BROADCAST_ADDRESS,
-                    Some(recipient) => {
-                        recipient == local_id && received.info.dst_address != BROADCAST_ADDRESS
-                    }
-                };
-                if !recipient_valid {
-                    record_invalid(runtime);
-                    continue;
-                }
-                message.sender
-            }
-        };
-
-        if sender_id == local_id {
+        if sender_id == radio.local_id {
             continue;
         }
 
-        let is_new =
-            with_state(|state| state.record_receive(sender_id, mac, rssi, now.as_millis()))
-                .unwrap_or(false);
-
-        if received.info.dst_address == BROADCAST_ADDRESS
-            && !manager.peer_exists(&received.info.src_address)
-        {
-            let _ = manager.add_peer(PeerInfo {
+        let mac = MacAddress(received.info.src_address);
+        let rssi = RssiDbm::from_dbm(received.info.rx_control.rssi);
+        let outcome =
+            radio.with_state(|state| state.record_receive(sender_id, mac, rssi, now.as_millis()));
+        if let Some(evicted) = outcome.evicted {
+            forget_radio_peer(manager, evicted);
+        }
+        if outcome.is_new {
+            info!("ESP-NOW peer found: id={} rssi={} dBm", sender_id, rssi.0);
+        }
+        if broadcast && !manager.peer_exists(&mac.0) {
+            let added = manager.add_peer(PeerInfo {
                 interface: EspNowWifiInterface::Station,
-                peer_address: received.info.src_address,
+                peer_address: mac.0,
                 lmk: None,
-                channel: Some(config.channel.number()),
+                channel: Some(radio.config.channel.number()),
                 encrypt: false,
             });
-        }
-
-        match frame {
-            protocol::DecodedFrame::Beacon(packet) => {
-                if is_new {
-                    ::log::info!(
-                        "ESP-NOW peer: id={} mac={} rssi={} dBm uptime={} ms cap=0x{:08X}",
-                        packet.device_id,
-                        mac,
-                        rssi,
-                        packet.uptime_ms,
-                        packet.capabilities,
-                    );
-                }
-            }
-            protocol::DecodedFrame::Application(message) => {
-                let _ = runtime.push_incoming(message.sender, message.recipient, message.payload);
+            if let Err(err) = added {
+                error!("ESP-NOW could not add peer {}: {:?}", mac, err);
             }
         }
 
-        publish_snapshot(runtime, now);
+        if let Some(packet) = application
+            && let Some(message) = IncomingMessage::from_bytes(packet.sender, packet.payload)
+        {
+            radio.runtime.deliver(message);
+        }
+        radio.publish(now);
     }
-}
-
-fn record_invalid(runtime: Runtime) {
-    let _ = with_state(NetworkState::record_invalid_receive);
-    publish_snapshot(runtime, Instant::now());
 }

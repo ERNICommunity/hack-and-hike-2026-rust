@@ -44,7 +44,7 @@ fn run(cpu1: Cpu1) {
         network::start(
             &spawner,
             cpu1.network_resources,
-            network::DEFAULT_CONFIG,
+            network::Config::default(),
             cpu1.network,
         );
 
