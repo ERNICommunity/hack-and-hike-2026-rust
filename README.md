@@ -76,9 +76,9 @@ instead. Put unit tests next to the code and scenario tests in
 
 ## Your first application
 
-`src/bin/imu_color.rs` turns the screen green while the motion sensor delivers
-samples and red when it does not, with a panel showing the sensor's own
-numbers. This is its `main`:
+`src/bin/imu_color.rs` makes the whole screen a compass-calibration gauge: red
+at 0 %, orange at 50 %, yellow at 75 % and green at 100 %, with a panel showing
+the sensor's own numbers. This is its `main`:
 
 ```rust
 #[esp_rtos::main]

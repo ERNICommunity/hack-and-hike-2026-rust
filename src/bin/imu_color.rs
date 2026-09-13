@@ -1,5 +1,7 @@
-//! The smallest example: the screen is green while the motion sensor is
-//! running and red when it is not, with the sensor's own numbers next to it.
+//! The smallest example: the whole screen is a compass-calibration gauge.
+//! It is red while the compass is uncalibrated and turns orange, then yellow,
+//! then green as the calibration completes, with the sensor's own numbers on
+//! a panel in the middle.
 
 #![no_std]
 #![no_main]
@@ -9,7 +11,10 @@ use core::fmt::Write as _;
 use arrayvec::ArrayString;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
-use embedded_graphics::{pixelcolor::Rgb565, prelude::Point};
+use embedded_graphics::{
+    pixelcolor::Rgb565,
+    prelude::{Point, RgbColor as _},
+};
 use embedded_gui::Rect;
 
 use hack_and_hike::{
@@ -32,8 +37,16 @@ esp_bootloader_esp_idf::esp_app_desc!();
 /// second at most.
 const REDRAW_PERIOD: Duration = Duration::from_millis(250);
 
-const RUNNING_GREEN: Rgb565 = Rgb565::new(3, 40, 6);
-const STOPPED_RED: Rgb565 = Rgb565::new(26, 6, 6);
+/// The background colour at each calibration percentage, blended in between.
+/// Channels are RGB565: red and blue run 0..=31, green 0..=63.
+const CALIBRATION_COLORS: [(u8, (u8, u8, u8)); 4] = [
+    (0, (31, 0, 0)),   // red
+    (50, (31, 41, 0)), // orange
+    (75, (31, 63, 0)), // yellow
+    (100, (0, 63, 0)), // green
+];
+/// Above this brightness, dark text reads better than white.
+const LIGHT_BACKGROUND_PERCENT: u32 = 55;
 
 const TITLE_AT: Point = Point::new(12, 10);
 const PANEL_X: i32 = 12;
@@ -100,19 +113,17 @@ impl Reading {
 }
 
 fn draw(frame: &mut GuiFramebuffer, reading: Option<Reading>) {
-    let running = reading.is_some_and(|reading| reading.status == Status::Running);
+    // Without a sample nothing is calibrated yet, so the gauge is empty.
+    let calibration = reading.map_or(0, |reading| reading.calibration_percent);
+    let background = calibration_color(calibration);
     let screen = Rect::new(0, 0, WIDTH as u32, HEIGHT as u32);
-    common::fill(
-        frame,
-        screen,
-        if running { RUNNING_GREEN } else { STOPPED_RED },
-    );
+    common::fill(frame, screen, background);
     common::text(
         frame,
         "IMU COLOUR",
         TITLE_AT,
         common::TITLE_FONT,
-        theme::WHITE,
+        readable_on(background),
     );
     common::fill(
         frame,
@@ -121,8 +132,9 @@ fn draw(frame: &mut GuiFramebuffer, reading: Option<Reading>) {
     );
 
     let mut lines = Lines::new(frame, TEXT_AT);
-    lines.line("The screen is green while the", theme::CHARCOAL);
-    lines.line("motion sensor delivers samples.", theme::CHARCOAL);
+    lines.line("The screen follows the compass", theme::CHARCOAL);
+    lines.line("calibration: red at 0 %, orange at", theme::CHARCOAL);
+    lines.line("50 %, yellow at 75 %, green at 100 %.", theme::CHARCOAL);
     lines.line("", theme::CHARCOAL);
 
     let Some(reading) = reading else {
@@ -176,4 +188,50 @@ fn draw(frame: &mut GuiFramebuffer, reading: Option<Reading>) {
 
 fn round(degrees: f32) -> i32 {
     libm::roundf(degrees) as i32
+}
+
+/// The gauge colour for a calibration percentage, blended between the stops
+/// in [`CALIBRATION_COLORS`].
+fn calibration_color(percent: u8) -> Rgb565 {
+    let percent = percent.min(100);
+    let (low, high) = CALIBRATION_COLORS
+        .windows(2)
+        .map(|stops| (stops[0], stops[1]))
+        .find(|(low, high)| (low.0..=high.0).contains(&percent))
+        .unwrap_or((CALIBRATION_COLORS[0], CALIBRATION_COLORS[0]));
+
+    let span = u32::from(high.0 - low.0);
+    let position = u32::from(percent - low.0);
+    Rgb565::new(
+        blend(low.1.0, high.1.0, position, span),
+        blend(low.1.1, high.1.1, position, span),
+        blend(low.1.2, high.1.2, position, span),
+    )
+}
+
+/// `from` at `position` 0, `to` at `position` `span`.
+fn blend(from: u8, to: u8, position: u32, span: u32) -> u8 {
+    if span == 0 {
+        return to;
+    }
+    let (from, to) = (u32::from(from), u32::from(to));
+    let value = if to >= from {
+        from + ((to - from) * position + span / 2) / span
+    } else {
+        from - ((from - to) * position + span / 2) / span
+    };
+    value as u8
+}
+
+/// White or charcoal, whichever reads better on `background`.
+fn readable_on(background: Rgb565) -> Rgb565 {
+    // Brightness in percent, weighting the channels the way an eye does.
+    let brightness = (30 * u32::from(background.r())) / 31
+        + (59 * u32::from(background.g())) / 63
+        + (11 * u32::from(background.b())) / 31;
+    if brightness >= LIGHT_BACKGROUND_PERCENT {
+        theme::CHARCOAL
+    } else {
+        theme::WHITE
+    }
 }
