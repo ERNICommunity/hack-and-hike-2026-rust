@@ -11,17 +11,17 @@
 //! something to the application; sensors deliver body-frame values.
 
 /// Express a body-frame vector in the screen frame.
-pub(super) fn screen_from_body(v: [f32; 3]) -> [f32; 3] {
+pub fn screen_from_body(v: [f32; 3]) -> [f32; 3] {
     [v[2], -v[0], -v[1]]
 }
 
 /// Express a screen-frame vector in the body frame.
-pub(super) fn body_from_screen(v: [f32; 3]) -> [f32; 3] {
+pub fn body_from_screen(v: [f32; 3]) -> [f32; 3] {
     [-v[1], -v[2], v[0]]
 }
 
 /// Express a BMM150 magnetometer reading in the body frame. The magnetometer
 /// shares the x axis with the BMI270 and has y and z pointing the other way.
-pub(super) fn body_from_magnetometer(v: [f32; 3]) -> [f32; 3] {
+pub fn body_from_magnetometer(v: [f32; 3]) -> [f32; 3] {
     [v[0], -v[1], -v[2]]
 }

@@ -1,0 +1,17 @@
+[package]
+name = "hack-and-hike-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+publish = false
+description = "Hardware-independent logic of the Hack & Hike firmware: IMU math and the network protocol"
+
+[dependencies]
+arrayvec = { version = "0.7.8", default-features = false }
+libm = "0.2"
+log = "0.4"
+postcard = { version = "1.1", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+
+[lints]
+workspace = true

@@ -16,11 +16,11 @@
 
 use core::{fmt, ops::Range};
 
-pub(super) const BEACON_PACKET_BYTES: usize = 32;
-pub(super) const MAX_RADIO_PACKET_BYTES: usize = 250;
+pub const BEACON_PACKET_BYTES: usize = 32;
+pub const MAX_RADIO_PACKET_BYTES: usize = 250;
 /// Largest serialized application message that fits one radio frame.
 pub const MAX_PAYLOAD: usize = 228;
-pub(super) const PROTOCOL_VERSION: u8 = 2;
+pub const PROTOCOL_VERSION: u8 = 2;
 
 const MAGIC: [u8; 4] = *b"HNHN";
 const MAGIC_FIELD: Range<usize> = 0..4;
@@ -70,7 +70,7 @@ impl fmt::Display for DeviceId {
 /// ESP-NOW station address of a peer. Used for routing only, never shown to
 /// applications, which see the [`DeviceId`] instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct MacAddress(pub(super) [u8; 6]);
+pub struct MacAddress(pub [u8; 6]);
 
 impl fmt::Display for MacAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -88,23 +88,23 @@ fn write_mac(f: &mut fmt::Formatter<'_>, bytes: &[u8; 6]) -> fmt::Result {
 
 /// Received signal strength in dBm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct RssiDbm(pub(super) i8);
+pub struct RssiDbm(pub i8);
 
 impl RssiDbm {
-    pub(super) fn from_dbm(dbm: i32) -> Self {
+    pub fn from_dbm(dbm: i32) -> Self {
         Self(i8::try_from(dbm).unwrap_or(i8::MIN))
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct BeaconPacket {
-    pub(super) device_id: DeviceId,
-    pub(super) sequence: u32,
-    pub(super) uptime_ms: u32,
+pub struct BeaconPacket {
+    pub device_id: DeviceId,
+    pub sequence: u32,
+    pub uptime_ms: u32,
 }
 
 impl BeaconPacket {
-    pub(super) fn encode(self) -> [u8; BEACON_PACKET_BYTES] {
+    pub fn encode(self) -> [u8; BEACON_PACKET_BYTES] {
         let mut out = [0u8; BEACON_PACKET_BYTES];
         out[MAGIC_FIELD].copy_from_slice(&MAGIC);
         out[VERSION_OFFSET] = PROTOCOL_VERSION;
@@ -117,21 +117,21 @@ impl BeaconPacket {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct ApplicationPacket<'a> {
-    pub(super) sender: DeviceId,
-    pub(super) recipient: Option<DeviceId>,
-    pub(super) payload: &'a [u8],
+pub struct ApplicationPacket<'a> {
+    pub sender: DeviceId,
+    pub recipient: Option<DeviceId>,
+    pub payload: &'a [u8],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DecodedFrame<'a> {
+pub enum DecodedFrame<'a> {
     Beacon(BeaconPacket),
     Application(ApplicationPacket<'a>),
 }
 
 /// Encode an application frame into `out`. Returns the frame length, or `None`
 /// when the payload is too large.
-pub(super) fn encode_application(
+pub fn encode_application(
     sender: DeviceId,
     recipient: Option<DeviceId>,
     payload: &[u8],
@@ -159,7 +159,7 @@ pub(super) fn encode_application(
 
 /// Decode a received frame. Anything that is not exactly a frame of this
 /// protocol version is rejected.
-pub(super) fn decode_frame(bytes: &[u8]) -> Option<DecodedFrame<'_>> {
+pub fn decode_frame(bytes: &[u8]) -> Option<DecodedFrame<'_>> {
     if bytes.len() <= KIND_OFFSET
         || bytes[MAGIC_FIELD] != MAGIC
         || bytes[VERSION_OFFSET] != PROTOCOL_VERSION

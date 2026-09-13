@@ -9,7 +9,7 @@ use esp_hal::i2c::master::Error as I2cError;
 
 use crate::platform::i2c::SystemI2cBus;
 
-use super::bmm150;
+use hack_and_hike_core::imu::bmm150::Trim;
 
 const BMI270_ADDR: u8 = 0x69;
 const BMI270_CHIP_ID: u8 = 0x24;
@@ -36,6 +36,23 @@ const REG_IF_CONF: u8 = 0x6B;
 const REG_PWR_CONF: u8 = 0x7C;
 const REG_PWR_CTRL: u8 = 0x7D;
 const REG_CMD: u8 = 0x7E;
+
+// BMM150 registers reached through the BMI270 auxiliary interface.
+const BMM150_ADDRESS: u8 = 0x10;
+const BMM150_CHIP_ID: u8 = 0x32;
+const BMM150_REG_CHIP_ID: u8 = 0x40;
+const BMM150_REG_DATA_X_LSB: u8 = 0x42;
+const BMM150_REG_POWER_CONTROL: u8 = 0x4B;
+const BMM150_REG_OP_MODE: u8 = 0x4C;
+const BMM150_REG_REP_XY: u8 = 0x51;
+const BMM150_REG_REP_Z: u8 = 0x52;
+const BMM150_DIG_X1: u8 = 0x5D;
+const BMM150_DIG_Z4_LSB: u8 = 0x62;
+const BMM150_DIG_Z2_LSB: u8 = 0x68;
+const BMM150_SOFT_RESET_AND_POWER: u8 = 0x83;
+const BMM150_NORMAL_30HZ: u8 = 0x38;
+const BMM150_REP_XY_REGULAR: u8 = 0x04;
+const BMM150_REP_Z_REGULAR: u8 = 0x07;
 
 const CMD_SOFT_RESET: u8 = 0xB6;
 const CONFIG_LOAD_OK: u8 = 0x01;
@@ -224,7 +241,7 @@ impl Bmi270 {
         Ok(result)
     }
 
-    pub(super) async fn initialize_bmm150(&self) -> Result<bmm150::Trim, Error> {
+    pub(super) async fn initialize_bmm150(&self) -> Result<Trim, Error> {
         self.write_register(REG_IF_CONF, 0x20).await?;
         self.write_register(REG_PWR_CONF, 0x00).await?;
         self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR).await?;
@@ -232,34 +249,34 @@ impl Bmi270 {
             .await?;
         self.write_register(REG_AUX_IF_CONF, AUX_IF_MANUAL_MODE)
             .await?;
-        self.write_register(REG_AUX_DEV_ID, bmm150::ADDRESS << 1)
+        self.write_register(REG_AUX_DEV_ID, BMM150_ADDRESS << 1)
             .await?;
 
-        self.aux_write_register(bmm150::REG_POWER_CONTROL, bmm150::SOFT_RESET_AND_POWER)
+        self.aux_write_register(BMM150_REG_POWER_CONTROL, BMM150_SOFT_RESET_AND_POWER)
             .await?;
         Timer::after(Duration::from_millis(5)).await;
 
-        let chip_id = self.aux_read_register(bmm150::REG_CHIP_ID).await?;
-        if chip_id != bmm150::CHIP_ID {
+        let chip_id = self.aux_read_register(BMM150_REG_CHIP_ID).await?;
+        if chip_id != BMM150_CHIP_ID {
             return Err(Error::BmmChipId(chip_id));
         }
 
-        let x1_y1 = self.aux_read_array::<2>(bmm150::DIG_X1).await?;
-        let z4_x2_y2 = self.aux_read_array::<4>(bmm150::DIG_Z4_LSB).await?;
-        let z2_to_xy1 = self.aux_read_array::<10>(bmm150::DIG_Z2_LSB).await?;
-        let trim = bmm150::Trim::from_registers(x1_y1, z4_x2_y2, z2_to_xy1);
+        let x1_y1 = self.aux_read_array::<2>(BMM150_DIG_X1).await?;
+        let z4_x2_y2 = self.aux_read_array::<4>(BMM150_DIG_Z4_LSB).await?;
+        let z2_to_xy1 = self.aux_read_array::<10>(BMM150_DIG_Z2_LSB).await?;
+        let trim = Trim::from_registers(x1_y1, z4_x2_y2, z2_to_xy1);
 
-        self.aux_write_register(bmm150::REG_REP_XY, bmm150::REP_XY_REGULAR)
+        self.aux_write_register(BMM150_REG_REP_XY, BMM150_REP_XY_REGULAR)
             .await?;
-        self.aux_write_register(bmm150::REG_REP_Z, bmm150::REP_Z_REGULAR)
+        self.aux_write_register(BMM150_REG_REP_Z, BMM150_REP_Z_REGULAR)
             .await?;
-        self.aux_write_register(bmm150::REG_OP_MODE, bmm150::NORMAL_30HZ)
+        self.aux_write_register(BMM150_REG_OP_MODE, BMM150_NORMAL_30HZ)
             .await?;
 
         self.write_register(REG_AUX_CONF, AUX_CONF_100HZ).await?;
         self.write_register(REG_AUX_IF_CONF, AUX_IF_DATA_MODE_8_BYTES)
             .await?;
-        self.write_register(REG_AUX_RD_ADDR, bmm150::REG_DATA_X_LSB)
+        self.write_register(REG_AUX_RD_ADDR, BMM150_REG_DATA_X_LSB)
             .await?;
         self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR_AUX)
             .await?;

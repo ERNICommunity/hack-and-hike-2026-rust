@@ -6,7 +6,9 @@
 use embassy_time::{Duration, Instant};
 use log::info;
 
-use super::{MagStatus, bmi270::Bmi270, bmm150, frames, vec3};
+use hack_and_hike_core::imu::{bmm150, frames, vec3};
+
+use super::{MagStatus, bmi270::Bmi270};
 
 /// How often a missing magnetometer is probed again.
 const RETRY_PERIOD: Duration = Duration::from_secs(5);

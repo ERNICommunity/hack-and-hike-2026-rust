@@ -1410,12 +1410,24 @@ dependencies = [
  "esp-println",
  "esp-radio",
  "esp-rtos",
+ "hack-and-hike-core",
  "libm",
  "log",
  "mipidsi",
  "postcard",
  "serde",
  "static_cell",
+]
+
+[[package]]
+name = "hack-and-hike-core"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "libm",
+ "log",
+ "postcard",
+ "serde",
 ]
 
 [[package]]

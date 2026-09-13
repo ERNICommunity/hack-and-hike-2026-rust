@@ -15,17 +15,17 @@ use super::{
 
 /// How strongly each correction pulls on the gyro-propagated basis.
 #[derive(Clone, Copy)]
-pub(super) struct Gains {
+pub struct Gains {
     /// Weight of the gyro prediction versus the accelerometer when leveling;
     /// 0 trusts the accelerometer alone, 1 never levels.
-    pub(super) roll_pitch_alpha: f32,
+    pub roll_pitch_alpha: f32,
     /// Fraction of the heading error the magnetometer corrects per sample.
-    pub(super) magnetic_gain: f32,
+    pub magnetic_gain: f32,
 }
 
 impl Gains {
     /// Tuned for the 100 Hz sample rate on the real sensors.
-    pub(super) const PRODUCTION: Self = Self {
+    pub const PRODUCTION: Self = Self {
         roll_pitch_alpha: 0.98,
         magnetic_gain: 0.02,
     };
@@ -68,14 +68,20 @@ const DEG_TO_RAD: f32 = PI / 180.0;
 
 /// Learns the gyroscope's zero-rate offset while the device is still.
 #[derive(Clone, Copy)]
-pub(super) struct GyroBias {
+pub struct GyroBias {
     bias_dps: [f32; 3],
     stationary_samples: u16,
     settled: bool,
 }
 
+impl Default for GyroBias {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GyroBias {
-    pub(super) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             bias_dps: [0.0; 3],
             stationary_samples: 0,
@@ -84,7 +90,7 @@ impl GyroBias {
     }
 
     /// Update the bias estimate and return the bias-corrected rate.
-    pub(super) fn correct(&mut self, accel_g: [f32; 3], gyro_dps: [f32; 3]) -> [f32; 3] {
+    pub fn correct(&mut self, accel_g: [f32; 3], gyro_dps: [f32; 3]) -> [f32; 3] {
         let accel_norm = vec3::norm(accel_g);
         let stationary = (STATIONARY_ACCEL_MIN_G..=STATIONARY_ACCEL_MAX_G).contains(&accel_norm)
             && vec3::max_abs(gyro_dps) < STATIONARY_GYRO_MAX_DPS;
@@ -143,7 +149,7 @@ impl SmoothedCandidate {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Fusion {
+pub struct Fusion {
     gains: Gains,
     // Inertially fixed world vectors expressed in the rotating screen frame.
     gravity_screen: [f32; 3],
@@ -159,12 +165,19 @@ pub(super) struct Fusion {
     initialized: bool,
 }
 
+impl Default for Fusion {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Fusion {
-    pub(super) const fn new() -> Self {
+    /// Fusion with the production gains.
+    pub const fn new() -> Self {
         Self::with_gains(Gains::PRODUCTION)
     }
 
-    pub(super) const fn with_gains(gains: Gains) -> Self {
+    pub const fn with_gains(gains: Gains) -> Self {
         Self {
             gains,
             gravity_screen: [0.0, 0.0, 1.0],
@@ -187,21 +200,21 @@ impl Fusion {
 
     /// Forget the magnetic lock after an event that made gyro integration
     /// unreliable, so north is re-acquired from scratch.
-    pub(super) fn invalidate_absolute_heading(&mut self) {
+    pub fn invalidate_absolute_heading(&mut self) {
         self.magnetic_locked = false;
         self.filtered_magnetic_north = None;
         self.initial_lock.clear();
         self.large_innovation.clear();
     }
 
-    pub(super) fn reset_rate_history(&mut self) {
+    pub fn reset_rate_history(&mut self) {
         self.previous_gyro_screen_dps = None;
     }
 
     /// Advance by one sample. `accel_g` in g, `gyro_dps` bias-corrected in
     /// degrees per second, `magnetic_field_ut` a trusted calibrated field in
     /// the body frame when available.
-    pub(super) fn update(
+    pub fn update(
         &mut self,
         accel_g: [f32; 3],
         gyro_dps: [f32; 3],

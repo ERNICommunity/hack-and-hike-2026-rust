@@ -5,13 +5,16 @@ use log::{info, trace, warn};
 
 use crate::platform::i2c::SystemI2cBus;
 
+use hack_and_hike_core::imu::{
+    fusion::{Fusion, GyroBias},
+    vec3,
+};
+
 use super::{
     MagStatus, Measurements, Orientation, Status,
     bmi270::{Bmi270, RawSample},
     channels::{Publisher, Runtime},
-    fusion::{Fusion, GyroBias},
     magnetic::MagneticState,
-    vec3,
 };
 
 /// Host sampling rate; fusion runs once per sample.

@@ -26,19 +26,15 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install host Rust toolchain
-        run: rustup toolchain install "$HOST_RUST_VERSION" --profile minimal
+        run: rustup toolchain install "$HOST_RUST_VERSION" --profile minimal --component clippy
+
+      - name: Lint the core crate and its tests
+        run: |
+          host_target="$(rustc +"$HOST_RUST_VERSION" -vV | sed -n 's/^host: //p')"
+          cargo +"$HOST_RUST_VERSION" clippy -p hack-and-hike-core --all-targets --target "$host_target" -- -D warnings
 
       - name: Run host tests
-        run: |
-          set -euo pipefail
-          # The workspace .cargo/config.toml targets the ESP32-S3; override it
-          # with the host triple for these host-only packages.
-          host_target="$(rustc +"$HOST_RUST_VERSION" -vV | sed -n 's/^host: //p')"
-          for package in tests/imu_regression tests/network_regression; do
-            RUSTFLAGS="-D warnings" cargo +"$HOST_RUST_VERSION" test \
-              --manifest-path "$package/Cargo.toml" \
-              --target "$host_target"
-          done
+        run: RUSTFLAGS="-D warnings" ./scripts/test.sh
 
   firmware:
     name: Firmware lint and build
