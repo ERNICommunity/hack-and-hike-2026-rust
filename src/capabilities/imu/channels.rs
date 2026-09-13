@@ -2,7 +2,9 @@
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 
-use super::{Measurements, Orientation, Sample, Status, magnetic::MagneticReport};
+use hack_and_hike_core::imu::Orientation;
+
+use super::{Attitude, Measurements, Sample, Status, magnetic::MagneticReport};
 
 struct Service {
     latest: Signal<CriticalSectionRawMutex, Sample>,
@@ -68,13 +70,14 @@ impl Publisher {
         magnetic: MagneticReport,
     ) {
         self.revision = self.revision.wrapping_add(1);
+        let measurements = measurements.in_screen_frame();
         self.runtime.service.latest.signal(Sample {
             revision: self.revision,
+            status,
+            attitude: Attitude::from_orientation(&orientation),
             acceleration_m_s2: measurements.acceleration_m_s2,
             angular_velocity_deg_s: measurements.angular_velocity_deg_s,
             magnetic_field_ut: measurements.magnetic_field_ut,
-            status,
-            orientation,
             mag_status: magnetic.status,
             mag_field_strength_ut: magnetic.field_ut,
             mag_calibration_percent: magnetic.calibration_percent,

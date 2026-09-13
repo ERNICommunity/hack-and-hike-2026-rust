@@ -1,17 +1,26 @@
 //! Display capability.
 //!
-//! [`Display`] exclusively owns the LCD transport. Applications render through a
-//! borrowed [`Surface`], which bounds every write to one [`Region`]. There are
-//! two ways to draw:
+//! [`Display`] exclusively owns the LCD transport. Applications draw through
+//! a borrowed [`Surface`], which bounds every write to one rectangle. There
+//! are two ways to draw:
 //!
 //! - [`Surface::render_scanlines`] hands the application one row of pixels at
 //!   a time to fill in.
-//! - [`Surface::render_from`] streams ready-made RGB565 rows from a
-//!   [`ScanlineSource`] such as a framebuffer or a camera frame.
+//! - [`Surface::render_from`] streams ready-made rows from a
+//!   [`ScanlineSource`] such as a [`Canvas`](crate::ui::Canvas) or a camera
+//!   frame.
+//!
+//! Both wait for the SPI DMA transfer to finish before they return, so a
+//! full-screen draw blocks the calling loop for a few milliseconds.
 
 mod controller;
 mod transport;
 
+use embedded_graphics::{
+    pixelcolor::{Rgb565, raw::RawU16},
+    prelude::{Point, RawData as _, Size},
+    primitives::Rectangle,
+};
 use esp_hal::{
     delay::Delay,
     peripherals::{DMA_CH1, GPIO3, GPIO35, GPIO36, GPIO37, SPI2},
@@ -20,49 +29,19 @@ use static_cell::StaticCell;
 
 use crate::platform;
 
-/// One RGB565 pixel in the CPU's native byte order.
-pub type Pixel = u16;
-
 pub const WIDTH: usize = platform::DISPLAY_WIDTH;
 pub const HEIGHT: usize = platform::DISPLAY_HEIGHT;
-const BYTES_PER_PIXEL: usize = 2;
+/// The panel size in pixels.
+pub const SIZE: Size = Size::new(WIDTH as u32, HEIGHT as u32);
+/// The whole panel, for `display.surface(SCREEN)`.
+pub const SCREEN: Rectangle = Rectangle::new(Point::zero(), SIZE);
+
+/// Bytes of one RGB565 pixel on the wire.
+pub const BYTES_PER_PIXEL: usize = 2;
 
 // The scanline scratch buffer lives in static RAM rather than on the main
 // stack; `Display` keeps the only reference to it.
-static LINE_BUFFER: StaticCell<[Pixel; WIDTH]> = StaticCell::new();
-
-/// A rectangle in physical LCD coordinates. Construction checks panel bounds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Region {
-    pub x: usize,
-    pub y: usize,
-    pub width: usize,
-    pub height: usize,
-}
-
-impl Region {
-    /// Panics when the rectangle does not fit the panel.
-    pub const fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
-        assert!(
-            x <= WIDTH && width <= WIDTH - x,
-            "region exceeds the panel width"
-        );
-        assert!(
-            y <= HEIGHT && height <= HEIGHT - y,
-            "region exceeds the panel height"
-        );
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    const fn is_empty(self) -> bool {
-        self.width == 0 || self.height == 0
-    }
-}
+static LINE_BUFFER: StaticCell<[Rgb565; WIDTH]> = StaticCell::new();
 
 /// Raw CPU0 hardware resources consumed exactly once by `init`.
 pub(crate) struct Resources {
@@ -77,16 +56,16 @@ pub(crate) struct Resources {
 /// Exclusive owner of the LCD transport.
 pub struct Display {
     transport: transport::Transport,
-    line_buffer: &'static mut [Pixel; WIDTH],
+    line_buffer: &'static mut [Rgb565; WIDTH],
 }
 
-/// Borrowed display access restricted to one region.
+/// Borrowed display access restricted to one rectangle.
 ///
 /// Coordinates handed to the application are local to the surface, and nested
 /// surfaces cannot escape their parent.
 pub struct Surface<'a> {
     display: &'a mut Display,
-    region: Region,
+    area: Rectangle,
 }
 
 /// Supplies ready-to-send rows of big-endian RGB565 bytes.
@@ -106,115 +85,86 @@ pub trait ScanlineSource {
 pub(crate) fn init(resources: Resources, delay: Delay) -> Display {
     Display {
         transport: transport::init(resources, delay),
-        line_buffer: LINE_BUFFER.init_with(|| [0; WIDTH]),
+        line_buffer: LINE_BUFFER.init_with(|| [Rgb565::new(0, 0, 0); WIDTH]),
     }
 }
 
 impl Display {
-    /// Borrow the display for drawing inside `region`.
-    pub fn surface(&mut self, region: Region) -> Surface<'_> {
+    /// Borrow the display for drawing inside `area`, in panel coordinates.
+    ///
+    /// Panics when `area` does not fit the panel: the rectangles an
+    /// application draws into are fixed by its layout, so that is a
+    /// programming error, not a runtime condition.
+    pub fn surface(&mut self, area: Rectangle) -> Surface<'_> {
+        assert!(
+            SCREEN.intersection(&area) == area,
+            "surface {area:?} does not fit the {WIDTH}x{HEIGHT} panel"
+        );
         Surface {
             display: self,
-            region,
+            area,
         }
-    }
-
-    fn render_scanlines_region(
-        &mut self,
-        region: Region,
-        mut render_line: impl FnMut(usize, &mut [Pixel]),
-    ) {
-        if region.is_empty() {
-            return;
-        }
-
-        let transport = &mut self.transport;
-        let pixels = &mut self.line_buffer[..region.width];
-
-        transport.begin_region(
-            region.x..region.x + region.width,
-            region.y..region.y + region.height,
-        );
-        for y in 0..region.height {
-            render_line(y, pixels);
-            let buffer = transport.prepare();
-            for (bytes, pixel) in buffer.chunks_exact_mut(BYTES_PER_PIXEL).zip(pixels.iter()) {
-                bytes.copy_from_slice(&pixel.to_be_bytes());
-            }
-            transport.send(region.width * BYTES_PER_PIXEL, || {});
-        }
-        transport.finish(|| {});
-    }
-
-    fn render_from_region(&mut self, region: Region, source: &mut impl ScanlineSource) {
-        if region.is_empty() {
-            return;
-        }
-
-        let row_bytes = region.width * BYTES_PER_PIXEL;
-        let transport = &mut self.transport;
-
-        transport.begin_region(
-            region.x..region.x + region.width,
-            region.y..region.y + region.height,
-        );
-        for first_row in (0..region.height).step_by(transport::BATCH_LINES) {
-            let rows = (region.height - first_row).min(transport::BATCH_LINES);
-            let buffer = transport.prepare();
-            for (offset, row) in buffer[..rows * row_bytes]
-                .chunks_exact_mut(row_bytes)
-                .enumerate()
-            {
-                source.fill_row(first_row + offset, row);
-            }
-            transport.send(rows * row_bytes, || source.while_transferring());
-        }
-        transport.finish(|| source.while_transferring());
     }
 }
 
 impl Surface<'_> {
-    pub const fn width(&self) -> usize {
-        self.region.width
+    pub fn size(&self) -> Size {
+        self.area.size
     }
 
-    pub const fn height(&self) -> usize {
-        self.region.height
+    pub fn width(&self) -> usize {
+        self.area.size.width as usize
     }
 
-    /// Borrow a smaller surface using coordinates local to this surface.
-    pub fn subsurface(&mut self, x: usize, y: usize, width: usize, height: usize) -> Surface<'_> {
-        assert!(
-            x <= self.region.width && width <= self.region.width - x,
-            "subsurface exceeds the parent width"
-        );
-        assert!(
-            y <= self.region.height && height <= self.region.height - y,
-            "subsurface exceeds the parent height"
-        );
+    pub fn height(&self) -> usize {
+        self.area.size.height as usize
+    }
 
+    /// Borrow a smaller surface, `area` being local to this surface.
+    pub fn subsurface(&mut self, area: Rectangle) -> Surface<'_> {
+        let local = Rectangle::new(Point::zero(), self.area.size);
+        assert!(
+            local.intersection(&area) == area,
+            "subsurface {area:?} does not fit its parent {local:?}"
+        );
         Surface {
             display: &mut *self.display,
-            region: Region {
-                x: self.region.x + x,
-                y: self.region.y + y,
-                width,
-                height,
-            },
+            area: Rectangle::new(self.area.top_left + area.top_left, area.size),
         }
     }
 
     /// Draw the whole surface one row at a time.
     ///
-    /// `render_line` receives the row index and a slice of exactly `width()`
+    /// `render_row` receives the row index and a slice of exactly `width()`
     /// pixels to fill.
-    pub fn render_scanlines(&mut self, render_line: impl FnMut(usize, &mut [Pixel])) {
-        self.display
-            .render_scanlines_region(self.region, render_line);
+    pub fn render_scanlines(&mut self, render_row: impl FnMut(usize, &mut [Rgb565])) {
+        let width = self.width();
+        let Surface { display, area } = self;
+        let mut rows = ComputedRows {
+            render_row,
+            pixels: &mut display.line_buffer[..width],
+        };
+        display.transport.render(*area, &mut rows);
     }
 
-    /// Draw the whole surface from rows that are already RGB565 big-endian bytes.
+    /// Draw the whole surface from rows that are already RGB565 big-endian
+    /// bytes, for example a [`Canvas`](crate::ui::Canvas) or a camera frame.
     pub fn render_from(&mut self, source: &mut impl ScanlineSource) {
-        self.display.render_from_region(self.region, source);
+        self.display.transport.render(self.area, source);
+    }
+}
+
+/// Adapts a per-row closure to the byte-oriented transport.
+struct ComputedRows<'a, F> {
+    render_row: F,
+    pixels: &'a mut [Rgb565],
+}
+
+impl<F: FnMut(usize, &mut [Rgb565])> ScanlineSource for ComputedRows<'_, F> {
+    fn fill_row(&mut self, y: usize, row: &mut [u8]) {
+        (self.render_row)(y, self.pixels);
+        for (bytes, pixel) in row.chunks_exact_mut(BYTES_PER_PIXEL).zip(&*self.pixels) {
+            bytes.copy_from_slice(&RawU16::from(*pixel).into_inner().to_be_bytes());
+        }
     }
 }

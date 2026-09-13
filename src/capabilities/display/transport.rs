@@ -3,13 +3,12 @@
 //! One-time controller setup lives in `controller`; this module owns only the
 //! allocation-free steady-state DCS windowing and pixel DMA pipeline.
 //!
-//! Sending works in batches: the caller fills the free DMA buffer through
-//! [`Transport::prepare`], then [`Transport::send`] waits for the previous
-//! batch to leave the SPI bus and starts the new one. Two buffers alternate, so
-//! the caller can prepare the next batch while the current one is in flight.
+//! Sending works in batches of rows: the source fills the free DMA buffer,
+//! then `send` waits for the previous batch to leave the SPI bus and starts
+//! the new one. Two buffers alternate, so the next batch is prepared while the
+//! current one is in flight.
 
-use core::ops::Range;
-
+use embedded_graphics::primitives::Rectangle;
 use embedded_hal::spi::SpiBus as _;
 use esp_hal::{
     Blocking,
@@ -20,14 +19,14 @@ use esp_hal::{
     time::Rate,
 };
 
-use super::{Resources, WIDTH, controller};
+use super::{BYTES_PER_PIXEL, Resources, ScanlineSource, WIDTH, controller};
 
 const DISPLAY_SPI_MHZ: u32 = 40;
 /// Scanlines per DMA batch. Seven full-width rows are 4,480 bytes, which keeps
 /// a batch close to one 4 KiB GDMA descriptor while cutting per-transfer
 /// overhead for full-frame producers such as the camera.
-pub(super) const BATCH_LINES: usize = 7;
-pub(super) const BATCH_BYTES: usize = WIDTH * 2 * BATCH_LINES;
+const BATCH_LINES: usize = 7;
+const BATCH_BYTES: usize = WIDTH * BYTES_PER_PIXEL * BATCH_LINES;
 const CONTROL_DMA_BYTES: usize = 256;
 
 const DCS_COLUMN_ADDRESS_SET: u8 = 0x2A;
@@ -133,30 +132,64 @@ impl Transport {
         self.cs.set_high();
     }
 
-    /// Program one rectangular GRAM window. The controller auto-increments
+    /// Draw `area` from `source`, waiting for the last batch to reach the
+    /// panel before returning. Nothing is sent for an empty area.
+    pub(super) fn render(&mut self, area: Rectangle, source: &mut impl ScanlineSource) {
+        let Some(bottom_right) = area.bottom_right() else {
+            return;
+        };
+        let width = area.size.width as usize;
+        let height = area.size.height as usize;
+        let row_bytes = width * BYTES_PER_PIXEL;
+
+        self.begin_window(
+            [area.top_left.x, area.top_left.y].map(panel_coordinate),
+            [bottom_right.x, bottom_right.y].map(panel_coordinate),
+        );
+        for first_row in (0..height).step_by(BATCH_LINES) {
+            let rows = (height - first_row).min(BATCH_LINES);
+            let buffer = self.prepare();
+            for (offset, row) in buffer[..rows * row_bytes]
+                .chunks_exact_mut(row_bytes)
+                .enumerate()
+            {
+                source.fill_row(first_row + offset, row);
+            }
+            self.send(rows * row_bytes, || source.while_transferring());
+        }
+        self.finish(|| source.while_transferring());
+    }
+
+    /// Program one rectangular GRAM window from the top-left to the
+    /// bottom-right pixel, both inclusive. The controller auto-increments
     /// through that window, so the pixel path only streams consecutive RGB565
     /// bytes afterwards. Any batch still in flight is completed first.
-    pub(super) fn begin_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
-        debug_assert!(!columns.is_empty() && !pages.is_empty());
-
+    fn begin_window(&mut self, [x0, y0]: [u16; 2], [x1, y1]: [u16; 2]) {
         let (mut spi, free, spare) = self.take_pipeline().drain(|| {});
         self.cs.set_high();
 
-        let [x0, x1] = [columns.start, columns.end - 1].map(panel_coordinate);
-        let [y0, y1] = [pages.start, pages.end - 1].map(panel_coordinate);
-        let columns = [(x0 >> 8) as u8, x0 as u8, (x1 >> 8) as u8, x1 as u8];
-        let pages = [(y0 >> 8) as u8, y0 as u8, (y1 >> 8) as u8, y1 as u8];
-
-        self.write_command(&mut spi, DCS_COLUMN_ADDRESS_SET, &columns);
-        self.write_command(&mut spi, DCS_PAGE_ADDRESS_SET, &pages);
+        let [x0_high, x0_low] = x0.to_be_bytes();
+        let [x1_high, x1_low] = x1.to_be_bytes();
+        let [y0_high, y0_low] = y0.to_be_bytes();
+        let [y1_high, y1_low] = y1.to_be_bytes();
+        self.write_command(
+            &mut spi,
+            DCS_COLUMN_ADDRESS_SET,
+            &[x0_high, x0_low, x1_high, x1_low],
+        );
+        self.write_command(
+            &mut spi,
+            DCS_PAGE_ADDRESS_SET,
+            &[y0_high, y0_low, y1_high, y1_low],
+        );
         self.write_command(&mut spi, DCS_MEMORY_WRITE, &[]);
 
         self.pipeline = Some(Pipeline::Idle { spi, free, spare });
     }
 
-    /// The free DMA buffer, to be filled with at most [`BATCH_BYTES`] of
-    /// big-endian RGB565 pixel data before calling [`Transport::send`].
-    pub(super) fn prepare(&mut self) -> &mut [u8] {
+    /// The free DMA buffer, to be filled with at most `BATCH_BYTES` of
+    /// big-endian RGB565 pixel data before calling `send`.
+    fn prepare(&mut self) -> &mut [u8] {
         match self.pipeline.as_mut() {
             Some(Pipeline::Idle { free, .. } | Pipeline::InFlight { free, .. }) => {
                 free.as_mut_slice()
@@ -168,7 +201,7 @@ impl Transport {
     /// Send the first `byte_len` bytes of the prepared buffer. While the
     /// previous batch is still on the bus, `while_transferring` is called
     /// repeatedly so the caller can do useful work instead of waiting.
-    pub(super) fn send(&mut self, byte_len: usize, while_transferring: impl FnMut()) {
+    fn send(&mut self, byte_len: usize, while_transferring: impl FnMut()) {
         debug_assert!(byte_len <= BATCH_BYTES);
         if byte_len == 0 {
             return;
@@ -187,13 +220,13 @@ impl Transport {
     }
 
     /// Wait for the last batch of the current region to reach the panel.
-    pub(super) fn finish(&mut self, while_transferring: impl FnMut()) {
+    fn finish(&mut self, while_transferring: impl FnMut()) {
         let (spi, free, spare) = self.take_pipeline().drain(while_transferring);
         self.cs.set_high();
         self.pipeline = Some(Pipeline::Idle { spi, free, spare });
     }
 }
 
-fn panel_coordinate(value: usize) -> u16 {
-    u16::try_from(value).expect("region coordinates fit the panel")
+fn panel_coordinate(value: i32) -> u16 {
+    u16::try_from(value).expect("surface coordinates fit the panel")
 }

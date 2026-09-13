@@ -12,24 +12,42 @@ use crate::platform::{self, i2c::SystemI2cBus};
 /// Backlight brightness in percent, from [`Brightness::MIN`] to
 /// [`Brightness::FULL`]. There is no "off": the lowest setting keeps the panel
 /// visibly lit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Brightness(u8);
+
+/// The percentage was outside 1 to 100.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidBrightness;
 
 impl Brightness {
     pub const MIN: Self = Self(1);
     pub const FULL: Self = Self(100);
 
-    /// `None` when `percent` is outside `1..=100`.
-    pub const fn new(percent: u8) -> Option<Self> {
-        if percent >= Self::MIN.0 && percent <= Self::FULL.0 {
-            Some(Self(percent))
-        } else {
-            None
-        }
+    /// For percentages written in the code. Panics outside 1 to 100, so a
+    /// typo fails at compile time in a `const`.
+    pub const fn new(percent: u8) -> Self {
+        assert!(
+            percent >= Self::MIN.0 && percent <= Self::FULL.0,
+            "brightness must be 1 to 100 percent"
+        );
+        Self(percent)
     }
 
     pub const fn percent(self) -> u8 {
         self.0
+    }
+}
+
+/// For percentages computed at run time, for example from a slider.
+impl TryFrom<u8> for Brightness {
+    type Error = InvalidBrightness;
+
+    fn try_from(percent: u8) -> Result<Self, Self::Error> {
+        if (Self::MIN.0..=Self::FULL.0).contains(&percent) {
+            Ok(Self(percent))
+        } else {
+            Err(InvalidBrightness)
+        }
     }
 }
 

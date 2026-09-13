@@ -2,17 +2,15 @@
 //!
 //! A touch that starts on the rail selects a screen when it is released on
 //! the same button. A touch that starts in the content area is forwarded to
-//! the visible screen as a [`Pointer`].
+//! the visible screen in content coordinates.
 
+use embedded_graphics::prelude::Point;
 use hack_and_hike::{
     capabilities::{
-        display::Surface,
-        touch::{Touch, TouchEdge, TouchPoint},
+        display::{self, Surface},
+        touch::{Touch, TouchEvent},
     },
-    ui::{
-        gui::{Pointer, PointerPhase},
-        theme::pixel,
-    },
+    ui::theme,
 };
 
 use crate::layout::NAV_WIDTH;
@@ -57,8 +55,8 @@ const ICON_SIZE: usize = 16;
 /// One row per line, most significant bit on the left.
 type Icon = [u16; ICON_SIZE];
 
-const BUTTON_HEIGHT: usize = hack_and_hike::capabilities::display::HEIGHT / ViewId::ALL.len();
-const ICON_X: usize = (NAV_WIDTH - ICON_SIZE) / 2;
+const BUTTON_HEIGHT: usize = display::HEIGHT / ViewId::ALL.len();
+const ICON_X: usize = (NAV_WIDTH as usize - ICON_SIZE) / 2;
 const ICON_Y: usize = (BUTTON_HEIGHT - ICON_SIZE) / 2;
 const _: () = assert!(BUTTON_HEIGHT > ICON_SIZE);
 
@@ -91,16 +89,16 @@ const LOG_ICON: Icon = [
     0x3FFC, 0x0000, 0x0000, 0x0000,
 ];
 
-/// Which part of the display a touch started on.
+/// Where the current touch started.
 #[derive(Clone, Copy)]
 enum Gesture {
-    /// Started on a rail button; `None` once the finger left that button.
+    /// On a rail button; `None` once the finger left that button.
     Rail(Option<ViewId>),
     Content,
 }
 
 /// Owns the touch handle and turns raw touches into screen selections and
-/// content pointers.
+/// content touches.
 pub(crate) struct Navigation {
     touch: Touch,
     gesture: Option<Gesture>,
@@ -116,95 +114,81 @@ impl Navigation {
 
     /// Process all pending touches. Content touches go to `on_content`; the
     /// return value is a screen the user selected on the rail, if any.
-    pub(crate) fn poll(&mut self, mut on_content: impl FnMut(Pointer)) -> Option<ViewId> {
+    pub(crate) fn poll(&mut self, mut on_content: impl FnMut(TouchEvent)) -> Option<ViewId> {
         let mut selected = None;
 
-        while let Some(edge) = self.touch.next_edge() {
-            self.forward_movement(&mut on_content);
-            match edge {
-                TouchEdge::Pressed(point) => {
-                    self.gesture = Some(if usize::from(point.x) < NAV_WIDTH {
+        while let Some(event) = self.touch.next_event() {
+            match (event, self.gesture) {
+                (TouchEvent::Pressed(point), _) => {
+                    self.gesture = Some(if point.x < NAV_WIDTH as i32 {
                         Gesture::Rail(view_at(point))
                     } else {
-                        on_content(content_pointer(point, PointerPhase::Pressed));
+                        on_content(in_content_coordinates(event));
                         Gesture::Content
                     });
                 }
-                TouchEdge::Released(point) => {
-                    match self.gesture {
-                        Some(Gesture::Rail(Some(view))) if view_at(point) == Some(view) => {
-                            selected = Some(view);
-                        }
-                        Some(Gesture::Content) => {
-                            on_content(content_pointer(point, PointerPhase::Released));
-                        }
-                        _ => {}
+                (TouchEvent::Moved(point), Some(Gesture::Rail(candidate))) => {
+                    if view_at(point) != candidate {
+                        self.gesture = Some(Gesture::Rail(None));
+                    }
+                }
+                (TouchEvent::Released(point), Some(Gesture::Rail(candidate))) => {
+                    if candidate.is_some() && view_at(point) == candidate {
+                        selected = candidate;
                     }
                     self.gesture = None;
                 }
+                (TouchEvent::Moved(_), Some(Gesture::Content)) => {
+                    on_content(in_content_coordinates(event));
+                }
+                (TouchEvent::Released(_), Some(Gesture::Content)) => {
+                    on_content(in_content_coordinates(event));
+                    self.gesture = None;
+                }
+                (_, None) => {}
             }
-        }
-
-        self.forward_movement(&mut on_content);
-        if self.gesture.is_none() {
-            // Discard movement that belongs to no gesture.
-            let _ = self.touch.take_latest_point();
         }
         selected
     }
+}
 
-    fn forward_movement(&mut self, on_content: &mut impl FnMut(Pointer)) {
-        let Some(point) = self.touch.take_latest_point() else {
-            return;
-        };
-        match &mut self.gesture {
-            Some(Gesture::Rail(candidate)) => {
-                if view_at(point) != *candidate {
-                    *candidate = None;
-                }
-            }
-            Some(Gesture::Content) => on_content(content_pointer(point, PointerPhase::Moved)),
-            None => {}
-        }
+fn in_content_coordinates(event: TouchEvent) -> TouchEvent {
+    let shift = |point: Point| point - Point::new(NAV_WIDTH as i32, 0);
+    match event {
+        TouchEvent::Pressed(point) => TouchEvent::Pressed(shift(point)),
+        TouchEvent::Moved(point) => TouchEvent::Moved(shift(point)),
+        TouchEvent::Released(point) => TouchEvent::Released(shift(point)),
     }
 }
 
-fn content_pointer(point: TouchPoint, phase: PointerPhase) -> Pointer {
-    Pointer {
-        x: i32::from(point.x) - NAV_WIDTH as i32,
-        y: i32::from(point.y),
-        phase,
-    }
-}
-
-fn view_at(point: TouchPoint) -> Option<ViewId> {
-    if usize::from(point.x) >= NAV_WIDTH {
+fn view_at(point: Point) -> Option<ViewId> {
+    if point.x < 0 || point.x >= NAV_WIDTH as i32 || point.y < 0 {
         return None;
     }
-    let index = (usize::from(point.y) / BUTTON_HEIGHT).min(ViewId::ALL.len() - 1);
+    let index = (point.y as usize / BUTTON_HEIGHT).min(ViewId::ALL.len() - 1);
     Some(ViewId::ALL[index])
 }
 
 /// Draw the rail with `active` highlighted.
 pub(crate) fn render(surface: &mut Surface<'_>, active: ViewId) {
-    debug_assert_eq!(surface.width(), NAV_WIDTH);
-    surface.render_scanlines(|y, pixels| {
+    debug_assert_eq!(surface.width(), NAV_WIDTH as usize);
+    surface.render_scanlines(|y, row| {
         let index = (y / BUTTON_HEIGHT).min(ViewId::ALL.len() - 1);
         let view = ViewId::ALL[index];
         let (background, foreground) = if view == active {
-            (pixel::LIGHT_BLUE, pixel::WHITE)
+            (theme::LIGHT_BLUE, theme::WHITE)
         } else {
-            (pixel::DARK_BLUE, pixel::LIGHT_GRAY)
+            (theme::DARK_BLUE, theme::LIGHT_GRAY)
         };
 
-        pixels.fill(background);
+        row.fill(background);
 
         let row_in_button = y - index * BUTTON_HEIGHT;
-        if let Some(row) = row_in_button.checked_sub(ICON_Y)
-            && row < ICON_SIZE
+        if let Some(icon_row) = row_in_button.checked_sub(ICON_Y)
+            && icon_row < ICON_SIZE
         {
-            let bits = view.icon()[row];
-            for (column, pixel) in pixels[ICON_X..ICON_X + ICON_SIZE].iter_mut().enumerate() {
+            let bits = view.icon()[icon_row];
+            for (column, pixel) in row[ICON_X..ICON_X + ICON_SIZE].iter_mut().enumerate() {
                 if bits & (1 << (ICON_SIZE - 1 - column)) != 0 {
                     *pixel = foreground;
                 }

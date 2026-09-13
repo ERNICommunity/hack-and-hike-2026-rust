@@ -56,9 +56,7 @@ fn run(cpu1: Cpu1) {
             backlight::task(system_bus, cpu1.backlight).expect("backlight task already spawned"),
         );
         spawner.spawn(imu::capture_task(system_bus, cpu1.imu).expect("IMU task already spawned"));
-        spawner.spawn(
-            touch::capture_task(system_bus, cpu1.touch).expect("touch task already spawned"),
-        );
+        touch::spawn(&spawner, system_bus, cpu1.touch);
         spawner.spawn(
             audio::capture_task(cpu1.audio_resources, spawner, cpu1.audio)
                 .expect("audio task already spawned"),

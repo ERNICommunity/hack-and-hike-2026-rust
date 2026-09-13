@@ -1,23 +1,23 @@
 //! Live camera preview.
 
-use embedded_gui::Rect;
+use embedded_graphics::prelude::Dimensions as _;
 use hack_and_hike::{
     capabilities::{
         camera::{self, Camera, Frame},
-        display::{ScanlineSource, Surface},
+        display::{BYTES_PER_PIXEL, ScanlineSource, Surface},
     },
-    ui::{common, gui::GuiSurface, theme},
+    ui::{Canvas, common, theme},
 };
 
 use crate::{layout, screens::Screen};
 
 // The sensor image is wider than the content area: show its middle.
-const CROP_PIXELS: usize = camera::WIDTH - layout::CONTENT_WIDTH;
-const CROP_LEFT: usize = CROP_PIXELS / 2;
-const SOURCE_START_BYTE: usize = CROP_LEFT * 2;
-const SOURCE_END_BYTE: usize = SOURCE_START_BYTE + layout::CONTENT_WIDTH * 2;
-const _: () = assert!(camera::HEIGHT == layout::CONTENT_HEIGHT);
-const _: () = assert!(camera::WIDTH >= layout::CONTENT_WIDTH);
+const CONTENT_WIDTH: usize = layout::CONTENT_SIZE.width as usize;
+const CROP_LEFT: usize = (camera::WIDTH - CONTENT_WIDTH) / 2;
+const SOURCE_BYTES: core::ops::Range<usize> =
+    CROP_LEFT * BYTES_PER_PIXEL..(CROP_LEFT + CONTENT_WIDTH) * BYTES_PER_PIXEL;
+const _: () = assert!(camera::HEIGHT == layout::CONTENT_SIZE.height as usize);
+const _: () = assert!(camera::WIDTH >= CONTENT_WIDTH);
 
 pub(crate) struct CameraScreen {
     camera: Option<Camera>,
@@ -44,32 +44,26 @@ impl Screen for CameraScreen {
         }
     }
 
-    fn present(&mut self, gui: &mut GuiSurface, surface: &mut Surface<'_>) {
+    fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>) {
         let Some(camera) = &mut self.camera else {
             if self.background_dirty {
                 self.background_dirty = false;
-                gui.present_custom(surface, |frame| {
-                    let area = Rect::new(
-                        0,
-                        0,
-                        layout::CONTENT_WIDTH as u32,
-                        layout::CONTENT_HEIGHT as u32,
-                    );
-                    common::centered_text(
-                        frame,
-                        area,
-                        "No camera detected",
-                        common::BODY_FONT,
-                        theme::DARK_GRAY,
-                    );
-                });
+                canvas.clear(theme::WHITE);
+                common::centered_text(
+                    canvas,
+                    canvas.bounding_box(),
+                    "No camera detected",
+                    common::BODY_FONT,
+                    theme::DARK_GRAY,
+                );
+                canvas.show(surface);
             }
             return;
         };
 
         if self.background_dirty {
             self.background_dirty = false;
-            surface.render_scanlines(|_, pixels| pixels.fill(theme::pixel::CHARCOAL));
+            surface.render_scanlines(|_, row| row.fill(theme::CHARCOAL));
         }
         if let Some(mut frame) = camera.begin_frame() {
             surface.render_from(&mut CenteredCrop { frame: &mut frame });
@@ -86,7 +80,7 @@ struct CenteredCrop<'a, 'f> {
 
 impl ScanlineSource for CenteredCrop<'_, '_> {
     fn fill_row(&mut self, y: usize, row: &mut [u8]) {
-        row.copy_from_slice(&self.frame.scanline(y)[SOURCE_START_BYTE..SOURCE_END_BYTE]);
+        row.copy_from_slice(&self.frame.scanline(y)[SOURCE_BYTES]);
     }
 
     fn while_transferring(&mut self) {

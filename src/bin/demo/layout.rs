@@ -1,9 +1,15 @@
 //! Where the navigation rail and the content area sit on the panel.
 
-use hack_and_hike::capabilities::display::{self, Region};
+use embedded_graphics::{
+    prelude::{Point, Size},
+    primitives::Rectangle,
+};
+use hack_and_hike::capabilities::display;
 
-pub(crate) const NAV_WIDTH: usize = 44;
-pub(crate) const CONTENT_WIDTH: usize = display::WIDTH - NAV_WIDTH;
-pub(crate) const CONTENT_HEIGHT: usize = display::HEIGHT;
-pub(crate) const NAV_REGION: Region = Region::new(0, 0, NAV_WIDTH, display::HEIGHT);
-pub(crate) const CONTENT_REGION: Region = Region::new(NAV_WIDTH, 0, CONTENT_WIDTH, CONTENT_HEIGHT);
+pub(crate) const NAV_WIDTH: u32 = 44;
+pub(crate) const CONTENT_SIZE: Size =
+    Size::new(display::SIZE.width - NAV_WIDTH, display::SIZE.height);
+pub(crate) const NAV_AREA: Rectangle =
+    Rectangle::new(Point::zero(), Size::new(NAV_WIDTH, display::SIZE.height));
+pub(crate) const CONTENT_AREA: Rectangle =
+    Rectangle::new(Point::new(NAV_WIDTH as i32, 0), CONTENT_SIZE);

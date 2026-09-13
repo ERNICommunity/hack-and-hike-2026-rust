@@ -29,7 +29,7 @@ pub fn zeroed_bytes(len: usize) -> PsramVec<u8> {
 /// This is for APIs such as framebuffer/DMA abstractions that require a static
 /// backing slice. The allocation happens once during bootstrap and is never
 /// replaced or resized afterwards.
-pub fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
+pub fn leaked_slice<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
     let mut storage = vec_with_capacity(len);
     storage.resize(len, value);
     storage.leak()
@@ -45,7 +45,7 @@ pub fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static
 /// `new_uninit_in` establishes the final aligned PSRAM destination first. The
 /// initializer is then written into that destination exactly once before the
 /// allocation is exposed as initialized `T`.
-pub fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
+pub fn leaked_value<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
     let mut storage = Box::<T, _>::new_uninit_in(psram::heap());
     // SAFETY: `storage` owns one properly aligned, uninitialized allocation for
     // exactly one `T`. `init()` is evaluated before the write, its value is

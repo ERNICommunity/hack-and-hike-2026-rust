@@ -15,6 +15,7 @@ mod board;
 pub mod capabilities;
 pub(crate) mod platform;
 pub mod support;
+pub mod synth;
 pub mod ui;
 
 pub use board::Board;

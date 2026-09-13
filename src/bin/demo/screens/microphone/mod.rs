@@ -6,13 +6,13 @@
 mod waveform;
 
 use embassy_time::{Duration, Instant};
-use embedded_gui::Rect;
+use embedded_graphics::primitives::Rectangle;
 use hack_and_hike::{
     capabilities::{
         audio::{self, MicBlockInfo, Microphone},
         display::Surface,
     },
-    ui::gui::{self, GuiSurface},
+    ui::{Canvas, gui, theme},
 };
 use log::warn;
 use static_cell::ConstStaticCell;
@@ -25,6 +25,8 @@ mod generated {
 }
 
 const NODES: usize = 16;
+const _: () = assert!(generated::MicrophoneApp::WIDTH == layout::CONTENT_SIZE.width);
+const _: () = assert!(generated::MicrophoneApp::HEIGHT == layout::CONTENT_SIZE.height);
 const UPDATE_PERIOD: Duration = Duration::from_millis(32);
 /// Points drawn per channel; each covers `FRAMES_PER_BLOCK / POINTS` frames.
 pub(super) const POINTS: usize = 128;
@@ -53,27 +55,27 @@ pub(crate) struct MicrophoneScreen {
     dropped_blocks: Option<u32>,
     last_update: Instant,
     gui: &'static mut gui::Context<NODES>,
-    left: Rect,
-    right: Rect,
+    left: Rectangle,
+    right: Rectangle,
     labels_dirty: bool,
     frame_dirty: bool,
 }
 
 impl MicrophoneScreen {
     pub(crate) fn new(microphone: Microphone) -> Self {
-        let gui = gui::context::<NODES>(layout::CONTENT_WIDTH, layout::CONTENT_HEIGHT);
+        let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app =
             generated::MicrophoneApp::build(gui).expect("microphone.kdl fits the GUI capacities");
         let left = gui::slot(gui, app.widgets.left_waveform);
         let right = gui::slot(gui, app.widgets.right_waveform);
-        for canvas in [left, right] {
+        for area in [left, right] {
             assert!(
-                (canvas.w as usize).is_multiple_of(POINTS),
+                (area.size.width as usize).is_multiple_of(POINTS),
                 "waveform width is a multiple of POINTS"
             );
             assert!(
-                MAX_AMPLITUDE_PIXELS < canvas.h as i32 / 2,
-                "waveform fits its canvas"
+                MAX_AMPLITUDE_PIXELS < area.size.height as i32 / 2,
+                "waveform fits its area"
             );
         }
 
@@ -144,7 +146,7 @@ impl Screen for MicrophoneScreen {
 
         // Drain the backlog and show only the newest block.
         let mut newest = None;
-        while let Some(info) = self.microphone.try_read(self.samples) {
+        while let Some(info) = self.microphone.next_block(self.samples) {
             newest = Some(info);
         }
         let Some(info) = newest else {
@@ -165,11 +167,13 @@ impl Screen for MicrophoneScreen {
         }
     }
 
-    fn present(&mut self, gui: &mut GuiSurface, surface: &mut Surface<'_>) {
+    fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>) {
         if self.labels_dirty {
             self.labels_dirty = false;
             self.frame_dirty = true;
-            gui.present(surface, self.gui, |_| {});
+            canvas.clear(theme::WHITE);
+            gui::render(self.gui, canvas);
+            canvas.show(surface);
         }
         if self.frame_dirty {
             self.frame_dirty = false;

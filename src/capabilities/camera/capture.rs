@@ -193,8 +193,8 @@ pub(crate) fn init(resources: Resources) -> Camera {
 
     Camera {
         stream: Some(Stream::Stopped { driver, buffer }),
-        display_buffer: storage::leaked_filled_slice(FRAME_BYTES, 0),
-        capture_buffer: storage::leaked_filled_slice(FRAME_BYTES, 0),
+        display_buffer: storage::leaked_slice(FRAME_BYTES, 0),
+        capture_buffer: storage::leaked_slice(FRAME_BYTES, 0),
         display_ready: false,
         progress: Progress::Filling(0),
         bad_frames: 0,

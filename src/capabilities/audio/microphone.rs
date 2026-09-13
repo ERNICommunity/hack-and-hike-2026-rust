@@ -27,7 +27,7 @@ pub struct Microphone {
 impl Microphone {
     /// Copy the oldest unread block into `samples`. `None` when no complete
     /// block is waiting.
-    pub fn try_read(&mut self, samples: &mut [i16; SAMPLES_PER_BLOCK]) -> Option<MicBlockInfo> {
+    pub fn next_block(&mut self, samples: &mut [i16; SAMPLES_PER_BLOCK]) -> Option<MicBlockInfo> {
         let block = self.service.mic_blocks.try_receive().ok()?;
         samples.copy_from_slice(&block.samples);
         Some(block.info)

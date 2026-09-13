@@ -13,21 +13,25 @@ use core::fmt::Write as _;
 use arrayvec::ArrayString;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use embedded_graphics::{pixelcolor::Rgb565, prelude::Point};
-use embedded_gui::Rect;
+use embedded_graphics::{
+    pixelcolor::Rgb565,
+    prelude::{Point, Size},
+    primitives::Rectangle,
+};
 use serde::{Deserialize, Serialize};
 
 use hack_and_hike::{
     Board,
     capabilities::{
         audio::{self, Speaker},
-        display::{HEIGHT, Region, WIDTH},
+        display::{Display, SCREEN, SIZE},
         network::{Message, Network},
-        touch::{Touch, TouchEdge},
+        touch::{Touch, TouchEvent},
     },
+    synth::SineWave,
     ui::{
+        Canvas,
         common::{self, Lines},
-        gui::{GuiFramebuffer, GuiSurface},
         theme,
     },
 };
@@ -36,14 +40,13 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 const TONE_DURATION_MS: usize = 300;
 const TONE_FRAMES: usize = audio::SAMPLE_RATE_HZ as usize * TONE_DURATION_MS / 1_000;
+const TONE_VOLUME: f32 = 0.15;
 const AUDIO_CHUNK_FRAMES: usize = 128;
-const AUDIO_CHUNK_SAMPLES: usize = AUDIO_CHUNK_FRAMES * audio::CHANNELS;
 
 /// The explanation at the top; the colour bands fill the rest.
-const BANNER_HEIGHT: u32 = 74;
-const BAND_TOP: i32 = BANNER_HEIGHT as i32;
-const BAND_HEIGHT: u32 = HEIGHT as u32 - BANNER_HEIGHT;
-const BAND_WIDTH: u32 = WIDTH as u32 / 4;
+const BANNER: Rectangle = Rectangle::new(Point::zero(), Size::new(SIZE.width, 74));
+const BAND_TOP: i32 = BANNER.size.height as i32;
+const BAND_SIZE: Size = Size::new(SIZE.width / 4, SIZE.height - BANNER.size.height);
 /// The bar marking the colour this board sent last.
 const MARKER_HEIGHT: u32 = 12;
 
@@ -59,10 +62,19 @@ impl Color {
     /// Left to right across the screen.
     const ALL: [Self; 4] = [Self::Red, Self::Green, Self::Blue, Self::Yellow];
 
-    /// The colour of the band at this horizontal position.
-    fn at_x(x: u16) -> Self {
-        let band = usize::from(x) * Self::ALL.len() / WIDTH;
+    /// The band at this horizontal position.
+    fn at_x(x: i32) -> Self {
+        let band = (x.max(0) as u32 / BAND_SIZE.width) as usize;
         Self::ALL[band.min(Self::ALL.len() - 1)]
+    }
+
+    /// Where the band is drawn.
+    fn area(self) -> Rectangle {
+        let index = Self::ALL.iter().position(|&c| c == self).unwrap_or(0) as i32;
+        Rectangle::new(
+            Point::new(index * BAND_SIZE.width as i32, BAND_TOP),
+            BAND_SIZE,
+        )
     }
 
     const fn name(self) -> &'static str {
@@ -97,18 +109,18 @@ impl Color {
         }
     }
 
-    const fn frequency_hz(self) -> u32 {
+    const fn frequency_hz(self) -> f32 {
         match self {
-            Self::Red => 800,
-            Self::Green => 1_000,
-            Self::Blue => 1_200,
-            Self::Yellow => 1_400,
+            Self::Red => 800.0,
+            Self::Green => 1_000.0,
+            Self::Blue => 1_200.0,
+            Self::Yellow => 1_400.0,
         }
     }
 }
 
-/// The message this application sends. The network only moves the bytes; what
-/// they mean is up to us.
+/// The message this application sends. The network only moves the bytes;
+/// what they mean is up to us.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct ColorPing {
     color: Color,
@@ -132,91 +144,105 @@ struct Shown {
     lit: Option<Color>,
 }
 
+/// The whole application: the handles it uses and its state.
+struct ColorPingApp {
+    display: Display,
+    touch: Touch,
+    network: Network,
+    speaker: Speaker,
+    canvas: Canvas,
+    tone: TonePlayer,
+    /// The band under the finger, while one is pressed.
+    touched: Option<Color>,
+    shown: Shown,
+    drawn: Option<Shown>,
+}
+
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     let Board {
-        mut display,
-        mut touch,
-        mut network,
-        mut speaker,
+        display,
+        touch,
+        network,
+        speaker,
         ..
     } = Board::init();
 
-    let full_screen = Region::new(0, 0, WIDTH, HEIGHT);
-    let mut screen = GuiSurface::new(WIDTH, HEIGHT);
-    let mut shown = Shown::default();
-    let mut touched = None;
-    let mut tone = TonePlayer::new();
-    let mut drawn = None;
+    let mut app = ColorPingApp {
+        display,
+        touch,
+        network,
+        speaker,
+        canvas: Canvas::new(SIZE),
+        tone: TonePlayer::default(),
+        touched: None,
+        shown: Shown::default(),
+        drawn: None,
+    };
 
     loop {
-        handle_touch(&mut touch, &mut network, &mut shown, &mut touched);
-        handle_network(&mut network, &mut tone, &mut shown);
-        tone.update(&mut speaker);
-        shown.lit = touched.or(tone.playing());
-
-        if drawn != Some(shown) {
-            drawn = Some(shown);
-            screen.present_custom(&mut display.surface(full_screen), |frame| {
-                draw(frame, shown);
-            });
-        }
+        app.handle_touch();
+        app.handle_network();
+        app.tone.play(&mut app.speaker);
+        app.shown.lit = app.touched.or(app.tone.playing());
+        app.draw_if_changed();
 
         Timer::after(Duration::from_millis(5)).await;
     }
 }
 
-/// A tap on a colour band selects that colour and broadcasts it. `touched`
-/// holds the band under the finger, so the screen can light it up.
-fn handle_touch(
-    touch: &mut Touch,
-    network: &mut Network,
-    shown: &mut Shown,
-    touched: &mut Option<Color>,
-) {
-    while let Some(edge) = touch.next_edge() {
-        let TouchEdge::Pressed(point) = edge else {
-            *touched = None;
-            continue;
-        };
-        if i32::from(point.y) < BAND_TOP {
-            continue;
-        }
+impl ColorPingApp {
+    /// A tap on a colour band selects that colour and broadcasts it.
+    fn handle_touch(&mut self) {
+        while let Some(event) = self.touch.next_event() {
+            let TouchEvent::Pressed(point) = event else {
+                self.touched = None;
+                continue;
+            };
+            if point.y < BAND_TOP {
+                continue;
+            }
 
-        let color = Color::at_x(point.x);
-        *touched = Some(color);
-        shown.sent = Some(color);
-        if network.broadcast(&ColorPing { color }).is_err() {
-            log::warn!("Send queue is full; the tap was not broadcast");
+            let color = Color::at_x(point.x);
+            self.touched = Some(color);
+            self.shown.sent = Some(color);
+            if let Err(error) = self.network.broadcast(&ColorPing { color }) {
+                log::warn!("The tap was not broadcast: {error}");
+            }
         }
+    }
+
+    /// A colour from another board starts its tone here.
+    fn handle_network(&mut self) {
+        while let Some(message) = self.network.next_message() {
+            // Other applications' messages arrive here too; they fail to decode.
+            if let Ok(ping) = message.decode::<ColorPing>() {
+                self.shown.heard = Some(ping.color);
+                self.tone.start(ping.color);
+            }
+        }
+    }
+
+    fn draw_if_changed(&mut self) {
+        if self.drawn == Some(self.shown) {
+            return;
+        }
+        self.drawn = Some(self.shown);
+        draw(&mut self.canvas, self.shown);
+        self.canvas.show(&mut self.display.surface(SCREEN));
     }
 }
 
-/// A colour from another board starts its tone here.
-fn handle_network(network: &mut Network, tone: &mut TonePlayer, shown: &mut Shown) {
-    while let Some(message) = network.next_message() {
-        // Other applications' messages arrive here too; they fail to decode.
-        if let Ok(ping) = message.decode::<ColorPing>() {
-            shown.heard = Some(ping.color);
-            tone.start(ping.color);
-        }
-    }
-}
-
-fn draw(frame: &mut GuiFramebuffer, shown: Shown) {
-    common::fill(
-        frame,
-        Rect::new(0, 0, WIDTH as u32, BANNER_HEIGHT),
-        theme::WHITE,
-    );
+fn draw(canvas: &mut Canvas, shown: Shown) {
+    canvas.fill(BANNER, theme::WHITE);
     common::text(
-        frame,
+        canvas,
         "COLOR PING",
         Point::new(10, 8),
         common::TITLE_FONT,
         theme::DARK_BLUE,
     );
-    let mut lines = Lines::new(frame, Point::new(10, 27));
+    let mut lines = Lines::new(canvas, Point::new(10, 27));
     lines.line("Tap a colour: every other board", theme::CHARCOAL);
     lines.line("nearby plays that colour's tone.", theme::CHARCOAL);
 
@@ -229,79 +255,68 @@ fn draw(frame: &mut GuiFramebuffer, shown: Shown) {
     );
     lines.line(&text, theme::DARK_GRAY);
 
-    for (band, color) in Color::ALL.into_iter().enumerate() {
-        let x = band as i32 * BAND_WIDTH as i32;
+    for color in Color::ALL {
+        let area = color.area();
         let lit = shown.lit == Some(color);
-        common::fill(
-            frame,
-            Rect::new(x, BAND_TOP, BAND_WIDTH, BAND_HEIGHT),
-            color.fill(lit),
-        );
+        canvas.fill(area, color.fill(lit));
+
+        let label_area = |y: i32, height: u32| {
+            Rectangle::new(
+                Point::new(area.top_left.x, y),
+                Size::new(area.size.width, height),
+            )
+        };
         common::centered_text(
-            frame,
-            Rect::new(x, BAND_TOP + 30, BAND_WIDTH, 16),
+            canvas,
+            label_area(BAND_TOP + 30, 16),
             color.name(),
             common::TITLE_FONT,
             color.label(lit),
         );
         text.clear();
-        let _ = write!(text, "{} Hz", color.frequency_hz());
+        let _ = write!(text, "{} Hz", color.frequency_hz() as u32);
         common::centered_text(
-            frame,
-            Rect::new(x, BAND_TOP + 52, BAND_WIDTH, 14),
+            canvas,
+            label_area(BAND_TOP + 52, 14),
             &text,
             common::BODY_FONT,
             color.label(lit),
         );
         if shown.sent == Some(color) {
-            common::fill(
-                frame,
-                Rect::new(
-                    x,
-                    HEIGHT as i32 - MARKER_HEIGHT as i32,
-                    BAND_WIDTH,
-                    MARKER_HEIGHT,
-                ),
+            canvas.fill(
+                label_area(SIZE.height as i32 - MARKER_HEIGHT as i32, MARKER_HEIGHT),
                 theme::WHITE,
             );
         }
     }
 }
 
-/// A tone in progress. Each call to `update` generates as much of it as the
+/// A tone in progress. Each call to `play` generates as much of it as the
 /// speaker queue accepts, so the main loop never blocks on audio.
+#[derive(Default)]
 struct TonePlayer {
-    phase: u32,
-    phase_step: u32,
+    wave: Option<SineWave>,
     frames_left: usize,
     /// The colour being played, so the screen can light up its band.
     color: Option<Color>,
 }
 
 impl TonePlayer {
-    const fn new() -> Self {
-        Self {
-            phase: 0,
-            phase_step: 0,
-            frames_left: 0,
-            color: None,
-        }
-    }
-
     /// The colour whose tone is playing, if any.
     const fn playing(&self) -> Option<Color> {
         self.color
     }
 
     fn start(&mut self, color: Color) {
-        self.phase = 0;
-        self.phase_step =
-            ((u64::from(color.frequency_hz()) << 32) / u64::from(audio::SAMPLE_RATE_HZ)) as u32;
+        self.wave = Some(SineWave::new(color.frequency_hz()));
         self.frames_left = TONE_FRAMES;
         self.color = Some(color);
     }
 
-    fn update(&mut self, speaker: &mut Speaker) {
+    fn play(&mut self, speaker: &mut Speaker) {
+        let Some(wave) = &mut self.wave else {
+            return;
+        };
         while self.frames_left > 0 {
             let frames = speaker
                 .available_frames()
@@ -311,28 +326,15 @@ impl TonePlayer {
                 return;
             }
 
-            let mut chunk = [0i16; AUDIO_CHUNK_SAMPLES];
+            let mut chunk = [0i16; AUDIO_CHUNK_FRAMES * audio::CHANNELS];
             let samples = &mut chunk[..frames * audio::CHANNELS];
             for frame in samples.chunks_exact_mut(audio::CHANNELS) {
-                frame.fill(sine_sample(self.phase));
-                self.phase = self.phase.wrapping_add(self.phase_step);
+                frame.fill(wave.next_sample(TONE_VOLUME));
             }
             speaker.write(samples);
             self.frames_left -= frames;
         }
+        self.wave = None;
         self.color = None;
     }
-}
-
-/// One sine sample for a phase that wraps over the full `u32` range. The top
-/// five bits pick one of 32 points of the wave; the volume is kept low.
-fn sine_sample(phase: u32) -> i16 {
-    const SINE: [i16; 32] = [
-        0, 6393, 12539, 18204, 23170, 27245, 30273, 32137, 32767, 32137, 30273, 27245, 23170,
-        18204, 12539, 6393, 0, -6393, -12539, -18204, -23170, -27245, -30273, -32137, -32767,
-        -32137, -30273, -27245, -23170, -18204, -12539, -6393,
-    ];
-    const VOLUME_DIVISOR: i16 = 6;
-
-    SINE[(phase >> 27) as usize] / VOLUME_DIVISOR
 }

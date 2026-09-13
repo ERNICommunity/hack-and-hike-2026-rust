@@ -13,7 +13,7 @@ mod styles;
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
-use hack_and_hike::{Board, ui::gui::GuiSurface};
+use hack_and_hike::{Board, ui::Canvas};
 
 use navigation::{Navigation, ViewId};
 use screens::{
@@ -81,30 +81,31 @@ async fn main(_spawner: Spawner) -> ! {
         log: LogScreen::new(log),
     };
     let mut navigation = Navigation::new(touch);
-    let mut gui = GuiSurface::new(layout::CONTENT_WIDTH, layout::CONTENT_HEIGHT);
+    // One canvas the size of the content area, shared by all screens.
+    let mut canvas = Canvas::new(layout::CONTENT_SIZE);
 
     let mut active = ViewId::ALL[0];
-    navigation::render(&mut display.surface(layout::NAV_REGION), active);
+    navigation::render(&mut display.surface(layout::NAV_AREA), active);
     screens.get_mut(active).enter();
 
     loop {
         let now = Instant::now();
 
-        let selected = navigation.poll(|pointer| screens.get_mut(active).handle_pointer(pointer));
+        let selected = navigation.poll(|event| screens.get_mut(active).handle_touch(event));
         if let Some(next) = selected
             && next != active
         {
             screens.get_mut(active).leave();
             active = next;
             screens.get_mut(active).enter();
-            navigation::render(&mut display.surface(layout::NAV_REGION), active);
+            navigation::render(&mut display.surface(layout::NAV_AREA), active);
             log::info!("Screen {:?}", active);
         }
 
         screens.update_all(now);
         screens
             .get_mut(active)
-            .present(&mut gui, &mut display.surface(layout::CONTENT_REGION));
+            .present(&mut canvas, &mut display.surface(layout::CONTENT_AREA));
 
         Timer::after(LOOP_PERIOD).await;
     }

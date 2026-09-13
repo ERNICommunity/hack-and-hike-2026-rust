@@ -6,12 +6,13 @@ use log::{info, trace, warn};
 use crate::platform::i2c::SystemI2cBus;
 
 use hack_and_hike_core::imu::{
+    Orientation,
     fusion::{Fusion, GyroBias},
     vec3,
 };
 
 use super::{
-    MagStatus, Measurements, Orientation, Status,
+    MagStatus, Measurements, Status,
     bmi270::{Bmi270, RawSample},
     channels::{Publisher, Runtime},
     magnetic::MagneticState,

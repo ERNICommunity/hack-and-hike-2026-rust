@@ -5,99 +5,90 @@
 
 use embedded_graphics::{
     prelude::*,
-    primitives::{Circle, PrimitiveStyle},
-};
-use embedded_gui::Rect;
-
-use super::{
-    common,
-    gui::{GuiFramebuffer, Pointer, PointerPhase},
-    theme,
+    primitives::{Circle, PrimitiveStyle, Rectangle},
 };
 
-const THUMB_DIAMETER: i32 = 22;
-const THUMB_RADIUS: i32 = THUMB_DIAMETER / 2;
-const THUMB_HOLE_DIAMETER: i32 = 12;
+use crate::capabilities::touch::TouchEvent;
+
+use super::{Canvas, theme};
+
+const THUMB_DIAMETER: u32 = 22;
+const THUMB_HOLE_DIAMETER: u32 = 12;
 const TRACK_HEIGHT: u32 = 8;
 /// Touches this far outside the slider still count.
-const HIT_MARGIN: i32 = 8;
+const HIT_MARGIN: u32 = 8;
 
 /// A horizontal slider over an integer range, drawn inside a fixed rectangle.
 #[derive(Clone, Copy)]
 pub struct Slider {
-    rect: Rect,
+    area: Rectangle,
     min: i32,
     max: i32,
     dragging: bool,
 }
 
 impl Slider {
-    pub const fn new(rect: Rect, min: i32, max: i32) -> Self {
+    pub const fn new(area: Rectangle, min: i32, max: i32) -> Self {
         Self {
-            rect,
+            area,
             min,
             max,
             dragging: false,
         }
     }
 
-    /// Feed a touch event. Returns the new value while the finger presses,
-    /// drags or releases on this slider.
-    pub fn handle_pointer(&mut self, pointer: Pointer) -> Option<i32> {
-        match pointer.phase {
-            PointerPhase::Pressed if self.contains(pointer) => {
+    /// Feed a touch event, in the coordinates of the canvas the slider is
+    /// drawn on. Returns the new value while the finger presses, drags or
+    /// releases on this slider.
+    pub fn handle_touch(&mut self, event: TouchEvent) -> Option<i32> {
+        match event {
+            TouchEvent::Pressed(point) if self.hit_area().contains(point) => {
                 self.dragging = true;
-                Some(self.value_at(pointer.x))
+                Some(self.value_at(point.x))
             }
-            PointerPhase::Moved if self.dragging => Some(self.value_at(pointer.x)),
-            PointerPhase::Released if self.dragging => {
+            TouchEvent::Moved(point) if self.dragging => Some(self.value_at(point.x)),
+            TouchEvent::Released(point) if self.dragging => {
                 self.dragging = false;
-                Some(self.value_at(pointer.x))
-            }
-            PointerPhase::Released => {
-                self.dragging = false;
-                None
+                Some(self.value_at(point.x))
             }
             _ => None,
         }
     }
 
-    pub fn draw(&self, frame: &mut GuiFramebuffer, value: i32) {
-        common::fill(frame, self.rect, theme::WHITE);
+    pub fn draw(&self, canvas: &mut Canvas, value: i32) {
+        canvas.fill(self.area, theme::WHITE);
 
         let (left, right) = self.track_bounds();
-        let center_y = self.rect.y + self.rect.h as i32 / 2;
+        let center_y = self.area.center().y;
         let track_y = center_y - TRACK_HEIGHT as i32 / 2;
         let thumb_x = self.thumb_x(value);
+        let track = |from: i32, to: i32| {
+            Rectangle::new(
+                Point::new(from, track_y),
+                Size::new((to - from + 1) as u32, TRACK_HEIGHT),
+            )
+        };
 
-        common::fill(
-            frame,
-            Rect::new(left, track_y, (right - left + 1) as u32, TRACK_HEIGHT),
-            theme::LIGHT_GRAY,
-        );
-        common::fill(
-            frame,
-            Rect::new(left, track_y, (thumb_x - left + 1) as u32, TRACK_HEIGHT),
-            theme::DARK_BLUE,
-        );
-        let _ = Circle::with_center(Point::new(thumb_x, center_y), THUMB_DIAMETER as u32)
+        canvas.fill(track(left, right), theme::LIGHT_GRAY);
+        canvas.fill(track(left, thumb_x), theme::DARK_BLUE);
+        let thumb = Point::new(thumb_x, center_y);
+        let Ok(()) = Circle::with_center(thumb, THUMB_DIAMETER)
             .into_styled(PrimitiveStyle::with_fill(theme::DARK_BLUE))
-            .draw(frame);
-        let _ = Circle::with_center(Point::new(thumb_x, center_y), THUMB_HOLE_DIAMETER as u32)
+            .draw(canvas);
+        let Ok(()) = Circle::with_center(thumb, THUMB_HOLE_DIAMETER)
             .into_styled(PrimitiveStyle::with_fill(theme::WHITE))
-            .draw(frame);
+            .draw(canvas);
     }
 
-    fn contains(&self, pointer: Pointer) -> bool {
-        let rect = self.rect;
-        (rect.x - HIT_MARGIN..rect.x + rect.w as i32 + HIT_MARGIN).contains(&pointer.x)
-            && (rect.y - HIT_MARGIN..rect.y + rect.h as i32 + HIT_MARGIN).contains(&pointer.y)
+    fn hit_area(&self) -> Rectangle {
+        self.area.offset(HIT_MARGIN as i32)
     }
 
     /// Leftmost and rightmost thumb centre positions.
     fn track_bounds(&self) -> (i32, i32) {
-        let left = self.rect.x + THUMB_RADIUS;
-        let right = self.rect.x + self.rect.w as i32 - THUMB_RADIUS - 1;
+        let radius = THUMB_DIAMETER as i32 / 2;
+        let left = self.area.top_left.x + radius;
+        let right = self.area.top_left.x + self.area.size.width as i32 - radius - 1;
         (left, right.max(left + 1))
     }
 

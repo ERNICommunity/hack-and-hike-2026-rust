@@ -1,25 +1,19 @@
-//! Attitude and heading as a perspective horizon with a compass.
+//! Attitude and heading: a numeric header, an artificial horizon and a
+//! compass.
 
-mod compass;
 mod horizon;
-mod projection;
 
 use core::fmt::Write as _;
 
 use arrayvec::ArrayString;
 use embassy_time::{Duration, Instant};
-use embedded_graphics::prelude::Point;
-use embedded_gui::Rect;
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use hack_and_hike::{
     capabilities::{
         display::Surface,
         imu::{Imu, MagStatus, Sample, Status},
     },
-    ui::{
-        common,
-        gui::{self, GuiFramebuffer, GuiSurface},
-        theme,
-    },
+    ui::{Canvas, common, gui, theme},
 };
 
 use crate::{layout, screens::Screen};
@@ -30,6 +24,8 @@ mod generated {
 }
 
 const NODES: usize = 16;
+const _: () = assert!(generated::ImuApp::WIDTH == layout::CONTENT_SIZE.width);
+const _: () = assert!(generated::ImuApp::HEIGHT == layout::CONTENT_SIZE.height);
 /// Matches the 100 Hz fusion rate; the handle keeps only the newest sample.
 const UPDATE_PERIOD: Duration = Duration::from_millis(10);
 
@@ -37,7 +33,7 @@ const HEADER_PADDING: i32 = 6;
 const HEADER_TITLE_Y: i32 = 3;
 const HEADER_STATUS_Y: i32 = 19;
 const HEADER_MAGNETOMETER_Y: i32 = 35;
-/// Where the roll/pitch/yaw columns start inside the header.
+/// Where the roll/pitch/heading columns start inside the header.
 const HEADER_VALUES_X: i32 = 78;
 const VALUE_LABEL_Y: i32 = 3;
 const VALUE_Y: i32 = 22;
@@ -47,14 +43,14 @@ pub(crate) struct ImuScreen {
     sample: Option<Sample>,
     last_update: Instant,
     gui: &'static mut gui::Context<NODES>,
-    header: Rect,
-    attitude: Rect,
+    header: Rectangle,
+    attitude: Rectangle,
     dirty: bool,
 }
 
 impl ImuScreen {
     pub(crate) fn new(imu: Imu) -> Self {
-        let gui = gui::context::<NODES>(layout::CONTENT_WIDTH, layout::CONTENT_HEIGHT);
+        let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::ImuApp::build(gui).expect("imu.kdl fits the GUI capacities");
         Self {
             imu,
@@ -84,56 +80,52 @@ impl Screen for ImuScreen {
         }
     }
 
-    fn present(&mut self, gui: &mut GuiSurface, surface: &mut Surface<'_>) {
+    fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>) {
         if !self.dirty {
             return;
         }
         self.dirty = false;
 
-        let (header, attitude, sample) = (self.header, self.attitude, self.sample);
-        gui.present(surface, self.gui, |frame| match sample {
+        canvas.clear(theme::WHITE);
+        gui::render(self.gui, canvas);
+        match &self.sample {
             Some(sample) => {
-                let display = projection::display_attitude(&sample.orientation);
-                draw_header(frame, header, &sample, display);
-                horizon::draw_attitude(frame, attitude, display);
+                draw_header(canvas, self.header, sample);
+                horizon::draw(canvas, self.attitude, sample);
             }
             None => {
-                draw_header_frame(frame, header, "WAITING");
-                common::fill(frame, attitude, theme::LIGHT_BLUE);
+                draw_header_frame(canvas, self.header, "WAITING");
+                canvas.fill(self.attitude, theme::LIGHT_BLUE);
             }
-        });
+        }
+        canvas.show(surface);
     }
 }
 
-fn draw_header_frame(frame: &mut GuiFramebuffer, area: Rect, status: &str) {
-    common::fill(frame, area, theme::DARK_BLUE);
-    let x = area.x + HEADER_PADDING;
+fn draw_header_frame(canvas: &mut Canvas, area: Rectangle, status: &str) {
+    canvas.fill(area, theme::DARK_BLUE);
+    let x = area.top_left.x + HEADER_PADDING;
     common::text(
-        frame,
+        canvas,
         "IMU",
-        Point::new(x, area.y + HEADER_TITLE_Y),
+        Point::new(x, area.top_left.y + HEADER_TITLE_Y),
         common::TITLE_FONT,
         theme::WHITE,
     );
     common::text(
-        frame,
+        canvas,
         status,
-        Point::new(x, area.y + HEADER_STATUS_Y),
+        Point::new(x, area.top_left.y + HEADER_STATUS_Y),
         common::BODY_FONT,
         theme::WHITE,
     );
 }
 
-fn draw_header(
-    frame: &mut GuiFramebuffer,
-    area: Rect,
-    sample: &Sample,
-    attitude: projection::DisplayAttitude,
-) {
-    draw_header_frame(frame, area, status_text(sample.status));
+fn draw_header(canvas: &mut Canvas, area: Rectangle, sample: &Sample) {
+    draw_header_frame(canvas, area, status_text(sample.status));
 
     let mut magnetometer = ArrayString::<24>::new();
-    let field = round_to_i32(sample.mag_field_strength_ut);
+    let field = round(sample.mag_field_strength_ut);
     let _ = match sample.mag_status {
         MagStatus::Ready => write!(magnetometer, "MAG {field}uT"),
         MagStatus::Learning => write!(magnetometer, "CAL {}%", sample.mag_calibration_percent),
@@ -141,34 +133,35 @@ fn draw_header(
         MagStatus::Missing => write!(magnetometer, "MAG MISSING"),
     };
     common::text(
-        frame,
+        canvas,
         &magnetometer,
-        Point::new(area.x + HEADER_PADDING, area.y + HEADER_MAGNETOMETER_Y),
+        area.top_left + Point::new(HEADER_PADDING, HEADER_MAGNETOMETER_Y),
         common::BODY_FONT,
         theme::LIGHT_GRAY,
     );
 
-    let column_width = ((area.w as i32 - HEADER_VALUES_X) / 3).max(1);
+    let attitude = sample.attitude;
+    let column_width = ((area.size.width as i32 - HEADER_VALUES_X) / 3).max(1);
     let columns = [
         ("ROLL", attitude.roll_deg),
         ("PITCH", attitude.pitch_deg),
-        ("YAW", attitude.yaw_deg),
+        ("HDG", attitude.heading_deg),
     ];
     for (index, (label, degrees)) in columns.into_iter().enumerate() {
-        let x = area.x + HEADER_VALUES_X + column_width * index as i32;
+        let x = area.top_left.x + HEADER_VALUES_X + column_width * index as i32;
         common::text(
-            frame,
+            canvas,
             label,
-            Point::new(x, area.y + VALUE_LABEL_Y),
+            Point::new(x, area.top_left.y + VALUE_LABEL_Y),
             common::BODY_FONT,
             theme::WHITE,
         );
         let mut value = ArrayString::<12>::new();
-        let _ = write!(value, "{:+}", round_to_i32(degrees));
+        let _ = write!(value, "{:+}", round(degrees));
         common::text(
-            frame,
+            canvas,
             &value,
-            Point::new(x, area.y + VALUE_Y),
+            Point::new(x, area.top_left.y + VALUE_Y),
             common::TITLE_FONT,
             theme::WHITE,
         );
@@ -184,6 +177,6 @@ fn status_text(status: Status) -> &'static str {
     }
 }
 
-fn round_to_i32(value: f32) -> i32 {
+fn round(value: f32) -> i32 {
     libm::roundf(value) as i32
 }

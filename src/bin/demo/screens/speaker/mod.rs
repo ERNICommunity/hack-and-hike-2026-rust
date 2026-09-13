@@ -11,11 +11,9 @@ use hack_and_hike::{
     capabilities::{
         audio::{self, Speaker},
         display::Surface,
+        touch::TouchEvent,
     },
-    ui::{
-        gui::{self, GuiSurface, Pointer},
-        widgets::Slider,
-    },
+    ui::{Canvas, gui, theme, widgets::Slider},
 };
 
 use crate::{layout, screens::Screen, styles};
@@ -29,6 +27,8 @@ mod generated {
 }
 
 const NODES: usize = 16;
+const _: () = assert!(generated::SpeakerApp::WIDTH == layout::CONTENT_SIZE.width);
+const _: () = assert!(generated::SpeakerApp::HEIGHT == layout::CONTENT_SIZE.height);
 const PCM_CHUNK_FRAMES: usize = 128;
 const PCM_CHUNK_SAMPLES: usize = PCM_CHUNK_FRAMES * audio::CHANNELS;
 
@@ -96,24 +96,22 @@ pub(crate) struct SpeakerScreen {
 
 impl SpeakerScreen {
     pub(crate) fn new(speaker: Speaker) -> Self {
-        let gui = gui::context::<NODES>(layout::CONTENT_WIDTH, layout::CONTENT_HEIGHT);
+        let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::SpeakerApp::build(gui).expect("speaker.kdl fits the GUI capacities");
-        let tempo_value = gui
-            .add_value_label(
-                gui::slot(gui, app.widgets.tempo_value),
-                "TEMPO BPM",
-                i32::from(TempoBpm::DEFAULT.get()),
-                styles::value(),
-            )
-            .expect("room for the tempo value");
-        let pitch_value = gui
-            .add_value_label(
-                gui::slot(gui, app.widgets.pitch_value),
-                "PITCH SEMITONES",
-                i32::from(PitchSemitones::CENTER.get()),
-                styles::value(),
-            )
-            .expect("room for the pitch value");
+        let tempo_value = gui::add_value_label(
+            gui,
+            app.widgets.tempo_value,
+            "TEMPO BPM",
+            i32::from(TempoBpm::DEFAULT.get()),
+            styles::value(),
+        );
+        let pitch_value = gui::add_value_label(
+            gui,
+            app.widgets.pitch_value,
+            "PITCH SEMITONES",
+            i32::from(PitchSemitones::CENTER.get()),
+            styles::value(),
+        );
 
         Self {
             speaker,
@@ -178,9 +176,9 @@ impl Screen for SpeakerScreen {
         self.feed_speaker();
     }
 
-    fn handle_pointer(&mut self, pointer: Pointer) {
+    fn handle_touch(&mut self, event: TouchEvent) {
         let mut clicked = None;
-        gui::click_buttons(self.gui, pointer, |id| clicked = Some(id));
+        gui::click_buttons(self.gui, event, |id| clicked = Some(id));
         if clicked == Some(self.play_button) {
             self.playing = !self.playing;
             if self.playing {
@@ -192,7 +190,7 @@ impl Screen for SpeakerScreen {
 
         if let Some(tempo) = self
             .tempo_slider
-            .handle_pointer(pointer)
+            .handle_touch(event)
             .and_then(|value| u16::try_from(value).ok())
             .and_then(TempoBpm::new)
         {
@@ -200,7 +198,7 @@ impl Screen for SpeakerScreen {
         }
         if let Some(pitch) = self
             .pitch_slider
-            .handle_pointer(pointer)
+            .handle_touch(event)
             .and_then(|value| i8::try_from(value).ok())
             .and_then(PitchSemitones::new)
         {
@@ -210,7 +208,7 @@ impl Screen for SpeakerScreen {
         self.dirty = true;
     }
 
-    fn present(&mut self, gui: &mut GuiSurface, surface: &mut Surface<'_>) {
+    fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>) {
         if !self.dirty {
             return;
         }
@@ -226,11 +224,10 @@ impl Screen for SpeakerScreen {
         gui::set_value(self.gui, self.tempo_value, i32::from(self.tempo.get()));
         gui::set_value(self.gui, self.pitch_value, i32::from(self.pitch.get()));
 
-        let (tempo_slider, tempo) = (self.tempo_slider, i32::from(self.tempo.get()));
-        let (pitch_slider, pitch) = (self.pitch_slider, i32::from(self.pitch.get()));
-        gui.present(surface, self.gui, |frame| {
-            tempo_slider.draw(frame, tempo);
-            pitch_slider.draw(frame, pitch);
-        });
+        canvas.clear(theme::WHITE);
+        gui::render(self.gui, canvas);
+        self.tempo_slider.draw(canvas, i32::from(self.tempo.get()));
+        self.pitch_slider.draw(canvas, i32::from(self.pitch.get()));
+        canvas.show(surface);
     }
 }

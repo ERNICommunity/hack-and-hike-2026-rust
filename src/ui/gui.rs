@@ -1,28 +1,22 @@
-//! Glue between `embedded-gui` and the display.
+//! Glue between `embedded-gui` and the rest of the firmware.
 //!
 //! A graphical screen describes its layout in a KDL file, builds it into a
-//! [`Context`] once, and renders into a [`GuiSurface`] framebuffer that is
-//! then copied to the LCD. Touches reach the widgets through [`Pointer`].
+//! [`Context`] once, renders the widgets into a [`Canvas`] with [`render`]
+//! and forwards touches with [`click_buttons`].
 
 use embedded_graphics::{
-    pixelcolor::{Rgb565, raw::RawU16},
-    prelude::{DrawTarget as _, Point, RawData as _},
+    prelude::{Point, Size},
+    primitives::Rectangle,
 };
 use embedded_gui::{
-    EndianCorrectedBuffer, EndianCorrection, FrameBuf, GuiContext, InputEvent, PointerButton,
-    PointerState, PropertyKey, PropertyValue, Rect, UiEvent, WidgetId,
+    GuiContext, InputEvent, PointerButton, PointerState, PropertyKey, PropertyValue, Rect, Style,
+    UiEvent, WidgetId,
 };
 use log::debug;
 
-use crate::{
-    capabilities::display::{ScanlineSource, Surface},
-    support::memory::storage,
-};
+use crate::{capabilities::touch::TouchEvent, support::memory::storage};
 
-use super::theme;
-
-pub type GuiFramebufferBackend = EndianCorrectedBuffer<'static, Rgb565>;
-pub type GuiFramebuffer = FrameBuf<Rgb565, GuiFramebufferBackend>;
+use super::Canvas;
 
 /// UI events one touch may queue before the screen drains them; a single tap
 /// produces about nine.
@@ -33,19 +27,36 @@ pub const DIRTY_RECTS: usize = 8;
 pub type Context<const NODES: usize> = GuiContext<'static, NODES, EVENTS, DIRTY_RECTS>;
 
 /// Allocate a screen's GUI context in PSRAM; it lives for the rest of the run.
-pub fn context<const NODES: usize>(width: usize, height: usize) -> &'static mut Context<NODES> {
-    let width = u32::try_from(width).expect("screen width fits u32");
-    let height = u32::try_from(height).expect("screen height fits u32");
-    storage::leaked_value_with(|| Context::new(Rect::new(0, 0, width, height)))
+pub fn context<const NODES: usize>(width: u32, height: u32) -> &'static mut Context<NODES> {
+    storage::leaked_value(|| Context::new(Rect::new(0, 0, width, height)))
 }
 
 /// The rectangle a KDL node occupies.
 ///
 /// Panics when the id is unknown: the layout is fixed at compile time, so a
 /// missing node is a programming error, not a runtime condition.
-pub fn slot<const NODES: usize>(gui: &Context<NODES>, id: WidgetId) -> Rect {
+pub fn slot<const NODES: usize>(gui: &Context<NODES>, id: WidgetId) -> Rectangle {
+    let rect = gui_rect(gui, id);
+    Rectangle::new(Point::new(rect.x, rect.y), Size::new(rect.w, rect.h))
+}
+
+fn gui_rect<const NODES: usize>(gui: &Context<NODES>, id: WidgetId) -> Rect {
     gui.absolute_rect(id)
         .expect("every KDL node has a rectangle after build()")
+}
+
+/// Put a numeric readout (a caption on the left, a number on the right) into
+/// the slot of the KDL node `id`. Change the number with [`set_value`].
+pub fn add_value_label<const NODES: usize>(
+    gui: &mut Context<NODES>,
+    id: WidgetId,
+    caption: &'static str,
+    value: i32,
+    style: Style,
+) -> WidgetId {
+    let rect = gui_rect(gui, id);
+    gui.add_value_label(rect, caption, value, style)
+        .expect("the GUI context has room for a value label")
 }
 
 /// Change the text of a label or button.
@@ -62,45 +73,25 @@ pub fn set_value<const NODES: usize>(gui: &mut Context<NODES>, id: WidgetId, val
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PointerPhase {
-    Pressed,
-    Moved,
-    Released,
-}
-
-/// A touch in the coordinates of the screen it lands on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Pointer {
-    pub x: i32,
-    pub y: i32,
-    pub phase: PointerPhase,
-}
-
-impl Pointer {
-    fn input_event(self) -> InputEvent {
-        let state = match self.phase {
-            PointerPhase::Pressed => PointerState::Pressed,
-            PointerPhase::Moved => PointerState::Moved,
-            PointerPhase::Released => PointerState::Released,
-        };
-        InputEvent::Pointer {
-            x: self.x,
-            y: self.y,
-            state,
-            button: PointerButton::Primary,
-        }
-    }
-}
-
 /// Deliver a touch to the widgets and call `on_click` for every button it
-/// clicked.
+/// clicked. `event` must be in the coordinates of the GUI context.
 pub fn click_buttons<const NODES: usize>(
     gui: &mut Context<NODES>,
-    pointer: Pointer,
+    event: TouchEvent,
     mut on_click: impl FnMut(WidgetId),
 ) {
-    if let Err(error) = gui.handle_input(pointer.input_event()) {
+    let (point, state) = match event {
+        TouchEvent::Pressed(point) => (point, PointerState::Pressed),
+        TouchEvent::Moved(point) => (point, PointerState::Moved),
+        TouchEvent::Released(point) => (point, PointerState::Released),
+    };
+    let input = InputEvent::Pointer {
+        x: point.x,
+        y: point.y,
+        state,
+        button: PointerButton::Primary,
+    };
+    if let Err(error) = gui.handle_input(input) {
         debug!("GUI input failed: {:?}", error);
     }
     while let Some(event) = gui.pop_event() {
@@ -110,68 +101,9 @@ pub fn click_buttons<const NODES: usize>(
     }
 }
 
-/// One framebuffer, the size of the content area, shared by all screens.
-pub struct GuiSurface {
-    framebuffer: GuiFramebuffer,
-    width: usize,
-    height: usize,
-}
-
-impl GuiSurface {
-    pub fn new(width: usize, height: usize) -> Self {
-        assert!(width != 0 && height != 0);
-        let pixels = storage::leaked_filled_slice(width * height, theme::WHITE);
-        let backend = EndianCorrectedBuffer::new(pixels, EndianCorrection::ToBigEndian);
-        Self {
-            framebuffer: FrameBuf::new(backend, width, height),
-            width,
-            height,
-        }
-    }
-
-    /// Render the widgets, let `overlay` draw on top, and show the result.
-    pub fn present<const NODES: usize>(
-        &mut self,
-        surface: &mut Surface<'_>,
-        gui: &mut Context<NODES>,
-        overlay: impl FnOnce(&mut GuiFramebuffer),
-    ) {
-        self.present_custom(surface, |frame| {
-            if let Err(error) = gui.render(frame) {
-                debug!("GUI render failed: {:?}", error);
-            }
-            overlay(frame);
-        });
-    }
-
-    /// Show a frame drawn entirely by `draw` on a white background.
-    pub fn present_custom(
-        &mut self,
-        surface: &mut Surface<'_>,
-        draw: impl FnOnce(&mut GuiFramebuffer),
-    ) {
-        debug_assert_eq!(surface.width(), self.width);
-        debug_assert_eq!(surface.height(), self.height);
-
-        let _ = self.framebuffer.clear(theme::WHITE);
-        draw(&mut self.framebuffer);
-        surface.render_from(&mut FramebufferRows {
-            framebuffer: &self.framebuffer,
-        });
-    }
-}
-
-/// Streams a rendered framebuffer to the display row by row.
-struct FramebufferRows<'a> {
-    framebuffer: &'a GuiFramebuffer,
-}
-
-impl ScanlineSource for FramebufferRows<'_> {
-    fn fill_row(&mut self, y: usize, row: &mut [u8]) {
-        let y = i32::try_from(y).expect("framebuffer rows fit in i32");
-        for (x, bytes) in (0..).zip(row.chunks_exact_mut(2)) {
-            let color = self.framebuffer.get_color_at(Point::new(x, y));
-            bytes.copy_from_slice(&RawU16::from(color).into_inner().to_be_bytes());
-        }
+/// Draw the widgets onto `canvas`. Draw anything of your own afterwards.
+pub fn render<const NODES: usize>(gui: &mut Context<NODES>, canvas: &mut Canvas) {
+    if let Err(error) = gui.render(canvas) {
+        debug!("GUI render failed: {:?}", error);
     }
 }

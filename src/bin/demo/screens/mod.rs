@@ -15,8 +15,8 @@ pub(crate) mod speaker;
 
 use embassy_time::Instant;
 use hack_and_hike::{
-    capabilities::display::Surface,
-    ui::gui::{GuiSurface, Pointer},
+    capabilities::{display::Surface, touch::TouchEvent},
+    ui::Canvas,
 };
 
 pub(crate) trait Screen {
@@ -29,10 +29,11 @@ pub(crate) trait Screen {
     /// Called on every loop iteration, visible or not.
     fn update(&mut self, _now: Instant) {}
 
-    /// A touch inside the content area while this screen is visible.
-    fn handle_pointer(&mut self, _pointer: Pointer) {}
+    /// A touch inside the content area while this screen is visible, in
+    /// content coordinates.
+    fn handle_touch(&mut self, _event: TouchEvent) {}
 
     /// Called on every loop iteration while visible. Redraw when something
-    /// changed; do nothing otherwise.
-    fn present(&mut self, gui: &mut GuiSurface, surface: &mut Surface<'_>);
+    /// changed; do nothing otherwise. `canvas` is the size of `surface`.
+    fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>);
 }

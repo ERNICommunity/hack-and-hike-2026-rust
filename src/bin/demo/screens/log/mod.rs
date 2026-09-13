@@ -1,16 +1,11 @@
 //! The device log: the newest lines of everything written through `log`.
 
 use embassy_time::{Duration, Instant};
-use embedded_graphics::prelude::Point;
-use embedded_gui::Rect;
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use hack_and_hike::{
     capabilities::display::Surface,
     support::logging::{HistoryBuffer, LogHistory},
-    ui::{
-        common,
-        gui::{self, GuiSurface},
-        theme,
-    },
+    ui::{Canvas, common, gui, theme},
 };
 
 use crate::{layout, screens::Screen};
@@ -22,19 +17,21 @@ mod generated {
 
 const NODES: usize = 16;
 const REFRESH_PERIOD: Duration = Duration::from_millis(100);
+const _: () = assert!(generated::LogApp::WIDTH == layout::CONTENT_SIZE.width);
+const _: () = assert!(generated::LogApp::HEIGHT == layout::CONTENT_SIZE.height);
 
 pub(crate) struct LogScreen {
     history: LogHistory,
     buffer: HistoryBuffer,
     gui: &'static mut gui::Context<NODES>,
-    body: Rect,
+    body: Rectangle,
     last_refresh: Instant,
     dirty: bool,
 }
 
 impl LogScreen {
     pub(crate) fn new(history: LogHistory) -> Self {
-        let gui = gui::context::<NODES>(layout::CONTENT_WIDTH, layout::CONTENT_HEIGHT);
+        let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::LogApp::build(gui).expect("log.kdl fits the GUI capacities");
         Self {
             history,
@@ -62,27 +59,23 @@ impl Screen for LogScreen {
         }
     }
 
-    fn present(&mut self, gui: &mut GuiSurface, surface: &mut Surface<'_>) {
+    fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>) {
         if !self.dirty {
             return;
         }
         self.dirty = false;
 
-        let body = self.body;
+        canvas.clear(theme::WHITE);
+        gui::render(self.gui, canvas);
+
         let text = self.buffer.text().unwrap_or_default();
-        gui.present(surface, self.gui, |frame| {
-            let visible = (body.h as i32 / common::DENSE_LINE_HEIGHT).max(1) as usize;
-            let skip = text.lines().count().saturating_sub(visible);
-            for (index, line) in text.lines().skip(skip).enumerate() {
-                let y = body.y + index as i32 * common::DENSE_LINE_HEIGHT;
-                common::text(
-                    frame,
-                    line,
-                    Point::new(body.x, y),
-                    common::DENSE_FONT,
-                    theme::CHARCOAL,
-                );
-            }
-        });
+        let visible = (self.body.size.height as i32 / common::DENSE_LINE_HEIGHT).max(1) as usize;
+        let skip = text.lines().count().saturating_sub(visible);
+        for (index, line) in text.lines().skip(skip).enumerate() {
+            let origin =
+                self.body.top_left + Point::new(0, index as i32 * common::DENSE_LINE_HEIGHT);
+            common::text(canvas, line, origin, common::DENSE_FONT, theme::CHARCOAL);
+        }
+        canvas.show(surface);
     }
 }

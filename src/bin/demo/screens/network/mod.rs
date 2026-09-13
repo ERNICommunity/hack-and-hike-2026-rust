@@ -5,17 +5,16 @@ use core::fmt::{self, Write as _};
 
 use arrayvec::ArrayString;
 use embassy_time::{Duration, Instant};
-use embedded_graphics::prelude::Point;
-use embedded_gui::Rect;
+use embedded_graphics::primitives::Rectangle;
 use hack_and_hike::{
     capabilities::{
         display::Surface,
         network::{self, DecodeError, Message, Network},
     },
     ui::{
+        Canvas,
         common::{self, Lines},
-        gui::{self, GuiFramebuffer, GuiSurface},
-        theme,
+        gui, theme,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -28,6 +27,8 @@ mod generated {
 }
 
 const NODES: usize = 16;
+const _: () = assert!(generated::NetworkApp::WIDTH == layout::CONTENT_SIZE.width);
+const _: () = assert!(generated::NetworkApp::HEIGHT == layout::CONTENT_SIZE.height);
 const UPDATE_PERIOD: Duration = Duration::from_millis(50);
 const PING_PERIOD: Duration = Duration::from_secs(1);
 
@@ -61,14 +62,14 @@ pub(crate) struct NetworkScreen {
     last_update: Instant,
     last_ping: Instant,
     gui: &'static mut gui::Context<NODES>,
-    summary: Rect,
-    peers: Rect,
+    summary: Rectangle,
+    peers: Rectangle,
     dirty: bool,
 }
 
 impl NetworkScreen {
     pub(crate) fn new(network: Network) -> Self {
-        let gui = gui::context::<NODES>(layout::CONTENT_WIDTH, layout::CONTENT_HEIGHT);
+        let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::NetworkApp::build(gui).expect("network.kdl fits the GUI capacities");
         let now = Instant::now();
         Self {
@@ -141,28 +142,27 @@ impl Screen for NetworkScreen {
         }
     }
 
-    fn present(&mut self, gui: &mut GuiSurface, surface: &mut Surface<'_>) {
+    fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>) {
         if !self.dirty {
             return;
         }
         self.dirty = false;
 
-        let (summary, peers, counters, snapshot) =
-            (self.summary, self.peers, self.counters, self.snapshot);
-        gui.present(surface, self.gui, |frame| {
-            draw_summary(frame, summary, counters, snapshot.as_ref());
-            draw_peers(frame, peers, snapshot.as_ref());
-        });
+        canvas.clear(theme::WHITE);
+        gui::render(self.gui, canvas);
+        draw_summary(canvas, self.summary, self.counters, self.snapshot.as_ref());
+        draw_peers(canvas, self.peers, self.snapshot.as_ref());
+        canvas.show(surface);
     }
 }
 
 fn draw_summary(
-    frame: &mut GuiFramebuffer,
-    area: Rect,
+    canvas: &mut Canvas,
+    area: Rectangle,
     counters: Counters,
     snapshot: Option<&network::Snapshot>,
 ) {
-    let mut lines = Lines::new(frame, Point::new(area.x, area.y));
+    let mut lines = Lines::new(canvas, area.top_left);
     let mut text = ArrayString::<48>::new();
 
     let Some(snapshot) = snapshot else {
@@ -220,14 +220,14 @@ fn draw_summary(
     lines.line(&text, theme::DARK_GRAY);
 }
 
-fn draw_peers(frame: &mut GuiFramebuffer, area: Rect, snapshot: Option<&network::Snapshot>) {
-    let mut lines = Lines::new(frame, Point::new(area.x, area.y));
+fn draw_peers(canvas: &mut Canvas, area: Rectangle, snapshot: Option<&network::Snapshot>) {
+    let mut lines = Lines::new(canvas, area.top_left);
     let peers = snapshot.into_iter().flat_map(network::Snapshot::peers);
     let mut text = ArrayString::<48>::new();
     let mut listed = 0;
 
     // One header line plus one line per peer.
-    let rows = (area.h as i32 / common::BODY_LINE_HEIGHT).max(1) as usize;
+    let rows = (area.size.height as i32 / common::BODY_LINE_HEIGHT).max(1) as usize;
     lines.line("PEER ADDRESS      RSSI    UPTIME", theme::DARK_GRAY);
     for peer in peers.take(rows - 1) {
         text.clear();
@@ -243,7 +243,7 @@ fn draw_peers(frame: &mut GuiFramebuffer, area: Rect, snapshot: Option<&network:
     }
 
     if listed == 0 {
-        lines.line("", theme::CHARCOAL);
+        lines.skip();
         lines.line("No other boards are broadcasting.", theme::DARK_GRAY);
         lines.line("Flash this application to a second", theme::DARK_GRAY);
         lines.line("board and it will appear here.", theme::DARK_GRAY);
