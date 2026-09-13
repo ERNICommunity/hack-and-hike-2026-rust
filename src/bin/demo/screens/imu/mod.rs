@@ -1,7 +1,8 @@
-//! Attitude and heading: a numeric header, an artificial horizon and a
-//! compass.
+//! Attitude and heading as a perspective horizon with a compass.
 
+mod compass;
 mod horizon;
+mod projection;
 
 use core::fmt::Write as _;
 
@@ -33,7 +34,7 @@ const HEADER_PADDING: i32 = 6;
 const HEADER_TITLE_Y: i32 = 3;
 const HEADER_STATUS_Y: i32 = 19;
 const HEADER_MAGNETOMETER_Y: i32 = 35;
-/// Where the roll/pitch/heading columns start inside the header.
+/// Where the roll/pitch/yaw columns start inside the header.
 const HEADER_VALUES_X: i32 = 78;
 const VALUE_LABEL_Y: i32 = 3;
 const VALUE_Y: i32 = 22;
@@ -90,8 +91,9 @@ impl Screen for ImuScreen {
         gui::render(self.gui, canvas);
         match &self.sample {
             Some(sample) => {
-                draw_header(canvas, self.header, sample);
-                horizon::draw(canvas, self.attitude, sample);
+                let display = projection::display_attitude(&sample.attitude);
+                draw_header(canvas, self.header, sample, display);
+                horizon::draw_attitude(canvas, self.attitude, display);
             }
             None => {
                 draw_header_frame(canvas, self.header, "WAITING");
@@ -121,7 +123,12 @@ fn draw_header_frame(canvas: &mut Canvas, area: Rectangle, status: &str) {
     );
 }
 
-fn draw_header(canvas: &mut Canvas, area: Rectangle, sample: &Sample) {
+fn draw_header(
+    canvas: &mut Canvas,
+    area: Rectangle,
+    sample: &Sample,
+    attitude: projection::DisplayAttitude,
+) {
     draw_header_frame(canvas, area, status_text(sample.status));
 
     let mut magnetometer = ArrayString::<24>::new();
@@ -140,12 +147,11 @@ fn draw_header(canvas: &mut Canvas, area: Rectangle, sample: &Sample) {
         theme::LIGHT_GRAY,
     );
 
-    let attitude = sample.attitude;
     let column_width = ((area.size.width as i32 - HEADER_VALUES_X) / 3).max(1);
     let columns = [
         ("ROLL", attitude.roll_deg),
         ("PITCH", attitude.pitch_deg),
-        ("HDG", attitude.heading_deg),
+        ("YAW", attitude.yaw_deg),
     ];
     for (index, (label, degrees)) in columns.into_iter().enumerate() {
         let x = area.top_left.x + HEADER_VALUES_X + column_width * index as i32;

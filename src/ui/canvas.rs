@@ -45,6 +45,13 @@ impl Canvas {
         self.pixels.fill(color);
     }
 
+    /// Set one pixel; a point outside the canvas is ignored.
+    pub fn set(&mut self, point: Point, color: Rgb565) {
+        if self.bounding_box().contains(point) {
+            self.pixels[point.y as usize * self.size.width as usize + point.x as usize] = color;
+        }
+    }
+
     /// Fill a rectangle; the part outside the canvas is ignored.
     pub fn fill(&mut self, area: Rectangle, color: Rgb565) {
         let area = area.intersection(&self.bounding_box());
