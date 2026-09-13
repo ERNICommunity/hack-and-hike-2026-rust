@@ -1,7 +1,7 @@
 //! ESP-NOW demo: broadcasts a ping every second, answers pings with pongs and
 //! lists the peers in range.
 
-use core::fmt::Write as _;
+use core::fmt::{self, Write as _};
 
 use arrayvec::ArrayString;
 use embassy_time::{Duration, Instant};
@@ -14,7 +14,7 @@ use hack_and_hike::{
     },
     ui::{
         common::{self, Lines},
-        gui::{self, GuiSurface},
+        gui::{self, GuiFramebuffer, GuiSurface},
         theme,
     },
 };
@@ -143,64 +143,128 @@ impl Screen for NetworkScreen {
         let (summary, peers, counters, snapshot) =
             (self.summary, self.peers, self.counters, self.snapshot);
         gui.present(surface, self.gui, |frame| {
-            let mut text = ArrayString::<64>::new();
-            let mut lines = Lines::new(frame, Point::new(summary.x, summary.y));
-            let Some(snapshot) = snapshot else {
-                lines.line("ESP-NOW  STARTING", theme::CHARCOAL);
-                return;
-            };
-
-            let status = match snapshot.status {
-                network::Status::Starting => "ESP-NOW  STARTING",
-                network::Status::Ready => "ESP-NOW  WAITING FOR PEER",
-                network::Status::PeerPresent => "ESP-NOW  PEER CONNECTED",
-                network::Status::Fault => "ESP-NOW  RADIO FAULT",
-            };
-            lines.line(status, theme::CHARCOAL);
-            let _ = write!(text, "ID {}", snapshot.local_id);
-            lines.line(&text, theme::CHARCOAL);
-            text.clear();
-            let _ = write!(
-                text,
-                "CH {}  PEERS {}/{}",
-                snapshot.channel,
-                snapshot.peer_count(),
-                network::MAX_PEERS
-            );
-            lines.line(&text, theme::CHARCOAL);
-            text.clear();
-            let _ = write!(
-                text,
-                "M {}/{}/{} E{}/{} Q{}/{}",
-                counters.pings_sent,
-                counters.pings_received,
-                counters.pongs_received,
-                counters.send_errors,
-                counters.decode_errors,
-                snapshot.tx_queue_full,
-                snapshot.rx_queue_full
-            );
-            lines.line(&text, theme::DARK_GRAY);
-
-            let mut lines = Lines::new(frame, Point::new(peers.x, peers.y));
-            if snapshot.peer_count() == 0 {
-                lines.line("No peers in range", theme::DARK_GRAY);
-                return;
-            }
-            let max_rows = (peers.h as i32 / common::BODY_LINE_HEIGHT).max(0) as usize;
-            for (index, peer) in snapshot.peers().take(max_rows).enumerate() {
-                text.clear();
-                let _ = write!(
-                    text,
-                    "P{:02} {} {:>4}dB A{} E{}",
-                    index + 1,
-                    peer.id,
-                    peer.rssi_dbm,
-                    peer.age_ms.min(9999),
-                    peer.expires_in_ms.min(9999)
-                );
-                lines.line(&text, theme::CHARCOAL);
-            }
+            draw_summary(frame, summary, counters, snapshot.as_ref());
+            draw_peers(frame, peers, snapshot.as_ref());
         });
+    }
+}
+
+fn draw_summary(
+    frame: &mut GuiFramebuffer,
+    area: Rect,
+    counters: Counters,
+    snapshot: Option<&network::Snapshot>,
+) {
+    let mut lines = Lines::new(frame, Point::new(area.x, area.y));
+    let mut text = ArrayString::<48>::new();
+
+    let Some(snapshot) = snapshot else {
+        lines.line("ESP-NOW: starting up", theme::CHARCOAL);
+        return;
+    };
+
+    let peer_count = snapshot.peer_count();
+    let _ = match snapshot.status {
+        network::Status::Starting => write!(text, "ESP-NOW: starting up"),
+        network::Status::Ready => write!(text, "ESP-NOW: ready, no peers yet"),
+        network::Status::PeerPresent if peer_count == 1 => {
+            write!(text, "ESP-NOW: 1 peer in range")
+        }
+        network::Status::PeerPresent => write!(text, "ESP-NOW: {peer_count} peers in range"),
+        network::Status::Fault => write!(text, "ESP-NOW: radio fault"),
+    };
+    lines.line(&text, theme::CHARCOAL);
+
+    text.clear();
+    let _ = write!(text, "This device {}", snapshot.local_id);
+    lines.line(&text, theme::CHARCOAL);
+
+    text.clear();
+    let _ = write!(
+        text,
+        "Channel {}, room for {} peers",
+        snapshot.channel,
+        network::MAX_PEERS
+    );
+    lines.line(&text, theme::DARK_GRAY);
+
+    // This screen broadcasts a ping every second and answers every ping it
+    // receives with a pong, so these three numbers should keep climbing.
+    text.clear();
+    let _ = write!(
+        text,
+        "Pings {} sent, {} received",
+        counters.pings_sent, counters.pings_received
+    );
+    lines.line(&text, theme::CHARCOAL);
+
+    text.clear();
+    let _ = write!(
+        text,
+        "Pongs {} back, {} lost, {} bad",
+        counters.pongs_received,
+        counters.send_errors + snapshot.tx_queue_full + snapshot.rx_queue_full,
+        counters.decode_errors + snapshot.rx_invalid
+    );
+    lines.line(&text, theme::DARK_GRAY);
+}
+
+fn draw_peers(frame: &mut GuiFramebuffer, area: Rect, snapshot: Option<&network::Snapshot>) {
+    let mut lines = Lines::new(frame, Point::new(area.x, area.y));
+    let peers = snapshot.into_iter().flat_map(network::Snapshot::peers);
+    let mut text = ArrayString::<48>::new();
+    let mut listed = 0;
+
+    // One header line plus one line per peer.
+    let rows = (area.h as i32 / common::BODY_LINE_HEIGHT).max(1) as usize;
+    lines.line("PEER ADDRESS      RSSI    UPTIME", theme::DARK_GRAY);
+    for peer in peers.take(rows - 1) {
+        text.clear();
+        let _ = write!(
+            text,
+            "{} {:>6}  {}",
+            peer.id,
+            Dbm(peer.rssi_dbm),
+            Uptime(peer.uptime_ms)
+        );
+        lines.line(&text, theme::CHARCOAL);
+        listed += 1;
+    }
+
+    if listed == 0 {
+        lines.line("", theme::CHARCOAL);
+        lines.line("No other boards are broadcasting.", theme::DARK_GRAY);
+        lines.line("Flash this application to a second", theme::DARK_GRAY);
+        lines.line("board and it will appear here.", theme::DARK_GRAY);
+    }
+}
+
+/// Signal strength, for example `-42dBm`.
+struct Dbm(i8);
+
+impl fmt::Display for Dbm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}dBm", self.0)
+    }
+}
+
+/// How long a peer has been running, for example `12m 03s`. A peer that has
+/// only sent application messages has not reported an uptime yet.
+struct Uptime(Option<u32>);
+
+impl fmt::Display for Uptime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some(milliseconds) = self.0 else {
+            return write!(f, "unknown");
+        };
+        let seconds = milliseconds / 1_000;
+        let (hours, minutes, seconds) = (seconds / 3_600, (seconds / 60) % 60, seconds % 60);
+        if hours > 0 {
+            write!(f, "{hours}h {minutes:02}m")
+        } else if minutes > 0 {
+            write!(f, "{minutes}m {seconds:02}s")
+        } else {
+            write!(f, "{seconds}s")
+        }
     }
 }

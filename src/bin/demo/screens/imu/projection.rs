@@ -231,10 +231,10 @@ pub(super) fn project_camera_solid_line(
     clip_line(
         start,
         end,
-        2 + half,
-        area.w as i32 - 3 - half,
-        2 + half,
-        area.h as i32 - 3 - half,
+        half,
+        area.w as i32 - 1 - half,
+        half,
+        area.h as i32 - 1 - half,
     )
 }
 

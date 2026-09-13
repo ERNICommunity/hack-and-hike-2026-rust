@@ -163,6 +163,8 @@ the CPU prepares the next batch while the previous one is on the wire.
 - `theme`: the six palette colours, as `Rgb565` and as raw pixels.
 - `common`: fill, outline, text helpers on a `Rect`, using the bitmap fonts at
   native resolution.
+- `font`: the same fonts adapted for `embedded-gui`, anchored at the top-left
+  corner of their rectangle.
 - `widgets::Slider`: a touch-friendly slider.
 - `gui`: a `GuiSurface` framebuffer the size of the content area, the
   `embedded-gui` context type, and `Pointer` for forwarding touches.
@@ -239,6 +241,11 @@ Rules that follow from how `embedded-gui` 0.2.6 works:
   `ui::widgets::Slider` draws into a slot and maps touches itself.
 - Styles are referenced as `style="crate::styles::title()"`; the demo
   re-exports `hack_and_hike::ui::styles` under that name.
+- **Fonts come from `ui::font`, not straight from `embedded-graphics`.**
+  `embedded-gui` draws an `embedded-graphics` font on its alphabetic baseline,
+  which puts the glyphs one ascent above the rectangle they belong to.
+  `ui::font::TopAnchored` draws from the top-left corner instead, so widget
+  text lines up with everything drawn by `ui::common`.
 
 Each screen's GUI context is allocated once in PSRAM (`gui::context`) because
 it is about 20 KiB.

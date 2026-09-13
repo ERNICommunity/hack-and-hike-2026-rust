@@ -100,7 +100,6 @@ impl Screen for ImuScreen {
             None => {
                 draw_header_frame(frame, header, "WAITING");
                 common::fill(frame, attitude, theme::LIGHT_BLUE);
-                common::outline(frame, attitude, theme::LIGHT_GRAY);
             }
         });
     }

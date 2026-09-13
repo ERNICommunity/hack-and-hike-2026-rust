@@ -20,7 +20,7 @@ use static_cell::StaticCell;
 use hack_and_hike_core::network::{
     message::{IncomingMessage, OutgoingMessage},
     protocol::{self, DeviceId, MacAddress, RssiDbm},
-    state::NetworkState,
+    state::{Heard, NetworkState},
 };
 
 use super::{Config, Resources, channels::Runtime};
@@ -198,35 +198,52 @@ async fn receive_task(
         let now = Instant::now();
         let broadcast = received.info.dst_address == BROADCAST_ADDRESS;
 
-        let (sender_id, application) = match protocol::decode_frame(received.data()) {
-            Some(protocol::DecodedFrame::Beacon(beacon)) => (Some(beacon.device_id), None),
+        let mac = MacAddress(received.info.src_address);
+        let rssi_dbm = RssiDbm::from_dbm(received.info.rx_control.rssi);
+        let (heard, application) = match protocol::decode_frame(received.data()) {
+            Some(protocol::DecodedFrame::Beacon(beacon)) => (
+                Some(Heard {
+                    device_id: beacon.device_id,
+                    mac,
+                    rssi_dbm,
+                    uptime_ms: Some(beacon.uptime_ms),
+                }),
+                None,
+            ),
             Some(protocol::DecodedFrame::Application(packet)) => {
-                let addressed_correctly = match packet.recipient {
+                let addressed_to_us = match packet.recipient {
                     None => broadcast,
                     Some(recipient) => recipient == radio.local_id && !broadcast,
                 };
-                (addressed_correctly.then_some(packet.sender), Some(packet))
+                let heard = addressed_to_us.then_some(Heard {
+                    device_id: packet.sender,
+                    mac,
+                    rssi_dbm,
+                    uptime_ms: None,
+                });
+                (heard, Some(packet))
             }
             None => (None, None),
         };
-        let Some(sender_id) = sender_id else {
+        let Some(heard) = heard else {
             radio.with_state(NetworkState::record_invalid_receive);
             radio.publish(now);
             continue;
         };
-        if sender_id == radio.local_id {
+        if heard.device_id == radio.local_id {
             continue;
         }
 
-        let mac = MacAddress(received.info.src_address);
-        let rssi = RssiDbm::from_dbm(received.info.rx_control.rssi);
-        let outcome =
-            radio.with_state(|state| state.record_receive(sender_id, mac, rssi, now.as_millis()));
+        let sender_id = heard.device_id;
+        let outcome = radio.with_state(|state| state.record_receive(heard, now.as_millis()));
         if let Some(evicted) = outcome.evicted {
             forget_radio_peer(manager, evicted);
         }
         if outcome.is_new {
-            info!("ESP-NOW peer found: id={} rssi={} dBm", sender_id, rssi.0);
+            info!(
+                "ESP-NOW peer found: id={} rssi={} dBm",
+                sender_id, rssi_dbm.0
+            );
         }
         if broadcast && !manager.peer_exists(&mac.0) {
             let added = manager.add_peer(PeerInfo {

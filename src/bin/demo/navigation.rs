@@ -198,7 +198,6 @@ pub(crate) fn render(surface: &mut Surface<'_>, active: ViewId) {
         };
 
         pixels.fill(background);
-        pixels[NAV_WIDTH - 1] = pixel::LIGHT_GRAY;
 
         let row_in_button = y - index * BUTTON_HEIGHT;
         if let Some(row) = row_in_button.checked_sub(ICON_Y)

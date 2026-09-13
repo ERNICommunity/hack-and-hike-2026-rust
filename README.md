@@ -76,26 +76,11 @@ instead. Put unit tests next to the code and scenario tests in
 
 ## Your first application
 
-This is `src/bin/imu_color.rs`, complete. It paints the screen green while the
-motion sensor delivers data and red otherwise.
+`src/bin/imu_color.rs` turns the screen green while the motion sensor delivers
+samples and red when it does not, with a panel showing the sensor's own
+numbers. This is its `main`:
 
 ```rust
-#![no_std]
-#![no_main]
-
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-
-use hack_and_hike::{
-    Board,
-    capabilities::{
-        display::{HEIGHT, Region, WIDTH},
-        imu::Status,
-    },
-};
-
-esp_bootloader_esp_idf::esp_app_desc!();
-
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     let Board {
@@ -105,37 +90,36 @@ async fn main(_spawner: Spawner) -> ! {
     } = Board::init();
 
     let full_screen = Region::new(0, 0, WIDTH, HEIGHT);
-    let mut screen_color = 0x0000;
+    let mut screen = GuiSurface::new(WIDTH, HEIGHT);
+    let mut shown = None;
+    let mut last_redraw = Instant::now();
+
+    screen.present_custom(&mut display.surface(full_screen), |frame| draw(frame, None));
 
     loop {
         if let Some(sample) = imu.latest() {
-            screen_color = if sample.status == Status::Running {
-                0x07E0 // green
-            } else {
-                0xF800 // red
-            };
+            let reading = Reading::from_sample(&sample);
+            if shown != Some(reading) && Instant::now() - last_redraw >= REDRAW_PERIOD {
+                shown = Some(reading);
+                last_redraw = Instant::now();
+                screen.present_custom(&mut display.surface(full_screen), |frame| {
+                    draw(frame, Some(reading));
+                });
+            }
         }
 
-        {
-            let mut surface = display.surface(full_screen);
-            surface.render_scanlines(|_y, pixels| {
-                pixels.fill(screen_color);
-            });
-        }
-
-        Timer::after(Duration::from_millis(50)).await;
+        Timer::after(Duration::from_millis(10)).await;
     }
 }
 ```
 
 Line by line:
 
-- `#![no_std]` and `#![no_main]`: this is firmware. There is no operating
-  system and no C-style `main`. You still have structs, enums, `Option`,
-  iterators, closures and modules.
-- `esp_app_desc!()` writes a small descriptor the bootloader expects. Every
-  application has this line.
-- `#[esp_rtos::main] async fn main(...) -> !`: an async entry point that
+- The file starts with `#![no_std]` and `#![no_main]`: this is firmware. There
+  is no operating system and no C-style `main`. You still have structs, enums,
+  `Option`, iterators, closures and modules. The `esp_app_desc!()` line writes
+  a small descriptor the bootloader expects; every application has it.
+- `#[esp_rtos::main] async fn main(...) -> !` is an async entry point that
   never returns (`!`). The board runs your loop forever.
 - `Board::init()` powers up the whole board and returns one handle per
   capability. The pattern `let Board { mut display, mut imu, .. } = ...` keeps
@@ -143,11 +127,26 @@ Line by line:
   is fine: the sensors keep running on the second CPU core.
 - `imu.latest()` returns `Some(sample)` when a new sample arrived since the
   last call and `None` otherwise. Nothing blocks.
-- `display.surface(region)` borrows the display for one rectangle.
-  `render_scanlines` calls your closure once per row with a slice of pixels to
-  fill; nothing can draw outside the region.
+- `display.surface(region)` borrows the display for one rectangle; nothing can
+  draw outside it. `GuiSurface` is a framebuffer the size of that rectangle:
+  `present_custom` hands your closure a `frame` to draw on and then copies it
+  to the panel in one go.
+- The `draw` function below `main` fills the background and writes the text,
+  using the helpers in `hack_and_hike::ui`. It is a plain function, so nothing
+  about it is specific to this application.
+- The screen is only redrawn when a value changed and at most four times a
+  second, because the sensor publishes a hundred samples per second.
 - `Timer::after(...).await` pauses this loop and lets other work on this core
   run. Every loop needs an `.await` somewhere.
+
+The simplest way to draw is without a framebuffer at all:
+
+```rust
+let mut surface = display.surface(full_screen);
+surface.render_scanlines(|_y, pixels| {
+    pixels.fill(0x07E0); // green, as an RGB565 value
+});
+```
 
 ## Create your own application
 
