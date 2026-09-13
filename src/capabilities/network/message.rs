@@ -6,14 +6,14 @@ use serde::{Serialize, de::DeserializeOwned};
 use super::{DeviceId, MAX_PAYLOAD};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SendError {
+pub enum SendError {
     MessageTooLarge,
     QueueFull,
     UnknownPeer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DecodeError;
+pub struct DecodeError;
 
 pub(super) fn serialize_payload<T: Serialize>(
     value: &T,
@@ -29,17 +29,9 @@ pub(super) fn serialize_payload<T: Serialize>(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct IncomingMessage {
-    #[allow(
-        dead_code,
-        reason = "field is part of the typed network message capability contract"
-    )]
-    pub(crate) sender: DeviceId,
-    #[allow(
-        dead_code,
-        reason = "field is part of the typed network message capability contract"
-    )]
-    pub(crate) recipient: Option<DeviceId>,
+pub struct IncomingMessage {
+    pub sender: DeviceId,
+    pub recipient: Option<DeviceId>,
     payload: ArrayVec<u8, MAX_PAYLOAD>,
 }
 
@@ -58,15 +50,14 @@ impl IncomingMessage {
         })
     }
 
-    pub(crate) fn decode<T>(&self) -> Result<T, DecodeError>
+    pub fn decode<T>(&self) -> Result<T, DecodeError>
     where
         T: DeserializeOwned,
     {
         postcard::from_bytes(self.payload.as_slice()).map_err(|_| DecodeError)
     }
 
-    #[allow(dead_code, reason = "part of the typed network message capability API")]
-    pub(crate) fn payload_len(&self) -> usize {
+    pub fn payload_len(&self) -> usize {
         self.payload.len()
     }
 }

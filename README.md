@@ -14,15 +14,13 @@ The main idea is simple:
 
 Those parts are called **capabilities**.
 
-A build selects one application. The repository contains three real applications that you can build and study:
+Every application is one binary in `src/bin/`. The repository contains three applications that you can build and study:
 
-| Feature | Application | Purpose |
+| Binary | Application | Purpose |
 | --- | --- | --- |
-| `app-demo` | Demo | Full Hack & Hike demo with all screens |
-| `app-imu-color` | IMU Color | Small display + IMU example |
-| `app-color-ping` | Color Ping | Display + touch + network + speaker example |
-
-There is also `app-idle`. It is a tiny headless application used for feature checks and simple experiments.
+| `demo` | Demo | Full Hack & Hike demo with all screens |
+| `imu_color` | IMU Color | Small display + IMU example |
+| `color_ping` | Color Ping | Display + touch + network + speaker example |
 
 ---
 
@@ -34,7 +32,7 @@ There is also `app-idle`. It is a tiny headless application used for feature che
 - [Applications and capabilities](#applications-and-capabilities)
 - [How startup works](#how-startup-works)
 - [CPU0 and CPU1](#cpu0-and-cpu1)
-- [Cargo features](#cargo-features)
+- [Everything is always initialized](#everything-is-always-initialized)
 - [The Rust ideas you need](#the-rust-ideas-you-need)
 - [How drawing works](#how-drawing-works)
 - [Application 1: Demo](#application-1-demo)
@@ -43,7 +41,6 @@ There is also `app-idle`. It is a tiny headless application used for feature che
 - [Create your own application](#create-your-own-application)
 - [Add more screens](#add-more-screens)
 - [Use background tasks](#use-background-tasks)
-- [Headless applications](#headless-applications)
 - [Memory and large buffers](#memory-and-large-buffers)
 - [Common mistakes](#common-mistakes)
 - [Where should my code go?](#where-should-my-code-go)
@@ -54,33 +51,21 @@ There is also `app-idle`. It is a tiny headless application used for feature che
 
 ## Build an application
 
-The default build selects the full demo application:
+Build one application by naming its binary:
 
 ```bash
-cargo build --release
+cargo build --release --bin imu_color
 ```
-
-You can also select it explicitly:
 
 ```bash
-cargo build --release --no-default-features --features app-demo
+cargo build --release --bin color_ping
 ```
-
-Build the small IMU example:
 
 ```bash
-cargo build --release --no-default-features --features app-imu-color
+cargo build --release --bin demo
 ```
 
-Build Color Ping:
-
-```bash
-cargo build --release --no-default-features --features app-color-ping
-```
-
-`--no-default-features` matters when you select another application because the default feature set selects `app-demo`.
-
-Only one application feature should be enabled in a firmware build.
+Without `--bin`, `cargo build --release` builds all of them.
 
 ---
 
@@ -121,12 +106,12 @@ The important part of the source tree looks like this:
 
 ```text
 src/
-├── main.rs
-├── applications/
-│   ├── mod.rs
+├── lib.rs
+├── bin/
 │   ├── demo/
-│   ├── imu_color/
-│   └── color_ping/
+│   ├── imu_color.rs
+│   └── color_ping.rs
+├── board/
 ├── capabilities/
 │   ├── display/
 │   ├── touch/
@@ -136,13 +121,12 @@ src/
 │   ├── network/
 │   ├── camera/
 │   └── audio/
-├── firmware/
 ├── platform/
 ├── support/
 └── ui/
 ```
 
-### `src/applications/`
+### `src/bin/`
 
 This is where device behavior belongs.
 
@@ -163,11 +147,11 @@ This is where hardware-facing APIs live.
 
 A capability hides low-level hardware work and gives the application useful values and operations.
 
-### `src/firmware/`
+### `src/board/`
 
 This connects the real board hardware to capabilities.
 
-`firmware::bootstrap()` starts enabled hardware and returns the application-facing handles.
+`Board::init()` powers up the hardware, starts the CPU1 runtimes and returns one handle per capability.
 
 You normally do **not** edit this folder when you make a new application.
 
@@ -183,7 +167,7 @@ Using it is optional. A small application can draw directly through the display 
 
 ### `src/support/`
 
-This contains shared support code such as logging, memory helpers, diagnostics, and stack/heap monitoring.
+This contains shared support code: logging with an on-device history, and PSRAM memory helpers.
 
 ---
 
@@ -195,7 +179,7 @@ A **capability** gives the application access to one hardware function.
 
 The current capabilities are:
 
-| Feature | Rust handle | What the application gets |
+| Capability | Rust handle | What the application gets |
 | --- | --- | --- |
 | `display` | `Display` | LCD drawing through bounded `Surface` values |
 | `touch` | `Touch` | Touch points and press/release events |
@@ -265,49 +249,52 @@ The network capability moves the message. The application decides what `Hello` m
 
 ## How startup works
 
-The program starts in `src/main.rs`.
+Each application is a binary with its own `main`.
 
 The important part is very small:
 
 ```rust
 #[esp_rtos::main]
-async fn main(cpu0_spawner: Spawner) -> ! {
-    let bootstrap = firmware::bootstrap();
-    applications::run(cpu0_spawner, bootstrap).await
+async fn main(_spawner: Spawner) -> ! {
+    let Board { mut display, mut imu, .. } = Board::init();
+
+    loop {
+        // Your application.
+    }
 }
 ```
 
 This means:
 
-1. Start the hardware.
-2. Create the enabled capabilities.
-3. Give their application handles to the selected application.
-4. Run that application forever.
+1. `Board::init()` starts the hardware and the CPU1 runtimes.
+2. It returns one handle per capability.
+3. Your application keeps the handles it needs and drops the rest.
+4. Your loop runs forever.
 
 ```mermaid
 sequenceDiagram
-    participant Main as main.rs
-    participant Boot as firmware::bootstrap()
+    participant Main as main()
+    participant Boot as Board::init()
     participant CPU1 as CPU1 capability work
-    participant App as Selected application
+    participant App as Your loop
 
-    Main->>Boot: bootstrap()
-    Boot->>CPU1: start enabled runtime tasks
-    Boot-->>Main: Bootstrap with capability handles
-    Main->>App: run(spawner, bootstrap)
+    Main->>Boot: Board::init()
+    Boot->>CPU1: start runtime tasks
+    Boot-->>Main: Board with capability handles
+    Main->>App: loop
     App->>App: run forever
 ```
 
-The selected application takes ownership of `Bootstrap` and moves out the handles it needs.
+The application takes ownership of `Board` and moves out the handles it needs.
 
 Example:
 
 ```rust
-let Bootstrap {
+let Board {
     mut display,
     mut imu,
     ..
-} = bootstrap;
+} = Board::init();
 ```
 
 Now this application owns `display` and `imu`.
@@ -362,73 +349,19 @@ For normal hardware access, use the capability handle. Do not manage CPU1 yourse
 
 ---
 
-## Cargo features
+## Everything is always initialized
 
-Cargo features decide which code and hardware support are included in a build.
+There are no Cargo features to choose. `Board::init()` always brings up the whole board: display, touch, IMU, microphone, speaker, network and camera.
 
-Hardware features are:
-
-```text
-display
-touch
-imu
-mic
-speaker
-network
-camera
-```
-
-There is also `ui`, which enables reusable GUI helpers and the display.
-
-The application features are:
-
-```toml
-app-demo = [
-    "ui",
-    "touch",
-    "imu",
-    "mic",
-    "speaker",
-    "network",
-    "camera",
-]
-
-app-imu-color = ["display", "imu"]
-
-app-color-ping = ["display", "touch", "network", "speaker"]
-```
-
-```mermaid
-flowchart TD
-    Demo["app-demo"] --> UI["ui / display"]
-    Demo --> Touch["touch"]
-    Demo --> IMU["imu"]
-    Demo --> Mic["mic"]
-    Demo --> Speaker["speaker"]
-    Demo --> Network["network"]
-    Demo --> Camera["camera"]
-
-    ImuColor["app-imu-color"] --> Display2["display"]
-    ImuColor --> IMU2["imu"]
-
-    ColorPing["app-color-ping"] --> Display3["display"]
-    ColorPing --> Touch3["touch"]
-    ColorPing --> Network3["network"]
-    ColorPing --> Speaker3["speaker"]
-```
-
-A small application only enables what it needs.
-
-### `#[cfg(...)]`
-
-You will see code like:
+An application simply takes the handles it wants:
 
 ```rust
-#[cfg(feature = "app-color-ping")]
-mod color_ping;
+let Board { mut display, mut imu, .. } = Board::init();
 ```
 
-This means that module is compiled only when `app-color-ping` is enabled.
+The `..` drops every other handle. The CPU1 runtimes behind them keep running; that costs nothing you will notice.
+
+A headless application is one that does not take `display`.
 
 ---
 
@@ -443,11 +376,11 @@ Rust values have an owner.
 Hardware handles also have one clear owner.
 
 ```rust
-let Bootstrap {
+let Board {
     mut display,
     mut imu,
     ..
-} = bootstrap;
+} = Board::init();
 ```
 
 After this line, the application owns `display` and `imu`.
@@ -558,7 +491,7 @@ A surface cannot draw outside its region.
 
 ### Shared GUI helpers
 
-Applications that enable `ui` may use `GuiSurface` and the shared GUI helpers.
+Applications may use `GuiSurface` and the shared GUI helpers from `src/ui/`.
 
 This is optional. Both small example applications draw directly through `Surface`.
 
@@ -566,16 +499,16 @@ This is optional. Both small example applications draw directly through `Surface
 
 # Application 1: Demo
 
-Feature:
+Binary:
 
 ```text
-app-demo
+demo
 ```
 
 Source:
 
 ```text
-src/applications/demo/
+src/bin/demo/
 ```
 
 This is the full Hack & Hike demo.
@@ -598,7 +531,7 @@ Its screens include Network, IMU, Microphone, Speaker, Camera, Settings, and Log
 
 ```mermaid
 flowchart TD
-    Demo["app-demo"] --> Nav["Navigation"]
+    Demo["demo"] --> Nav["Navigation"]
     Demo --> Network["Network screen"]
     Demo --> IMU["IMU screen"]
     Demo --> Mic["Microphone screen"]
@@ -611,7 +544,7 @@ flowchart TD
 Build it:
 
 ```bash
-cargo build --release --no-default-features --features app-demo
+cargo build --release --bin demo
 ```
 
 This application is useful when you want to see how a larger application owns several views and combines many capabilities.
@@ -620,16 +553,16 @@ This application is useful when you want to see how a larger application owns se
 
 # Application 2: IMU Color
 
-Feature:
+Binary:
 
 ```text
-app-imu-color
+imu_color
 ```
 
 Source:
 
 ```text
-src/applications/imu_color/mod.rs
+src/bin/imu_color.rs
 ```
 
 This is the smallest real graphical example in the repository.
@@ -646,12 +579,13 @@ The application reads the newest IMU sample. It paints the display green while t
 The important shape of the code is:
 
 ```rust
-pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    let Bootstrap {
+#[esp_rtos::main]
+async fn main(_spawner: Spawner) -> ! {
+    let Board {
         mut display,
         mut imu,
         ..
-    } = bootstrap;
+    } = Board::init();
 
     let full_screen = Region::new(0, 0, WIDTH, HEIGHT);
     let mut screen_color = 0x0000;
@@ -683,7 +617,7 @@ Follow the data:
 flowchart LR
     Sensor["IMU hardware"] --> Runtime["IMU runtime on CPU1"]
     Runtime --> Latest["Imu::latest()"]
-    Latest --> App["app-imu-color"]
+    Latest --> App["imu_color"]
     App --> Surface["Display Surface"]
     Surface --> LCD["LCD"]
 ```
@@ -691,7 +625,7 @@ flowchart LR
 Build it:
 
 ```bash
-cargo build --release --no-default-features --features app-imu-color
+cargo build --release --bin imu_color
 ```
 
 Use this application as the first template for a new small application.
@@ -700,16 +634,16 @@ Use this application as the first template for a new small application.
 
 # Application 3: Color Ping
 
-Feature:
+Binary:
 
 ```text
-app-color-ping
+color_ping
 ```
 
 Source:
 
 ```text
-src/applications/color_ping/mod.rs
+src/bin/color_ping.rs
 ```
 
 This example combines:
@@ -817,7 +751,7 @@ This is a useful embedded pattern:
 Build Color Ping:
 
 ```bash
-cargo build --release --no-default-features --features app-color-ping
+cargo build --release --bin color_ping
 ```
 
 Flash the same build to at least two devices.
@@ -835,61 +769,32 @@ A simple test is:
 
 # Create your own application
 
-The easiest way to create an application is to copy the structure of `imu_color` or `color_ping`.
+The easiest way to create an application is to copy `src/bin/imu_color.rs` or `src/bin/color_ping.rs`.
 
 Assume you want a new application called **My Hack**.
 
-Its feature will be:
+## Step 1: create the file
 
-```text
-app-my-hack
-```
-
-Its module will be:
-
-```text
-src/applications/my_hack/mod.rs
-```
-
-## Step 1: choose only the capabilities you need
-
-Suppose My Hack needs display, touch, and IMU.
-
-Add this to `Cargo.toml`:
-
-```toml
-app-my-hack = ["display", "touch", "imu"]
-```
-
-If it needs the shared GUI helpers, use `ui` instead of `display`:
-
-```toml
-app-my-hack = ["ui", "touch", "imu"]
-```
-
-## Step 2: create the module
-
-Create:
-
-```text
-src/applications/my_hack/mod.rs
-```
-
-Start small:
+Create `src/bin/my_hack.rs`:
 
 ```rust
+#![no_std]
+#![no_main]
+
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
+use hack_and_hike::Board;
 
-use crate::firmware::Bootstrap;
+esp_bootloader_esp_idf::esp_app_desc!();
 
-pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    let Bootstrap {
+#[esp_rtos::main]
+async fn main(_spawner: Spawner) -> ! {
+    let Board {
         mut display,
         mut touch,
         mut imu,
         ..
-    } = bootstrap;
+    } = Board::init();
 
     loop {
         // Read input.
@@ -901,69 +806,19 @@ pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
 }
 ```
 
-The compiler will tell you if a field does not exist because you forgot to enable its capability feature.
+The first lines are the same in every application: no standard library, no C-style `main`, an application descriptor for the bootloader, and an async `main` that never returns.
 
-## Step 3: register the module
-
-Open:
-
-```text
-src/applications/mod.rs
-```
-
-Add:
-
-```rust
-#[cfg(feature = "app-my-hack")]
-mod my_hack;
-```
-
-Add the run branch:
-
-```rust
-#[cfg(feature = "app-my-hack")]
-pub(crate) async fn run(spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    my_hack::run(spawner, bootstrap).await
-}
-```
-
-Then add `app-my-hack` to the conditions that:
-
-- reject selecting two applications at once,
-- decide when the idle fallback should compile,
-- decide when the idle `Timer` import should compile.
-
-The selector is intentionally explicit. There is no application registry or framework trait hidden behind it.
-
-## Step 4: add it to CI
-
-Open:
-
-```text
-.github/workflows/firmware-build.yml
-```
-
-Add your feature to the real-application loop:
+## Step 2: build it
 
 ```bash
-for app in app-demo app-imu-color app-color-ping app-my-hack
+cargo build --release --bin my_hack
 ```
 
-CI builds each real application with:
+That is all. Cargo finds every file in `src/bin/` by itself, and CI builds every binary.
 
-```text
--D warnings
-```
+If your application grows, turn it into a folder: `src/bin/my_hack/main.rs` plus sibling modules, like `src/bin/demo/`.
 
-That catches broken feature combinations early.
-
-## Step 5: build only your app
-
-```bash
-cargo build --release --no-default-features --features app-my-hack
-```
-
-## Step 6: keep application behavior in the application
+## Step 3: keep application behavior in the application
 
 Good application code includes things such as:
 
@@ -1068,28 +923,6 @@ A simpler model is:
 
 ---
 
-## Headless applications
-
-An application does not need a display.
-
-A headless application simply leaves `display` out of its feature list.
-
-For example:
-
-```toml
-app-sensor-node = ["imu", "network"]
-```
-
-It can read IMU samples and send messages without drawing anything.
-
-The repository also keeps `app-idle` for feature-composition checks:
-
-```bash
-cargo build --release --no-default-features --features app-idle,imu,network
-```
-
----
-
 ## Memory and large buffers
 
 Embedded devices have much less internal RAM than desktop computers.
@@ -1167,16 +1000,6 @@ You do not need a generic `View` trait because several screens can draw.
 
 Prefer normal structs, enums, functions, and `match` until real duplication proves a shared abstraction is useful.
 
-### Forgetting `--no-default-features`
-
-When building a non-default application:
-
-```bash
-cargo build --release --no-default-features --features app-color-ping
-```
-
-The default build enables `app-demo`.
-
 ### Never yielding in an async loop
 
 A CPU0 loop that never reaches `.await` can stop other CPU0 tasks from running.
@@ -1197,15 +1020,15 @@ Keep large framebuffers and histories out of local task-stack variables.
 
 | I want to... | Put it in... |
 | --- | --- |
-| Create a new device experience | `src/applications/my_app/` |
-| Change the full demo | `src/applications/demo/` |
-| Add a demo screen | `src/applications/demo/views/` |
-| Change demo navigation | `src/applications/demo/navigation.rs` |
+| Create a new device experience | `src/bin/my_app.rs` |
+| Change the full demo | `src/bin/demo/` |
+| Add a demo screen | `src/bin/demo/views/` |
+| Change demo navigation | `src/bin/demo/navigation.rs` |
 | Add a reusable drawing helper | `src/ui/` |
 | Expose a new useful hardware operation | matching `src/capabilities/.../` module |
 | Change sensor register setup | matching capability |
 | Change board pins or power wiring | `src/platform/` |
-| Change capability startup wiring | `src/firmware/` |
+| Change capability startup wiring | `src/board/` |
 | Add logging or memory support | `src/support/` |
 
 A useful rule is:
@@ -1222,23 +1045,19 @@ If this is your first time in the repository, do not start with low-level driver
 
 Read in this order:
 
-1. `src/main.rs`
-2. `src/applications/mod.rs`
-3. `src/applications/imu_color/mod.rs`
-4. `src/applications/color_ping/mod.rs`
-5. `Cargo.toml`
-6. `src/applications/demo/mod.rs`
-7. one capability API such as `src/capabilities/imu/mod.rs`
-8. `src/capabilities/display/mod.rs`
-9. `src/firmware/bootstrap.rs`
-10. low-level drivers only when you need them
+1. `src/bin/imu_color.rs`
+2. `src/bin/color_ping.rs`
+3. `src/lib.rs`
+4. `src/bin/demo/main.rs`
+5. one capability API such as `src/capabilities/imu/mod.rs`
+6. `src/capabilities/display/mod.rs`
+7. `src/board/mod.rs`
+8. low-level drivers only when you need them
 
 ```mermaid
 flowchart LR
-    Main["main.rs"] --> Selector["applications/mod.rs"]
-    Selector --> Small["small example app"]
-    Small --> Cap["capability API"]
-    Cap --> Boot["firmware/bootstrap.rs"]
+    Small["small example app"] --> Cap["capability API"]
+    Cap --> Boot["board/mod.rs"]
     Boot --> Driver["hardware details"]
 ```
 
@@ -1265,10 +1084,6 @@ A Rust value that gives an application access to a capability.
 ### View / screen
 
 One visual part of an application.
-
-### Cargo feature
-
-A compile-time switch used to select capabilities and applications.
 
 ### Ownership
 

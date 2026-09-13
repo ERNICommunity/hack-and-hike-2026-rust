@@ -1,31 +1,24 @@
 //! Cross-core synchronization for the private shared audio runtime.
 
-#[cfg(any(feature = "mic", feature = "speaker"))]
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use static_cell::StaticCell;
 
-#[cfg(feature = "mic")]
 use crate::capabilities::mic::{MicBlockInfo, QUEUE_CAPACITY_BLOCKS, SAMPLES_PER_BLOCK};
 
-#[cfg(feature = "speaker")]
 const SPEAKER_CHANNELS: usize = 2;
-#[cfg(feature = "speaker")]
 // Buffer one complete DMA descriptor refill. esp-hal's default DMA descriptor
 // payload is 4092 bytes; 1024 stereo i16 frames are 4096 bytes. The old
 // 512-frame queue was smaller than one refill burst, so playback could drain it
 // and zero-pad the remainder before CPU0 generated more PCM.
 const SPEAKER_QUEUE_CAPACITY_FRAMES: usize = 1_024;
-#[cfg(feature = "speaker")]
 const SPEAKER_QUEUE_CAPACITY_SAMPLES: usize = SPEAKER_QUEUE_CAPACITY_FRAMES * SPEAKER_CHANNELS;
 
-#[cfg(feature = "mic")]
 #[derive(Clone, Copy)]
 struct MicQueueBlock {
     samples: [i16; SAMPLES_PER_BLOCK],
     info: MicBlockInfo,
 }
 
-#[cfg(feature = "mic")]
 impl MicQueueBlock {
     const EMPTY: Self = Self {
         samples: [0; SAMPLES_PER_BLOCK],
@@ -38,7 +31,6 @@ impl MicQueueBlock {
     };
 }
 
-#[cfg(feature = "mic")]
 struct MicQueue {
     blocks: [MicQueueBlock; QUEUE_CAPACITY_BLOCKS],
     read_index: usize,
@@ -47,7 +39,6 @@ struct MicQueue {
     dropped_blocks: u32,
 }
 
-#[cfg(feature = "mic")]
 impl MicQueue {
     const fn new() -> Self {
         Self {
@@ -94,14 +85,12 @@ impl MicQueue {
     }
 }
 
-#[cfg(feature = "speaker")]
 struct SpeakerQueue {
     samples: [i16; SPEAKER_QUEUE_CAPACITY_SAMPLES],
     read_index: usize,
     len_samples: usize,
 }
 
-#[cfg(feature = "speaker")]
 impl SpeakerQueue {
     const fn new() -> Self {
         Self {
@@ -140,24 +129,18 @@ impl SpeakerQueue {
     }
 }
 
-#[cfg(feature = "mic")]
 type MicQueueStore = Mutex<CriticalSectionRawMutex, MicQueue>;
-#[cfg(feature = "speaker")]
 type SpeakerQueueStore = Mutex<CriticalSectionRawMutex, SpeakerQueue>;
 
 struct Service {
-    #[cfg(feature = "mic")]
     mic_queue: MicQueueStore,
-    #[cfg(feature = "speaker")]
     speaker_queue: SpeakerQueueStore,
 }
 
 impl Service {
     const fn new() -> Self {
         Self {
-            #[cfg(feature = "mic")]
             mic_queue: Mutex::new(MicQueue::new()),
-            #[cfg(feature = "speaker")]
             speaker_queue: Mutex::new(SpeakerQueue::new()),
         }
     }
@@ -171,22 +154,18 @@ pub(crate) struct Runtime {
 }
 
 /// Private CPU0 endpoint wrapped by the public `mic::Microphone` capability.
-#[cfg(feature = "mic")]
 pub(crate) struct MicReader {
     service: &'static Service,
 }
 
 /// Private CPU0 endpoint wrapped by the public `speaker::Speaker` capability.
-#[cfg(feature = "speaker")]
 pub(crate) struct SpeakerWriter {
     service: &'static Service,
 }
 
 pub(crate) struct Endpoints {
     pub(crate) runtime: Runtime,
-    #[cfg(feature = "mic")]
     pub(crate) mic: MicReader,
-    #[cfg(feature = "speaker")]
     pub(crate) speaker: SpeakerWriter,
 }
 
@@ -197,14 +176,11 @@ pub(crate) fn init_endpoints() -> Endpoints {
     let service: &'static Service = SERVICE.init_with(Service::new);
     Endpoints {
         runtime: Runtime { service },
-        #[cfg(feature = "mic")]
         mic: MicReader { service },
-        #[cfg(feature = "speaker")]
         speaker: SpeakerWriter { service },
     }
 }
 
-#[cfg(feature = "mic")]
 impl MicReader {
     pub(crate) fn try_read(&mut self, out: &mut [i16; SAMPLES_PER_BLOCK]) -> Option<MicBlockInfo> {
         let mut queue = self.service.mic_queue.try_lock().ok()?;
@@ -212,7 +188,6 @@ impl MicReader {
     }
 }
 
-#[cfg(feature = "speaker")]
 impl SpeakerWriter {
     pub(crate) fn try_write_interleaved(&mut self, samples: &[i16]) -> usize {
         let Ok(mut queue) = self.service.speaker_queue.try_lock() else {
@@ -230,7 +205,6 @@ impl SpeakerWriter {
 }
 
 impl Runtime {
-    #[cfg(feature = "mic")]
     pub(super) async fn publish_audio(
         self,
         samples: &[i16; SAMPLES_PER_BLOCK],
@@ -241,7 +215,6 @@ impl Runtime {
         queue.push(samples, peak_left, peak_right)
     }
 
-    #[cfg(feature = "speaker")]
     pub(super) async fn read_speaker_interleaved(self, out: &mut [i16]) -> usize {
         let mut queue = self.service.speaker_queue.lock().await;
         queue.read_interleaved(out)

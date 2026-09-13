@@ -15,22 +15,18 @@ use esp_hal::{
 };
 use static_cell::StaticCell;
 
-use crate::platform::board;
+use crate::platform;
 
-#[allow(
-    unused_imports,
-    reason = "Brightness is part of the application-facing display capability contract"
-)]
-pub(crate) use brightness::{Brightness, BrightnessControl};
+pub use brightness::{Brightness, BrightnessControl};
 pub(crate) use brightness::{
     Endpoints as BrightnessEndpoints, Runtime as BrightnessRuntime,
     init_endpoints as init_brightness_endpoints, task as brightness_task,
 };
 
-pub(crate) type Pixel = u16;
+pub type Pixel = u16;
 
-pub(crate) const WIDTH: usize = board::DISPLAY_WIDTH;
-pub(crate) const HEIGHT: usize = board::DISPLAY_HEIGHT;
+pub const WIDTH: usize = platform::DISPLAY_WIDTH;
+pub const HEIGHT: usize = platform::DISPLAY_HEIGHT;
 const RGB565_BYTES_PER_PIXEL: usize = 2;
 const RAW_BATCH_BYTES: usize = WIDTH * RGB565_BYTES_PER_PIXEL * transport::RAW_BATCH_LINES;
 
@@ -48,7 +44,7 @@ static RAW_BATCH_BUFFER: StaticCell<[u8; RAW_BATCH_BYTES]> = StaticCell::new();
 /// see a borrowed `Surface` and use coordinates local to that surface instead of
 /// constructing nested physical regions themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Region {
+pub struct Region {
     x: usize,
     y: usize,
     width: usize,
@@ -56,7 +52,7 @@ pub(crate) struct Region {
 }
 
 impl Region {
-    pub(crate) const fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
+    pub const fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
         assert!(x <= WIDTH && width <= WIDTH - x);
         assert!(y <= HEIGHT && height <= HEIGHT - y);
         Self {
@@ -67,19 +63,11 @@ impl Region {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing display region capability contract"
-    )]
-    pub(crate) const fn width(self) -> usize {
+    pub const fn width(self) -> usize {
         self.width
     }
 
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing display region capability contract"
-    )]
-    pub(crate) const fn height(self) -> usize {
+    pub const fn height(self) -> usize {
         self.height
     }
 
@@ -98,22 +86,18 @@ impl Region {
 
 /// Raw CPU0 hardware resources consumed exactly once by `init`.
 pub(crate) struct Resources {
-    pub(crate) spi2: SPI2<'static>,
-    pub(crate) dma: DMA_CH1<'static>,
-    pub(crate) sck: GPIO36<'static>,
-    pub(crate) mosi: GPIO37<'static>,
-    pub(crate) dc: GPIO35<'static>,
-    pub(crate) cs: GPIO3<'static>,
+    pub spi2: SPI2<'static>,
+    pub dma: DMA_CH1<'static>,
+    pub sck: GPIO36<'static>,
+    pub mosi: GPIO37<'static>,
+    pub dc: GPIO35<'static>,
+    pub cs: GPIO3<'static>,
 }
 
 /// Exclusive CPU0 owner of the LCD transport and reusable scanline scratch.
-pub(crate) struct Display {
+pub struct Display {
     transport: transport::Transport,
     line_buffer: &'static mut [Pixel; WIDTH],
-    #[allow(
-        dead_code,
-        reason = "reserved for optional raw RGB565 display streaming paths"
-    )]
     raw_batch_buffer: &'static mut [u8; RAW_BATCH_BYTES],
 }
 
@@ -121,12 +105,12 @@ pub(crate) struct Display {
 ///
 /// The raw transport is intentionally inaccessible through this type. Nested
 /// surfaces are addressed relative to their parent surface and cannot escape it.
-pub(crate) struct Surface<'a> {
+pub struct Surface<'a> {
     display: &'a mut Display,
     region: Region,
 }
 
-pub(crate) fn init(resources: Resources, delay: &mut Delay) -> Display {
+pub(crate) fn init(resources: Resources, delay: Delay) -> Display {
     let transport = transport::init(resources, delay);
     let line_buffer = LINE_BUFFER.init_with(|| [0; WIDTH]);
     let raw_batch_buffer = RAW_BATCH_BUFFER.init_with(|| [0; RAW_BATCH_BYTES]);
@@ -139,7 +123,7 @@ pub(crate) fn init(resources: Resources, delay: &mut Delay) -> Display {
 }
 
 impl Display {
-    pub(crate) fn surface(&mut self, region: Region) -> Surface<'_> {
+    pub fn surface(&mut self, region: Region) -> Surface<'_> {
         Surface {
             display: self,
             region,
@@ -170,10 +154,6 @@ impl Display {
         transport.finish();
     }
 
-    #[allow(
-        dead_code,
-        reason = "used when an application chooses raw RGB565 surface streaming"
-    )]
     fn render_rgb565_be_bytes_region(&mut self, region: Region, bytes: &[u8]) {
         if region.is_empty() {
             return;
@@ -192,10 +172,6 @@ impl Display {
         transport.finish();
     }
 
-    #[allow(
-        dead_code,
-        reason = "used when an application chooses pumped raw RGB565 surface streaming"
-    )]
     fn render_rgb565_be_scanlines_pumped_region<C>(
         &mut self,
         region: Region,
@@ -243,28 +219,16 @@ impl Display {
 }
 
 impl Surface<'_> {
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing display surface capability contract"
-    )]
-    pub(crate) const fn width(&self) -> usize {
+    pub const fn width(&self) -> usize {
         self.region.width()
     }
 
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing display surface capability contract"
-    )]
-    pub(crate) const fn height(&self) -> usize {
+    pub const fn height(&self) -> usize {
         self.region.height()
     }
 
     /// Borrow a stricter surface using coordinates local to this surface.
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing display surface capability contract"
-    )]
-    pub(crate) fn subsurface<'a>(
+    pub fn subsurface<'a>(
         &'a mut self,
         x: usize,
         y: usize,
@@ -286,27 +250,19 @@ impl Surface<'_> {
     }
 
     /// Render this entire surface one scanline at a time.
-    pub(crate) fn render_scanlines(&mut self, render_line: impl FnMut(usize, &mut [Pixel])) {
+    pub fn render_scanlines(&mut self, render_line: impl FnMut(usize, &mut [Pixel])) {
         self.display
             .render_scanlines_region(self.region, render_line);
     }
 
     /// Stream one complete big-endian RGB565 frame into this surface.
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing raw RGB565 display capability contract"
-    )]
-    pub(crate) fn render_rgb565_be_bytes(&mut self, bytes: &[u8]) {
+    pub fn render_rgb565_be_bytes(&mut self, bytes: &[u8]) {
         self.display
             .render_rgb565_be_bytes_region(self.region, bytes);
     }
 
     /// Stream scanlines while using LCD DMA wait time to advance another producer.
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing pumped RGB565 display capability contract"
-    )]
-    pub(crate) fn render_rgb565_be_scanlines_pumped<C>(
+    pub fn render_rgb565_be_scanlines_pumped<C>(
         &mut self,
         context: &mut C,
         render_line: impl FnMut(&mut C, usize, &mut [u8]) -> bool,

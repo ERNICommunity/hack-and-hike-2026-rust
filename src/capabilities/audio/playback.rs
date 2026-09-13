@@ -7,13 +7,10 @@
 
 use esp_hal::{Async, dma::DmaTxStreamBuf, i2s::master::I2sTx};
 
-use crate::support::diagnostics;
-
 use super::channels::Runtime;
 
 // 1024 bytes is 16 ms of stereo 16-bit audio at 16 kHz.
 const PLAYBACK_FILL_BYTES: usize = 1_024;
-#[cfg(feature = "speaker")]
 const PLAYBACK_FILL_SAMPLES: usize = PLAYBACK_FILL_BYTES / core::mem::size_of::<i16>();
 const _: () = assert!(PLAYBACK_FILL_BYTES.is_multiple_of(4));
 
@@ -34,7 +31,6 @@ pub(super) async fn playback_task(
         .expect("Failed to start circular I2S TX DMA");
     let mut staging = [0u8; PLAYBACK_FILL_BYTES];
     let mut staging_offset = staging.len();
-    #[cfg(feature = "speaker")]
     let mut pcm = [0i16; PLAYBACK_FILL_SAMPLES];
 
     loop {
@@ -53,7 +49,6 @@ pub(super) async fn playback_task(
         if staging_offset == staging.len() {
             staging.fill(0);
 
-            #[cfg(feature = "speaker")]
             {
                 let frames = runtime.read_speaker_interleaved(&mut pcm).await;
                 let sample_count = frames * 2;
@@ -64,9 +59,6 @@ pub(super) async fn playback_task(
                     encoded.copy_from_slice(&sample.to_le_bytes());
                 }
             }
-            #[cfg(not(feature = "speaker"))]
-            let _ = runtime;
-
             staging_offset = 0;
         }
 
@@ -78,7 +70,6 @@ pub(super) async fn playback_task(
 }
 
 fn handle_dma_underrun() -> ! {
-    diagnostics::record_audio_playback_error();
     ::log::error!("I2S TX DMA underrun; rebooting to recover audio");
     esp_hal::system::software_reset();
 }

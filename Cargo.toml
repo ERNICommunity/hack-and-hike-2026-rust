@@ -4,49 +4,23 @@ name = "hack-and-hike"
 rust-version = "1.97.0"
 version = "0.1.0"
 
-[[bin]]
-name = "hack-and-hike"
-path = "./src/main.rs"
+[lib]
+path = "src/lib.rs"
 test = false
 bench = false
 
-[features]
-default = ["full"]
+# Applications are binaries under src/bin/. Cargo discovers them by itself:
+# `src/bin/my_app.rs` builds with `cargo build --release --bin my_app`.
 
-# Hardware capabilities. Enabling one owns and initializes the corresponding
-# board hardware without requiring any particular application.
-display = []
-touch = []
-imu = []
-mic = []
-speaker = []
-network = ["dep:serde", "dep:postcard"]
-camera = []
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
 
-# Optional reusable presentation helpers. Applications can render directly with
-# `display` or opt into the shared GUI layer independently of demo navigation.
-ui = ["display"]
-
-# Firmware applications. A build runs one application. Applications own the
-# enabled capability handles and may be graphical or headless. `app-idle` is a
-# minimal headless application used explicitly in CI/examples; selecting no app
-# feature falls back to the same idle behavior so capabilities remain testable
-# independently.
-app-idle = []
-app-demo = [
-    "ui",
-    "touch",
-    "imu",
-    "mic",
-    "speaker",
-    "network",
-    "camera",
-]
-app-imu-color = ["display", "imu"]
-app-color-ping = ["display", "touch", "network", "speaker"]
-
-# Preserve the complete out-of-box demo firmware.
-full = ["app-demo"]
+[lints.clippy]
+# mem::forget is generally not safe to do with esp_hal types, especially those
+# holding buffers for the duration of a data transfer.
+mem_forget = "deny"
+# The task stacks are 16 KiB; a large local array on one of them is a bug.
+large_stack_frames = "deny"
 
 [dependencies]
 # Keep the ESP crates on one coherent monorepo snapshot. The published
@@ -77,8 +51,8 @@ embedded-hal-bus = "0.3"
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 arrayvec = { version = "0.7.8", default-features = false }
-serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
-postcard = { version = "1.1", default-features = false, optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+postcard = { version = "1.1", default-features = false }
 
 [profile.dev]
 # Unoptimized builds are too slow for the display and sensor loops.

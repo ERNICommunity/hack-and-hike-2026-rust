@@ -1,9 +1,4 @@
-#[cfg(any(
-    feature = "touch",
-    feature = "mic",
-    feature = "speaker",
-    feature = "network",
-))]
-pub(crate) mod diagnostics;
-pub(crate) mod logging;
-pub(crate) mod memory;
+//! Shared support code: logging and memory helpers.
+
+pub mod logging;
+pub mod memory;

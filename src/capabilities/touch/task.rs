@@ -2,10 +2,7 @@
 
 use embassy_time::{Duration, Timer};
 
-use crate::{
-    platform::{board, i2c::SystemI2cBus},
-    support::diagnostics,
-};
+use crate::platform::{self, i2c::SystemI2cBus};
 
 use super::{TouchEdge, TouchPoint, channels::Runtime};
 
@@ -40,11 +37,11 @@ async fn read_sample(bus: SystemI2cBus) -> TouchSample {
     let x = (u16::from(data[1] & 0x0F) << 8) | u16::from(data[2]);
     let y = (u16::from(data[3] & 0x0F) << 8) | u16::from(data[4]);
 
-    if usize::from(x) >= board::DISPLAY_WIDTH || usize::from(y) >= board::DISPLAY_HEIGHT {
+    if usize::from(x) >= platform::DISPLAY_WIDTH || usize::from(y) >= platform::DISPLAY_HEIGHT {
         return TouchSample::ReadError;
     }
 
-    let (x, y) = board::logical_display_point(x, y);
+    let (x, y) = platform::logical_display_point(x, y);
     TouchSample::Down(TouchPoint { x, y })
 }
 
@@ -57,21 +54,17 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
 
     loop {
         match read_sample(bus).await {
-            TouchSample::ReadError => diagnostics::record_touch_read_error(),
+            TouchSample::ReadError => {}
             TouchSample::Up if pressed => {
                 pressed = false;
-                if !runtime.try_publish_edge(TouchEdge::Released(last_point)) {
-                    diagnostics::record_touch_edge_drop();
-                }
+                runtime.try_publish_edge(TouchEdge::Released(last_point));
             }
             TouchSample::Up => {}
             TouchSample::Down(point) if !pressed => {
                 pressed = true;
                 last_point = point;
                 runtime.publish_point(point);
-                if !runtime.try_publish_edge(TouchEdge::Pressed(point)) {
-                    diagnostics::record_touch_edge_drop();
-                }
+                if !runtime.try_publish_edge(TouchEdge::Pressed(point)) {}
             }
             TouchSample::Down(point) if point != last_point => {
                 last_point = point;

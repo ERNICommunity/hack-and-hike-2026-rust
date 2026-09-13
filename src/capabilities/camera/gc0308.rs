@@ -261,7 +261,7 @@ const DEFAULT_REGS: &[(u8, u8)] = &[
     (0xfe, 0x00),
 ];
 
-pub(super) fn init<I2C>(i2c: &mut I2C, delay: &mut Delay) -> Result<u8, I2C::Error>
+pub(super) fn init<I2C>(i2c: &mut I2C, delay: Delay) -> Result<u8, I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {

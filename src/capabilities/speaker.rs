@@ -6,11 +6,11 @@
 
 use super::audio;
 
-pub(crate) const SAMPLE_RATE_HZ: u32 = audio::SAMPLE_RATE_HZ;
-pub(crate) const CHANNELS: usize = 2;
+pub const SAMPLE_RATE_HZ: u32 = audio::SAMPLE_RATE_HZ;
+pub const CHANNELS: usize = 2;
 
 /// CPU0 writer for signed 16-bit interleaved stereo PCM.
-pub(crate) struct Speaker {
+pub struct Speaker {
     writer: audio::SpeakerWriter,
 }
 
@@ -18,14 +18,14 @@ impl Speaker {
     /// Try to enqueue complete stereo frames without blocking.
     ///
     /// Returns the number of frames accepted. An odd trailing sample is ignored.
-    pub(crate) fn try_write_interleaved(&mut self, samples: &[i16]) -> usize {
+    pub fn try_write_interleaved(&mut self, samples: &[i16]) -> usize {
         self.writer.try_write_interleaved(samples)
     }
 
     /// Return the number of complete stereo frames that can currently be queued.
     ///
     /// Returns zero while the private queue is momentarily locked by CPU1.
-    pub(crate) fn available_frames(&self) -> usize {
+    pub fn available_frames(&self) -> usize {
         self.writer.available_frames()
     }
 }

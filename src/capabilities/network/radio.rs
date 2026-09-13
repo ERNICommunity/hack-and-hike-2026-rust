@@ -15,18 +15,13 @@ use esp_radio::{
 };
 use static_cell::StaticCell;
 
-use crate::support::diagnostics;
-
 use super::{
     Config, MacAddress, Resources, RssiDbm, channels::Runtime, protocol, state::NetworkState,
 };
 
 const TX_POLL_PERIOD: Duration = Duration::from_millis(10);
-const LOCAL_CAPABILITIES: protocol::Capabilities = protocol::Capabilities::from_enabled(
-    cfg!(feature = "imu"),
-    cfg!(any(feature = "mic", feature = "speaker")),
-    cfg!(feature = "display"),
-);
+const LOCAL_CAPABILITIES: protocol::Capabilities =
+    protocol::Capabilities::from_enabled(true, true, true);
 
 static STATE: Mutex<RefCell<Option<NetworkState>>> = Mutex::new(RefCell::new(None));
 static WIFI_CONTROLLER: StaticCell<WifiController<'static>> = StaticCell::new();
@@ -69,7 +64,6 @@ pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, run
     let controller = match WifiController::new(resources.wifi, Default::default()) {
         Ok(controller) => controller,
         Err(error) => {
-            diagnostics::record_network_init_error();
             let _ = with_state(NetworkState::mark_fault);
             publish_snapshot(runtime, Instant::now());
             ::log::error!("ESP-NOW radio init failed: {:?}", error);
@@ -80,7 +74,6 @@ pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, run
 
     let esp_now = controller.esp_now();
     if let Err(error) = esp_now.set_channel(config.channel.number()) {
-        diagnostics::record_network_init_error();
         let _ = with_state(NetworkState::mark_fault);
         publish_snapshot(runtime, Instant::now());
         ::log::error!("ESP-NOW channel {} failed: {:?}", config.channel, error);
@@ -130,7 +123,6 @@ async fn transmit_task(
             };
 
             let Some(destination) = destination else {
-                diagnostics::record_network_tx_error();
                 let _ = with_state(NetworkState::record_send_error);
                 continue;
             };
@@ -140,7 +132,6 @@ async fn transmit_task(
                 &message.payload[..message.len],
                 &mut encoded,
             ) else {
-                diagnostics::record_network_tx_error();
                 let _ = with_state(NetworkState::record_send_error);
                 continue;
             };
@@ -150,11 +141,9 @@ async fn transmit_task(
                 .await
             {
                 Ok(()) => {
-                    diagnostics::record_network_tx_packet();
                     let _ = with_state(NetworkState::record_send_ok);
                 }
                 Err(_) => {
-                    diagnostics::record_network_tx_error();
                     let _ = with_state(NetworkState::record_send_error);
                 }
             }
@@ -168,11 +157,9 @@ async fn transmit_task(
                 let payload = packet.encode();
                 match sender.send_async(&BROADCAST_ADDRESS, &payload).await {
                     Ok(()) => {
-                        diagnostics::record_network_tx_packet();
                         let _ = with_state(NetworkState::record_send_ok);
                     }
                     Err(_) => {
-                        diagnostics::record_network_tx_error();
                         let _ = with_state(NetworkState::record_send_error);
                     }
                 }
@@ -227,13 +214,9 @@ async fn receive_task(
             continue;
         }
 
-        diagnostics::record_network_rx_packet();
-        let outcome =
-            with_state(|state| state.record_receive(sender_id, mac, rssi, now.as_millis()));
-        let is_new = outcome.is_some_and(|outcome| outcome.is_new);
-        if outcome.is_some_and(|outcome| outcome.evicted) {
-            diagnostics::record_network_peer_eviction();
-        }
+        let is_new =
+            with_state(|state| state.record_receive(sender_id, mac, rssi, now.as_millis()))
+                .unwrap_or(false);
 
         if received.info.dst_address == BROADCAST_ADDRESS
             && !manager.peer_exists(&received.info.src_address)
@@ -270,7 +253,6 @@ async fn receive_task(
 }
 
 fn record_invalid(runtime: Runtime) {
-    diagnostics::record_network_rx_invalid();
     let _ = with_state(NetworkState::record_invalid_receive);
     publish_snapshot(runtime, Instant::now());
 }

@@ -8,7 +8,7 @@ use esp_hal::{
 
 static PSRAM_HEAP: EspHeap = EspHeap::empty();
 
-pub(crate) fn enable(psram_peripheral: PSRAM<'static>) {
+pub fn enable(psram_peripheral: PSRAM<'static>) {
     let config = PsramConfig {
         mode: PsramMode::QuadSpi,
         ..PsramConfig::default()

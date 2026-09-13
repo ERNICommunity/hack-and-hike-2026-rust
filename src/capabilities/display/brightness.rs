@@ -9,32 +9,20 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use log::warn;
 use static_cell::StaticCell;
 
-use crate::platform::{board, i2c::SystemI2cBus};
+use crate::platform::{self, i2c::SystemI2cBus};
 
 /// Valid user-facing LCD brightness percentage.
 ///
 /// Runtime brightness intentionally has no OFF state. The lowest setting keeps
 /// the panel visibly powered; display power policy is separate from dimming.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Brightness(u8);
+pub struct Brightness(u8);
 
 impl Brightness {
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing display brightness capability contract"
-    )]
-    pub(crate) const MIN: Self = Self(1);
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing display brightness capability contract"
-    )]
-    pub(crate) const FULL: Self = Self(100);
+    pub const MIN: Self = Self(1);
+    pub const FULL: Self = Self(100);
 
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing display brightness capability contract"
-    )]
-    pub(crate) const fn new(value: u8) -> Option<Self> {
+    pub const fn new(value: u8) -> Option<Self> {
         if value >= Self::MIN.0 && value <= Self::FULL.0 {
             Some(Self(value))
         } else {
@@ -42,7 +30,7 @@ impl Brightness {
         }
     }
 
-    pub(crate) const fn get(self) -> u8 {
+    pub const fn get(self) -> u8 {
         self.0
     }
 }
@@ -69,17 +57,13 @@ pub(crate) struct Runtime {
 }
 
 /// Move-only CPU0 command handle for LCD brightness.
-pub(crate) struct BrightnessControl {
-    #[allow(
-        dead_code,
-        reason = "display applications may intentionally keep the boot brightness"
-    )]
+pub struct BrightnessControl {
     service: &'static Service,
 }
 
 pub(crate) struct Endpoints {
-    pub(crate) runtime: Runtime,
-    pub(crate) control: BrightnessControl,
+    pub runtime: Runtime,
+    pub control: BrightnessControl,
 }
 
 pub(crate) fn init_endpoints() -> Endpoints {
@@ -92,11 +76,7 @@ pub(crate) fn init_endpoints() -> Endpoints {
 
 impl BrightnessControl {
     /// Replace any pending brightness request with the newest slider value.
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing display brightness capability contract"
-    )]
-    pub(crate) fn set(&mut self, brightness: Brightness) {
+    pub fn set(&mut self, brightness: Brightness) {
         self.service.request.signal(brightness);
     }
 }
@@ -108,7 +88,7 @@ pub(crate) async fn task(bus: SystemI2cBus, runtime: Runtime) {
         let brightness = runtime.service.request.wait().await;
         let result = {
             let mut i2c = bus.lock().await;
-            board::power::set_lcd_backlight(&mut *i2c, brightness.get()).await
+            platform::power::set_lcd_backlight(&mut *i2c, brightness.get()).await
         };
 
         if let Err(err) = result {

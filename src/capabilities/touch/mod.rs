@@ -7,31 +7,18 @@
 mod channels;
 mod task;
 
-pub(crate) use channels::Touch;
-// Bootstrap still names its aggregate field `input`; keep this internal alias so
-// composition terminology does not leak into the application-facing API.
-pub(crate) type Input = Touch;
+pub use channels::Touch;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 pub(crate) use task::capture_task;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TouchPoint {
-    pub(crate) x: u16,
-    #[allow(
-        dead_code,
-        reason = "coordinate is part of the application-facing touch capability contract"
-    )]
-    pub(crate) y: u16,
+pub struct TouchPoint {
+    pub x: u16,
+    pub y: u16,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum TouchEdge {
+pub enum TouchEdge {
     Pressed(TouchPoint),
-    Released(
-        #[allow(
-            dead_code,
-            reason = "release position is part of the application-facing touch capability contract"
-        )]
-        TouchPoint,
-    ),
+    Released(TouchPoint),
 }

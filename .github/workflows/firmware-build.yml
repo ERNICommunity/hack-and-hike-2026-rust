@@ -61,14 +61,8 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Clippy for every application
-        run: |
-          set -euo pipefail
-          for app in app-demo app-imu-color app-color-ping; do
-            echo "::group::clippy --features ${app}"
-            cargo clippy --locked --release --no-default-features --features "${app}" -- -D warnings
-            echo "::endgroup::"
-          done
+      - name: Clippy (library and every application binary)
+        run: cargo clippy --locked --release -- -D warnings
 
-      - name: Build default firmware
+      - name: Build every application binary
         run: cargo build --locked --release

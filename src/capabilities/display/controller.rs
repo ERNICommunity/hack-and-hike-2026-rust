@@ -13,7 +13,7 @@ use mipidsi::options::{
     HorizontalRefreshOrder, Orientation, RefreshOrder, Rotation, VerticalRefreshOrder,
 };
 
-use crate::platform::board;
+use crate::platform;
 
 type DisplaySpiDma = SpiDma<'static, Blocking>;
 
@@ -100,7 +100,7 @@ pub(super) fn initialize(
     dma_bus: DisplaySpiDma,
     cs: Output<'static>,
     dc: Output<'static>,
-    delay: &mut Delay,
+    mut delay: Delay,
 ) -> Initialized {
     let spi_device = OwnedSpiDevice::new(dma_bus, cs).expect("Failed to initialize LCD SPI device");
     let di = display_interface_spi::SPIInterface::new(spi_device, dc);
@@ -108,7 +108,7 @@ pub(super) fn initialize(
     // The board is mounted 180 degrees, so logical top-to-bottom/left-to-right
     // GRAM writes travel physically bottom-to-top/right-to-left. Match the
     // controller refresh direction to that same physical direction.
-    let (orientation, refresh_order) = if board::DISPLAY_ROTATED_180 {
+    let (orientation, refresh_order) = if platform::DISPLAY_ROTATED_180 {
         (
             Orientation::new().rotate(Rotation::Deg180),
             RefreshOrder {
@@ -131,7 +131,7 @@ pub(super) fn initialize(
         .invert_colors(mipidsi::options::ColorInversion::Inverted)
         .orientation(orientation)
         .refresh_order(refresh_order)
-        .init(delay)
+        .init(&mut delay)
         .unwrap();
 
     let (di, _model, _reset) = display.release();

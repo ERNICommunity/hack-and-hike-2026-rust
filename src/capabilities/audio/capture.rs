@@ -1,34 +1,28 @@
 //! CPU1 shared I2S setup and optional microphone RX acquisition.
 
 use embassy_executor::Spawner;
-#[cfg(feature = "mic")]
 use esp_hal::gpio::NoPin;
 use esp_hal::{
     i2s::master::{Channels, DataFormat, I2s, TdmConfig},
     time::Rate,
 };
 
-#[cfg(feature = "mic")]
 use crate::{
     capabilities::mic::{CHANNELS, FRAMES_PER_BLOCK, SAMPLES_PER_BLOCK},
-    support::{diagnostics, memory::storage},
+    support::memory::storage,
 };
 
 use super::{Resources, SAMPLE_RATE_HZ, channels::Runtime, playback};
 
-#[cfg(feature = "mic")]
 const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
-#[cfg(feature = "mic")]
 const RX_PROCESS_CHUNK_BYTES: usize = FRAMES_PER_BLOCK * CHANNELS * 2;
 // esp-hal 1.2's streaming TX buffer currently requires at least four DMA
 // descriptors. Keep the proven default 4092-byte descriptor geometry and
 // deepen only the stream ring rather than shrinking descriptor chunks.
 const TX_DMA_BUFFER_BYTES: usize = 4 * esp_hal::dma::CHUNK_SIZE;
-#[cfg(feature = "mic")]
 const _: () = assert!(RX_PROCESS_CHUNK_BYTES.is_multiple_of(4));
 const _: () = assert!(TX_DMA_BUFFER_BYTES.is_multiple_of(4));
 
-#[cfg(feature = "mic")]
 async fn yield_to_executor() {
     use core::task::Poll;
 
@@ -55,13 +49,10 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
         mclk,
         bclk,
         word_select,
-        #[cfg(feature = "mic")]
         data_in,
-        #[cfg(feature = "speaker")]
         data_out,
     } = resources;
 
-    #[cfg(feature = "mic")]
     let rx_buffer = esp_hal::dma_rx_stream_buffer!(RX_DMA_BUFFER_BYTES, esp_hal::dma::CHUNK_SIZE);
     let tx_buffer = esp_hal::dma_tx_stream_buffer!(TX_DMA_BUFFER_BYTES, esp_hal::dma::CHUNK_SIZE);
 
@@ -78,22 +69,12 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
     .with_mclk(mclk)
     .into_async();
 
-    #[cfg(feature = "speaker")]
     let i2s_tx = i2s
         .i2s_tx
         .with_bclk(bclk)
         .with_ws(word_select)
         .with_dout(data_out)
         .build();
-    #[cfg(not(feature = "speaker"))]
-    let i2s_tx = i2s
-        .i2s_tx
-        .with_bclk(bclk)
-        .with_ws(word_select)
-        .with_dout(NoPin)
-        .build();
-
-    #[cfg(feature = "mic")]
     let i2s_rx = i2s
         .i2s_rx
         .with_bclk(NoPin)
@@ -106,10 +87,6 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
             .expect("Failed to allocate audio TX task"),
     );
 
-    #[cfg(not(feature = "mic"))]
-    core::future::pending::<()>().await;
-
-    #[cfg(feature = "mic")]
     {
         let mut transfer = i2s_rx
             .read(rx_buffer)
@@ -130,7 +107,6 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
 
         loop {
             if transfer.wait_for_available_async().await.is_err() {
-                diagnostics::record_audio_capture_error();
                 panic!("I2S circular DMA read failed");
             }
 
@@ -139,10 +115,6 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
                 continue;
             }
             let count = transfer.pop(&mut dma_drain.as_mut_slice()[..available]);
-
-            if count == RX_DMA_BUFFER_BYTES {
-                diagnostics::record_audio_full_drain();
-            }
 
             for processing_chunk in dma_drain.as_slice()[..count].chunks(RX_PROCESS_CHUNK_BYTES) {
                 for frame_bytes in processing_chunk.chunks_exact(4) {
