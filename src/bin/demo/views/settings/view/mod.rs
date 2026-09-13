@@ -14,7 +14,7 @@ use embedded_graphics::{
 use embedded_gui::prelude::*;
 
 use hack_and_hike::{
-    capabilities::display::{Brightness, Surface},
+    capabilities::{backlight::Brightness, display::Surface},
     support::memory::storage,
     ui::{
         common,
@@ -128,9 +128,9 @@ impl View {
         let (left, right) = slider_track_bounds(self.geometry.slider);
         let span = (right - left).max(1);
         let x = pointer_x.clamp(left, right);
-        let range = i32::from(Brightness::FULL.get() - Brightness::MIN.get());
+        let range = i32::from(Brightness::FULL.percent() - Brightness::MIN.percent());
         let offset = ((x - left) * range + span / 2) / span;
-        let percent = Brightness::MIN.get() + offset as u8;
+        let percent = Brightness::MIN.percent() + offset as u8;
         Brightness::new(percent)
             .expect("slider mapping must produce a visible brightness percentage")
     }
@@ -146,7 +146,7 @@ fn draw_settings(frame: &mut GuiFramebuffer, geometry: Geometry, brightness: Bri
     );
 
     let mut value = ArrayString::<32>::new();
-    let _ = write!(&mut value, "DISPLAY BRIGHTNESS  {}%", brightness.get());
+    let _ = write!(&mut value, "DISPLAY BRIGHTNESS  {}%", brightness.percent());
     common::draw_body(
         frame,
         value.as_str(),
@@ -183,8 +183,8 @@ fn draw_brightness_slider(frame: &mut GuiFramebuffer, rect: Rect, brightness: Br
         common::light_gray(),
     );
 
-    let range = i32::from(Brightness::FULL.get() - Brightness::MIN.get());
-    let offset = i32::from(brightness.get() - Brightness::MIN.get());
+    let range = i32::from(Brightness::FULL.percent() - Brightness::MIN.percent());
+    let offset = i32::from(brightness.percent() - Brightness::MIN.percent());
     let span = (right - left).max(1);
     let thumb_x = left + (offset * span + range / 2) / range.max(1);
     let active_width = (thumb_x - left + 1).max(1) as u32;

@@ -3,7 +3,7 @@
 use embassy_time::{Duration, Instant};
 use static_cell::ConstStaticCell;
 
-use hack_and_hike::capabilities::mic;
+use hack_and_hike::capabilities::audio;
 
 pub(crate) const POINTS: usize = 128;
 pub(crate) const MAX_AMPLITUDE_PIXELS: i32 = 42;
@@ -11,8 +11,8 @@ pub(crate) const MAX_AMPLITUDE_PIXELS: i32 = 42;
 const WAVEFORM_UPDATE: Duration = Duration::from_millis(32);
 const WAVEFORM_PEAK_FLOOR: u16 = 1024;
 
-static SAMPLES: ConstStaticCell<[i16; mic::SAMPLES_PER_BLOCK]> =
-    ConstStaticCell::new([0; mic::SAMPLES_PER_BLOCK]);
+static SAMPLES: ConstStaticCell<[i16; audio::SAMPLES_PER_BLOCK]> =
+    ConstStaticCell::new([0; audio::SAMPLES_PER_BLOCK]);
 
 #[derive(Clone, Copy)]
 pub(crate) struct WaveformFrame {
@@ -30,9 +30,9 @@ impl WaveformFrame {
 }
 
 pub(crate) struct Model {
-    microphone: mic::Microphone,
+    microphone: audio::Microphone,
     frame: WaveformFrame,
-    samples: &'static mut [i16; mic::SAMPLES_PER_BLOCK],
+    samples: &'static mut [i16; audio::SAMPLES_PER_BLOCK],
     last_sequence: u32,
     last_dropped_blocks: u32,
     drop_baseline_pending: bool,
@@ -41,7 +41,7 @@ pub(crate) struct Model {
 }
 
 impl Model {
-    pub(crate) fn new(microphone: mic::Microphone) -> Self {
+    pub(crate) fn new(microphone: audio::Microphone) -> Self {
         // One full stereo PCM block is 2048 bytes. Keep that persistent scratch
         // storage out of the by-value application/UI construction path. A
         // ConstStaticCell guarantees the zeroed buffer itself is initialized in
@@ -91,7 +91,7 @@ impl Model {
             self.last_dropped_blocks = info.dropped_blocks;
             self.drop_baseline_pending = false;
         } else if info.dropped_blocks != self.last_dropped_blocks {
-            ::log::warn!(
+            log::warn!(
                 "Microphone PCM queue dropped blocks while active: total={} latest_sequence={}",
                 info.dropped_blocks,
                 info.sequence
@@ -105,8 +105,8 @@ impl Model {
         }
     }
 
-    fn update_frame(&mut self, info: mic::MicBlockInfo) -> bool {
-        const FRAMES_PER_POINT: usize = mic::FRAMES_PER_BLOCK / POINTS;
+    fn update_frame(&mut self, info: audio::MicBlockInfo) -> bool {
+        const FRAMES_PER_POINT: usize = audio::FRAMES_PER_BLOCK / POINTS;
         let left_scale = i32::from(info.peak_left.max(WAVEFORM_PEAK_FLOOR));
         let right_scale = i32::from(info.peak_right.max(WAVEFORM_PEAK_FLOOR));
         let mut changed = false;
@@ -120,7 +120,7 @@ impl Model {
             let mut right_magnitude = 0u16;
 
             for frame in first_frame..last_frame {
-                let sample_index = frame * mic::CHANNELS;
+                let sample_index = frame * audio::CHANNELS;
                 let left = self.samples[sample_index];
                 let right = self.samples[sample_index + 1];
                 let left_abs = left.unsigned_abs();

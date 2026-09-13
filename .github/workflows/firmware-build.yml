@@ -31,15 +31,14 @@ jobs:
       - name: Run host tests
         run: |
           set -euo pipefail
+          # The workspace .cargo/config.toml targets the ESP32-S3; override it
+          # with the host triple for these host-only packages.
           host_target="$(rustc +"$HOST_RUST_VERSION" -vV | sed -n 's/^host: //p')"
-          for test in tests/imu_*_regression.rs; do
-            name="$(basename "$test" .rs)"
-            rustc +"$HOST_RUST_VERSION" --edition=2024 --test "$test" -D warnings -o "/tmp/$name"
-            "/tmp/$name"
+          for package in tests/imu_regression tests/network_regression; do
+            RUSTFLAGS="-D warnings" cargo +"$HOST_RUST_VERSION" test \
+              --manifest-path "$package/Cargo.toml" \
+              --target "$host_target"
           done
-          RUSTFLAGS="-D warnings" cargo +"$HOST_RUST_VERSION" test \
-            --manifest-path tests/network_regression/Cargo.toml \
-            --target "$host_target"
 
   firmware:
     name: Firmware lint and build

@@ -7,7 +7,7 @@ mod model;
 mod view;
 
 use hack_and_hike::{
-    capabilities::display::{BrightnessControl, Surface},
+    capabilities::{backlight::Backlight, display::Surface},
     ui::gui::GuiSurface,
 };
 
@@ -21,9 +21,9 @@ pub(crate) struct Application {
 }
 
 impl Application {
-    pub(crate) fn new(brightness: BrightnessControl) -> Self {
+    pub(crate) fn new(backlight: Backlight) -> Self {
         Self {
-            model: Model::new(brightness),
+            model: Model::new(backlight),
             view: View::new(),
         }
     }

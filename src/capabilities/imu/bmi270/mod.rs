@@ -2,7 +2,10 @@
 
 mod config;
 
+use core::fmt;
+
 use embassy_time::{Duration, Timer};
+use esp_hal::i2c::master::Error as I2cError;
 
 use crate::platform::i2c::SystemI2cBus;
 
@@ -59,17 +62,35 @@ const ACC_G_PER_LSB: f32 = 4.0 / 32768.0;
 const GYR_DPS_PER_LSB: f32 = 2000.0 / 32768.0;
 const SENSOR_STARTUP: Duration = Duration::from_millis(50);
 
-/// BMI270 gyroscope data registers run faster internally to reduce phase lag
-/// during quick turns while the host keeps the proven 100 Hz I2C cadence.
-pub(super) const GYRO_SENSOR_ODR_HZ: u32 = 400;
-
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Error {
-    Bus,
+    Bus(I2cError),
+    /// The chip at the BMI270 address reported this ID instead.
     ChipId(u8),
+    /// The BMI270 did not accept its configuration blob.
     ConfigStatus(u8),
+    /// The auxiliary (magnetometer) interface stayed busy.
     AuxBusy,
+    /// The chip on the auxiliary bus reported this ID instead of a BMM150.
     BmmChipId(u8),
+}
+
+impl From<I2cError> for Error {
+    fn from(error: I2cError) -> Self {
+        Self::Bus(error)
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bus(error) => write!(f, "I2C error {error:?}"),
+            Self::ChipId(id) => write!(f, "unexpected BMI270 chip id 0x{id:02x}"),
+            Self::ConfigStatus(status) => write!(f, "config load status 0x{status:02x}"),
+            Self::AuxBusy => write!(f, "auxiliary interface busy"),
+            Self::BmmChipId(id) => write!(f, "unexpected BMM150 chip id 0x{id:02x}"),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -91,28 +112,28 @@ impl Bmi270 {
 
     async fn write_register(&self, register: u8, value: u8) -> Result<(), Error> {
         let mut i2c = self.bus.lock().await;
-        i2c.write_async(BMI270_ADDR, &[register, value])
-            .await
-            .map_err(|_| Error::Bus)
+        i2c.write_async(BMI270_ADDR, &[register, value]).await?;
+        Ok(())
     }
 
     async fn read_register(&self, register: u8) -> Result<u8, Error> {
         let mut value = [0u8; 1];
         let mut i2c = self.bus.lock().await;
         i2c.write_read_async(BMI270_ADDR, &[register], &mut value)
-            .await
-            .map_err(|_| Error::Bus)?;
+            .await?;
         Ok(value[0])
     }
 
     async fn upload_config(&self) -> Result<(), Error> {
         for (offset, chunk) in config::MAXIMUM_FIFO_CONFIG.chunks(32).enumerate() {
             let byte_offset = offset * 32;
+            // The init address is a word address split into a low nibble and
+            // a high byte across two registers.
             let word_address = byte_offset >> 1;
             let address = [
                 REG_INIT_ADDR_0,
-                (word_address & 0x0F) as u8,
-                (word_address >> 4) as u8,
+                u8::try_from(word_address & 0x0F).expect("a nibble fits u8"),
+                u8::try_from(word_address >> 4).expect("BMI270 config fits its address space"),
             ];
 
             let mut packet = [0u8; 33];
@@ -120,12 +141,9 @@ impl Bmi270 {
             packet[1..1 + chunk.len()].copy_from_slice(chunk);
 
             let mut i2c = self.bus.lock().await;
-            i2c.write_async(BMI270_ADDR, &address)
-                .await
-                .map_err(|_| Error::Bus)?;
+            i2c.write_async(BMI270_ADDR, &address).await?;
             i2c.write_async(BMI270_ADDR, &packet[..1 + chunk.len()])
-                .await
-                .map_err(|_| Error::Bus)?;
+                .await?;
         }
 
         Ok(())
@@ -250,8 +268,17 @@ impl Bmi270 {
         Ok(trim)
     }
 
+    /// Turn the auxiliary interface off again after a failed BMM150 start.
+    /// Failure is ignored: the accelerometer and gyroscope keep working either
+    /// way, and the next retry repeats the whole sequence.
     pub(super) async fn disable_aux(&self) {
-        let _ = self.write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR).await;
+        if self
+            .write_register(REG_PWR_CTRL, PWR_CTRL_ACC_GYR)
+            .await
+            .is_err()
+        {
+            log::debug!("BMI270 auxiliary interface could not be disabled");
+        }
     }
 
     pub(super) async fn read_sample(&self) -> Result<RawSample, Error> {
@@ -262,12 +289,10 @@ impl Bmi270 {
         let mut bytes = [0u8; 23];
         let mut i2c = self.bus.lock().await;
         i2c.write_read_async(BMI270_ADDR, &[REG_AUX_X_LSB], &mut bytes)
-            .await
-            .map_err(|_| Error::Bus)?;
+            .await?;
         drop(i2c);
 
-        let mut mag_data = [0u8; 8];
-        mag_data.copy_from_slice(&bytes[..8]);
+        let mag_data = bytes[..8].try_into().expect("eight magnetometer bytes");
 
         let acc = [
             i16::from_le_bytes([bytes[8], bytes[9]]),

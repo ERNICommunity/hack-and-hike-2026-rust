@@ -1,76 +1,62 @@
-//! BMI270 + BMM150 motion/orientation capability.
+//! Motion sensing: BMI270 accelerometer/gyroscope plus BMM150 magnetometer.
 //!
-//! CPU1 owns raw sensor access and fusion. CPU0 receives converted physical
-//! sensor measurements alongside the fused orientation/status state. Sensor-chip
-//! register formats remain private to the capability.
+//! CPU1 reads the sensors, learns the gyroscope bias and the magnetometer's
+//! enclosure distortion, and fuses everything into an orientation. CPU0
+//! receives [`Sample`]s through the [`Imu`] handle. Sensor registers stay
+//! private to this module.
 
 mod bmi270;
 mod bmm150;
 mod channels;
+mod frames;
 mod fusion;
 mod magnetic;
 mod task;
-
-use embassy_time::Duration;
+mod vec3;
 
 pub use channels::Imu;
-pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
+pub(crate) use channels::{Endpoints, Runtime, endpoints};
 pub(crate) use task::capture_task;
 
-/// Host-side accelerometer/gyroscope acquisition target.
-pub(crate) const DEFAULT_SENSOR_HZ: u32 = 100;
-/// Fusion runs once per host acquisition.
-pub(crate) const DEFAULT_FUSION_HZ: u32 = 100;
-/// BMM150 is configured for its maximum 30 Hz normal-mode ODR.
-pub(crate) const DEFAULT_MAG_HZ: u32 = 30;
-
-/// Runtime-tunable fusion parameters.
-#[derive(Clone, Copy)]
-pub(crate) struct Config {
-    pub sample_period: Duration,
-    pub roll_pitch_alpha: f32,
-    pub yaw_alpha: f32,
-}
-
-pub(crate) const DEFAULT_CONFIG: Config = Config {
-    sample_period: Duration::from_millis(10),
-    roll_pitch_alpha: 0.98,
-    // Magnetic north is a slow absolute reference. Fusion dynamically reduces
-    // its authority during fast motion rather than dropping it completely.
-    yaw_alpha: 0.98,
-};
-
+/// Health of the accelerometer/gyroscope acquisition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(i32)]
 pub enum Status {
-    Starting = 0,
-    Running = 1,
-    Degraded = 2,
-    Fault = 3,
+    /// The sensor is being initialized; no measurement yet.
+    Starting,
+    /// Samples are flowing.
+    Running,
+    /// A read failed; the last orientation is being repeated while retrying.
+    Degraded,
+    /// Repeated failures; the sensor is being re-initialized.
+    Fault,
 }
 
+/// Health of the magnetometer, which the heading depends on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(i32)]
 pub enum MagStatus {
-    Missing = 0,
-    Learning = 1,
-    Ready = 2,
-    Disturbed = 3,
+    /// No magnetometer is answering; heading drifts with the gyroscope.
+    Missing,
+    /// Calibration is collecting samples; move the device in all directions.
+    Learning,
+    /// Calibrated and delivering plausible fields.
+    Ready,
+    /// The field does not look like the Earth's; heading is not corrected.
+    Disturbed,
 }
 
+/// The device's orientation.
 #[derive(Clone, Copy, Debug)]
 pub struct Orientation {
-    /// Euler values are presentation/diagnostic outputs only. They necessarily
-    /// have branch singularities and must not be used to reconstruct 3-D pose.
+    /// Euler angles are for display only. They have singularities near the
+    /// poles and must not be used to reconstruct a 3-D pose.
     pub roll_deg: f32,
     pub pitch_deg: f32,
-    /// Magnetometer-corrected magnetic heading. No magnetic-declination
-    /// correction is applied, so this is magnetic yaw.
+    /// Magnetic heading; no declination correction is applied.
     pub yaw_deg: f32,
-    /// World gravity (down) expressed in the physical display/screen frame.
+    /// World gravity (down) expressed in the screen frame.
     pub gravity_screen: [f32; 3],
-    /// Magnetic north expressed in the same screen frame and kept orthogonal to
-    /// gravity by fusion. This remains well-defined through Euler poles.
+    /// Magnetic north expressed in the screen frame, perpendicular to
+    /// gravity. Well-defined even where the Euler angles are not.
     pub north_screen: [f32; 3],
 }
 
@@ -86,13 +72,15 @@ impl Default for Orientation {
     }
 }
 
-/// One coherent latest-value IMU capability sample.
+/// One IMU sample as published to the application.
 ///
-/// Acceleration is expressed in m/s², angular velocity in degrees/s, and the
-/// optional magnetic vector in microtesla. `None` measurements indicate that no
-/// valid reading for that sensor is available in the current acquisition session.
+/// Acceleration is in m/s², angular velocity in degrees/s, the magnetic field
+/// in microtesla. A `None` measurement means that sensor delivered nothing
+/// valid in the current session.
 #[derive(Clone, Copy, Debug)]
 pub struct Sample {
+    /// Increments with every published sample; gaps mean the application
+    /// skipped samples.
     pub revision: u32,
     pub acceleration_m_s2: Option<[f32; 3]>,
     pub angular_velocity_deg_s: Option<[f32; 3]>,
@@ -100,13 +88,16 @@ pub struct Sample {
     pub status: Status,
     pub orientation: Orientation,
     pub mag_status: MagStatus,
+    /// Magnitude of the (calibrated) magnetic field.
     pub mag_field_strength_ut: f32,
+    /// Magnetometer calibration progress, 100 once a model is in use.
     pub mag_calibration_percent: u8,
 }
 
+/// Physical measurements of one sample before fusion.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Measurements {
-    pub(super) acceleration_m_s2: Option<[f32; 3]>,
-    pub(super) angular_velocity_deg_s: Option<[f32; 3]>,
-    pub(super) magnetic_field_ut: Option<[f32; 3]>,
+struct Measurements {
+    acceleration_m_s2: Option<[f32; 3]>,
+    angular_velocity_deg_s: Option<[f32; 3]>,
+    magnetic_field_ut: Option<[f32; 3]>,
 }

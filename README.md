@@ -179,13 +179,14 @@ A **capability** gives the application access to one hardware function.
 
 The current capabilities are:
 
-| Capability | Rust handle | What the application gets |
+| Module | Rust handle | What the application gets |
 | --- | --- | --- |
 | `display` | `Display` | LCD drawing through bounded `Surface` values |
+| `backlight` | `Backlight` | LCD brightness |
 | `touch` | `Touch` | Touch points and press/release events |
 | `imu` | `Imu` | Motion measurements and orientation |
-| `mic` | `Microphone` | Stereo signed 16-bit PCM input |
-| `speaker` | `Speaker` | Stereo signed 16-bit PCM output |
+| `audio` | `Microphone` | Stereo signed 16-bit PCM input |
+| `audio` | `Speaker` | Stereo signed 16-bit PCM output |
 | `network` | `Network` | ESP-NOW peers and typed messages |
 | `camera` | `Camera` | RGB565 camera frames |
 
@@ -228,10 +229,10 @@ struct Hello {
 Broadcast it:
 
 ```rust
-let _ = network.send(None, &Hello { number: 42 });
+let _ = network.broadcast(&Hello { number: 42 });
 ```
 
-`None` means broadcast.
+To reach one device instead, use `network.send_to(peer_id, &message)`.
 
 Receive and decode it:
 
@@ -522,7 +523,7 @@ It owns:
 - speaker,
 - network,
 - camera,
-- brightness,
+- backlight,
 - log history,
 - navigation,
 - all demo screen state.
@@ -714,10 +715,8 @@ flowchart LR
 The broadcast call is:
 
 ```rust
-network.send(None, &ColorPing { color: selected })
+network.broadcast(&ColorPing { color: selected })
 ```
-
-Again, `None` means broadcast.
 
 ### A received ping starts audio
 

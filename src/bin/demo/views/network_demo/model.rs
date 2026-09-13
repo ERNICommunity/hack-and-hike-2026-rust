@@ -58,8 +58,9 @@ impl Model {
         }
         self.last_update = now;
 
-        if self.network.refresh() {
-            self.display.snapshot = self.network.snapshot().copied();
+        let snapshot = self.network.snapshot().copied();
+        if snapshot.map(|s| s.revision) != self.display.snapshot.map(|s| s.revision) {
+            self.display.snapshot = snapshot;
             self.dirty = true;
         }
 
@@ -69,7 +70,7 @@ impl Model {
                     self.display.pings_received = self.display.pings_received.wrapping_add(1);
                     if self
                         .network
-                        .send(Some(message.sender), &DemoMessage::Pong { sequence })
+                        .send_to(message.sender, &DemoMessage::Pong { sequence })
                         .is_err()
                     {
                         self.display.send_errors = self.display.send_errors.wrapping_add(1);
@@ -90,7 +91,7 @@ impl Model {
         if now - self.last_ping >= PING_PERIOD {
             self.last_ping = now;
             let sequence = self.next_ping_sequence;
-            match self.network.send(None, &DemoMessage::Ping { sequence }) {
+            match self.network.broadcast(&DemoMessage::Ping { sequence }) {
                 Ok(()) => {
                     self.next_ping_sequence = self.next_ping_sequence.wrapping_add(1);
                     self.display.pings_sent = self.display.pings_sent.wrapping_add(1);

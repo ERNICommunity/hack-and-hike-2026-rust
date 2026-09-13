@@ -21,6 +21,14 @@ const SPEAKER_RESET: u8 = 1 << 2;
 const CAMERA_RESET: u8 = 1 << 0;
 const LCD_RESET: u8 = 1 << 1;
 
+const LCD_TOUCH_RESET_PULSE_MS: u32 = 20;
+const LCD_TOUCH_RESET_SETTLE_MS: u32 = 300;
+const CAMERA_RESET_PULSE_MS: u32 = 20;
+const CAMERA_CLOCK_SETTLE_MS: u32 = 20;
+const AMPLIFIER_RAIL_SETTLE_MS: u32 = 10;
+const AMPLIFIER_RESET_PULSE_MS: u32 = 10;
+const AMPLIFIER_SETTLE_MS: u32 = 50;
+
 // M5Stack's CoreS3 AW9523 bootstrap values. P0_2 normally appears high in the
 // reference value (0x07); we deliberately hold it low here until the AW88298
 // rail has been enabled and the speaker reset sequence is executed.
@@ -57,24 +65,27 @@ where
 /// Establish the CoreS3-Lite AW9523 GPIO policy and reset LCD + touch.
 ///
 /// This runs once during board bring-up before CPU1 starts. The speaker reset
-/// line remains asserted until the amplifier rail is enabled.
-pub(crate) fn reset_display_and_touch(i2c: &mut impl embedded_hal::i2c::I2c, delay: Delay) {
-    let _ = i2c.write(AW9523_ADDR, &[PORT0_OUTPUT_REGISTER, PORT0_BOOT_OUTPUTS]);
-    let _ = i2c.write(AW9523_ADDR, &[PORT1_OUTPUT_REGISTER, PORT1_BOOT_OUTPUTS]);
-    let _ = i2c.write(AW9523_ADDR, &[PORT0_DIRECTION_REGISTER, PORT0_DIRECTIONS]);
-    let _ = i2c.write(AW9523_ADDR, &[PORT1_DIRECTION_REGISTER, PORT1_DIRECTIONS]);
-    let _ = i2c.write(AW9523_ADDR, &[GLOBAL_CONTROL_REGISTER, PORT0_PUSH_PULL]);
-    let _ = i2c.write(AW9523_ADDR, &[PORT0_MODE_REGISTER, GPIO_MODE_ALL]);
-    let _ = i2c.write(AW9523_ADDR, &[PORT1_MODE_REGISTER, GPIO_MODE_ALL]);
+/// line stays asserted until the amplifier rail is enabled.
+pub(crate) fn reset_display_and_touch<I2C>(i2c: &mut I2C, delay: Delay) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    i2c.write(AW9523_ADDR, &[PORT0_OUTPUT_REGISTER, PORT0_BOOT_OUTPUTS])?;
+    i2c.write(AW9523_ADDR, &[PORT1_OUTPUT_REGISTER, PORT1_BOOT_OUTPUTS])?;
+    i2c.write(AW9523_ADDR, &[PORT0_DIRECTION_REGISTER, PORT0_DIRECTIONS])?;
+    i2c.write(AW9523_ADDR, &[PORT1_DIRECTION_REGISTER, PORT1_DIRECTIONS])?;
+    i2c.write(AW9523_ADDR, &[GLOBAL_CONTROL_REGISTER, PORT0_PUSH_PULL])?;
+    i2c.write(AW9523_ADDR, &[PORT0_MODE_REGISTER, GPIO_MODE_ALL])?;
+    i2c.write(AW9523_ADDR, &[PORT1_MODE_REGISTER, GPIO_MODE_ALL])?;
 
-    // Reset LCD and touch together while leaving AW88298 held in reset.
-    let _ = update_register_bits(i2c, PORT1_OUTPUT_REGISTER, LCD_RESET, 0);
-    let _ = update_register_bits(i2c, PORT0_OUTPUT_REGISTER, TOUCH_RESET, 0);
-    delay.delay_millis(20u32);
+    update_register_bits(i2c, PORT1_OUTPUT_REGISTER, LCD_RESET, 0)?;
+    update_register_bits(i2c, PORT0_OUTPUT_REGISTER, TOUCH_RESET, 0)?;
+    delay.delay_millis(LCD_TOUCH_RESET_PULSE_MS);
 
-    let _ = update_register_bits(i2c, PORT1_OUTPUT_REGISTER, LCD_RESET, LCD_RESET);
-    let _ = update_register_bits(i2c, PORT0_OUTPUT_REGISTER, TOUCH_RESET, TOUCH_RESET);
-    delay.delay_millis(300u32);
+    update_register_bits(i2c, PORT1_OUTPUT_REGISTER, LCD_RESET, LCD_RESET)?;
+    update_register_bits(i2c, PORT0_OUTPUT_REGISTER, TOUCH_RESET, TOUCH_RESET)?;
+    delay.delay_millis(LCD_TOUCH_RESET_SETTLE_MS);
+    Ok(())
 }
 
 /// Pulse the onboard GC0308 reset line on AW9523 P1_0.
@@ -88,12 +99,12 @@ where
     update_register_bits(i2c, PORT1_MODE_REGISTER, CAMERA_RESET, CAMERA_RESET)?;
     update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, 0)?;
     update_register_bits(i2c, PORT1_DIRECTION_REGISTER, CAMERA_RESET, 0)?;
-    delay.delay_millis(20u32);
+    delay.delay_millis(CAMERA_RESET_PULSE_MS);
 
     // GC0308 RESETB is active-low. Release it and allow the external 20 MHz
     // camera clock to run before SCCB access.
     update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, CAMERA_RESET)?;
-    delay.delay_millis(20u32);
+    delay.delay_millis(CAMERA_CLOCK_SETTLE_MS);
     Ok(())
 }
 
@@ -108,7 +119,7 @@ where
     I2C: embedded_hal::i2c::I2c,
 {
     super::power::enable_speaker_amplifier(i2c)?;
-    delay.delay_millis(10u32);
+    delay.delay_millis(AMPLIFIER_RAIL_SETTLE_MS);
 
     // Make the control pin unambiguously a push-pull GPIO before resetting the
     // amplifier. Drive the output latch low before changing its direction to
@@ -117,9 +128,9 @@ where
     update_register_bits(i2c, PORT0_MODE_REGISTER, SPEAKER_RESET, SPEAKER_RESET)?;
     update_register_bits(i2c, PORT0_OUTPUT_REGISTER, SPEAKER_RESET, 0)?;
     update_register_bits(i2c, PORT0_DIRECTION_REGISTER, SPEAKER_RESET, 0)?;
-    delay.delay_millis(10u32);
+    delay.delay_millis(AMPLIFIER_RESET_PULSE_MS);
 
     update_register_bits(i2c, PORT0_OUTPUT_REGISTER, SPEAKER_RESET, SPEAKER_RESET)?;
-    delay.delay_millis(50u32);
+    delay.delay_millis(AMPLIFIER_SETTLE_MS);
     Ok(())
 }

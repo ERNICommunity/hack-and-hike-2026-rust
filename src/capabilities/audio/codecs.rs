@@ -7,8 +7,17 @@ use crate::platform;
 const ES7210_ADDR: u8 = 0x40;
 const AW88298_ADDR: u8 = 0x36;
 
+/// Power and configure both audio codecs for 16 kHz stereo 16-bit I2S.
+pub(crate) fn init_codecs<I2C>(i2c: &mut I2C, delay: Delay) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    init_es7210(i2c)?;
+    init_aw88298(i2c, delay)
+}
+
 /// Configure ES7210 MIC1/MIC2 for stereo 16 kHz I2S input.
-pub(crate) fn init_es7210<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
+fn init_es7210<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
@@ -55,7 +64,7 @@ where
 
 /// Release and configure the onboard AW88298 speaker amplifier for the same
 /// 16 kHz, stereo, 16-bit I2S clock domain used by microphone capture.
-pub(crate) fn init_aw88298<I2C>(i2c: &mut I2C, delay: Delay) -> Result<(), I2C::Error>
+fn init_aw88298<I2C>(i2c: &mut I2C, delay: Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {

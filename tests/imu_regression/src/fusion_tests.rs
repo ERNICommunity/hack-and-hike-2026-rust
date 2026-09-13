@@ -1,21 +1,18 @@
-#![allow(
-    dead_code,
-    reason = "host regression harness intentionally compiles only part of the production IMU fusion module"
-)]
+//! Regression tests for the orientation fusion.
 
-#[derive(Clone, Copy, Debug, Default)]
-struct Orientation {
-    roll_deg: f32,
-    pitch_deg: f32,
-    yaw_deg: f32,
-    gravity_screen: [f32; 3],
-    north_screen: [f32; 3],
+use crate::{
+    Orientation,
+    fusion::{Fusion, Gains},
+};
+
+/// The scenarios below level instantly from the accelerometer so that each
+/// step's heading depends on the magnetic correction alone.
+fn fusion() -> Fusion {
+    Fusion::with_gains(Gains {
+        roll_pitch_alpha: 0.0,
+        ..Gains::PRODUCTION
+    })
 }
-
-#[path = "../src/capabilities/imu/fusion.rs"]
-mod fusion;
-
-use fusion::Fusion;
 
 fn angular_distance(a: f32, b: f32) -> f32 {
     let mut delta = a - b;
@@ -40,22 +37,20 @@ fn settle_heading(
 ) -> Orientation {
     let mut orientation = Orientation::default();
     for _ in 0..samples {
-        orientation = fusion.update(accel_g, [0.0, 0.0, 0.0], 0.01, 0.0, Some(field_ut), 0.98);
+        orientation = fusion.update(accel_g, [0.0, 0.0, 0.0], 0.01, Some(field_ut));
     }
     orientation
 }
 
 #[test]
 fn flat_crossing_does_not_leave_a_sticky_magnetic_branch_offset() {
-    let mut fusion = Fusion::new();
+    let mut fusion = fusion();
 
     let _ = fusion.update(
         [0.0, -1.0, 0.0],
         [0.0, 0.0, 0.0],
         0.01,
-        0.0,
         Some([0.0, 0.0, 50.0]),
-        0.98,
     );
     let mut orientation = settle_heading(&mut fusion, [0.0, -1.0, 0.0], [0.0, 0.0, 50.0], 12);
     assert!(angular_distance(orientation.yaw_deg, 0.0) < 1.0);
@@ -64,9 +59,7 @@ fn flat_crossing_does_not_leave_a_sticky_magnetic_branch_offset() {
         [0.0, 0.0, 1.0],
         [-100.0, 0.0, 0.0],
         0.01,
-        0.0,
         Some([0.0, 50.0, 0.0]),
-        0.98,
     );
     assert!(angular_distance(orientation.yaw_deg, 0.0) < 1.0);
 
@@ -81,9 +74,7 @@ fn flat_crossing_does_not_leave_a_sticky_magnetic_branch_offset() {
         [0.0, 0.0, 1.0],
         [100.0, 0.0, 0.0],
         0.01,
-        0.0,
         Some([0.0, 50.0, 0.0]),
-        0.98,
     );
     orientation = settle_heading(&mut fusion, [0.0, -1.0, 0.0], [0.0, 0.0, 50.0], 16);
     assert!(
@@ -95,8 +86,8 @@ fn flat_crossing_does_not_leave_a_sticky_magnetic_branch_offset() {
 
 #[test]
 fn full_basis_stays_continuous_through_camera_forward_pole() {
-    let mut fusion = Fusion::new();
-    let mut previous = fusion.update([0.0, -1.0, 0.0], [0.0, 0.0, 0.0], 0.01, 0.0, None, 0.98);
+    let mut fusion = fusion();
+    let mut previous = fusion.update([0.0, -1.0, 0.0], [0.0, 0.0, 0.0], 0.01, None);
 
     // Roll the physical device from upright through display-flat to the other
     // side in two-degree increments. Euler yaw is allowed to change branch at
@@ -104,7 +95,7 @@ fn full_basis_stays_continuous_through_camera_forward_pole() {
     for degrees in (2..=178).step_by(2) {
         let radians = degrees as f32 * core::f32::consts::PI / 180.0;
         let accel = [0.0, -radians.cos(), radians.sin()];
-        let current = fusion.update(accel, [0.0, 0.0, 0.0], 0.01, 0.0, None, 0.98);
+        let current = fusion.update(accel, [0.0, 0.0, 0.0], 0.01, None);
         assert!(
             dot3(previous.gravity_screen, current.gravity_screen) > 0.998,
             "gravity basis jumped at {degrees} deg"
@@ -119,14 +110,12 @@ fn full_basis_stays_continuous_through_camera_forward_pole() {
 
 #[test]
 fn magnetic_reacquisition_is_smooth_not_a_single_frame_snap() {
-    let mut fusion = Fusion::new();
+    let mut fusion = fusion();
     let _ = fusion.update(
         [0.0, -1.0, 0.0],
         [0.0, 0.0, 0.0],
         0.01,
-        0.0,
         Some([0.0, 0.0, 50.0]),
-        0.98,
     );
     let settled = settle_heading(&mut fusion, [0.0, -1.0, 0.0], [0.0, 0.0, 50.0], 12);
     assert!(angular_distance(settled.yaw_deg, 0.0) < 1.0);
@@ -138,9 +127,7 @@ fn magnetic_reacquisition_is_smooth_not_a_single_frame_snap() {
             [0.0, -1.0, 0.0],
             [0.0, 0.0, 0.0],
             0.01,
-            0.0,
             Some([0.0, 0.0, -50.0]),
-            0.98,
         );
     }
     assert!(
@@ -154,9 +141,7 @@ fn magnetic_reacquisition_is_smooth_not_a_single_frame_snap() {
             [0.0, -1.0, 0.0],
             [0.0, 0.0, 0.0],
             0.01,
-            0.0,
             Some([0.0, 0.0, -50.0]),
-            0.98,
         );
     }
     assert!(
@@ -168,15 +153,13 @@ fn magnetic_reacquisition_is_smooth_not_a_single_frame_snap() {
 
 #[test]
 fn stationary_noisy_magnetic_samples_do_not_make_yaw_hunt() {
-    let mut fusion = Fusion::new();
+    let mut fusion = fusion();
 
     let _ = fusion.update(
         [0.0, -1.0, 0.0],
         [0.0, 0.0, 0.0],
         0.01,
-        0.0,
         Some([0.0, 0.0, 50.0]),
-        0.98,
     );
 
     let mut orientation = settle_heading(&mut fusion, [0.0, -1.0, 0.0], [0.0, 0.0, 50.0], 12);
@@ -189,9 +172,7 @@ fn stationary_noisy_magnetic_samples_do_not_make_yaw_hunt() {
             [0.0, -1.0, 0.0],
             [0.0, 0.0, 0.0],
             0.01,
-            0.0,
             Some([noisy_x, 0.0, 50.0]),
-            0.98,
         );
         max_deviation = max_deviation.max(angular_distance(orientation.yaw_deg, 0.0));
     }

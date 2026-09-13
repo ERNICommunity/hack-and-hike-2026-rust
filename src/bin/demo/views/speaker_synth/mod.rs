@@ -10,7 +10,7 @@ mod model;
 mod view;
 
 use hack_and_hike::{
-    capabilities::{display::Surface, speaker::Speaker},
+    capabilities::{audio::Speaker, display::Surface},
     ui::gui::GuiSurface,
 };
 
