@@ -1,3 +1,8 @@
+#![allow(
+    dead_code,
+    reason = "host regression harness intentionally compiles only part of the production IMU fusion module"
+)]
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Orientation {
     roll_deg: f32,
