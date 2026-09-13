@@ -1,6 +1,6 @@
 //! Fixed-size linear algebra used only by BMM150 calibration.
 
-pub(super) const PARAMS: usize = 9;
+pub const PARAMS: usize = 9;
 const SOLVER_RELATIVE_PIVOT_EPSILON: f32 = 1.0e-6;
 const JACOBI_ROTATIONS: usize = 18;
 const JACOBI_CONVERGED_OFF_DIAGONAL: f32 = 1.0e-7;
@@ -8,7 +8,7 @@ const JACOBI_CONVERGED_OFF_DIAGONAL: f32 = 1.0e-7;
 /// Solve `matrix * x = rhs` by Gauss-Jordan elimination with partial pivoting.
 ///
 /// Returns `None` when the system is singular or numerically unstable.
-pub(super) fn solve_linear<const N: usize>(
+pub fn solve_linear<const N: usize>(
     mut matrix: [[f32; N]; N],
     mut rhs: [f32; N],
 ) -> Option<[f32; N]> {
@@ -66,15 +66,15 @@ pub(super) fn solve_linear<const N: usize>(
 }
 
 /// Eigen-decomposition of a real symmetric 3x3 matrix.
-pub(super) struct Eigen3 {
-    pub(super) values: [f32; 3],
+pub struct Eigen3 {
+    pub values: [f32; 3],
     /// Eigenvectors are the columns of this matrix.
-    pub(super) vectors: [[f32; 3]; 3],
+    pub vectors: [[f32; 3]; 3],
 }
 
 /// Jacobi diagonalization. The fixed rotation count gives deterministic cost
 /// on the embedded target and is ample for a 3x3 matrix.
-pub(super) fn symmetric_eigen_3(mut matrix: [[f32; 3]; 3]) -> Option<Eigen3> {
+pub fn symmetric_eigen_3(mut matrix: [[f32; 3]; 3]) -> Option<Eigen3> {
     let mut vectors = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
     for _ in 0..JACOBI_ROTATIONS {
@@ -136,5 +136,38 @@ fn largest_off_diagonal(matrix: [[f32; 3]; 3]) -> (usize, usize) {
         (0, 2)
     } else {
         (1, 2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn solves_a_small_system() {
+        let matrix = [[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 4.0]];
+        let rhs = [3.0, 5.0, 5.0];
+        let x = solve_linear(matrix, rhs).expect("well-conditioned system");
+        for (row, expected) in matrix.iter().zip(rhs) {
+            let value: f32 = row.iter().zip(x).map(|(a, b)| a * b).sum();
+            assert!((value - expected).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn rejects_a_singular_system() {
+        let matrix = [[1.0, 2.0], [2.0, 4.0]];
+        assert!(solve_linear(matrix, [1.0, 2.0]).is_none());
+    }
+
+    #[test]
+    fn diagonalizes_a_symmetric_matrix() {
+        let matrix = [[2.0, 1.0, 0.0], [1.0, 2.0, 0.0], [0.0, 0.0, 5.0]];
+        let eigen = symmetric_eigen_3(matrix).expect("finite eigenvalues");
+        let mut values = eigen.values;
+        values.sort_by(f32::total_cmp);
+        for (value, expected) in values.iter().zip([1.0, 3.0, 5.0]) {
+            assert!((value - expected).abs() < 1.0e-4, "{values:?}");
+        }
     }
 }

@@ -4,21 +4,22 @@
 //! each other become peers. Applications send and receive their own
 //! `serde`-serializable message types through the [`Network`] handle, either
 //! to everyone ([`Network::broadcast`]) or to one peer ([`Network::send_to`]).
-//! The wire format, MAC addresses and the radio itself stay private.
+//! The wire format, MAC addresses and the radio itself stay private; the
+//! protocol and peer table live in `hack_and_hike_core::network`, where they
+//! are unit-tested on the host.
 
 mod channels;
-mod message;
-mod protocol;
 mod radio;
-mod state;
 
 use embassy_time::Duration;
 use esp_hal::peripherals::WIFI;
 
 pub use channels::Network;
-pub use message::{DecodeError, IncomingMessage, SendError};
-pub use protocol::{DeviceId, MAX_PAYLOAD};
-pub use state::{Channel, MAX_PEERS, Peer, Snapshot, Status};
+pub use hack_and_hike_core::network::{
+    message::{DecodeError, IncomingMessage, SendError},
+    protocol::{DeviceId, MAX_PAYLOAD},
+    state::{Channel, MAX_PEERS, Peer, Snapshot, Status},
+};
 
 pub(crate) use channels::{Endpoints, Runtime, endpoints};
 pub(crate) use radio::start;

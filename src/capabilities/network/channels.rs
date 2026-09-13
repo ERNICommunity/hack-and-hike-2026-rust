@@ -8,7 +8,7 @@ use embassy_sync::{
 };
 use serde::Serialize;
 
-use super::{
+use hack_and_hike_core::network::{
     message::{IncomingMessage, OutgoingMessage, SendError, serialize_payload},
     protocol::DeviceId,
     state::{Peer, QueueCounters, Snapshot},

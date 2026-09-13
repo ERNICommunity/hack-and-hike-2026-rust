@@ -27,6 +27,7 @@ Every application is one binary in `src/bin/`. The repository contains three app
 ## Table of contents
 
 - [Build an application](#build-an-application)
+- [Run the tests](#run-the-tests)
 - [The architecture in one picture](#the-architecture-in-one-picture)
 - [Project folders](#project-folders)
 - [Applications and capabilities](#applications-and-capabilities)
@@ -69,6 +70,18 @@ Without `--bin`, `cargo build --release` builds all of them.
 
 ---
 
+## Run the tests
+
+The hardware-independent logic (IMU math, the network protocol and peer table) lives in its own crate, `crates/core`, and has ordinary Rust tests that run on your computer:
+
+```bash
+./scripts/test.sh
+```
+
+The script exists because the repository's Cargo configuration targets the ESP32-S3. It runs `cargo test` for that one crate with your computer's target instead. Anything you add to `crates/core` can be tested the same way; put unit tests next to the code and scenario tests in `crates/core/tests/`.
+
+---
+
 ## The architecture in one picture
 
 The firmware has two main layers:
@@ -105,6 +118,8 @@ That low-level work stays inside capabilities.
 The important part of the source tree looks like this:
 
 ```text
+crates/
+└── core/          hardware-independent logic with tests
 src/
 ├── lib.rs
 ├── bin/

@@ -3,19 +3,17 @@
 //! CPU1 reads the sensors, learns the gyroscope bias and the magnetometer's
 //! enclosure distortion, and fuses everything into an orientation. CPU0
 //! receives [`Sample`]s through the [`Imu`] handle. Sensor registers stay
-//! private to this module.
+//! private to this module; the math lives in `hack_and_hike_core::imu`, where
+//! it is unit-tested on the host.
 
 mod bmi270;
-mod bmm150;
 mod channels;
-mod frames;
-mod fusion;
 mod magnetic;
 mod task;
-mod vec3;
 
 pub use channels::Imu;
 pub(crate) use channels::{Endpoints, Runtime, endpoints};
+pub use hack_and_hike_core::imu::Orientation;
 pub(crate) use task::capture_task;
 
 /// Health of the accelerometer/gyroscope acquisition.
@@ -42,34 +40,6 @@ pub enum MagStatus {
     Ready,
     /// The field does not look like the Earth's; heading is not corrected.
     Disturbed,
-}
-
-/// The device's orientation.
-#[derive(Clone, Copy, Debug)]
-pub struct Orientation {
-    /// Euler angles are for display only. They have singularities near the
-    /// poles and must not be used to reconstruct a 3-D pose.
-    pub roll_deg: f32,
-    pub pitch_deg: f32,
-    /// Magnetic heading; no declination correction is applied.
-    pub yaw_deg: f32,
-    /// World gravity (down) expressed in the screen frame.
-    pub gravity_screen: [f32; 3],
-    /// Magnetic north expressed in the screen frame, perpendicular to
-    /// gravity. Well-defined even where the Euler angles are not.
-    pub north_screen: [f32; 3],
-}
-
-impl Default for Orientation {
-    fn default() -> Self {
-        Self {
-            roll_deg: 0.0,
-            pitch_deg: 0.0,
-            yaw_deg: 0.0,
-            gravity_screen: [0.0, 0.0, 1.0],
-            north_screen: [1.0, 0.0, 0.0],
-        }
-    }
 }
 
 /// One IMU sample as published to the application.

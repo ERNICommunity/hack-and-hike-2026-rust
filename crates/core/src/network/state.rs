@@ -17,7 +17,7 @@ pub struct Channel(u8);
 
 impl Channel {
     /// Panics on a channel outside 1 to 14.
-    pub(super) const fn new(number: u8) -> Self {
+    pub const fn new(number: u8) -> Self {
         assert!(
             number >= 1 && number <= 14,
             "ESP-NOW channel must be 1 to 14"
@@ -100,21 +100,21 @@ struct PeerState {
 }
 
 /// What happened to the peer table when a frame arrived.
-pub(super) struct Received {
+pub struct Received {
     /// The sender was not a peer before this frame.
-    pub(super) is_new: bool,
+    pub is_new: bool,
     /// A peer that was replaced to make room for the sender.
-    pub(super) evicted: Option<MacAddress>,
+    pub evicted: Option<MacAddress>,
 }
 
 /// Queue-full counters kept outside the state, passed in for the snapshot.
 #[derive(Clone, Copy, Default)]
-pub(super) struct QueueCounters {
-    pub(super) tx_queue_full: u32,
-    pub(super) rx_queue_full: u32,
+pub struct QueueCounters {
+    pub tx_queue_full: u32,
+    pub rx_queue_full: u32,
 }
 
-pub(super) struct NetworkState {
+pub struct NetworkState {
     revision: u32,
     status: Status,
     local_id: DeviceId,
@@ -130,7 +130,7 @@ pub(super) struct NetworkState {
 }
 
 impl NetworkState {
-    pub(super) fn new(local_id: DeviceId, channel: Channel, peer_timeout_ms: u64) -> Self {
+    pub fn new(local_id: DeviceId, channel: Channel, peer_timeout_ms: u64) -> Self {
         Self {
             revision: 0,
             status: Status::Starting,
@@ -147,12 +147,12 @@ impl NetworkState {
         }
     }
 
-    pub(super) fn mark_ready(&mut self) {
+    pub fn mark_ready(&mut self) {
         self.status = Status::Ready;
         self.bump_revision();
     }
 
-    pub(super) fn mark_fault(&mut self) {
+    pub fn mark_fault(&mut self) {
         self.status = Status::Fault;
         self.bump_revision();
     }
@@ -161,7 +161,7 @@ impl NetworkState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    pub(super) fn next_beacon(&mut self, now_ms: u64) -> protocol::BeaconPacket {
+    pub fn next_beacon(&mut self, now_ms: u64) -> protocol::BeaconPacket {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
         protocol::BeaconPacket {
@@ -172,23 +172,23 @@ impl NetworkState {
         }
     }
 
-    pub(super) fn record_send_ok(&mut self) {
+    pub fn record_send_ok(&mut self) {
         self.tx_packets = self.tx_packets.wrapping_add(1);
         self.bump_revision();
     }
 
-    pub(super) fn record_send_error(&mut self) {
+    pub fn record_send_error(&mut self) {
         self.tx_errors = self.tx_errors.wrapping_add(1);
         self.bump_revision();
     }
 
-    pub(super) fn record_invalid_receive(&mut self) {
+    pub fn record_invalid_receive(&mut self) {
         self.rx_invalid = self.rx_invalid.wrapping_add(1);
         self.bump_revision();
     }
 
     /// The radio address to use for a unicast to `device_id`.
-    pub(super) fn route_for(&self, device_id: DeviceId) -> Option<MacAddress> {
+    pub fn route_for(&self, device_id: DeviceId) -> Option<MacAddress> {
         self.peers
             .iter()
             .flatten()
@@ -196,7 +196,7 @@ impl NetworkState {
             .map(|peer| peer.mac)
     }
 
-    pub(super) fn record_receive(
+    pub fn record_receive(
         &mut self,
         device_id: DeviceId,
         mac: MacAddress,
@@ -256,7 +256,7 @@ impl NetworkState {
 
     /// Forget peers that have been silent for longer than the timeout and
     /// return their radio addresses.
-    pub(super) fn expire_peers(&mut self, now_ms: u64) -> ArrayVec<MacAddress, MAX_PEERS> {
+    pub fn expire_peers(&mut self, now_ms: u64) -> ArrayVec<MacAddress, MAX_PEERS> {
         let mut expired = ArrayVec::new();
         for slot in &mut self.peers {
             if slot
@@ -274,7 +274,7 @@ impl NetworkState {
     }
 
     /// The current state as seen by applications.
-    pub(super) fn snapshot(&mut self, now_ms: u64, queues: QueueCounters) -> Snapshot {
+    pub fn snapshot(&mut self, now_ms: u64, queues: QueueCounters) -> Snapshot {
         let mut peers = [None; MAX_PEERS];
         for (target, source) in peers.iter_mut().zip(self.peers.iter().flatten()) {
             let age_ms = now_ms.saturating_sub(source.last_seen_ms);

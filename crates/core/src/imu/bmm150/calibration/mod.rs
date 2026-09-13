@@ -10,7 +10,7 @@ mod math;
 
 use log::info;
 
-use crate::capabilities::imu::vec3;
+use crate::imu::vec3;
 
 use fit::{Candidate, MIN_FIT_SAMPLES, Model, NormalEquations, Validation};
 
@@ -40,7 +40,7 @@ const ORIGIN_PHASE_PERCENT: f32 = 20.0;
 const COVERAGE_PHASE_PERCENT: f32 = 65.0;
 const VALIDATION_PHASE_PERCENT: f32 = 14.0;
 
-pub(in crate::capabilities::imu) struct Calibration {
+pub struct Calibration {
     equations: NormalEquations,
     min: [f32; 3],
     max: [f32; 3],
@@ -56,8 +56,14 @@ pub(in crate::capabilities::imu) struct Calibration {
     model: Option<Model>,
 }
 
+impl Default for Calibration {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Calibration {
-    pub(in crate::capabilities::imu) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             equations: NormalEquations::new(),
             min: [f32::MAX; 3],
@@ -76,25 +82,25 @@ impl Calibration {
     }
 
     /// Whether a raw field could be a distorted Earth field worth learning from.
-    pub(in crate::capabilities::imu) fn is_learnable(field_ut: [f32; 3]) -> bool {
+    pub fn is_learnable(field_ut: [f32; 3]) -> bool {
         (LEARNING_FIELD_MIN_UT..=LEARNING_FIELD_MAX_UT).contains(&vec3::norm(field_ut))
     }
 
     /// Whether a corrected field magnitude looks like the Earth's field.
-    pub(in crate::capabilities::imu) fn is_earth_field(strength_ut: f32) -> bool {
+    pub fn is_earth_field(strength_ut: f32) -> bool {
         (EARTH_FIELD_MIN_UT..=EARTH_FIELD_MAX_UT).contains(&strength_ut)
     }
 
-    pub(in crate::capabilities::imu) fn is_ready(&self) -> bool {
+    pub fn is_ready(&self) -> bool {
         self.model.is_some()
     }
 
-    pub(in crate::capabilities::imu) fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
+    pub fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
         self.model.map_or(field_ut, |model| model.apply(field_ut))
     }
 
     /// Learn from one raw body-frame field.
-    pub(in crate::capabilities::imu) fn observe(&mut self, field_ut: [f32; 3]) {
+    pub fn observe(&mut self, field_ut: [f32; 3]) {
         if self.model.is_some() || !Self::is_learnable(field_ut) {
             return;
         }
@@ -176,7 +182,7 @@ impl Calibration {
     }
 
     /// 0 to 100 %, where 100 means a validated model is in use.
-    pub(in crate::capabilities::imu) fn progress_percent(&self) -> u8 {
+    pub fn progress_percent(&self) -> u8 {
         if self.model.is_some() {
             return 100;
         }

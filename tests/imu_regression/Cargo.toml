@@ -1,8 +1,0 @@
-[package]
-name = "imu-regression"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[dependencies]
-libm = "0.2"

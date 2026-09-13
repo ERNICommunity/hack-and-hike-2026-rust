@@ -19,9 +19,9 @@ pub enum SendError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeError;
 
-pub(super) type Payload = ArrayVec<u8, MAX_PAYLOAD>;
+pub type Payload = ArrayVec<u8, MAX_PAYLOAD>;
 
-pub(super) fn serialize_payload<T: Serialize>(value: &T) -> Result<Payload, SendError> {
+pub fn serialize_payload<T: Serialize>(value: &T) -> Result<Payload, SendError> {
     let mut storage = [0u8; MAX_PAYLOAD];
     let encoded =
         postcard::to_slice(value, &mut storage).map_err(|_| SendError::MessageTooLarge)?;
@@ -29,10 +29,10 @@ pub(super) fn serialize_payload<T: Serialize>(value: &T) -> Result<Payload, Send
 }
 
 /// A message waiting to be transmitted by CPU1.
-pub(super) struct OutgoingMessage {
+pub struct OutgoingMessage {
     /// `None` broadcasts to every peer.
-    pub(super) recipient: Option<DeviceId>,
-    pub(super) payload: Payload,
+    pub recipient: Option<DeviceId>,
+    pub payload: Payload,
 }
 
 /// A message received from another device. Decode it into your own type.
@@ -43,7 +43,7 @@ pub struct IncomingMessage {
 }
 
 impl IncomingMessage {
-    pub(super) fn from_bytes(sender: DeviceId, bytes: &[u8]) -> Option<Self> {
+    pub fn from_bytes(sender: DeviceId, bytes: &[u8]) -> Option<Self> {
         Some(Self {
             sender,
             payload: Payload::try_from(bytes).ok()?,

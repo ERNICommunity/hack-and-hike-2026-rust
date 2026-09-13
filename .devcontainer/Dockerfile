@@ -17,7 +17,7 @@ USER $USER_NAME
 
 # Host toolchain for the host-side tests, rustfmt and rust-analyzer. Keep the
 # version equal to the Xtensa toolchain version below.
-RUN rustup toolchain install 1.97.0 --component rustfmt --component rust-analyzer --component rust-src && \
+RUN rustup toolchain install 1.97.0 --component rustfmt --component clippy --component rust-analyzer --component rust-src && \
     rustup default 1.97.0
 
 # Install cargo-binstall and ESP utilities

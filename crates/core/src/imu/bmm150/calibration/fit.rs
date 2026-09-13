@@ -1,11 +1,11 @@
 //! Ellipsoid fitting and candidate validation for BMM150 calibration.
 
 use super::math::{PARAMS, solve_linear, symmetric_eigen_3};
-use crate::capabilities::imu::vec3;
+use crate::imu::vec3;
 
 /// Balanced samples needed before a fit is attempted: more than ten
 /// observations per fitted quadratic parameter.
-pub(super) const MIN_FIT_SAMPLES: u32 = 96;
+pub const MIN_FIT_SAMPLES: u32 = 96;
 /// A fit may run with slightly fewer weighted samples than the nominal minimum.
 const MIN_FIT_WEIGHT_FRACTION: f32 = 0.75;
 
@@ -19,7 +19,7 @@ const MAX_VALIDATION_SINGLE_RELATIVE_ERROR: f32 = 0.35;
 const MAX_VALIDATION_BAD_SAMPLES: u8 = 6;
 
 /// Corrected fields are normalized to this magnitude.
-pub(super) const CALIBRATED_FIELD_RADIUS_UT: f32 = 50.0;
+pub const CALIBRATED_FIELD_RADIUS_UT: f32 = 50.0;
 /// The fit works on fields divided by this scale so that quadratic and linear
 /// terms stay comparable in f32.
 const FIT_INPUT_SCALE_UT: f32 = 256.0;
@@ -35,20 +35,20 @@ const CENTER_MARGIN_UT: f32 = 5.0;
 
 /// Hard-iron offset and soft-iron correction matrix.
 #[derive(Clone, Copy)]
-pub(super) struct Model {
-    pub(super) center_ut: [f32; 3],
+pub struct Model {
+    pub center_ut: [f32; 3],
     correction: [[f32; 3]; 3],
 }
 
 impl Model {
-    pub(super) fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
+    pub fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
         vec3::matrix_vector(self.correction, vec3::sub(field_ut, self.center_ut))
     }
 }
 
 /// A fitted model being checked against fresh samples before it is trusted.
 #[derive(Clone, Copy)]
-pub(super) struct Candidate {
+pub struct Candidate {
     model: Model,
     samples: u16,
     direction_bins: u32,
@@ -57,7 +57,7 @@ pub(super) struct Candidate {
 }
 
 impl Candidate {
-    pub(super) const fn new(model: Model) -> Self {
+    pub const fn new(model: Model) -> Self {
         Self {
             model,
             samples: 0,
@@ -68,20 +68,20 @@ impl Candidate {
     }
 
     /// Fraction of the validation requirement met so far.
-    pub(super) fn progress(self) -> f32 {
+    pub fn progress(self) -> f32 {
         let samples = f32::from(self.samples) / f32::from(VALIDATION_MIN_SAMPLES);
         let bins = self.direction_bins.count_ones() as f32 / VALIDATION_MIN_BINS as f32;
         samples.min(bins).clamp(0.0, 1.0)
     }
 }
 
-pub(super) enum Validation {
+pub enum Validation {
     Pending(Candidate),
     Accepted(Model),
     Rejected,
 }
 
-pub(super) fn validate_candidate(mut candidate: Candidate, field_ut: [f32; 3]) -> Validation {
+pub fn validate_candidate(mut candidate: Candidate, field_ut: [f32; 3]) -> Validation {
     // Diversity is measured around the fitted center, the best physical
     // reference available.
     let bin = direction_bin(field_ut, candidate.model.center_ut);
@@ -121,7 +121,7 @@ pub(super) fn validate_candidate(mut candidate: Candidate, field_ut: [f32; 3]) -
 
 /// One of 24 direction bins (6 cube faces times 4 quadrants) of a field
 /// relative to `origin_ut`; used to judge how well the sphere is covered.
-pub(super) fn direction_bin(field_ut: [f32; 3], origin_ut: [f32; 3]) -> usize {
+pub fn direction_bin(field_ut: [f32; 3], origin_ut: [f32; 3]) -> usize {
     let [x, y, z] = vec3::sub(field_ut, origin_ut);
     let (face, first, second) = if x.abs() >= y.abs() && x.abs() >= z.abs() {
         (if x >= 0.0 { 0 } else { 1 }, y, z)
@@ -135,14 +135,14 @@ pub(super) fn direction_bin(field_ut: [f32; 3], origin_ut: [f32; 3]) -> usize {
 }
 
 /// Least-squares normal equations of the algebraic ellipsoid fit.
-pub(super) struct NormalEquations {
+pub struct NormalEquations {
     matrix: [[f32; PARAMS]; PARAMS],
     rhs: [f32; PARAMS],
     weight_sum: f32,
 }
 
 impl NormalEquations {
-    pub(super) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             matrix: [[0.0; PARAMS]; PARAMS],
             rhs: [0.0; PARAMS],
@@ -150,7 +150,7 @@ impl NormalEquations {
         }
     }
 
-    pub(super) fn accumulate(&mut self, field_ut: [f32; 3], origin_ut: [f32; 3]) {
+    pub fn accumulate(&mut self, field_ut: [f32; 3], origin_ut: [f32; 3]) {
         let [x, y, z] = vec3::scale(vec3::sub(field_ut, origin_ut), 1.0 / FIT_INPUT_SCALE_UT);
         let feature = [
             x * x,
@@ -191,7 +191,7 @@ impl NormalEquations {
 /// Fit an ellipsoid to the accumulated samples. `origin_ut` is the point the
 /// samples were accumulated around; `min`/`max` are the observed extrema used
 /// to sanity-check the fitted center.
-pub(super) fn fit_model(
+pub fn fit_model(
     equations: &NormalEquations,
     origin_ut: [f32; 3],
     min: [f32; 3],

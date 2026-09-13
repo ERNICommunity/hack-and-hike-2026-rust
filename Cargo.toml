@@ -12,15 +12,21 @@ bench = false
 # Applications are binaries under src/bin/. Cargo discovers them by itself:
 # `src/bin/my_app.rs` builds with `cargo build --release --bin my_app`.
 
-[lints.rust]
+[workspace]
+members = ["crates/core"]
+
+[workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 # mem::forget is generally not safe to do with esp_hal types, especially those
 # holding buffers for the duration of a data transfer.
 mem_forget = "deny"
 # The task stacks are 16 KiB; a large local array on one of them is a bug.
 large_stack_frames = "deny"
+
+[lints]
+workspace = true
 
 [dependencies]
 # Keep the ESP crates on one coherent monorepo snapshot. The published
@@ -55,6 +61,7 @@ embedded-hal-async = "1.0"
 arrayvec = { version = "0.7.8", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 postcard = { version = "1.1", default-features = false }
+hack-and-hike-core = { path = "crates/core" }
 
 [profile.dev]
 # Unoptimized builds are too slow for the display and sensor loops.

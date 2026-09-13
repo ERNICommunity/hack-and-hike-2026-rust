@@ -1,6 +1,6 @@
 //! Regression tests for the orientation fusion.
 
-use crate::{
+use hack_and_hike_core::imu::{
     Orientation,
     fusion::{Fusion, Gains},
 };

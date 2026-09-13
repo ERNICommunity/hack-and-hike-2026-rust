@@ -1,39 +1,22 @@
-//! BMM150 magnetometer: register map, data decoding and Bosch factory
-//! compensation.
+//! BMM150 magnetometer data decoding and Bosch factory compensation.
 //!
-//! The BMI270 driver owns the auxiliary-bus transport used to reach this sensor.
-//! Runtime hard/soft-iron calibration lives in the `calibration` submodule.
+//! The firmware's BMI270 driver owns the register-level transport to this
+//! sensor and hands the raw data frame and trim bytes to this module. Runtime
+//! hard/soft-iron calibration lives in the `calibration` submodule.
 //!
 //! The compensation equations are derived from Bosch Sensortec's BSD-3-Clause
 //! BMM150 SensorAPI v2.0.0.
 
 mod calibration;
 
-pub(super) use calibration::Calibration;
-
-pub(super) const ADDRESS: u8 = 0x10;
-pub(super) const CHIP_ID: u8 = 0x32;
-pub(super) const REG_CHIP_ID: u8 = 0x40;
-pub(super) const REG_DATA_X_LSB: u8 = 0x42;
-pub(super) const REG_POWER_CONTROL: u8 = 0x4B;
-pub(super) const REG_OP_MODE: u8 = 0x4C;
-pub(super) const REG_REP_XY: u8 = 0x51;
-pub(super) const REG_REP_Z: u8 = 0x52;
-pub(super) const DIG_X1: u8 = 0x5D;
-pub(super) const DIG_Z4_LSB: u8 = 0x62;
-pub(super) const DIG_Z2_LSB: u8 = 0x68;
-
-pub(super) const SOFT_RESET_AND_POWER: u8 = 0x83;
-pub(super) const NORMAL_30HZ: u8 = 0x38;
-pub(super) const REP_XY_REGULAR: u8 = 0x04;
-pub(super) const REP_Z_REGULAR: u8 = 0x07;
+pub use calibration::Calibration;
 
 const OVERFLOW_XY: i16 = -4096;
 const OVERFLOW_Z: i16 = -16384;
 
 /// Factory trim values read from the sensor once at start-up.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Trim {
+pub struct Trim {
     dig_x1: i8,
     dig_y1: i8,
     dig_x2: i8,
@@ -50,7 +33,7 @@ pub(super) struct Trim {
 impl Trim {
     /// Construct factory trim from the three register blocks Bosch documents:
     /// 0x5D..0x5E, 0x62..0x65, and 0x68..0x71.
-    pub(super) fn from_registers(x1_y1: [u8; 2], z4_x2_y2: [u8; 4], z2_to_xy1: [u8; 10]) -> Self {
+    pub fn from_registers(x1_y1: [u8; 2], z4_x2_y2: [u8; 4], z2_to_xy1: [u8; 10]) -> Self {
         Self {
             dig_x1: i8::from_ne_bytes([x1_y1[0]]),
             dig_y1: i8::from_ne_bytes([x1_y1[1]]),
@@ -68,15 +51,15 @@ impl Trim {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Sample {
+pub struct Sample {
     /// Compensated field in the magnetometer's own axes.
-    pub(super) field_ut: [f32; 3],
-    pub(super) data_ready: bool,
+    pub field_ut: [f32; 3],
+    pub data_ready: bool,
 }
 
 /// Decode and apply Bosch factory compensation to the BMM150's 8-byte data
 /// frame (X, Y, Z and RHALL). Returns `None` for overflow or invalid trim data.
-pub(super) fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
+pub fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
     let raw_x = i16::from_le_bytes([data[0], data[1]]) >> 3;
     let raw_y = i16::from_le_bytes([data[2], data[3]]) >> 3;
     let raw_z = i16::from_le_bytes([data[4], data[5]]) >> 1;

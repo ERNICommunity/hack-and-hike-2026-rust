@@ -17,13 +17,13 @@ use esp_radio::{
 use log::{error, info};
 use static_cell::StaticCell;
 
-use super::{
-    Config, Resources,
-    channels::Runtime,
+use hack_and_hike_core::network::{
     message::{IncomingMessage, OutgoingMessage},
     protocol::{self, DeviceId, MacAddress, RssiDbm},
     state::NetworkState,
 };
+
+use super::{Config, Resources, channels::Runtime};
 
 type SharedState = Mutex<CriticalSectionRawMutex, RefCell<NetworkState>>;
 
