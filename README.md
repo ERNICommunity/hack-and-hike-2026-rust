@@ -303,7 +303,8 @@ log::info!("button pressed at {}", point.x);
 
 **Color Ping** splits the screen into four colour bands. Tapping a band
 broadcasts that colour; every other device that receives it plays a 300 ms
-tone. Flash it to two devices and tap.
+tone. A band lights up while you hold it, and on the receiving device while
+its tone plays. Flash it to two devices and tap.
 
 ```mermaid
 sequenceDiagram
