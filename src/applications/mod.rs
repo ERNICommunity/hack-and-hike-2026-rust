@@ -21,12 +21,12 @@ compile_error!(
     "select exactly one application feature: `app-demo`, `app-imu-color`, `app-color-ping`, or `app-idle`"
 );
 
+#[cfg(feature = "app-color-ping")]
+mod color_ping;
 #[cfg(feature = "app-demo")]
 mod demo;
 #[cfg(feature = "app-imu-color")]
 mod imu_color;
-#[cfg(feature = "app-color-ping")]
-mod color_ping;
 
 use embassy_executor::Spawner;
 #[cfg(not(any(

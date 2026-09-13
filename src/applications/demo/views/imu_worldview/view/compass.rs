@@ -177,10 +177,8 @@ fn draw_world_compass_glyph(
             draw_solid_line_pixels(
                 frame,
                 area,
-                line.0.0,
-                line.0.1,
-                line.1.0,
-                line.1.1,
+                Point::new(line.0.0, line.0.1),
+                Point::new(line.1.0, line.1.1),
                 common::white(),
                 COMPASS_STROKE_WIDTH,
             );
@@ -219,13 +217,16 @@ fn compass_glyph_world_point(
 fn draw_solid_line_pixels(
     frame: &mut GuiFramebuffer,
     area: Rect,
-    mut x0: i32,
-    mut y0: i32,
-    x1: i32,
-    y1: i32,
+    start: Point,
+    end: Point,
     color: Rgb565,
     width: u32,
 ) {
+    let Point {
+        x: mut x0,
+        y: mut y0,
+    } = start;
+    let Point { x: x1, y: y1 } = end;
     let dx = (x1 - x0).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
     let dy = -(y1 - y0).abs();

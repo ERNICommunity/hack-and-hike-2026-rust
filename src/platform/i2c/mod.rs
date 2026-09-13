@@ -1,13 +1,13 @@
 #[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
+use esp_hal::Async;
 use esp_hal::{
     Blocking,
     i2c::master::{Config as I2cConfig, I2c},
     peripherals::{GPIO11, GPIO12, I2C0},
     time::Rate,
 };
-#[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
-use esp_hal::Async;
 #[cfg(any(feature = "display", feature = "touch", feature = "imu"))]
 use static_cell::StaticCell;
 

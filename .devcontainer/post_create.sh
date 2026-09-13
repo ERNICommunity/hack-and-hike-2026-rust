@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
+# Runs once after the container is built.
+# See the output in VS Code via "Dev Containers: Show Container Log".
+set -euo pipefail
 
-# save workspace dir
-WORKSPACE=$(pwd)
-
-# Create a temp directory
-TEMPDIR=/tmp/setup
-mkdir -p $TEMPDIR
-
-# This will be shown in the dev container log 
-# See it in VSCode using "Dev Containers: Show container log"
-echo "Executing postCreate script, workspace is ${WORKSPACE}"
-
-# These commands will be executed once after container build
+# Download all dependencies now so the first build does not start with a
+# multi-minute git clone of the esp-hal repository.
+cargo fetch

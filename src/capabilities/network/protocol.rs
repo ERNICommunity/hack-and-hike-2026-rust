@@ -151,7 +151,11 @@ pub(super) fn encode_application(
     out[0..4].copy_from_slice(&MAGIC);
     out[4] = PROTOCOL_VERSION;
     out[5] = KIND_APPLICATION;
-    out[6] = if recipient.is_some() { FLAG_RECIPIENT } else { 0 };
+    out[6] = if recipient.is_some() {
+        FLAG_RECIPIENT
+    } else {
+        0
+    };
     out[8..14].copy_from_slice(&sender.0);
     if let Some(recipient) = recipient {
         out[14..20].copy_from_slice(&recipient.0);
@@ -186,9 +190,7 @@ fn decode_beacon(bytes: &[u8]) -> Option<BeaconPacket> {
         device_id: DeviceId::try_from(id).ok()?,
         sequence: u32::from_le_bytes(bytes[14..18].try_into().ok()?),
         uptime_ms: u32::from_le_bytes(bytes[18..22].try_into().ok()?),
-        capabilities: Capabilities::from_bits(u32::from_le_bytes(
-            bytes[22..26].try_into().ok()?,
-        )),
+        capabilities: Capabilities::from_bits(u32::from_le_bytes(bytes[22..26].try_into().ok()?)),
     })
 }
 

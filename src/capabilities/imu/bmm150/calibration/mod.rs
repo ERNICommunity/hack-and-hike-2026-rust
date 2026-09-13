@@ -76,9 +76,9 @@ impl Calibration {
             return;
         }
 
-        for axis in 0..3 {
-            self.min[axis] = math::min_f32(self.min[axis], field_ut[axis]);
-            self.max[axis] = math::max_f32(self.max[axis], field_ut[axis]);
+        for ((min, max), value) in self.min.iter_mut().zip(&mut self.max).zip(field_ut) {
+            *min = math::min_f32(*min, value);
+            *max = math::max_f32(*max, value);
         }
         self.samples = self.samples.saturating_add(1);
 

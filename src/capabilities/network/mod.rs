@@ -124,44 +124,89 @@ impl fmt::Display for MacAddress {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Peer {
     pub(crate) id: DeviceId,
-    #[allow(dead_code, reason = "field is part of the application-facing network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "field is part of the application-facing network diagnostics capability contract"
+    )]
     pub(crate) rssi_dbm: i8,
-    #[allow(dead_code, reason = "field is part of the application-facing network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "field is part of the application-facing network diagnostics capability contract"
+    )]
     pub(crate) age_ms: u32,
-    #[allow(dead_code, reason = "field is part of the application-facing network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "field is part of the application-facing network diagnostics capability contract"
+    )]
     pub(crate) expires_in_ms: u32,
 }
 
 /// Replace-latest diagnostics/peer snapshot cached by the CPU0 `Network` handle.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Snapshot {
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) revision: u32,
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) status: Status,
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) local_id: DeviceId,
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) channel: Channel,
     pub(crate) peers: [Option<Peer>; MAX_PEERS],
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) tx_packets: u32,
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) rx_packets: u32,
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) tx_errors: u32,
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) rx_invalid: u32,
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) peer_evictions: u32,
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) tx_queue_full: u32,
-    #[allow(dead_code, reason = "part of the network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the network diagnostics capability contract"
+    )]
     pub(crate) rx_queue_full: u32,
 }
 
 impl Snapshot {
-    #[allow(dead_code, reason = "part of the application-facing network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing network diagnostics capability contract"
+    )]
     pub(crate) fn peer_count(&self) -> usize {
         self.peers.iter().flatten().count()
     }

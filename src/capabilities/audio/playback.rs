@@ -15,7 +15,7 @@ use super::channels::Runtime;
 const PLAYBACK_FILL_BYTES: usize = 1_024;
 #[cfg(feature = "speaker")]
 const PLAYBACK_FILL_SAMPLES: usize = PLAYBACK_FILL_BYTES / core::mem::size_of::<i16>();
-const _: () = assert!(PLAYBACK_FILL_BYTES % 4 == 0);
+const _: () = assert!(PLAYBACK_FILL_BYTES.is_multiple_of(4));
 
 #[embassy_executor::task]
 pub(super) async fn playback_task(
@@ -30,7 +30,7 @@ pub(super) async fn playback_task(
 
     let mut transfer = i2s_tx
         .write(tx_buffer)
-        .ok()
+        .map_err(|(error, _, _)| error)
         .expect("Failed to start circular I2S TX DMA");
     let mut staging = [0u8; PLAYBACK_FILL_BYTES];
     let mut staging_offset = staging.len();

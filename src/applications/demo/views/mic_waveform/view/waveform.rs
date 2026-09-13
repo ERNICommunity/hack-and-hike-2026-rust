@@ -1,12 +1,9 @@
 //! Allocation-free direct renderer for the realtime microphone waveform.
 
-use crate::{
-    capabilities::display::Surface,
-    ui::theme,
-};
+use crate::{capabilities::display::Surface, ui::theme};
 
-use super::Canvas;
 use super::super::{POINTS, WaveformFrame};
+use super::Canvas;
 
 pub(super) fn render(
     surface: &mut Surface<'_>,

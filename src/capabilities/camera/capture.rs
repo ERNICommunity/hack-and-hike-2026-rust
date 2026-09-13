@@ -39,8 +39,8 @@ const BAD_FRAME_LOG_INTERVAL: u32 = 32;
 type InFlight = CameraTransfer<'static, DmaRxStreamBuf>;
 
 const _: () = assert!(STREAM_CHUNK_BYTES <= 4095);
-const _: () = assert!(STREAM_BUFFER_BYTES % STREAM_CHUNK_BYTES == 0);
-const _: () = assert!(FRAME_BYTES % PSRAM_ALIGNMENT == 0);
+const _: () = assert!(STREAM_BUFFER_BYTES.is_multiple_of(STREAM_CHUNK_BYTES));
+const _: () = assert!(FRAME_BYTES.is_multiple_of(PSRAM_ALIGNMENT));
 
 #[repr(C, align(32))]
 #[derive(Clone, Copy)]
@@ -365,7 +365,7 @@ impl Camera {
 
     fn report_bad_frame(&mut self, received: usize) {
         self.bad_frames = self.bad_frames.saturating_add(1);
-        if self.bad_frames == 1 || self.bad_frames % BAD_FRAME_LOG_INTERVAL == 0 {
+        if self.bad_frames == 1 || self.bad_frames.is_multiple_of(BAD_FRAME_LOG_INTERVAL) {
             log::warn!(
                 "Camera VSYNC frame size mismatch: {} / {} bytes (total bad frames={})",
                 received,

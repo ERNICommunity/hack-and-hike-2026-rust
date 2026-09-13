@@ -206,4 +206,20 @@ impl MagneticState {
     pub(super) fn calibration_percent(&self) -> u8 {
         self.calibration.progress_percent()
     }
+
+    /// Magnetometer health as published alongside every IMU sample.
+    pub(super) fn report(&self) -> MagneticReport {
+        MagneticReport {
+            status: self.status,
+            field_ut: self.field_ut,
+            calibration_percent: self.calibration_percent(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MagneticReport {
+    pub(super) status: MagStatus,
+    pub(super) field_ut: f32,
+    pub(super) calibration_percent: u8,
 }

@@ -55,7 +55,10 @@ impl Touch {
         self.service.edges.try_receive().ok()
     }
 
-    #[allow(dead_code, reason = "part of the application-facing touch capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing touch capability contract"
+    )]
     pub(crate) fn take_latest_point(&mut self) -> Option<TouchPoint> {
         self.service.latest_point.try_take()
     }

@@ -16,8 +16,7 @@ const SPEAKER_CHANNELS: usize = 2;
 // and zero-pad the remainder before CPU0 generated more PCM.
 const SPEAKER_QUEUE_CAPACITY_FRAMES: usize = 1_024;
 #[cfg(feature = "speaker")]
-const SPEAKER_QUEUE_CAPACITY_SAMPLES: usize =
-    SPEAKER_QUEUE_CAPACITY_FRAMES * SPEAKER_CHANNELS;
+const SPEAKER_QUEUE_CAPACITY_SAMPLES: usize = SPEAKER_QUEUE_CAPACITY_FRAMES * SPEAKER_CHANNELS;
 
 #[cfg(feature = "mic")]
 #[derive(Clone, Copy)]
@@ -60,12 +59,7 @@ impl MicQueue {
         }
     }
 
-    fn push(
-        &mut self,
-        samples: &[i16; SAMPLES_PER_BLOCK],
-        peak_left: u16,
-        peak_right: u16,
-    ) -> u32 {
+    fn push(&mut self, samples: &[i16; SAMPLES_PER_BLOCK], peak_left: u16, peak_right: u16) -> u32 {
         self.next_sequence = self.next_sequence.wrapping_add(1);
 
         if self.len == QUEUE_CAPACITY_BLOCKS {
@@ -212,10 +206,7 @@ pub(crate) fn init_endpoints() -> Endpoints {
 
 #[cfg(feature = "mic")]
 impl MicReader {
-    pub(crate) fn try_read(
-        &mut self,
-        out: &mut [i16; SAMPLES_PER_BLOCK],
-    ) -> Option<MicBlockInfo> {
+    pub(crate) fn try_read(&mut self, out: &mut [i16; SAMPLES_PER_BLOCK]) -> Option<MicBlockInfo> {
         let mut queue = self.service.mic_queue.try_lock().ok()?;
         queue.pop(out)
     }

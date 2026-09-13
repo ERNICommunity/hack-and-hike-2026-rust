@@ -34,4 +34,5 @@
     // do not check integration tests because they are host architecture
     "rust-analyzer.cargo.allTargets": false,
     "rust-analyzer.check.allTargets": false,
+    "rust-analyzer.cargo.target": "xtensa-esp32s3-none-elf"
 }

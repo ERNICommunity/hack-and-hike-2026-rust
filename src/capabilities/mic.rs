@@ -6,7 +6,10 @@
 
 use super::audio;
 
-#[allow(dead_code, reason = "sample rate is part of the microphone capability contract")]
+#[allow(
+    dead_code,
+    reason = "sample rate is part of the microphone capability contract"
+)]
 pub(crate) const SAMPLE_RATE_HZ: u32 = audio::SAMPLE_RATE_HZ;
 pub(crate) const CHANNELS: usize = 2;
 pub(crate) const FRAMES_PER_BLOCK: usize = 512;

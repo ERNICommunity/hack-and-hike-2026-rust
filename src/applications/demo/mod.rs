@@ -87,11 +87,11 @@ impl Ui {
             })
         };
 
-        if let Some(view) = selected {
-            if view != self.active_view {
-                self.active_view = view;
-                self.mark_active_dirty();
-            }
+        if let Some(view) = selected
+            && view != self.active_view
+        {
+            self.active_view = view;
+            self.mark_active_dirty();
         }
 
         // These behaviors intentionally continue while another demo screen is
@@ -205,7 +205,10 @@ impl Ui {
                     .views
                     .speaker_synth
                     .present_if_dirty(&mut self.gui_surface, &mut content);
-                debug_assert!(presented, "speaker state must be dirty when entering Speaker");
+                debug_assert!(
+                    presented,
+                    "speaker state must be dirty when entering Speaker"
+                );
             }
             ViewId::Camera => self.views.camera_view.present_shell(&mut content),
             ViewId::Settings => {
@@ -213,7 +216,10 @@ impl Ui {
                     .views
                     .settings
                     .present_if_dirty(&mut self.gui_surface, &mut content);
-                debug_assert!(presented, "settings state must be dirty when entering Settings");
+                debug_assert!(
+                    presented,
+                    "settings state must be dirty when entering Settings"
+                );
             }
             ViewId::Log => self
                 .views
@@ -270,11 +276,9 @@ pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
         ui.render(&mut display);
 
         let camera_active = camera_ready && ui.presented_view() == ViewId::Camera;
-        if camera_active {
-            if let Some(mut frame) = camera.begin_frame() {
-                ui.render_camera(&mut display, &mut frame);
-                frame.finish();
-            }
+        if camera_active && let Some(mut frame) = camera.begin_frame() {
+            ui.render_camera(&mut display, &mut frame);
+            frame.finish();
         }
 
         if let Some(transition) = transition {

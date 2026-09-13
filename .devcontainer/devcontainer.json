@@ -1,60 +1,23 @@
 {
     "name": "ERNI Rust Dev Container",
-    // move cargo target folder into container to speed up builds
     "containerEnv": {
+        // Keep the build tree off the bind mount: file sharing with the host is
+        // slow, and the tree is wiped when the container is rebuilt.
         "CARGO_TARGET_DIR": "/tmp/cargo-target"
     },
     "build": {
         "dockerfile": "Dockerfile"
     },
     "runArgs": [
+        // Podman only: map the container user to the host user.
         "--userns=keep-id",
-        // This allows the container to talk to applications running on your Mac's localhost
+        // Lets the container reach services on the host's localhost.
         "--net=host"
     ],
     "customizations": {
         "vscode": {
-            "settings": {
-                // we do not want to update rust-analyzer because it is not compatible with the esp toolchain
-                "extensions.autoUpdate": false,
-                // do not scroll beyond last line because it could confuse beginners
-                "editor.scrollBeyondLastLine": false,
-                // automatically save after 1 second
-                "editor.formatOnSave": true,
-                // automatically save files after 1 second
-                "files.autoSave": "afterDelay",
-                // scale the minimap to the window height
-                "editor.minimap.size": "fill",
-                // do not show the right sidebar because we need the screen space for a two column editor layout
-                "workbench.secondarySideBar.defaultVisibility": "hidden",
-                "chat.disableAIFeatures": true,
-                "workbench.auxiliaryBar.visible": false,
-                // Keep rust-analyzer snappy by using a separate target dir inside the cargo target dir
-                "rust-analyzer.cargo.targetDir": true,
-                // adjust explorer view to show tasks
-                "explorer.openEditors.visible": 1,
-                "outline.collapseItems": "alwaysCollapse",
-                "timeline.excludeSources": [
-                    "git-history"
-                ],
-                // Keep Cargo.toml dependencies on one line
-                "evenBetterToml.formatter.inlineTableExpand": false,
-                "evenBetterToml.formatter.arrayAutoExpand": false,
-                "evenBetterToml.formatter.arrayAutoCollapse": true,
-                "evenBetterToml.formatter.columnWidth": 10000,
-                // open readme on startup and use markdown preview for it
-                "workbench.startupEditor": "readme",
-                "workbench.editorAssociations": {
-                    "README.md": "vscode.markdown.preview.editor"
-                },
-                // show spaces as dots and tabs as arrows
-                "editor.renderWhitespace": "all",
-                "[rust]": {
-                    "editor.defaultFormatter": "rust-lang.rust-analyzer",
-                    "editor.formatOnSave": true
-                },
-                "rust-analyzer.cargo.target": "xtensa-esp32s3-none-elf"
-            },
+            // Editor settings live in .vscode/settings.json so they apply in
+            // and outside the container.
             "extensions": [
                 "rust-lang.rust-analyzer",
                 "tamasfe.even-better-toml",
@@ -69,6 +32,5 @@
             ]
         }
     },
-    "updateContentCommand": "chmod +x .devcontainer/update_content.sh && .devcontainer/update_content.sh",
-    "postCreateCommand": "chmod +x .devcontainer/post_create.sh && .devcontainer/post_create.sh"
+    "postCreateCommand": "bash .devcontainer/post_create.sh"
 }

@@ -8,6 +8,8 @@
 //! correction rotates the complete basis, while magnetometer correction rotates
 //! only north around gravity. Euler angles are derived outputs only.
 
+use core::f32::consts::PI;
+
 use super::Orientation;
 
 // Magnetic correction is intentionally bounded so a delayed/noisy 30 Hz BMM150
@@ -56,8 +58,8 @@ impl GyroBias {
         if stationary {
             self.stationary_samples = self.stationary_samples.saturating_add(1);
             let learn = if self.ready { 0.002 } else { 0.02 };
-            for axis in 0..3 {
-                self.bias_dps[axis] += (gyro_dps[axis] - self.bias_dps[axis]) * learn;
+            for (bias, gyro) in self.bias_dps.iter_mut().zip(gyro_dps) {
+                *bias += (gyro - *bias) * learn;
             }
             if self.stationary_samples >= 100 {
                 self.ready = true;
@@ -255,12 +257,7 @@ impl Fusion {
         filtered
     }
 
-    fn fuse_magnetic_north(
-        &mut self,
-        measured_north: [f32; 3],
-        yaw_alpha: f32,
-        rate_dps: f32,
-    ) {
+    fn fuse_magnetic_north(&mut self, measured_north: [f32; 3], yaw_alpha: f32, rate_dps: f32) {
         let error_deg = signed_angle_deg(self.north_screen, measured_north, self.gravity_screen);
 
         // Do not establish a brand-new absolute reference while the 30 Hz field
@@ -335,7 +332,11 @@ impl Fusion {
 
         let motion_weight = magnetic_motion_weight(rate_dps);
         let base_gain = 1.0 - clamp_f32(yaw_alpha, 0.0, 1.0);
-        let gain = if large_error { base_gain * 4.0 } else { base_gain };
+        let gain = if large_error {
+            base_gain * 4.0
+        } else {
+            base_gain
+        };
         let requested = gain * error_deg * motion_weight;
         let max_step = if large_error {
             MAX_MAG_CORRECTION_RECOVERY_DEG
@@ -347,13 +348,10 @@ impl Fusion {
     }
 
     fn rotate_north(&mut self, degrees: f32) {
-        self.north_screen = rotate_around_axis(
-            self.north_screen,
-            self.gravity_screen,
-            degrees * DEG_TO_RAD,
-        );
-        self.north_screen = horizontal_unit(self.north_screen, self.gravity_screen)
-            .unwrap_or(self.north_screen);
+        self.north_screen =
+            rotate_around_axis(self.north_screen, self.gravity_screen, degrees * DEG_TO_RAD);
+        self.north_screen =
+            horizontal_unit(self.north_screen, self.gravity_screen).unwrap_or(self.north_screen);
     }
 }
 
@@ -369,7 +367,6 @@ fn magnetic_motion_weight(rate_dps: f32) -> f32 {
     1.0 - t * (1.0 - MAG_MIN_MOTION_WEIGHT)
 }
 
-const PI: f32 = 3.14159265358979323846;
 const RAD_TO_DEG: f32 = 180.0 / PI;
 const DEG_TO_RAD: f32 = PI / 180.0;
 
@@ -470,11 +467,7 @@ fn initial_horizontal_reference(gravity: [f32; 3]) -> [f32; 3] {
         .unwrap_or([0.0, 0.0, 1.0])
 }
 
-fn integrate_inertial_vector(
-    vector: [f32; 3],
-    gyro_dps: [f32; 3],
-    dt_seconds: f32,
-) -> [f32; 3] {
+fn integrate_inertial_vector(vector: [f32; 3], gyro_dps: [f32; 3], dt_seconds: f32) -> [f32; 3] {
     let omega = [
         gyro_dps[0] * DEG_TO_RAD,
         gyro_dps[1] * DEG_TO_RAD,
@@ -505,12 +498,7 @@ fn rotate_around_axis(value: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
     rotate_around_axis_sin_cos(value, axis, sin_approx(angle), cos_approx(angle))
 }
 
-fn rotate_around_axis_sin_cos(
-    value: [f32; 3],
-    axis: [f32; 3],
-    sine: f32,
-    cosine: f32,
-) -> [f32; 3] {
+fn rotate_around_axis_sin_cos(value: [f32; 3], axis: [f32; 3], sine: f32, cosine: f32) -> [f32; 3] {
     let cross = cross3(axis, value);
     let along = dot3(axis, value) * (1.0 - cosine);
     [

@@ -74,8 +74,7 @@ pub(super) fn init(resources: Resources, delay: &mut Delay) -> Transport {
 
     let dc = Output::new(dc, Level::Low, OutputConfig::default());
     let cs = Output::new(cs, Level::High, OutputConfig::default());
-    let controller::Initialized { spi, cs, dc } =
-        controller::initialize(dma_bus, cs, dc, delay);
+    let controller::Initialized { spi, cs, dc } = controller::initialize(dma_bus, cs, dc, delay);
 
     // Seven rows cut Camera pixel submissions from 60 to 35 per 240-row frame.
     // The centered 276-pixel Camera region is 3,864 bytes per full batch, below
@@ -164,7 +163,10 @@ impl Transport {
         byte_len
     }
 
-    #[allow(dead_code, reason = "used only by optional raw RGB565 display streaming paths")]
+    #[allow(
+        dead_code,
+        reason = "used only by optional raw RGB565 display streaming paths"
+    )]
     fn copy_bytes(buffer: &mut DmaTxBuf, bytes: &[u8]) -> usize {
         let byte_len = bytes.len();
         debug_assert!(byte_len <= PIXEL_DMA_BYTES);
@@ -188,7 +190,7 @@ impl Transport {
                 self.state = Some(PipelineState::InFlight { transfer, free });
             }
             Err((err, spi, buffer)) => {
-                let _ = self.cs.set_high();
+                self.cs.set_high();
                 self.state = Some(PipelineState::Idle {
                     spi,
                     first: buffer,
@@ -226,7 +228,10 @@ impl Transport {
     /// Queue one raw RGB565 byte batch. While the prior SPI-DMA transfer is
     /// shifting pixels to the panel, `pump` can advance an independent producer
     /// such as the next camera frame.
-    #[allow(dead_code, reason = "used only by optional raw RGB565 display streaming paths")]
+    #[allow(
+        dead_code,
+        reason = "used only by optional raw RGB565 display streaming paths"
+    )]
     pub(super) fn queue_bytes_pumped(&mut self, bytes: &[u8], mut pump: impl FnMut()) {
         if bytes.is_empty() {
             return;
@@ -277,7 +282,10 @@ impl Transport {
 
     /// Finish the final LCD transfer while continuing to pump an independent
     /// producer until the last SPI byte of the current region has left the panel.
-    #[allow(dead_code, reason = "used only by optional pumped RGB565 display streaming paths")]
+    #[allow(
+        dead_code,
+        reason = "used only by optional pumped RGB565 display streaming paths"
+    )]
     pub(super) fn finish_pumped(&mut self, mut pump: impl FnMut()) {
         let Some(state) = self.state.take() else {
             return;
