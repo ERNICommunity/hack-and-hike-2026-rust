@@ -67,12 +67,18 @@ impl Region {
         }
     }
 
-    #[allow(dead_code, reason = "part of the application-facing display region capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing display region capability contract"
+    )]
     pub(crate) const fn width(self) -> usize {
         self.width
     }
 
-    #[allow(dead_code, reason = "part of the application-facing display region capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing display region capability contract"
+    )]
     pub(crate) const fn height(self) -> usize {
         self.height
     }
@@ -104,7 +110,10 @@ pub(crate) struct Resources {
 pub(crate) struct Display {
     transport: transport::Transport,
     line_buffer: &'static mut [Pixel; WIDTH],
-    #[allow(dead_code, reason = "reserved for optional raw RGB565 display streaming paths")]
+    #[allow(
+        dead_code,
+        reason = "reserved for optional raw RGB565 display streaming paths"
+    )]
     raw_batch_buffer: &'static mut [u8; RAW_BATCH_BYTES],
 }
 
@@ -161,7 +170,10 @@ impl Display {
         transport.finish();
     }
 
-    #[allow(dead_code, reason = "used when an application chooses raw RGB565 surface streaming")]
+    #[allow(
+        dead_code,
+        reason = "used when an application chooses raw RGB565 surface streaming"
+    )]
     fn render_rgb565_be_bytes_region(&mut self, region: Region, bytes: &[u8]) {
         if region.is_empty() {
             return;
@@ -180,7 +192,10 @@ impl Display {
         transport.finish();
     }
 
-    #[allow(dead_code, reason = "used when an application chooses pumped raw RGB565 surface streaming")]
+    #[allow(
+        dead_code,
+        reason = "used when an application chooses pumped raw RGB565 surface streaming"
+    )]
     fn render_rgb565_be_scanlines_pumped_region<C>(
         &mut self,
         region: Region,
@@ -228,18 +243,27 @@ impl Display {
 }
 
 impl Surface<'_> {
-    #[allow(dead_code, reason = "part of the application-facing display surface capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing display surface capability contract"
+    )]
     pub(crate) const fn width(&self) -> usize {
         self.region.width()
     }
 
-    #[allow(dead_code, reason = "part of the application-facing display surface capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing display surface capability contract"
+    )]
     pub(crate) const fn height(&self) -> usize {
         self.region.height()
     }
 
     /// Borrow a stricter surface using coordinates local to this surface.
-    #[allow(dead_code, reason = "part of the application-facing display surface capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing display surface capability contract"
+    )]
     pub(crate) fn subsurface<'a>(
         &'a mut self,
         x: usize,
@@ -263,18 +287,25 @@ impl Surface<'_> {
 
     /// Render this entire surface one scanline at a time.
     pub(crate) fn render_scanlines(&mut self, render_line: impl FnMut(usize, &mut [Pixel])) {
-        self.display.render_scanlines_region(self.region, render_line);
+        self.display
+            .render_scanlines_region(self.region, render_line);
     }
 
     /// Stream one complete big-endian RGB565 frame into this surface.
-    #[allow(dead_code, reason = "part of the application-facing raw RGB565 display capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing raw RGB565 display capability contract"
+    )]
     pub(crate) fn render_rgb565_be_bytes(&mut self, bytes: &[u8]) {
         self.display
             .render_rgb565_be_bytes_region(self.region, bytes);
     }
 
     /// Stream scanlines while using LCD DMA wait time to advance another producer.
-    #[allow(dead_code, reason = "part of the application-facing pumped RGB565 display capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing pumped RGB565 display capability contract"
+    )]
     pub(crate) fn render_rgb565_be_scanlines_pumped<C>(
         &mut self,
         context: &mut C,

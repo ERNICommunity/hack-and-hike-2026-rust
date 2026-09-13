@@ -61,11 +61,7 @@ impl GuiSurface {
         self.present_frame(surface, overlay);
     }
 
-    fn present_frame(
-        &mut self,
-        surface: &mut Surface<'_>,
-        draw: impl FnOnce(&mut GuiFramebuffer),
-    ) {
+    fn present_frame(&mut self, surface: &mut Surface<'_>, draw: impl FnOnce(&mut GuiFramebuffer)) {
         debug_assert_eq!(surface.width(), self.width);
         debug_assert_eq!(surface.height(), self.height);
 

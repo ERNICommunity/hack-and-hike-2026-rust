@@ -18,7 +18,7 @@ const CAMERA_SOURCE_END_BYTE: usize = (camera::WIDTH - CAMERA_CROP_RIGHT) * 2;
 
 const _: () = assert!(camera::HEIGHT == design::CONTENT_HEIGHT);
 const _: () = assert!(camera::WIDTH >= design::CONTENT_WIDTH);
-const _: () = assert!(CAMERA_CROP_PIXELS % 2 == 0);
+const _: () = assert!(CAMERA_CROP_PIXELS.is_multiple_of(2));
 const _: () =
     assert!(CAMERA_SOURCE_END_BYTE - CAMERA_SOURCE_START_BYTE == design::CONTENT_WIDTH * 2);
 

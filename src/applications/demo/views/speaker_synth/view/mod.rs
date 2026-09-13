@@ -22,8 +22,8 @@ use crate::{
     },
 };
 
-use crate::applications::demo::navigation::{ContentPointer, PointerPhase};
 use super::{Action, PitchSemitones, SpeakerDisplay, TempoBpm};
+use crate::applications::demo::navigation::{ContentPointer, PointerPhase};
 
 mod generated {
     use embedded_gui::prelude::*;

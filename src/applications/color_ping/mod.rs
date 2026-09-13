@@ -90,8 +90,8 @@ impl TonePlayer {
 
     fn start(&mut self, color: Color) {
         self.phase = 0;
-        self.phase_step = ((u64::from(color.frequency_hz()) << 32)
-            / u64::from(speaker::SAMPLE_RATE_HZ)) as u32;
+        self.phase_step =
+            ((u64::from(color.frequency_hz()) << 32) / u64::from(speaker::SAMPLE_RATE_HZ)) as u32;
         self.frames_left_to_generate = speaker::SAMPLE_RATE_HZ * TONE_DURATION_MS / 1_000;
         self.pending_frames = 0;
         self.pending_offset_frames = 0;
@@ -102,8 +102,8 @@ impl TonePlayer {
             if self.pending_offset_frames < self.pending_frames {
                 let first_sample = self.pending_offset_frames * speaker::CHANNELS;
                 let last_sample = self.pending_frames * speaker::CHANNELS;
-                let written = speaker
-                    .try_write_interleaved(&self.pending[first_sample..last_sample]);
+                let written =
+                    speaker.try_write_interleaved(&self.pending[first_sample..last_sample]);
 
                 if written == 0 {
                     return;
@@ -133,8 +133,8 @@ impl TonePlayer {
 
             let mut phase = self.phase;
             let phase_step = self.phase_step;
-            for frame in self.pending[..frames * speaker::CHANNELS]
-                .chunks_exact_mut(speaker::CHANNELS)
+            for frame in
+                self.pending[..frames * speaker::CHANNELS].chunks_exact_mut(speaker::CHANNELS)
             {
                 let sample = sine_sample(phase);
                 phase = phase.wrapping_add(phase_step);
@@ -151,10 +151,9 @@ impl TonePlayer {
 
 fn sine_sample(phase: u32) -> i16 {
     const SINE: [i16; 32] = [
-        0, 6393, 12539, 18204, 23170, 27245, 30273, 32137,
-        32767, 32137, 30273, 27245, 23170, 18204, 12539, 6393,
-        0, -6393, -12539, -18204, -23170, -27245, -30273, -32137,
-        -32767, -32137, -30273, -27245, -23170, -18204, -12539, -6393,
+        0, 6393, 12539, 18204, 23170, 27245, 30273, 32137, 32767, 32137, 30273, 27245, 23170,
+        18204, 12539, 6393, 0, -6393, -12539, -18204, -23170, -27245, -30273, -32137, -32767,
+        -32137, -30273, -27245, -23170, -18204, -12539, -6393,
     ];
 
     let index = (phase >> 27) as usize;
@@ -177,12 +176,7 @@ fn draw(display: &mut Display, selected: Color) {
     });
 }
 
-fn handle_touch(
-    touch: &mut Touch,
-    network: &mut Network,
-    selected: &mut Color,
-    redraw: &mut bool,
-) {
+fn handle_touch(touch: &mut Touch, network: &mut Network, selected: &mut Color, redraw: &mut bool) {
     while let Some(edge) = touch.next_edge() {
         if let TouchEdge::Pressed(point) = edge {
             *selected = Color::from_x(point.x);
@@ -218,12 +212,7 @@ pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
     let mut tone = TonePlayer::new();
 
     loop {
-        handle_touch(
-            &mut touch,
-            &mut network,
-            &mut selected,
-            &mut redraw,
-        );
+        handle_touch(&mut touch, &mut network, &mut selected, &mut redraw);
         handle_network(&mut network, &mut tone);
         tone.update(&mut speaker);
 

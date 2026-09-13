@@ -199,7 +199,7 @@ fn speaker_safe_wave(phase: u32, fundamental_step: u32) -> i16 {
 
     let step = u64::from(fundamental_step);
     let threshold = u64::from(DIRECT_FUNDAMENTAL_MIN_STEP);
-    let first_harmonic = ((threshold + step - 1) / step) as u32;
+    let first_harmonic = threshold.div_ceil(step) as u32;
     // The current pitch range requires at most the 5th harmonic. Keep a hard
     // bound in case the score range changes later.
     let first_harmonic = first_harmonic.clamp(2, 6);

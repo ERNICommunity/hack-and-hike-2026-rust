@@ -4,11 +4,9 @@
 //! owns the active destination and physical touch reader, routing one gesture to
 //! either the navigation rail or the active content screen.
 
-use crate::{
-    capabilities::{
-        display::Surface,
-        touch::{Touch, TouchEdge, TouchPoint},
-    },
+use crate::capabilities::{
+    display::Surface,
+    touch::{Touch, TouchEdge, TouchPoint},
 };
 
 use super::design;
@@ -43,8 +41,7 @@ impl ViewId {
 }
 
 const ICON_X: usize = (design::UI.navigation.width - design::NAV_ICON_SIZE) / 2;
-const ICON_Y_IN_BUTTON: usize =
-    (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;
+const ICON_Y_IN_BUTTON: usize = (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PointerPhase {
@@ -79,10 +76,7 @@ impl NavigationInput {
         }
     }
 
-    pub(super) fn poll(
-        &mut self,
-        mut on_content: impl FnMut(ContentPointer),
-    ) -> Option<ViewId> {
+    pub(super) fn poll(&mut self, mut on_content: impl FnMut(ContentPointer)) -> Option<ViewId> {
         let mut selected = None;
 
         while let Some(edge) = self.touch.next_edge() {

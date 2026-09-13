@@ -8,11 +8,7 @@ mod view;
 
 use embassy_time::Instant;
 
-use crate::{
-    capabilities::display::Surface,
-    support::logging,
-    ui::gui::GuiSurface,
-};
+use crate::{capabilities::display::Surface, support::logging, ui::gui::GuiSurface};
 
 use model::Model;
 use view::View;

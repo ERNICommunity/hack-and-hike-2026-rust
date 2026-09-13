@@ -7,8 +7,6 @@
 use esp_hal::system::Stack;
 use static_cell::StaticCell;
 
-#[cfg(any(feature = "display", feature = "imu", feature = "touch"))]
-use crate::platform::i2c as system_i2c;
 #[cfg(any(feature = "mic", feature = "speaker"))]
 use crate::capabilities::audio;
 #[cfg(feature = "display")]
@@ -19,6 +17,8 @@ use crate::capabilities::imu;
 use crate::capabilities::network;
 #[cfg(feature = "touch")]
 use crate::capabilities::touch;
+#[cfg(any(feature = "display", feature = "imu", feature = "touch"))]
+use crate::platform::i2c as system_i2c;
 use crate::support::memory;
 
 const STACK_SIZE: usize = 16 * 1024;

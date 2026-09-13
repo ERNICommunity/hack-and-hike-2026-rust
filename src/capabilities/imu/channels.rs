@@ -3,7 +3,7 @@
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use static_cell::StaticCell;
 
-use super::{MagStatus, Measurements, Orientation, Sample, Status};
+use super::{Measurements, Orientation, Sample, Status, magnetic::MagneticReport};
 
 type SampleSignal = Signal<CriticalSectionRawMutex, Sample>;
 
@@ -53,26 +53,48 @@ impl Imu {
     }
 }
 
-pub(super) fn publish(
+/// CPU1 side of the transport: numbers and publishes samples.
+pub(super) struct Publisher {
     runtime: Runtime,
-    revision: &mut u32,
-    measurements: Measurements,
-    status: Status,
-    orientation: Orientation,
-    mag_status: MagStatus,
-    mag_field_ut: f32,
-    mag_calibration_percent: u8,
-) {
-    *revision = revision.wrapping_add(1);
-    runtime.service.latest.signal(Sample {
-        revision: *revision,
-        acceleration_m_s2: measurements.acceleration_m_s2,
-        angular_velocity_deg_s: measurements.angular_velocity_deg_s,
-        magnetic_field_ut: measurements.magnetic_field_ut,
-        status,
-        orientation,
-        mag_status,
-        mag_field_strength_ut: mag_field_ut,
-        mag_calibration_percent,
-    });
+    revision: u32,
+}
+
+impl Publisher {
+    pub(super) const fn new(runtime: Runtime) -> Self {
+        Self {
+            runtime,
+            revision: 0,
+        }
+    }
+
+    /// Revision carried by the most recently published sample.
+    pub(super) const fn revision(&self) -> u32 {
+        self.revision
+    }
+
+    /// Revision the next published sample will carry.
+    pub(super) const fn next_revision(&self) -> u32 {
+        self.revision.wrapping_add(1)
+    }
+
+    pub(super) fn publish(
+        &mut self,
+        status: Status,
+        measurements: Measurements,
+        orientation: Orientation,
+        magnetic: MagneticReport,
+    ) {
+        self.revision = self.next_revision();
+        self.runtime.service.latest.signal(Sample {
+            revision: self.revision,
+            acceleration_m_s2: measurements.acceleration_m_s2,
+            angular_velocity_deg_s: measurements.angular_velocity_deg_s,
+            magnetic_field_ut: measurements.magnetic_field_ut,
+            status,
+            orientation,
+            mag_status: magnetic.status,
+            mag_field_strength_ut: magnetic.field_ut,
+            mag_calibration_percent: magnetic.calibration_percent,
+        });
+    }
 }

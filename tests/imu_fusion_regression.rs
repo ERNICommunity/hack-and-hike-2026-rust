@@ -40,14 +40,7 @@ fn settle_heading(
 ) -> Orientation {
     let mut orientation = Orientation::default();
     for _ in 0..samples {
-        orientation = fusion.update(
-            accel_g,
-            [0.0, 0.0, 0.0],
-            0.01,
-            0.0,
-            Some(field_ut),
-            0.98,
-        );
+        orientation = fusion.update(accel_g, [0.0, 0.0, 0.0], 0.01, 0.0, Some(field_ut), 0.98);
     }
     orientation
 }
@@ -64,12 +57,7 @@ fn flat_crossing_does_not_leave_a_sticky_magnetic_branch_offset() {
         Some([0.0, 0.0, 50.0]),
         0.98,
     );
-    let mut orientation = settle_heading(
-        &mut fusion,
-        [0.0, -1.0, 0.0],
-        [0.0, 0.0, 50.0],
-        12,
-    );
+    let mut orientation = settle_heading(&mut fusion, [0.0, -1.0, 0.0], [0.0, 0.0, 50.0], 12);
     assert!(angular_distance(orientation.yaw_deg, 0.0) < 1.0);
 
     orientation = fusion.update(
@@ -82,12 +70,7 @@ fn flat_crossing_does_not_leave_a_sticky_magnetic_branch_offset() {
     );
     assert!(angular_distance(orientation.yaw_deg, 0.0) < 1.0);
 
-    orientation = settle_heading(
-        &mut fusion,
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, -50.0],
-        16,
-    );
+    orientation = settle_heading(&mut fusion, [0.0, 1.0, 0.0], [0.0, 0.0, -50.0], 16);
     assert!(
         angular_distance(orientation.yaw_deg, 180.0) < 2.0,
         "expected raw far-side magnetic branch near 180 deg, got {} deg",
@@ -102,12 +85,7 @@ fn flat_crossing_does_not_leave_a_sticky_magnetic_branch_offset() {
         Some([0.0, 50.0, 0.0]),
         0.98,
     );
-    orientation = settle_heading(
-        &mut fusion,
-        [0.0, -1.0, 0.0],
-        [0.0, 0.0, 50.0],
-        16,
-    );
+    orientation = settle_heading(&mut fusion, [0.0, -1.0, 0.0], [0.0, 0.0, 50.0], 16);
     assert!(
         angular_distance(orientation.yaw_deg, 0.0) < 2.0,
         "expected original magnetic branch near 0 deg, got {} deg",
@@ -118,14 +96,7 @@ fn flat_crossing_does_not_leave_a_sticky_magnetic_branch_offset() {
 #[test]
 fn full_basis_stays_continuous_through_camera_forward_pole() {
     let mut fusion = Fusion::new();
-    let mut previous = fusion.update(
-        [0.0, -1.0, 0.0],
-        [0.0, 0.0, 0.0],
-        0.01,
-        0.0,
-        None,
-        0.98,
-    );
+    let mut previous = fusion.update([0.0, -1.0, 0.0], [0.0, 0.0, 0.0], 0.01, 0.0, None, 0.98);
 
     // Roll the physical device from upright through display-flat to the other
     // side in two-degree increments. Euler yaw is allowed to change branch at
@@ -157,12 +128,7 @@ fn magnetic_reacquisition_is_smooth_not_a_single_frame_snap() {
         Some([0.0, 0.0, 50.0]),
         0.98,
     );
-    let settled = settle_heading(
-        &mut fusion,
-        [0.0, -1.0, 0.0],
-        [0.0, 0.0, 50.0],
-        12,
-    );
+    let settled = settle_heading(&mut fusion, [0.0, -1.0, 0.0], [0.0, 0.0, 50.0], 12);
     assert!(angular_distance(settled.yaw_deg, 0.0) < 1.0);
 
     fusion.invalidate_absolute_heading();
@@ -213,12 +179,7 @@ fn stationary_noisy_magnetic_samples_do_not_make_yaw_hunt() {
         0.98,
     );
 
-    let mut orientation = settle_heading(
-        &mut fusion,
-        [0.0, -1.0, 0.0],
-        [0.0, 0.0, 50.0],
-        12,
-    );
+    let mut orientation = settle_heading(&mut fusion, [0.0, -1.0, 0.0], [0.0, 0.0, 50.0], 12);
     assert!(angular_distance(orientation.yaw_deg, 0.0) < 1.0);
 
     let mut max_deviation = 0.0f32;

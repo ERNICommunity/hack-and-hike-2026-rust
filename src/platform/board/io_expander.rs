@@ -8,11 +8,19 @@ use esp_hal::delay::Delay;
 
 const AW9523_ADDR: u8 = 0x58;
 
-#[cfg(any(feature = "touch", feature = "speaker", all(feature = "display", feature = "touch")))]
+#[cfg(any(
+    feature = "touch",
+    feature = "speaker",
+    all(feature = "display", feature = "touch")
+))]
 const PORT0_OUTPUT_REGISTER: u8 = 0x02;
 #[cfg(any(feature = "display", feature = "camera"))]
 const PORT1_OUTPUT_REGISTER: u8 = 0x03;
-#[cfg(any(feature = "touch", feature = "speaker", all(feature = "display", feature = "touch")))]
+#[cfg(any(
+    feature = "touch",
+    feature = "speaker",
+    all(feature = "display", feature = "touch")
+))]
 const PORT0_DIRECTION_REGISTER: u8 = 0x04;
 #[cfg(any(feature = "display", feature = "camera"))]
 const PORT1_DIRECTION_REGISTER: u8 = 0x05;

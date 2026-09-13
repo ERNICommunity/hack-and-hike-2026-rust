@@ -8,7 +8,7 @@ use super::{
     Config, DEFAULT_FUSION_HZ, DEFAULT_MAG_HZ, DEFAULT_SENSOR_HZ, MagStatus, Measurements,
     Orientation, Status,
     bmi270::{Bmi270, Error, GYRO_SENSOR_ODR_HZ},
-    channels::{self, Runtime},
+    channels::{Publisher, Runtime},
     fusion::{Fusion, GyroBias, max_abs3},
     magnetic::MagneticState,
 };
@@ -34,7 +34,7 @@ const IMU_TRACE_EVERY_SAMPLES: u32 = 20;
 #[embassy_executor::task]
 pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
     let sensor = Bmi270::new(bus);
-    let mut revision = 0u32;
+    let mut publisher = Publisher::new(runtime);
     let mut last_orientation = Orientation::default();
     let mut logged_calibrated_publish = false;
     // Calibration describes the physical sensor/enclosure, not one transport
@@ -44,30 +44,22 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
     loop {
         let mut measurements = Measurements::default();
         magnetic.rebind(None, Instant::now());
-        channels::publish(
-            runtime,
-            &mut revision,
-            measurements,
+        publisher.publish(
             Status::Starting,
+            measurements,
             last_orientation,
-            magnetic.status(),
-            magnetic.field_ut(),
-            magnetic.calibration_percent(),
+            magnetic.report(),
         );
 
         match sensor.initialize().await {
             Ok(()) => {}
             Err(error) => {
                 log_init_error("BMI270", error);
-                channels::publish(
-                    runtime,
-                    &mut revision,
-                    measurements,
+                publisher.publish(
                     Status::Fault,
+                    measurements,
                     last_orientation,
-                    magnetic.status(),
-                    magnetic.field_ut(),
-                    magnetic.calibration_percent(),
+                    magnetic.report(),
                 );
                 Timer::after(INIT_RETRY).await;
                 continue;
@@ -106,7 +98,7 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
         // closer to 80-90 Hz in the captured trace.
         let mut sample_ticker = Ticker::every(config.sample_period);
 
-        ::log::trace!("IMU session-start revision={}", revision);
+        ::log::trace!("IMU session-start revision={}", publisher.revision());
 
         loop {
             sample_ticker.next().await;
@@ -184,16 +176,16 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                             mag_status,
                             magnetic.field_ut(),
                             calibration_percent,
-                            revision.wrapping_add(1)
+                            publisher.next_revision()
                         );
                         previous_mag_status = mag_status;
                     }
 
-                    if trace_samples % IMU_TRACE_EVERY_SAMPLES == 0 {
+                    if trace_samples.is_multiple_of(IMU_TRACE_EVERY_SAMPLES) {
                         let mag = magnetic_for_fusion.unwrap_or([0.0, 0.0, 0.0]);
                         ::log::trace!(
                             "IMU rev={} st={} dt_ms={} acc=[{},{},{}] gyro_raw=[{},{},{}] gyro_corr=[{},{},{}] mag_used={} mag=[{},{},{}] field_ut={} mag_status={:?} cal={} out_rpy=[{},{},{}] g=[{},{},{}] n=[{},{},{}]",
-                            revision.wrapping_add(1),
+                            publisher.next_revision(),
                             sample.sensor_time,
                             dt_seconds * 1000.0,
                             sample.accel_g[0],
@@ -230,37 +222,24 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                             status,
                             mag_status,
                             magnetic.field_ut(),
-                            revision.wrapping_add(1)
+                            publisher.next_revision()
                         );
                         logged_calibrated_publish = true;
                     }
-                    channels::publish(
-                        runtime,
-                        &mut revision,
-                        measurements,
-                        status,
-                        last_orientation,
-                        mag_status,
-                        magnetic.field_ut(),
-                        calibration_percent,
-                    );
+                    publisher.publish(status, measurements, last_orientation, magnetic.report());
                 }
                 Err(_) => {
                     consecutive_errors = consecutive_errors.saturating_add(1);
                     ::log::warn!(
                         "IMU-EVENT read-error consecutive={} revision={}",
                         consecutive_errors,
-                        revision
+                        publisher.revision()
                     );
-                    channels::publish(
-                        runtime,
-                        &mut revision,
-                        measurements,
+                    publisher.publish(
                         Status::Degraded,
+                        measurements,
                         last_orientation,
-                        magnetic.status(),
-                        magnetic.field_ut(),
-                        magnetic.calibration_percent(),
+                        magnetic.report(),
                     );
 
                     if consecutive_errors >= MAX_CONSECUTIVE_READ_ERRORS {
@@ -268,15 +247,11 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Run
                             "BMI270 read failed {} times consecutively; reinitializing IMU",
                             consecutive_errors
                         );
-                        channels::publish(
-                            runtime,
-                            &mut revision,
-                            measurements,
+                        publisher.publish(
                             Status::Fault,
+                            measurements,
                             last_orientation,
-                            magnetic.status(),
-                            magnetic.field_ut(),
-                            magnetic.calibration_percent(),
+                            magnetic.report(),
                         );
                         Timer::after(Duration::from_millis(250)).await;
                         break;

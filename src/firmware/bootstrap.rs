@@ -8,7 +8,6 @@
 use ::log::info;
 #[cfg(feature = "camera")]
 use ::log::warn;
-use esp_hal::{clock::CpuClock, timer::timg::TimerGroup};
 #[cfg(any(
     feature = "display",
     feature = "touch",
@@ -16,18 +15,8 @@ use esp_hal::{clock::CpuClock, timer::timg::TimerGroup};
     feature = "camera",
 ))]
 use esp_hal::delay::Delay;
+use esp_hal::{clock::CpuClock, timer::timg::TimerGroup};
 
-#[cfg(any(feature = "display", feature = "touch", feature = "camera"))]
-use crate::platform::board;
-#[cfg(any(
-    feature = "display",
-    feature = "touch",
-    feature = "imu",
-    feature = "mic",
-    feature = "speaker",
-    feature = "camera",
-))]
-use crate::platform::i2c as system_i2c;
 #[cfg(any(feature = "mic", feature = "speaker"))]
 use crate::capabilities::audio;
 #[cfg(feature = "camera")]
@@ -53,6 +42,17 @@ use crate::capabilities::touch;
     feature = "network",
 ))]
 use crate::firmware::cpu1;
+#[cfg(any(feature = "display", feature = "touch", feature = "camera"))]
+use crate::platform::board;
+#[cfg(any(
+    feature = "display",
+    feature = "touch",
+    feature = "imu",
+    feature = "mic",
+    feature = "speaker",
+    feature = "camera",
+))]
+use crate::platform::i2c as system_i2c;
 use crate::support::{logging as logger, memory};
 
 pub(crate) struct Bootstrap {
@@ -131,7 +131,8 @@ where
         Ok(pid) => {
             warn!(
                 "Camera disabled: unexpected GC0308 PID 0x{:02x} (expected 0x{:02x})",
-                pid, camera::EXPECTED_SENSOR_PID
+                pid,
+                camera::EXPECTED_SENSOR_PID
             );
             false
         }

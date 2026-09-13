@@ -1,8 +1,8 @@
 //! Ellipsoid fitting and provisional-model validation for BMM150 calibration.
 
 use super::math::{
-    PARAMS, abs_f32, bit_count_u32, clamp_f32, dot3, matrix_vector, max_f32, min_f32,
-    solve_linear_3, solve_linear_9, sqrt_approx, symmetric_eigen_3,
+    PARAMS, abs_f32, bit_count_u32, clamp_f32, dot3, matrix_vector, max_f32, min_f32, solve_linear,
+    sqrt_approx, symmetric_eigen_3,
 };
 
 // Ninety-six balanced samples still provide more than ten observations per
@@ -204,14 +204,9 @@ pub(super) fn fit_model(
     }
 
     let inverse_weight = 1.0 / weight_sum;
-    let mut augmented = [[0.0; PARAMS + 1]; PARAMS];
-    for row in 0..PARAMS {
-        for col in 0..PARAMS {
-            augmented[row][col] = normal[row][col] * inverse_weight;
-        }
-        augmented[row][PARAMS] = rhs[row] * inverse_weight;
-    }
-    let parameters = solve_linear_9(augmented)?;
+    let scaled_normal = normal.map(|row| row.map(|value| value * inverse_weight));
+    let scaled_rhs = rhs.map(|value| value * inverse_weight);
+    let parameters = solve_linear(scaled_normal, scaled_rhs)?;
 
     let rms = algebraic_rms(parameters, normal, rhs, weight_sum);
     if !rms.is_finite() || rms > MAX_ALGEBRAIC_RMS {
@@ -224,7 +219,7 @@ pub(super) fn fit_model(
         [parameters[4], parameters[5], parameters[2]],
     ];
     let linear = [parameters[6], parameters[7], parameters[8]];
-    let q_center = solve_linear_3(q, linear)?;
+    let q_center = solve_linear(q, linear)?;
     let center_normalized = [-0.5 * q_center[0], -0.5 * q_center[1], -0.5 * q_center[2]];
 
     let scale = 1.0 + dot3(center_normalized, matrix_vector(q, center_normalized));

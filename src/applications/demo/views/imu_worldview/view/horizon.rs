@@ -305,8 +305,8 @@ fn draw_clipped_line(
     let max_x = area.w as i32 - 3;
     let min_y = 2;
     let max_y = area.h as i32 - 3;
-    if let Some(((x0, y0), (x1, y1))) = clip_line(start, end, min_x, max_x, min_y, max_y) {
-        draw_line_pixels(frame, area, camera, x0, y0, x1, y1, sky);
+    if let Some((start, end)) = clip_line(start, end, min_x, max_x, min_y, max_y) {
+        draw_line_pixels(frame, area, camera, start, end, sky);
     }
 }
 
@@ -317,10 +317,8 @@ fn draw_line_pixels(
     frame: &mut GuiFramebuffer,
     area: Rect,
     camera: PerspectiveCamera,
-    mut x0: i32,
-    mut y0: i32,
-    x1: i32,
-    y1: i32,
+    (mut x0, mut y0): (i32, i32),
+    (x1, y1): (i32, i32),
     sky: bool,
 ) {
     let dx = (x1 - x0).abs();

@@ -33,10 +33,6 @@ fn sqrt_handles_zero_subnormals_and_infinity() {
     assert_eq!(sqrt::sqrt_approx(-1.0), 0.0);
 
     let smallest = f32::from_bits(1);
-    assert_relative(
-        sqrt::sqrt_approx(smallest),
-        3.743_392e-23,
-        1.0e-5,
-    );
+    assert_relative(sqrt::sqrt_approx(smallest), 3.743_392e-23, 1.0e-5);
     assert_eq!(sqrt::sqrt_approx(f32::INFINITY), f32::INFINITY);
 }

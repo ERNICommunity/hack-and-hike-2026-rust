@@ -4,6 +4,8 @@
 //! exist only for the numeric header and are never used to reconstruct camera
 //! orientation, so the renderer has no pole branch to infer or repair.
 
+use core::f32::consts::PI;
+
 use embedded_gui::prelude::Rect;
 
 use super::super::DisplayState;
@@ -11,7 +13,6 @@ use super::super::DisplayState;
 pub(super) const TAN_SCALE: i32 = 1024;
 pub(super) const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
-const PI: f32 = 3.14159265358979323846;
 const RAD_TO_DEG: f32 = 180.0 / PI;
 
 // tan(50deg) gives a 100deg horizontal FOV at any viewport width.
@@ -104,9 +105,8 @@ pub(super) fn perspective_camera(
     // from gravity. The focal_x/focal_y term keeps the horizon exact under the
     // renderer's anisotropic horizontal FOV.
     let scaled_gravity_x = gravity_camera[0] * focal_y / focal_x;
-    let raster_norm = sqrt_approx(
-        scaled_gravity_x * scaled_gravity_x + gravity_camera[1] * gravity_camera[1],
-    );
+    let raster_norm =
+        sqrt_approx(scaled_gravity_x * scaled_gravity_x + gravity_camera[1] * gravity_camera[1]);
     let (sin_roll, cos_roll, pitch_offset) = if raster_norm > 0.0001 {
         (
             -scaled_gravity_x / raster_norm,
@@ -120,13 +120,16 @@ pub(super) fn perspective_camera(
         (
             0.0,
             1.0,
-            if gravity_camera[2] >= 0.0 { -offscreen } else { offscreen },
+            if gravity_camera[2] >= 0.0 {
+                -offscreen
+            } else {
+                offscreen
+            },
         )
     };
 
-    let cos_pitch = sqrt_approx(
-        gravity_camera[0] * gravity_camera[0] + gravity_camera[1] * gravity_camera[1],
-    );
+    let cos_pitch =
+        sqrt_approx(gravity_camera[0] * gravity_camera[0] + gravity_camera[1] * gravity_camera[1]);
     let sin_pitch = -gravity_camera[2];
 
     // A camera ray through pixel offset (dx,dy) is proportional to

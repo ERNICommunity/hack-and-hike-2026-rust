@@ -25,8 +25,8 @@ const RX_PROCESS_CHUNK_BYTES: usize = FRAMES_PER_BLOCK * CHANNELS * 2;
 // deepen only the stream ring rather than shrinking descriptor chunks.
 const TX_DMA_BUFFER_BYTES: usize = 4 * esp_hal::dma::CHUNK_SIZE;
 #[cfg(feature = "mic")]
-const _: () = assert!(RX_PROCESS_CHUNK_BYTES % 4 == 0);
-const _: () = assert!(TX_DMA_BUFFER_BYTES % 4 == 0);
+const _: () = assert!(RX_PROCESS_CHUNK_BYTES.is_multiple_of(4));
+const _: () = assert!(TX_DMA_BUFFER_BYTES.is_multiple_of(4));
 
 #[cfg(feature = "mic")]
 async fn yield_to_executor() {
@@ -62,10 +62,8 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
     } = resources;
 
     #[cfg(feature = "mic")]
-    let rx_buffer =
-        esp_hal::dma_rx_stream_buffer!(RX_DMA_BUFFER_BYTES, esp_hal::dma::CHUNK_SIZE);
-    let tx_buffer =
-        esp_hal::dma_tx_stream_buffer!(TX_DMA_BUFFER_BYTES, esp_hal::dma::CHUNK_SIZE);
+    let rx_buffer = esp_hal::dma_rx_stream_buffer!(RX_DMA_BUFFER_BYTES, esp_hal::dma::CHUNK_SIZE);
+    let tx_buffer = esp_hal::dma_tx_stream_buffer!(TX_DMA_BUFFER_BYTES, esp_hal::dma::CHUNK_SIZE);
 
     let i2s = I2s::new(
         i2s0,
@@ -109,16 +107,13 @@ pub(crate) async fn capture_task(resources: Resources, spawner: Spawner, runtime
     );
 
     #[cfg(not(feature = "mic"))]
-    {
-        core::future::pending::<()>().await;
-        return;
-    }
+    core::future::pending::<()>().await;
 
     #[cfg(feature = "mic")]
     {
         let mut transfer = i2s_rx
             .read(rx_buffer)
-            .ok()
+            .map_err(|(error, _, _)| error)
             .expect("Failed to start circular I2S RX DMA");
 
         ::log::info!(

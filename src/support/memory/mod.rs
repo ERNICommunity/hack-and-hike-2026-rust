@@ -17,6 +17,4 @@ pub(crate) use stack::init_cpu0_stack_watermark;
     feature = "speaker",
     feature = "network",
 ))]
-pub(crate) use stack::{
-    cpu1_stack_monitor_task, init_cpu1_stack_watermark, register_cpu1_stack,
-};
+pub(crate) use stack::{cpu1_stack_monitor_task, init_cpu1_stack_watermark, register_cpu1_stack};

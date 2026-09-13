@@ -145,7 +145,10 @@ async fn transmit_task(
                 continue;
             };
 
-            match sender.send_async(&destination, &encoded[..encoded_len]).await {
+            match sender
+                .send_async(&destination, &encoded[..encoded_len])
+                .await
+            {
                 Ok(()) => {
                     diagnostics::record_network_tx_packet();
                     let _ = with_state(NetworkState::record_send_ok);
@@ -159,9 +162,9 @@ async fn transmit_task(
 
         let now = Instant::now();
         if now.as_millis() >= next_beacon_ms {
-            if let Some(packet) = with_state(|state| {
-                state.next_beacon(now.as_millis(), LOCAL_CAPABILITIES)
-            }) {
+            if let Some(packet) =
+                with_state(|state| state.next_beacon(now.as_millis(), LOCAL_CAPABILITIES))
+            {
                 let payload = packet.encode();
                 match sender.send_async(&BROADCAST_ADDRESS, &payload).await {
                     Ok(()) => {
@@ -225,7 +228,8 @@ async fn receive_task(
         }
 
         diagnostics::record_network_rx_packet();
-        let outcome = with_state(|state| state.record_receive(sender_id, mac, rssi, now.as_millis()));
+        let outcome =
+            with_state(|state| state.record_receive(sender_id, mac, rssi, now.as_millis()));
         let is_new = outcome.is_some_and(|outcome| outcome.is_new);
         if outcome.is_some_and(|outcome| outcome.evicted) {
             diagnostics::record_network_peer_eviction();

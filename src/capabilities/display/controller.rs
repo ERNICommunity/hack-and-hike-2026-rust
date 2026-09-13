@@ -8,12 +8,7 @@ use embedded_hal::{
     spi::{ErrorType as SpiErrorType, Operation, SpiBus, SpiDevice},
 };
 use embedded_hal_bus::spi::DeviceError;
-use esp_hal::{
-    Blocking,
-    delay::Delay,
-    gpio::Output,
-    spi::master::SpiDma,
-};
+use esp_hal::{Blocking, delay::Delay, gpio::Output, spi::master::SpiDma};
 use mipidsi::options::{
     HorizontalRefreshOrder, Orientation, RefreshOrder, Rotation, VerticalRefreshOrder,
 };
@@ -87,10 +82,10 @@ where
             }
         }
 
-        if result.is_ok() {
-            if let Err(err) = self.bus.flush() {
-                result = Err(DeviceError::Spi(err));
-            }
+        if result.is_ok()
+            && let Err(err) = self.bus.flush()
+        {
+            result = Err(DeviceError::Spi(err));
         }
 
         let cs_result = self.cs.set_high().map_err(DeviceError::Cs);

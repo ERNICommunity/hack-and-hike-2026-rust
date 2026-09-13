@@ -2,11 +2,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use embassy_sync::{
-    blocking_mutex::raw::CriticalSectionRawMutex,
-    mutex::Mutex,
-    signal::Signal,
-};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex, signal::Signal};
 use serde::Serialize;
 use static_cell::StaticCell;
 
@@ -180,7 +176,10 @@ pub(crate) fn init_endpoints() -> Endpoints {
 
 impl Network {
     /// Refresh the CPU0 peer/diagnostic cache from the newest CPU1 snapshot.
-    #[allow(dead_code, reason = "part of the application-facing network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing network diagnostics capability contract"
+    )]
     pub(crate) fn refresh(&mut self) -> bool {
         let Some(snapshot) = self.service.latest.try_take() else {
             return false;
@@ -189,7 +188,10 @@ impl Network {
         true
     }
 
-    #[allow(dead_code, reason = "part of the application-facing network diagnostics capability contract")]
+    #[allow(
+        dead_code,
+        reason = "part of the application-facing network diagnostics capability contract"
+    )]
     pub(crate) fn snapshot(&self) -> Option<&Snapshot> {
         self.snapshot.as_ref()
     }
@@ -210,10 +212,10 @@ impl Network {
     ) -> Result<(), SendError> {
         let payload = serialize_payload(value)?;
 
-        if let Some(recipient) = recipient {
-            if !self.peers().any(|peer| peer.id == recipient) {
-                return Err(SendError::UnknownPeer);
-            }
+        if let Some(recipient) = recipient
+            && !self.peers().any(|peer| peer.id == recipient)
+        {
+            return Err(SendError::UnknownPeer);
         }
 
         let Ok(mut queue) = self.service.tx.try_lock() else {

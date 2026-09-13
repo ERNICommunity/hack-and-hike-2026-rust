@@ -1,116 +1,67 @@
 //! Fixed-size numerical helpers used only by BMM150 calibration.
 
 pub(super) const PARAMS: usize = 9;
-const AUGMENTED: usize = PARAMS + 1;
 const SOLVER_RELATIVE_PIVOT_EPSILON: f32 = 1.0e-6;
 const JACOBI_ROTATIONS: usize = 18;
 
-pub(super) fn solve_linear_9(mut augmented: [[f32; AUGMENTED]; PARAMS]) -> Option<[f32; PARAMS]> {
-    let mut matrix_max = 0.0f32;
-    for row in 0..PARAMS {
-        for col in 0..PARAMS {
-            matrix_max = max_f32(matrix_max, abs_f32(augmented[row][col]));
-        }
-    }
+/// Solve `matrix * x = rhs` by Gauss-Jordan elimination with partial pivoting.
+///
+/// Returns `None` when the system is singular or numerically unstable.
+pub(super) fn solve_linear<const N: usize>(
+    mut matrix: [[f32; N]; N],
+    mut rhs: [f32; N],
+) -> Option<[f32; N]> {
+    let matrix_max = matrix
+        .iter()
+        .flatten()
+        .fold(0.0f32, |max, value| max_f32(max, abs_f32(*value)));
     if matrix_max <= 0.0 {
         return None;
     }
     let pivot_epsilon = matrix_max * SOLVER_RELATIVE_PIVOT_EPSILON;
 
-    for col in 0..PARAMS {
-        let mut pivot_row = col;
-        let mut pivot_abs = abs_f32(augmented[col][col]);
-        for row in (col + 1)..PARAMS {
-            let candidate = abs_f32(augmented[row][col]);
-            if candidate > pivot_abs {
-                pivot_abs = candidate;
-                pivot_row = row;
-            }
-        }
-        if pivot_abs <= pivot_epsilon {
+    for col in 0..N {
+        let pivot_row = matrix
+            .iter()
+            .enumerate()
+            .skip(col)
+            .fold(col, |best, (row, values)| {
+                if abs_f32(values[col]) > abs_f32(matrix[best][col]) {
+                    row
+                } else {
+                    best
+                }
+            });
+        if abs_f32(matrix[pivot_row][col]) <= pivot_epsilon {
             return None;
         }
-        if pivot_row != col {
-            augmented.swap(pivot_row, col);
-        }
+        matrix.swap(pivot_row, col);
+        rhs.swap(pivot_row, col);
 
-        let pivot = augmented[col][col];
-        for index in col..AUGMENTED {
-            augmented[col][index] /= pivot;
+        let pivot = matrix[col][col];
+        for value in &mut matrix[col] {
+            *value /= pivot;
         }
+        rhs[col] /= pivot;
 
-        for row in 0..PARAMS {
+        let pivot_values = matrix[col];
+        let pivot_rhs = rhs[col];
+        for (row, (values, value_rhs)) in matrix.iter_mut().zip(&mut rhs).enumerate() {
             if row == col {
                 continue;
             }
-            let factor = augmented[row][col];
+            let factor = values[col];
             if factor == 0.0 {
                 continue;
             }
-            for index in col..AUGMENTED {
-                augmented[row][index] -= factor * augmented[col][index];
+            for (value, pivot_value) in values.iter_mut().zip(pivot_values) {
+                *value -= factor * pivot_value;
             }
+            *value_rhs -= factor * pivot_rhs;
         }
     }
 
-    let mut result = [0.0; PARAMS];
-    for row in 0..PARAMS {
-        result[row] = augmented[row][PARAMS];
-        if !result[row].is_finite() {
-            return None;
-        }
-    }
-    Some(result)
-}
-
-pub(super) fn solve_linear_3(matrix: [[f32; 3]; 3], rhs: [f32; 3]) -> Option<[f32; 3]> {
-    let mut augmented = [[0.0; 4]; 3];
-    let mut matrix_max = 0.0f32;
-    for row in 0..3 {
-        for col in 0..3 {
-            augmented[row][col] = matrix[row][col];
-            matrix_max = max_f32(matrix_max, abs_f32(matrix[row][col]));
-        }
-        augmented[row][3] = rhs[row];
-    }
-    if matrix_max <= 0.0 {
-        return None;
-    }
-    let pivot_epsilon = matrix_max * SOLVER_RELATIVE_PIVOT_EPSILON;
-
-    for col in 0..3 {
-        let mut pivot_row = col;
-        let mut pivot_abs = abs_f32(augmented[col][col]);
-        for row in (col + 1)..3 {
-            let candidate = abs_f32(augmented[row][col]);
-            if candidate > pivot_abs {
-                pivot_abs = candidate;
-                pivot_row = row;
-            }
-        }
-        if pivot_abs <= pivot_epsilon {
-            return None;
-        }
-        if pivot_row != col {
-            augmented.swap(pivot_row, col);
-        }
-
-        let pivot = augmented[col][col];
-        for index in col..4 {
-            augmented[col][index] /= pivot;
-        }
-        for row in 0..3 {
-            if row == col {
-                continue;
-            }
-            let factor = augmented[row][col];
-            for index in col..4 {
-                augmented[row][index] -= factor * augmented[col][index];
-            }
-        }
-    }
-
-    Some([augmented[0][3], augmented[1][3], augmented[2][3]])
+    rhs.iter().all(|value| value.is_finite()).then_some(rhs)
 }
 
 /// Jacobi diagonalization for a real symmetric 3x3 matrix.
@@ -142,19 +93,16 @@ pub(super) fn symmetric_eigen_3(mut matrix: [[f32; 3]; 3]) -> Option<([f32; 3], 
         let cosine = 1.0 / sqrt_approx(1.0 + t * t);
         let sine = t * cosine;
 
-        for k in 0..3 {
-            if k == p || k == q {
-                continue;
-            }
-            let akp = matrix[k][p];
-            let akq = matrix[k][q];
-            let new_kp = cosine * akp - sine * akq;
-            let new_kq = sine * akp + cosine * akq;
-            matrix[k][p] = new_kp;
-            matrix[p][k] = new_kp;
-            matrix[k][q] = new_kq;
-            matrix[q][k] = new_kq;
-        }
+        // In a 3x3 matrix exactly one index is neither `p` nor `q`.
+        let k = 3 - p - q;
+        let akp = matrix[k][p];
+        let akq = matrix[k][q];
+        let new_kp = cosine * akp - sine * akq;
+        let new_kq = sine * akp + cosine * akq;
+        matrix[k][p] = new_kp;
+        matrix[p][k] = new_kp;
+        matrix[k][q] = new_kq;
+        matrix[q][k] = new_kq;
 
         let c2 = cosine * cosine;
         let s2 = sine * sine;
@@ -164,11 +112,11 @@ pub(super) fn symmetric_eigen_3(mut matrix: [[f32; 3]; 3]) -> Option<([f32; 3], 
         matrix[p][q] = 0.0;
         matrix[q][p] = 0.0;
 
-        for row in 0..3 {
-            let vip = vectors[row][p];
-            let viq = vectors[row][q];
-            vectors[row][p] = cosine * vip - sine * viq;
-            vectors[row][q] = sine * vip + cosine * viq;
+        for row in &mut vectors {
+            let vip = row[p];
+            let viq = row[q];
+            row[p] = cosine * vip - sine * viq;
+            row[q] = sine * vip + cosine * viq;
         }
     }
 

@@ -14,8 +14,8 @@ use crate::{
     ui::gui::GuiSurface,
 };
 
-pub(crate) use model::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame};
 use model::Model;
+pub(crate) use model::{MAX_AMPLITUDE_PIXELS, POINTS, WaveformFrame};
 use view::View;
 
 pub(crate) struct Application {

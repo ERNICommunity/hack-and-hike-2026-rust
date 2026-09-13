@@ -50,7 +50,7 @@ fn raw_color(raw: u16) -> Rgb565 {
 }
 
 pub(crate) fn fill_rect(frame: &mut GuiFramebuffer, rect: Rect, color: Rgb565) {
-    fill_box(frame, rect.x, rect.y, rect.w as u32, rect.h as u32, color);
+    fill_box(frame, rect.x, rect.y, rect.w, rect.h, color);
 }
 
 pub(crate) fn fill_box(

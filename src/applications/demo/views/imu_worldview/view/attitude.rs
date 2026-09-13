@@ -176,8 +176,7 @@ impl Tracker {
         let provisional_offset_deg = wrap_degrees(self.yaw_offset_deg - base_delta_deg);
         let pole_offset_active = abs_f32(self.yaw_offset_deg) >= MIN_ACTIVE_POLE_OFFSET_DEG;
         let large_fused_recovery = abs_f32(base_delta_deg) >= MIN_POLE_RECOVERY_DELTA_DEG;
-        let reduces_pole_offset =
-            abs_f32(provisional_offset_deg) < abs_f32(self.yaw_offset_deg);
+        let reduces_pole_offset = abs_f32(provisional_offset_deg) < abs_f32(self.yaw_offset_deg);
 
         if pole_offset_active && large_fused_recovery && reduces_pole_offset {
             self.pending_reacquisition = Some(PendingReacquisition {

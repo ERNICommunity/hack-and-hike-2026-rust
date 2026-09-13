@@ -16,8 +16,8 @@ use crate::{
 
 use super::super::navigation::ContentPointer;
 
-pub(crate) use model::{PitchSemitones, SpeakerDisplay, TempoBpm};
 use model::Model;
+pub(crate) use model::{PitchSemitones, SpeakerDisplay, TempoBpm};
 use view::View;
 
 #[derive(Clone, Copy, Debug)]
