@@ -15,10 +15,14 @@ RUN apt-get update && \
 
 USER $USER_NAME
 
-# Host toolchain for the host-side tests, rustfmt and rust-analyzer. Keep the
-# version equal to the Xtensa toolchain version below.
-RUN rustup toolchain install 1.97.0 --component rustfmt --component clippy --component rust-analyzer --component rust-src && \
-    rustup default 1.97.0
+# The Rust version is the `rust-version` of the root Cargo.toml; a Dockerfile
+# cannot read it, so it is repeated here. The Xtensa toolchain below adds a
+# fourth version component.
+ARG RUST_VERSION=1.97.0
+
+# Host toolchain for the host-side tests, rustfmt and rust-analyzer.
+RUN rustup toolchain install "$RUST_VERSION" --component rustfmt --component clippy --component rust-analyzer --component rust-src && \
+    rustup default "$RUST_VERSION"
 
 # Install cargo-binstall and ESP utilities
 RUN cargo install cargo-binstall
@@ -26,9 +30,8 @@ RUN cargo binstall -y --secure \
         espup \
         cargo-espflash
 
-# Install the matching ESP Xtensa toolchain. Keep in sync with
-# .github/workflows/firmware-build.yml.
-RUN espup install -v 1.97.0.0 -t esp32s3
+# Install the matching ESP Xtensa toolchain.
+RUN espup install -v "$RUST_VERSION.0" -t esp32s3
 
 # Add espup environment variables to shell profile
 RUN echo 'source $HOME/export-esp.sh' >> /home/$USER_NAME/.bashrc && \

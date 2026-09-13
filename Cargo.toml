@@ -1,7 +1,7 @@
 [package]
 edition = "2024"
 name = "hack-and-hike"
-rust-version = "1.97.0"
+rust-version.workspace = true
 version = "0.1.0"
 
 [lib]
@@ -14,6 +14,12 @@ bench = false
 
 [workspace]
 members = ["crates/core"]
+
+[workspace.package]
+# The one place the toolchain version is written down. CI and
+# scripts/test.sh read it from here; .devcontainer/Dockerfile repeats it
+# because a Dockerfile cannot read it.
+rust-version = "1.97.0"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -15,8 +15,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  HOST_RUST_VERSION: "1.97.0"
-  XTENSA_RUST_VERSION: "1.97.0.0"
 
 jobs:
   host-tests:
@@ -25,13 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Read the toolchain version from Cargo.toml
+        run: echo "RUST_VERSION=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
+
       - name: Install host Rust toolchain
-        run: rustup toolchain install "$HOST_RUST_VERSION" --profile minimal --component clippy
+        run: rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy
 
       - name: Lint the core crate and its tests
         run: |
-          host_target="$(rustc +"$HOST_RUST_VERSION" -vV | sed -n 's/^host: //p')"
-          cargo +"$HOST_RUST_VERSION" clippy -p hack-and-hike-core --all-targets --target "$host_target" -- -D warnings
+          host_target="$(rustc +"$RUST_VERSION" -vV | sed -n 's/^host: //p')"
+          cargo +"$RUST_VERSION" clippy -p hack-and-hike-core --all-targets --target "$host_target" -- -D warnings
 
       - name: Run host tests
         run: RUSTFLAGS="-D warnings" ./scripts/test.sh
@@ -42,12 +43,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Read the toolchain version from Cargo.toml
+        run: echo "RUST_VERSION=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
+
       - name: Install Xtensa Rust toolchain
         uses: esp-rs/xtensa-toolchain@v1.7
         with:
           default: true
           buildtargets: esp32s3
-          version: ${{ env.XTENSA_RUST_VERSION }}
+          # The Xtensa toolchain adds a fourth version component.
+          version: ${{ env.RUST_VERSION }}.0
           ldproxy: false
 
       - name: Cache Cargo registry and build tree

@@ -1,7 +1,7 @@
 {
     // do not scroll beyond last line because it could confuse beginners
     "editor.scrollBeyondLastLine": false,
-    // automatically save after 1 second
+    // format every file when it is saved
     "editor.formatOnSave": true,
     // automatically save files after 1 second
     "files.autoSave": "afterDelay",
@@ -31,7 +31,9 @@
         "editor.defaultFormatter": "rust-lang.rust-analyzer",
         "editor.formatOnSave": true
     },
-    // do not check integration tests because they are host architecture
+    // rust-analyzer checks the firmware target. The tests in crates/core build
+    // for your computer instead, so they are excluded here; run them with
+    // scripts/test.sh, which also reports their compile errors.
     "rust-analyzer.cargo.allTargets": false,
     "rust-analyzer.check.allTargets": false,
     "rust-analyzer.cargo.target": "xtensa-esp32s3-none-elf"

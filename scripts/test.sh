@@ -6,5 +6,6 @@
 # the tests for your computer's target with the host toolchain instead.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-host_target="$(rustc +1.97.0 -vV | sed -n 's/^host: //p')"
-exec cargo +1.97.0 test -p hack-and-hike-core --target "$host_target" "$@"
+rust_version="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+host_target="$(rustc +"$rust_version" -vV | sed -n 's/^host: //p')"
+exec cargo +"$rust_version" test -p hack-and-hike-core --target "$host_target" "$@"
