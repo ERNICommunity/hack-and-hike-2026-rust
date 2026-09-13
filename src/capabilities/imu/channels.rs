@@ -1,55 +1,48 @@
-//! CPU1-to-CPU0 IMU latest-value transport.
+//! CPU1-to-CPU0 transport of IMU samples.
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
-use static_cell::StaticCell;
 
 use super::{Measurements, Orientation, Sample, Status, magnetic::MagneticReport};
 
-type SampleSignal = Signal<CriticalSectionRawMutex, Sample>;
-
 struct Service {
-    latest: SampleSignal,
+    latest: Signal<CriticalSectionRawMutex, Sample>,
 }
 
-impl Service {
-    const fn new() -> Self {
-        Self {
-            latest: Signal::new(),
-        }
+static SERVICE: Service = Service {
+    latest: Signal::new(),
+};
+
+/// Application handle for the motion sensors.
+///
+/// CPU1 publishes about 100 samples per second. Only the newest one is kept,
+/// so an application that polls slower than that always sees fresh data and
+/// can detect skipped samples through [`Sample::revision`].
+pub struct Imu {
+    service: &'static Service,
+}
+
+impl Imu {
+    /// The newest sample, or `None` when nothing new was published since the
+    /// previous call.
+    pub fn latest(&mut self) -> Option<Sample> {
+        self.service.latest.try_take()
     }
 }
-
-static SERVICE: StaticCell<Service> = StaticCell::new();
 
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
     service: &'static Service,
 }
 
-/// CPU0 semantic IMU reader. Hardware polling, sensor register formats and
-/// cross-core synchronization remain private to the capability.
-pub struct Imu {
-    service: &'static Service,
-}
-
 pub(crate) struct Endpoints {
-    pub runtime: Runtime,
-    pub input: Imu,
+    pub(crate) handle: Imu,
+    pub(crate) runtime: Runtime,
 }
 
-pub(crate) fn init_endpoints() -> Endpoints {
-    let service: &'static Service = SERVICE.init(Service::new());
+pub(crate) fn endpoints() -> Endpoints {
     Endpoints {
-        runtime: Runtime { service },
-        input: Imu { service },
-    }
-}
-
-impl Imu {
-    /// Take the newest coherent semantic IMU sample, if CPU1 published one since
-    /// the previous take. Multiple CPU1 updates collapse to one latest value.
-    pub fn latest(&mut self) -> Option<Sample> {
-        self.service.latest.try_take()
+        handle: Imu { service: &SERVICE },
+        runtime: Runtime { service: &SERVICE },
     }
 }
 
@@ -67,16 +60,6 @@ impl Publisher {
         }
     }
 
-    /// Revision carried by the most recently published sample.
-    pub(super) const fn revision(&self) -> u32 {
-        self.revision
-    }
-
-    /// Revision the next published sample will carry.
-    pub(super) const fn next_revision(&self) -> u32 {
-        self.revision.wrapping_add(1)
-    }
-
     pub(super) fn publish(
         &mut self,
         status: Status,
@@ -84,7 +67,7 @@ impl Publisher {
         orientation: Orientation,
         magnetic: MagneticReport,
     ) {
-        self.revision = self.next_revision();
+        self.revision = self.revision.wrapping_add(1);
         self.runtime.service.latest.signal(Sample {
             revision: self.revision,
             acceleration_m_s2: measurements.acceleration_m_s2,

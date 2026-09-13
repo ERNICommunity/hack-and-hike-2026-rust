@@ -1410,6 +1410,7 @@ dependencies = [
  "esp-println",
  "esp-radio",
  "esp-rtos",
+ "libm",
  "log",
  "mipidsi",
  "postcard",

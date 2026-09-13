@@ -55,10 +55,7 @@ fn run(cpu1: Cpu1) {
         spawner.spawn(
             backlight::task(system_bus, cpu1.backlight).expect("backlight task already spawned"),
         );
-        spawner.spawn(
-            imu::capture_task(system_bus, imu::DEFAULT_CONFIG, cpu1.imu)
-                .expect("IMU task already spawned"),
-        );
+        spawner.spawn(imu::capture_task(system_bus, cpu1.imu).expect("IMU task already spawned"));
         spawner.spawn(
             touch::capture_task(system_bus, cpu1.touch).expect("touch task already spawned"),
         );

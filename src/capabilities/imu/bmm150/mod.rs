@@ -1,4 +1,5 @@
-//! BMM150 magnetometer definitions, data decoding, and Bosch factory compensation.
+//! BMM150 magnetometer: register map, data decoding and Bosch factory
+//! compensation.
 //!
 //! The BMI270 driver owns the auxiliary-bus transport used to reach this sensor.
 //! Runtime hard/soft-iron calibration lives in the `calibration` submodule.
@@ -7,9 +8,8 @@
 //! BMM150 SensorAPI v2.0.0.
 
 mod calibration;
-mod sqrt;
 
-pub(super) use calibration::{Calibration, GOOD_FIELD_MAX_UT, GOOD_FIELD_MIN_UT, vector_length};
+pub(super) use calibration::Calibration;
 
 pub(super) const ADDRESS: u8 = 0x10;
 pub(super) const CHIP_ID: u8 = 0x32;
@@ -31,6 +31,7 @@ pub(super) const REP_Z_REGULAR: u8 = 0x07;
 const OVERFLOW_XY: i16 = -4096;
 const OVERFLOW_Z: i16 = -16384;
 
+/// Factory trim values read from the sensor once at start-up.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Trim {
     dig_x1: i8,
@@ -51,16 +52,16 @@ impl Trim {
     /// 0x5D..0x5E, 0x62..0x65, and 0x68..0x71.
     pub(super) fn from_registers(x1_y1: [u8; 2], z4_x2_y2: [u8; 4], z2_to_xy1: [u8; 10]) -> Self {
         Self {
-            dig_x1: x1_y1[0] as i8,
-            dig_y1: x1_y1[1] as i8,
-            dig_x2: z4_x2_y2[2] as i8,
-            dig_y2: z4_x2_y2[3] as i8,
+            dig_x1: i8::from_ne_bytes([x1_y1[0]]),
+            dig_y1: i8::from_ne_bytes([x1_y1[1]]),
+            dig_x2: i8::from_ne_bytes([z4_x2_y2[2]]),
+            dig_y2: i8::from_ne_bytes([z4_x2_y2[3]]),
             dig_z1: u16::from_le_bytes([z2_to_xy1[2], z2_to_xy1[3]]),
             dig_z2: i16::from_le_bytes([z2_to_xy1[0], z2_to_xy1[1]]),
             dig_z3: i16::from_le_bytes([z2_to_xy1[6], z2_to_xy1[7]]),
             dig_z4: i16::from_le_bytes([z4_x2_y2[0], z4_x2_y2[1]]),
             dig_xy1: z2_to_xy1[9],
-            dig_xy2: z2_to_xy1[8] as i8,
+            dig_xy2: i8::from_ne_bytes([z2_to_xy1[8]]),
             dig_xyz1: u16::from_le_bytes([z2_to_xy1[4], z2_to_xy1[5] & 0x7f]),
         }
     }
@@ -68,13 +69,13 @@ impl Trim {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Sample {
+    /// Compensated field in the magnetometer's own axes.
     pub(super) field_ut: [f32; 3],
-    pub(super) field_strength_ut: f32,
     pub(super) data_ready: bool,
 }
 
 /// Decode and apply Bosch factory compensation to the BMM150's 8-byte data
-/// frame (X, Y, Z and RHALL). Returns `None` for overflow/invalid trim data.
+/// frame (X, Y, Z and RHALL). Returns `None` for overflow or invalid trim data.
 pub(super) fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
     let raw_x = i16::from_le_bytes([data[0], data[1]]) >> 3;
     let raw_y = i16::from_le_bytes([data[2], data[3]]) >> 3;
@@ -93,44 +94,33 @@ pub(super) fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
         return None;
     }
 
-    let x = compensate_xy(raw_x, rhall, trim.dig_x1, trim.dig_x2, trim)?;
-    let y = compensate_xy(raw_y, rhall, trim.dig_y1, trim.dig_y2, trim)?;
+    let x = compensate_xy(raw_x, rhall, trim.dig_x1, trim.dig_x2, trim);
+    let y = compensate_xy(raw_y, rhall, trim.dig_y1, trim.dig_y2, trim);
     let z = compensate_z(raw_z, rhall, trim)?;
-    let field_strength_ut = sqrt::sqrt_approx(x * x + y * y + z * z);
 
     Some(Sample {
         field_ut: [x, y, z],
-        field_strength_ut,
         data_ready,
     })
 }
 
-fn compensate_xy(raw: i16, rhall: u16, dig_1: i8, dig_2: i8, trim: Trim) -> Option<f32> {
-    if raw == OVERFLOW_XY || rhall == 0 || trim.dig_xyz1 == 0 {
-        return None;
-    }
-
+fn compensate_xy(raw: i16, rhall: u16, dig_1: i8, dig_2: i8, trim: Trim) -> f32 {
     let x0 = f32::from(trim.dig_xyz1) * 16384.0 / f32::from(rhall);
     let ratio = x0 - 16384.0;
     let x1 = f32::from(trim.dig_xy2) * (ratio * ratio / 268_435_456.0);
     let x2 = x1 + ratio * f32::from(trim.dig_xy1) / 16384.0;
     let x3 = f32::from(dig_2) + 160.0;
     let x4 = f32::from(raw) * ((x2 + 256.0) * x3);
-    Some(((x4 / 8192.0) + f32::from(dig_1) * 8.0) / 16.0)
+    ((x4 / 8192.0) + f32::from(dig_1) * 8.0) / 16.0
 }
 
 fn compensate_z(raw: i16, rhall: u16, trim: Trim) -> Option<f32> {
-    if raw == OVERFLOW_Z || trim.dig_z2 == 0 || trim.dig_z1 == 0 || trim.dig_xyz1 == 0 || rhall == 0
-    {
-        return None;
-    }
-
     let z0 = f32::from(raw) - f32::from(trim.dig_z4);
     let z1 = f32::from(rhall) - f32::from(trim.dig_xyz1);
     let z2 = f32::from(trim.dig_z3) * z1;
     let z3 = f32::from(trim.dig_z1) * f32::from(rhall) / 32768.0;
     let z4 = f32::from(trim.dig_z2) + z3;
-    if z4 > -0.0001 && z4 < 0.0001 {
+    if z4.abs() < 0.0001 {
         return None;
     }
     let z5 = z0 * 131072.0 - z2;

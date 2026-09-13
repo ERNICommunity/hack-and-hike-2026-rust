@@ -157,9 +157,9 @@ impl Board {
             runtime: backlight_runtime,
         } = backlight::endpoints();
         let imu::Endpoints {
-            input: imu,
+            handle: imu,
             runtime: imu_runtime,
-        } = imu::init_endpoints();
+        } = imu::endpoints();
         let network::Endpoints {
             handle: network,
             runtime: network_runtime,

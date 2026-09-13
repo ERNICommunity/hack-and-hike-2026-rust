@@ -1,27 +1,30 @@
 //! Runtime hard/soft-iron calibration for the BMM150 magnetic field.
 //!
-//! Calibration lifecycle and acceptance remain here. Ellipsoid fitting and its
-//! fixed-size numerical helpers stay feature-local in private child modules.
+//! The magnetometer sits inside an enclosure that distorts the field. While
+//! the user moves the device, samples are collected until they cover the
+//! sphere well enough to fit an ellipsoid; a fitted model is then validated on
+//! fresh samples before it is accepted.
 
 mod fit;
 mod math;
 
-use fit::{CALIBRATION_MIN_FIT_SAMPLES, Candidate, CandidateValidation, Model};
-use math::{PARAMS, bit_count_u8, bit_count_u32, clamp_f32, dot3, min_f32, sqrt_approx};
+use log::info;
 
-/// Compensated BMM150 fields inside the CoreS3 enclosure can be far larger than
-/// the Earth's field before hard-iron removal. Keep the learning window broad,
-/// but reject near-zero/overflow-like samples.
+use crate::capabilities::imu::vec3;
+
+use fit::{Candidate, MIN_FIT_SAMPLES, Model, NormalEquations, Validation};
+
+/// Compensated fields inside the enclosure can be far larger than the Earth's
+/// field before hard-iron removal. Keep the learning window broad, but reject
+/// near-zero and overflow-like samples.
 const LEARNING_FIELD_MIN_UT: f32 = 5.0;
 const LEARNING_FIELD_MAX_UT: f32 = 4000.0;
+/// Corrected fields are normalized to 50 uT; this window leaves room for noise
+/// and transient disturbances.
+const EARTH_FIELD_MIN_UT: f32 = 25.0;
+const EARTH_FIELD_MAX_UT: f32 = 80.0;
 
-/// Post-calibration magnitude gate. The calibration intentionally normalizes
-/// the accepted ellipsoid to 50 uT, so a much wider 5..150 uT window hid bad
-/// fits. This still leaves generous room for noise and transient disturbances.
-pub const GOOD_FIELD_MIN_UT: f32 = 25.0;
-pub const GOOD_FIELD_MAX_UT: f32 = 80.0;
-
-const CALIBRATION_TARGET_SPAN_UT: f32 = 35.0;
+const TARGET_SPAN_UT: f32 = 35.0;
 const ORIGIN_WARMUP_SAMPLES: u32 = 36;
 const ORIGIN_MIN_SPAN_UT: f32 = 20.0;
 
@@ -32,15 +35,18 @@ const MAX_SAMPLES_PER_DIRECTION_BIN: u8 = 32;
 const REFIT_INTERVAL_SAMPLES: u16 = 16;
 const MIN_REFIT_DIRECTION_BINS: u32 = 4;
 
-pub struct Calibration {
-    normal: [[f32; PARAMS]; PARAMS],
-    rhs: [f32; PARAMS],
+// Progress reporting: the three phases add up to 99 %, 100 % means accepted.
+const ORIGIN_PHASE_PERCENT: f32 = 20.0;
+const COVERAGE_PHASE_PERCENT: f32 = 65.0;
+const VALIDATION_PHASE_PERCENT: f32 = 14.0;
+
+pub(in crate::capabilities::imu) struct Calibration {
+    equations: NormalEquations,
     min: [f32; 3],
     max: [f32; 3],
     samples: u32,
     fit_origin_ut: Option<[f32; 3]>,
     fit_samples: u32,
-    weight_sum: f32,
     samples_since_fit: u16,
     refit_direction_bins: u32,
     direction_bins: u32,
@@ -51,16 +57,14 @@ pub struct Calibration {
 }
 
 impl Calibration {
-    pub const fn new() -> Self {
+    pub(in crate::capabilities::imu) const fn new() -> Self {
         Self {
-            normal: [[0.0; PARAMS]; PARAMS],
-            rhs: [0.0; PARAMS],
+            equations: NormalEquations::new(),
             min: [f32::MAX; 3],
             max: [f32::MIN; 3],
             samples: 0,
             fit_origin_ut: None,
             fit_samples: 0,
-            weight_sum: 0.0,
             samples_since_fit: 0,
             refit_direction_bins: 0,
             direction_bins: 0,
@@ -71,202 +75,166 @@ impl Calibration {
         }
     }
 
-    pub fn observe(&mut self, field_ut: [f32; 3]) {
-        if self.model.is_some() || !raw_sample_is_plausible(field_ut) {
+    /// Whether a raw field could be a distorted Earth field worth learning from.
+    pub(in crate::capabilities::imu) fn is_learnable(field_ut: [f32; 3]) -> bool {
+        (LEARNING_FIELD_MIN_UT..=LEARNING_FIELD_MAX_UT).contains(&vec3::norm(field_ut))
+    }
+
+    /// Whether a corrected field magnitude looks like the Earth's field.
+    pub(in crate::capabilities::imu) fn is_earth_field(strength_ut: f32) -> bool {
+        (EARTH_FIELD_MIN_UT..=EARTH_FIELD_MAX_UT).contains(&strength_ut)
+    }
+
+    pub(in crate::capabilities::imu) fn is_ready(&self) -> bool {
+        self.model.is_some()
+    }
+
+    pub(in crate::capabilities::imu) fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
+        self.model.map_or(field_ut, |model| model.apply(field_ut))
+    }
+
+    /// Learn from one raw body-frame field.
+    pub(in crate::capabilities::imu) fn observe(&mut self, field_ut: [f32; 3]) {
+        if self.model.is_some() || !Self::is_learnable(field_ut) {
             return;
         }
 
         for ((min, max), value) in self.min.iter_mut().zip(&mut self.max).zip(field_ut) {
-            *min = math::min_f32(*min, value);
-            *max = math::max_f32(*max, value);
+            *min = min.min(value);
+            *max = max.max(value);
         }
         self.samples = self.samples.saturating_add(1);
 
-        if self.fit_origin_ut.is_none() {
+        let Some(fit_origin) = self.fit_origin_ut else {
             if self.samples >= ORIGIN_WARMUP_SAMPLES && self.minimum_span() >= ORIGIN_MIN_SPAN_UT {
                 self.fit_origin_ut = Some(self.coverage_origin());
             }
             return;
-        }
-
-        let direction_bin = fit::direction_bin(field_ut, self.coverage_origin());
+        };
 
         if let Some(candidate) = self.candidate.take() {
             match fit::validate_candidate(candidate, field_ut) {
-                CandidateValidation::Pending(candidate) => self.candidate = Some(candidate),
-                CandidateValidation::Accepted(model) => {
-                    ::log::info!("BMM150 calibration candidate accepted");
+                Validation::Pending(candidate) => self.candidate = Some(candidate),
+                Validation::Accepted(model) => {
+                    info!("BMM150 calibration accepted");
                     self.model = Some(model);
+                    return;
                 }
-                CandidateValidation::Rejected => {
-                    ::log::info!(
-                        "BMM150 calibration candidate rejected; restarting balanced fit epoch"
-                    );
+                Validation::Rejected => {
+                    info!("BMM150 calibration candidate rejected; collecting a fresh sample set");
                     self.restart_fit_epoch();
                     return;
                 }
             }
-            if self.model.is_some() {
-                return;
-            }
         }
 
-        self.direction_bins |= 1u32 << direction_bin;
-        self.direction_faces |= 1u8 << (direction_bin / 4);
-
-        if self.direction_bin_samples[direction_bin] < MAX_SAMPLES_PER_DIRECTION_BIN {
-            self.direction_bin_samples[direction_bin] += 1;
-            fit::accumulate(
-                &mut self.normal,
-                &mut self.rhs,
-                &mut self.weight_sum,
-                field_ut,
-                self.fit_origin_ut.unwrap_or([0.0; 3]),
-            );
+        let bin = fit::direction_bin(field_ut, self.coverage_origin());
+        self.direction_bins |= 1 << bin;
+        self.direction_faces |= 1 << (bin / 4);
+        if self.direction_bin_samples[bin] < MAX_SAMPLES_PER_DIRECTION_BIN {
+            self.direction_bin_samples[bin] += 1;
+            self.equations.accumulate(field_ut, fit_origin);
             self.fit_samples = self.fit_samples.saturating_add(1);
             self.samples_since_fit = self.samples_since_fit.saturating_add(1);
-            self.refit_direction_bins |= 1u32 << direction_bin;
+            self.refit_direction_bins |= 1 << bin;
         }
 
         if self.candidate.is_none()
             && self.has_minimum_coverage()
             && self.samples_since_fit >= REFIT_INTERVAL_SAMPLES
-            && bit_count_u32(self.refit_direction_bins) >= MIN_REFIT_DIRECTION_BINS
+            && self.refit_direction_bins.count_ones() >= MIN_REFIT_DIRECTION_BINS
         {
-            let refit_bins = bit_count_u32(self.refit_direction_bins);
-            let total_bins = bit_count_u32(self.direction_bins);
-            let total_faces = bit_count_u8(self.direction_faces);
-            let span = self.minimum_span();
             self.samples_since_fit = 0;
             self.refit_direction_bins = 0;
-            match fit::fit_model(
-                &self.normal,
-                &self.rhs,
-                self.weight_sum,
-                self.fit_origin_ut,
-                self.min,
-                self.max,
-            ) {
-                Some(model) => {
-                    ::log::info!(
-                        "BMM150 calibration fit produced candidate: fit_samples={}, weight={}, bins={}, faces={}, refit_bins={}, min_span={}",
-                        self.fit_samples,
-                        self.weight_sum,
-                        total_bins,
-                        total_faces,
-                        refit_bins,
-                        span
-                    );
-                    self.candidate = Some(Candidate::new(model));
-                }
-                None => {
-                    ::log::info!(
-                        "BMM150 calibration fit rejected: fit_samples={}, weight={}, bins={}, faces={}, refit_bins={}, min_span={}; restarting balanced fit epoch",
-                        self.fit_samples,
-                        self.weight_sum,
-                        total_bins,
-                        total_faces,
-                        refit_bins,
-                        span
-                    );
-                    self.restart_fit_epoch();
-                }
+            self.try_fit(fit_origin);
+        }
+    }
+
+    fn try_fit(&mut self, fit_origin: [f32; 3]) {
+        match fit::fit_model(&self.equations, fit_origin, self.min, self.max) {
+            Some(model) => {
+                info!(
+                    "BMM150 calibration candidate: samples={} bins={} faces={} span={}uT",
+                    self.fit_samples,
+                    self.direction_bins.count_ones(),
+                    self.direction_faces.count_ones(),
+                    self.minimum_span()
+                );
+                self.candidate = Some(Candidate::new(model));
+            }
+            None => {
+                info!(
+                    "BMM150 calibration fit rejected: samples={} bins={} faces={} span={}uT; collecting a fresh sample set",
+                    self.fit_samples,
+                    self.direction_bins.count_ones(),
+                    self.direction_faces.count_ones(),
+                    self.minimum_span()
+                );
+                self.restart_fit_epoch();
             }
         }
     }
 
-    pub fn is_ready(&self) -> bool {
-        self.model.is_some()
-    }
-
-    pub fn progress_percent(&self) -> u8 {
+    /// 0 to 100 %, where 100 means a validated model is in use.
+    pub(in crate::capabilities::imu) fn progress_percent(&self) -> u8 {
         if self.model.is_some() {
             return 100;
         }
         if self.samples == 0 {
             return 0;
         }
-
-        if self.fit_origin_ut.is_none() {
-            let sample_progress =
-                clamp_f32(self.samples as f32 / ORIGIN_WARMUP_SAMPLES as f32, 0.0, 1.0);
-            let span_progress = clamp_f32(self.minimum_span() / ORIGIN_MIN_SPAN_UT, 0.0, 1.0);
-            return (20.0 * min_f32(sample_progress, span_progress)) as u8;
-        }
-
-        let sample_progress = clamp_f32(
-            self.fit_samples as f32 / CALIBRATION_MIN_FIT_SAMPLES as f32,
-            0.0,
-            1.0,
-        );
-        let span_progress = clamp_f32(self.minimum_span() / CALIBRATION_TARGET_SPAN_UT, 0.0, 1.0);
-        let direction_progress = clamp_f32(
-            bit_count_u32(self.direction_bins) as f32 / MIN_DIRECTION_BINS as f32,
-            0.0,
-            1.0,
-        );
-        let face_progress = clamp_f32(
-            bit_count_u8(self.direction_faces) as f32 / MIN_DIRECTION_FACES as f32,
-            0.0,
-            1.0,
-        );
-        let coverage_progress = min_f32(
-            min_f32(sample_progress, span_progress),
-            min_f32(direction_progress, face_progress),
-        );
-        let coverage_percent = 20.0 + 65.0 * coverage_progress;
-
         if let Some(candidate) = self.candidate {
-            return (85.0 + 14.0 * fit::validation_progress(candidate)) as u8;
+            return percent(
+                ORIGIN_PHASE_PERCENT
+                    + COVERAGE_PHASE_PERCENT
+                    + VALIDATION_PHASE_PERCENT * candidate.progress(),
+            );
+        }
+        if self.fit_origin_ut.is_none() {
+            let samples = self.samples as f32 / ORIGIN_WARMUP_SAMPLES as f32;
+            let span = self.minimum_span() / ORIGIN_MIN_SPAN_UT;
+            return percent(ORIGIN_PHASE_PERCENT * samples.min(span).clamp(0.0, 1.0));
         }
 
-        (coverage_percent as u8).min(85)
-    }
-
-    pub fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
-        self.model
-            .map(|model| model.apply(field_ut))
-            .unwrap_or(field_ut)
+        let samples = self.fit_samples as f32 / MIN_FIT_SAMPLES as f32;
+        let span = self.minimum_span() / TARGET_SPAN_UT;
+        let bins = self.direction_bins.count_ones() as f32 / MIN_DIRECTION_BINS as f32;
+        let faces = self.direction_faces.count_ones() as f32 / MIN_DIRECTION_FACES as f32;
+        let coverage = samples.min(span).min(bins).min(faces).clamp(0.0, 1.0);
+        percent(ORIGIN_PHASE_PERCENT + COVERAGE_PHASE_PERCENT * coverage)
     }
 
     fn has_minimum_coverage(&self) -> bool {
         self.fit_origin_ut.is_some()
-            && self.fit_samples >= CALIBRATION_MIN_FIT_SAMPLES
-            && self.minimum_span() >= CALIBRATION_TARGET_SPAN_UT
-            && bit_count_u32(self.direction_bins) >= MIN_DIRECTION_BINS
-            && bit_count_u8(self.direction_faces) >= MIN_DIRECTION_FACES
+            && self.fit_samples >= MIN_FIT_SAMPLES
+            && self.minimum_span() >= TARGET_SPAN_UT
+            && self.direction_bins.count_ones() >= MIN_DIRECTION_BINS
+            && self.direction_faces.count_ones() >= MIN_DIRECTION_FACES
     }
 
+    /// Midpoint of the observed extrema, a rough hard-iron estimate.
     fn coverage_origin(&self) -> [f32; 3] {
-        [
-            0.5 * (self.min[0] + self.max[0]),
-            0.5 * (self.min[1] + self.max[1]),
-            0.5 * (self.min[2] + self.max[2]),
-        ]
+        vec3::scale(vec3::add(self.min, self.max), 0.5)
     }
 
+    /// Smallest extent of the observed samples along any axis.
     fn minimum_span(&self) -> f32 {
         if self.samples == 0 {
             return 0.0;
         }
-        min_f32(
-            self.max[0] - self.min[0],
-            min_f32(self.max[1] - self.min[1], self.max[2] - self.min[2]),
-        )
+        vec3::sub(self.max, self.min)
+            .into_iter()
+            .fold(f32::MAX, f32::min)
     }
 
+    /// A rejected fit says the accumulated equations do not describe a
+    /// physically acceptable ellipsoid. Adding a few more directions to that
+    /// history could unbalance it further, so keep the raw extrema, recenter
+    /// on their midpoint and build the next fit from a fresh sample set.
     fn restart_fit_epoch(&mut self) {
-        // A rejected fit says the current normal equations do not describe a
-        // physically acceptable ellipsoid. Do not keep adding a small subset of
-        // directions to that same history: doing so can progressively unbalance
-        // the matrix and trap calibration at 85% forever. Preserve the raw
-        // extrema already learned, recenter on their latest midpoint, and build
-        // the next fit from a fresh, independently balanced 3-D sample set.
-        self.normal = [[0.0; PARAMS]; PARAMS];
-        self.rhs = [0.0; PARAMS];
+        self.equations = NormalEquations::new();
         self.fit_origin_ut = Some(self.coverage_origin());
         self.fit_samples = 0;
-        self.weight_sum = 0.0;
         self.samples_since_fit = 0;
         self.refit_direction_bins = 0;
         self.direction_bins = 0;
@@ -276,11 +244,7 @@ impl Calibration {
     }
 }
 
-fn raw_sample_is_plausible(field_ut: [f32; 3]) -> bool {
-    let strength = vector_length(field_ut);
-    (LEARNING_FIELD_MIN_UT..=LEARNING_FIELD_MAX_UT).contains(&strength)
-}
-
-pub fn vector_length(value: [f32; 3]) -> f32 {
-    sqrt_approx(dot3(value, value))
+/// Truncate a 0..=100 float percentage to `u8`.
+fn percent(value: f32) -> u8 {
+    value.clamp(0.0, 100.0) as u8
 }

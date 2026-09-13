@@ -1,7 +1,6 @@
-#[path = "../src/bin/demo/views/imu_worldview/view/attitude.rs"]
-mod attitude;
+//! Regression tests for the demo attitude tracker.
 
-use attitude::Tracker;
+use crate::attitude::Tracker;
 
 const ANGLE_EPSILON_DEG: f32 = 0.01;
 

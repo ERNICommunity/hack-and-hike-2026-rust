@@ -229,10 +229,10 @@ struct Hello {
 Broadcast it:
 
 ```rust
-let _ = network.send(None, &Hello { number: 42 });
+let _ = network.broadcast(&Hello { number: 42 });
 ```
 
-`None` means broadcast.
+To reach one device instead, use `network.send_to(peer_id, &message)`.
 
 Receive and decode it:
 
@@ -715,10 +715,8 @@ flowchart LR
 The broadcast call is:
 
 ```rust
-network.send(None, &ColorPing { color: selected })
+network.broadcast(&ColorPing { color: selected })
 ```
-
-Again, `None` means broadcast.
 
 ### A received ping starts audio
 

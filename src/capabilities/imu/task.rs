@@ -1,275 +1,224 @@
-//! Runtime IMU acquisition and service orchestration.
+//! CPU1 IMU acquisition loop.
 
 use embassy_time::{Duration, Instant, Ticker, Timer};
+use log::{info, trace, warn};
 
 use crate::platform::i2c::SystemI2cBus;
 
 use super::{
-    Config, DEFAULT_FUSION_HZ, DEFAULT_MAG_HZ, DEFAULT_SENSOR_HZ, MagStatus, Measurements,
-    Orientation, Status,
-    bmi270::{Bmi270, Error, GYRO_SENSOR_ODR_HZ},
+    MagStatus, Measurements, Orientation, Status,
+    bmi270::{Bmi270, RawSample},
     channels::{Publisher, Runtime},
-    fusion::{Fusion, GyroBias, max_abs3},
+    fusion::{Fusion, GyroBias},
     magnetic::MagneticState,
+    vec3,
 };
 
-// BMI270 sensor time is a free-running 24-bit counter at exactly 25.6 kHz.
-const SENSOR_TIME_TICK_SECONDS: f32 = 1.0 / 25_600.0;
+/// Host sampling rate; fusion runs once per sample.
+const SAMPLE_HZ: u32 = 100;
+const SAMPLE_PERIOD: Duration = Duration::from_hz(SAMPLE_HZ as u64);
+// BMI270 sensor time is a free-running 24-bit counter at 25.6 kHz.
+const SENSOR_TIME_HZ: u32 = 25_600;
+const SENSOR_TIME_TICK_SECONDS: f32 = 1.0 / SENSOR_TIME_HZ as f32;
 const SENSOR_TIME_MASK: u32 = 0x00FF_FFFF;
-const MAX_FUSION_SAMPLE_GAP_TICKS: u32 = 1_280; // 50 ms
-const NOMINAL_FUSION_TICKS: u32 = 25_600 / DEFAULT_SENSOR_HZ; // 10 ms
+const NOMINAL_SAMPLE_TICKS: u32 = SENSOR_TIME_HZ / SAMPLE_HZ;
+/// A longer gap between samples means some were lost; the integration then
+/// uses one nominal step instead of the measured interval.
+const MAX_SAMPLE_GAP_TICKS: u32 = NOMINAL_SAMPLE_TICKS * 5;
 const STANDARD_GRAVITY_M_S2: f32 = 9.80665;
 
 const INIT_RETRY: Duration = Duration::from_secs(1);
+const REINIT_DELAY: Duration = Duration::from_millis(250);
 const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
-// If a trusted gyro integration is known to have become incomplete (near full
-// scale or a long sample gap), explicitly mark absolute yaw untrusted.
+/// Near full scale the gyroscope clips, so integration cannot be trusted.
 const GYRO_NEAR_SATURATION_DPS: f32 = 1950.0;
-
-// The steady-state trace is intentionally much slower than the 100 Hz fusion
-// loop. Five lines per second is dense enough to reconstruct motion while not
-// making serial logging itself a meaningful source of sample jitter.
-const IMU_TRACE_EVERY_SAMPLES: u32 = 20;
+/// Trace every 20th sample: five lines per second.
+const TRACE_EVERY_SAMPLES: u32 = 20;
 
 #[embassy_executor::task]
-pub(crate) async fn capture_task(bus: SystemI2cBus, config: Config, runtime: Runtime) {
+pub(crate) async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
     let sensor = Bmi270::new(bus);
     let mut publisher = Publisher::new(runtime);
-    let mut last_orientation = Orientation::default();
-    let mut logged_calibrated_publish = false;
-    // Calibration describes the physical sensor/enclosure, not one transport
-    // session. Keep it alive across BMI270/AUX recovery for the whole boot.
+    // Calibration describes the physical sensor and enclosure, not one
+    // session, so it survives sensor re-initialization.
     let mut magnetic = MagneticState::new(Instant::now());
+    let mut orientation = Orientation::default();
 
     loop {
-        let mut measurements = Measurements::default();
-        magnetic.rebind(None, Instant::now());
         publisher.publish(
             Status::Starting,
-            measurements,
-            last_orientation,
+            Measurements::default(),
+            orientation,
             magnetic.report(),
         );
-
-        match sensor.initialize().await {
-            Ok(()) => {}
-            Err(error) => {
-                log_init_error("BMI270", error);
-                publisher.publish(
-                    Status::Fault,
-                    measurements,
-                    last_orientation,
-                    magnetic.report(),
-                );
-                Timer::after(INIT_RETRY).await;
-                continue;
-            }
+        if let Err(error) = sensor.initialize().await {
+            warn!("BMI270 init failed: {error}");
+            publisher.publish(
+                Status::Fault,
+                Measurements::default(),
+                orientation,
+                magnetic.report(),
+            );
+            Timer::after(INIT_RETRY).await;
+            continue;
         }
 
-        let initial_mag_trim = match sensor.initialize_bmm150().await {
-            Ok(trim) => {
-                ::log::info!(
-                    "BMI270+BMM150 IMU started: host={} Hz, fusion={} Hz, gyro={} Hz, mag={} Hz",
-                    DEFAULT_SENSOR_HZ,
-                    DEFAULT_FUSION_HZ,
-                    GYRO_SENSOR_ODR_HZ,
-                    DEFAULT_MAG_HZ
-                );
-                Some(trim)
-            }
+        let trim = match sensor.initialize_bmm150().await {
+            Ok(trim) => Some(trim),
             Err(error) => {
-                log_init_error("BMM150", error);
+                warn!("BMM150 init failed: {error}; heading will drift until it recovers");
                 sensor.disable_aux().await;
-                ::log::warn!("IMU continuing in 6-axis fallback; BMM150 will retry");
                 None
             }
         };
+        magnetic.rebind(trim, Instant::now());
+        info!("IMU started at {} Hz", SAMPLE_HZ);
 
-        let mut fusion = Fusion::new();
-        let mut gyro_bias = GyroBias::new();
-        let now = Instant::now();
-        magnetic.rebind(initial_mag_trim, now);
-        let mut last_sensor_time: Option<u32> = None;
-        let mut consecutive_errors = 0u8;
-        let mut trace_samples = 0u32;
-        let mut previous_mag_status = magnetic.status();
-        // Ticker advances against a fixed deadline. The old Timer::after loop
-        // added I2C/fusion execution time to every nominal 10 ms period and ran
-        // closer to 80-90 Hz in the captured trace.
-        let mut sample_ticker = Ticker::every(config.sample_period);
-
-        ::log::trace!("IMU session-start revision={}", publisher.revision());
-
+        let mut session = Session::new(magnetic.status());
+        let mut ticker = Ticker::every(SAMPLE_PERIOD);
         loop {
-            sample_ticker.next().await;
+            ticker.next().await;
             let now = Instant::now();
             magnetic.maintain(&sensor, now).await;
 
             match sensor.read_sample().await {
                 Ok(sample) => {
-                    consecutive_errors = 0;
-                    trace_samples = trace_samples.wrapping_add(1);
-
-                    let delta_ticks = last_sensor_time
-                        .map(|previous| {
-                            sample.sensor_time.wrapping_sub(previous) & SENSOR_TIME_MASK
-                        })
-                        .unwrap_or(NOMINAL_FUSION_TICKS);
-                    last_sensor_time = Some(sample.sensor_time);
-                    let timing_gap = delta_ticks == 0 || delta_ticks > MAX_FUSION_SAMPLE_GAP_TICKS;
-                    let integration_ticks = if timing_gap {
-                        NOMINAL_FUSION_TICKS
-                    } else {
-                        delta_ticks
-                    };
-                    let dt_seconds = integration_ticks as f32 * SENSOR_TIME_TICK_SECONDS;
-                    let raw_gyro_max = max_abs3(sample.gyro_dps);
-                    let near_saturation = raw_gyro_max >= GYRO_NEAR_SATURATION_DPS;
-
-                    if timing_gap || near_saturation {
-                        ::log::warn!(
-                            "IMU-EVENT integration-invalid sensor_time={} delta_ticks={} dt_ms={} gyro_max_dps={} timing_gap={} saturation={}",
-                            sample.sensor_time,
-                            delta_ticks,
-                            dt_seconds * 1000.0,
-                            raw_gyro_max,
-                            timing_gap,
-                            near_saturation
-                        );
-                        fusion.invalidate_absolute_heading();
-                    }
-                    if timing_gap {
-                        fusion.reset_rate_history();
-                    }
-
-                    let corrected_gyro = gyro_bias.correct(sample.accel_g, sample.gyro_dps);
-                    let magnetic_for_fusion = magnetic.observe(sample.mag_data, now);
-                    measurements = Measurements {
-                        acceleration_m_s2: Some(
-                            sample.accel_g.map(|value| value * STANDARD_GRAVITY_M_S2),
-                        ),
-                        angular_velocity_deg_s: Some(sample.gyro_dps),
-                        magnetic_field_ut: magnetic.vector_ut(),
-                    };
-
-                    last_orientation = fusion.update(
-                        sample.accel_g,
-                        corrected_gyro,
-                        dt_seconds,
-                        config.roll_pitch_alpha,
-                        magnetic_for_fusion,
-                        config.yaw_alpha,
-                    );
-
-                    let mag_status = magnetic.status();
-                    let calibration_percent = magnetic.calibration_percent();
-                    let status = match mag_status {
-                        MagStatus::Learning => Status::Starting,
-                        MagStatus::Ready => Status::Running,
-                        MagStatus::Missing | MagStatus::Disturbed => Status::Degraded,
-                    };
-
-                    if mag_status != previous_mag_status {
-                        ::log::warn!(
-                            "IMU-EVENT mag-status {:?}->{:?} field_ut={} cal={} revision={}",
-                            previous_mag_status,
-                            mag_status,
-                            magnetic.field_ut(),
-                            calibration_percent,
-                            publisher.next_revision()
-                        );
-                        previous_mag_status = mag_status;
-                    }
-
-                    if trace_samples.is_multiple_of(IMU_TRACE_EVERY_SAMPLES) {
-                        let mag = magnetic_for_fusion.unwrap_or([0.0, 0.0, 0.0]);
-                        ::log::trace!(
-                            "IMU rev={} st={} dt_ms={} acc=[{},{},{}] gyro_raw=[{},{},{}] gyro_corr=[{},{},{}] mag_used={} mag=[{},{},{}] field_ut={} mag_status={:?} cal={} out_rpy=[{},{},{}] g=[{},{},{}] n=[{},{},{}]",
-                            publisher.next_revision(),
-                            sample.sensor_time,
-                            dt_seconds * 1000.0,
-                            sample.accel_g[0],
-                            sample.accel_g[1],
-                            sample.accel_g[2],
-                            sample.gyro_dps[0],
-                            sample.gyro_dps[1],
-                            sample.gyro_dps[2],
-                            corrected_gyro[0],
-                            corrected_gyro[1],
-                            corrected_gyro[2],
-                            magnetic_for_fusion.is_some(),
-                            mag[0],
-                            mag[1],
-                            mag[2],
-                            magnetic.field_ut(),
-                            mag_status,
-                            calibration_percent,
-                            last_orientation.roll_deg,
-                            last_orientation.pitch_deg,
-                            last_orientation.yaw_deg,
-                            last_orientation.gravity_screen[0],
-                            last_orientation.gravity_screen[1],
-                            last_orientation.gravity_screen[2],
-                            last_orientation.north_screen[0],
-                            last_orientation.north_screen[1],
-                            last_orientation.north_screen[2]
-                        );
-                    }
-
-                    if calibration_percent == 100 && !logged_calibrated_publish {
-                        ::log::info!(
-                            "CPU1 publishing calibrated IMU sample: status={:?} mag_status={:?} field={}uT revision={}",
-                            status,
-                            mag_status,
-                            magnetic.field_ut(),
-                            publisher.next_revision()
-                        );
-                        logged_calibrated_publish = true;
-                    }
-                    publisher.publish(status, measurements, last_orientation, magnetic.report());
-                }
-                Err(_) => {
-                    consecutive_errors = consecutive_errors.saturating_add(1);
-                    ::log::warn!(
-                        "IMU-EVENT read-error consecutive={} revision={}",
-                        consecutive_errors,
-                        publisher.revision()
-                    );
+                    let measurements;
+                    (measurements, orientation) = session.process(sample, &mut magnetic, now);
                     publisher.publish(
-                        Status::Degraded,
+                        Status::Running,
                         measurements,
-                        last_orientation,
+                        orientation,
                         magnetic.report(),
                     );
-
-                    if consecutive_errors >= MAX_CONSECUTIVE_READ_ERRORS {
-                        ::log::warn!(
-                            "BMI270 read failed {} times consecutively; reinitializing IMU",
-                            consecutive_errors
+                }
+                Err(error) => {
+                    if session.record_read_error() {
+                        warn!(
+                            "BMI270 read failed {MAX_CONSECUTIVE_READ_ERRORS} times in a row ({error}); re-initializing"
                         );
                         publisher.publish(
                             Status::Fault,
-                            measurements,
-                            last_orientation,
+                            Measurements::default(),
+                            orientation,
                             magnetic.report(),
                         );
-                        Timer::after(Duration::from_millis(250)).await;
+                        Timer::after(REINIT_DELAY).await;
                         break;
                     }
+                    publisher.publish(
+                        Status::Degraded,
+                        Measurements::default(),
+                        orientation,
+                        magnetic.report(),
+                    );
                 }
             }
         }
     }
 }
 
-fn log_init_error(device: &str, error: Error) {
-    match error {
-        Error::ChipId(id) => ::log::warn!("{} init failed: chip id=0x{:02x}", device, id),
-        Error::BmmChipId(id) => ::log::warn!("{} init failed: chip id=0x{:02x}", device, id),
-        Error::ConfigStatus(status) => {
-            ::log::warn!("{} init failed: config status=0x{:02x}", device, status)
+/// Fusion state for one sensor session, which lasts until the sensor is
+/// re-initialized.
+struct Session {
+    fusion: Fusion,
+    gyro_bias: GyroBias,
+    last_sensor_time: Option<u32>,
+    consecutive_read_errors: u8,
+    samples: u32,
+    mag_status: MagStatus,
+}
+
+impl Session {
+    const fn new(mag_status: MagStatus) -> Self {
+        Self {
+            fusion: Fusion::new(),
+            gyro_bias: GyroBias::new(),
+            last_sensor_time: None,
+            consecutive_read_errors: 0,
+            samples: 0,
+            mag_status,
         }
-        Error::AuxBusy => ::log::warn!("{} init failed: BMI270 AUX interface busy", device),
-        Error::Bus => ::log::warn!("{} init failed: I2C error", device),
+    }
+
+    /// Seconds since the previous sample by the sensor's own clock, and
+    /// whether samples were lost in between.
+    fn integration_step(&mut self, sensor_time: u32) -> (f32, bool) {
+        let delta_ticks = self
+            .last_sensor_time
+            .map_or(NOMINAL_SAMPLE_TICKS, |previous| {
+                sensor_time.wrapping_sub(previous) & SENSOR_TIME_MASK
+            });
+        self.last_sensor_time = Some(sensor_time);
+
+        let gap = delta_ticks == 0 || delta_ticks > MAX_SAMPLE_GAP_TICKS;
+        let ticks = if gap {
+            NOMINAL_SAMPLE_TICKS
+        } else {
+            delta_ticks
+        };
+        (ticks as f32 * SENSOR_TIME_TICK_SECONDS, gap)
+    }
+
+    fn process(
+        &mut self,
+        sample: RawSample,
+        magnetic: &mut MagneticState,
+        now: Instant,
+    ) -> (Measurements, Orientation) {
+        self.consecutive_read_errors = 0;
+        self.samples = self.samples.wrapping_add(1);
+
+        let (dt_seconds, gap) = self.integration_step(sample.sensor_time);
+        let saturated = vec3::max_abs(sample.gyro_dps) >= GYRO_NEAR_SATURATION_DPS;
+        if gap || saturated {
+            warn!(
+                "IMU integration interrupted (sample gap: {gap}, gyro saturated: {saturated}); heading will be re-acquired"
+            );
+            self.fusion.invalidate_absolute_heading();
+        }
+        if gap {
+            self.fusion.reset_rate_history();
+        }
+
+        let gyro_dps = self.gyro_bias.correct(sample.accel_g, sample.gyro_dps);
+        let magnetic_for_fusion = magnetic.observe(sample.mag_data, now);
+        let orientation =
+            self.fusion
+                .update(sample.accel_g, gyro_dps, dt_seconds, magnetic_for_fusion);
+
+        if magnetic.status() != self.mag_status {
+            info!(
+                "Magnetometer {:?} -> {:?}",
+                self.mag_status,
+                magnetic.status()
+            );
+            self.mag_status = magnetic.status();
+        }
+        if self.samples.is_multiple_of(TRACE_EVERY_SAMPLES) {
+            trace!(
+                "IMU dt={:.1}ms roll={:.1} pitch={:.1} yaw={:.1} mag={:?} cal={}%",
+                dt_seconds * 1000.0,
+                orientation.roll_deg,
+                orientation.pitch_deg,
+                orientation.yaw_deg,
+                magnetic.status(),
+                magnetic.report().calibration_percent
+            );
+        }
+
+        let measurements = Measurements {
+            acceleration_m_s2: Some(vec3::scale(sample.accel_g, STANDARD_GRAVITY_M_S2)),
+            angular_velocity_deg_s: Some(sample.gyro_dps),
+            magnetic_field_ut: magnetic.vector_ut(),
+        };
+        (measurements, orientation)
+    }
+
+    /// Count a failed read. Returns true once the sensor should be
+    /// re-initialized.
+    fn record_read_error(&mut self) -> bool {
+        self.consecutive_read_errors = self.consecutive_read_errors.saturating_add(1);
+        self.consecutive_read_errors >= MAX_CONSECUTIVE_READ_ERRORS
     }
 }
