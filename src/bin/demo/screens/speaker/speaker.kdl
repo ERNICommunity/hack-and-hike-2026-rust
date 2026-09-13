@@ -1,0 +1,13 @@
+screen id="Speaker" width=276 height=240 {
+    grid cols="1fr 1fr" rows="20px 18px 36px 18px 34px 18px 34px 1fr" gap=4 padding=8 {
+        label id="title" text="SPEAKER" col=0 row=0 col_span=2 style="crate::styles::title()"
+        label id="status" text="MELODY STOPPED" col=0 row=1 col_span=2 style="crate::styles::hint()"
+        button id="play" text="PLAY" col=0 row=2 style="crate::styles::button()"
+        button id="chime" text="PLAY CHIME" col=1 row=2 style="crate::styles::secondary_button()"
+        label id="tempo_value" text="" col=0 row=3 col_span=2
+        label id="tempo_slider" text="" col=0 row=4 col_span=2
+        label id="pitch_value" text="" col=0 row=5 col_span=2
+        label id="pitch_slider" text="" col=0 row=6 col_span=2
+        label id="hint" text="Sine melody + flash chime" col=0 row=7 col_span=2 style="crate::styles::hint()"
+    }
+}

@@ -1,6 +1,0 @@
-screen id="Log" width=276 height=240 theme="light" {
-    grid cols="1fr" rows="18px 1fr" gap=6 padding=8 {
-        label id="title_slot" text="" col=0 row=0
-        label id="body_slot" text="" col=0 row=1
-    }
-}

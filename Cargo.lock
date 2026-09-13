@@ -635,14 +635,14 @@ checksum = "748264a4284c70371da5e8cc0fdcf4b5ef5cedff75ac132eee228f133633fd7b"
 dependencies = [
  "critical-section",
  "embedded-graphics-core",
- "embedded-graphics-framebuf",
+ "embedded-graphics-framebuf 0.3.0",
 ]
 
 [[package]]
 name = "embedded-dsp"
-version = "0.2.2"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c1da00f04633e55be040e0ce4b1e70db382a6965447d2f33196d998e96a85fd"
+checksum = "1c3038494bcff2cb0cd80781dcb34354a47bb4500cc02a31844b1c49dcc536e7"
 dependencies = [
  "libm",
 ]
@@ -681,17 +681,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "embedded-gui"
-version = "0.2.5"
+name = "embedded-graphics-framebuf"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61e08213e3373982db42233455453e944c6c06b5466095bd0e4edc6f87be8e20"
+checksum = "22354420f68727fa24d1e2741dae1e9a041065e80fb63b35a8d19c647a85be76"
+dependencies = [
+ "embedded-dma",
+ "embedded-graphics",
+]
+
+[[package]]
+name = "embedded-gui"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab4b544882908c79d873db53a6df4b1be4b64ecf82cb1b5c0393e9503a58862"
 dependencies = [
  "critical-section",
  "embedded-draw-target",
  "embedded-dsp",
  "embedded-graphics",
  "embedded-graphics-core",
- "embedded-graphics-framebuf",
+ "embedded-graphics-framebuf 0.5.0",
  "embedded-gui-macros",
  "heapless 0.9.3",
  "libm",

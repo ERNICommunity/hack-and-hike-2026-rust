@@ -52,7 +52,7 @@ embedded-graphics = "0.8"
 # Rich widgets use floating-point helpers such as round/sin/cos. On our
 # `no_std` Xtensa target those methods are supplied by embedded-gui's `libm`
 # feature rather than by `std`.
-embedded-gui = { version = "=0.2.5", default-features = false, features = ["embedded-graphics", "libm", "macros", "rich-widgets"] }
+embedded-gui = { version = "=0.2.6", default-features = false, features = ["embedded-graphics", "libm", "macros", "rich-widgets"] }
 mipidsi = "0.8"
 display-interface-spi = "0.5"
 embedded-hal-bus = "0.3"

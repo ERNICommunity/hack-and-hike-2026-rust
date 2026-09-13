@@ -1,99 +1,108 @@
-//! Reusable drawing primitives shared by application views.
+//! Small drawing helpers on top of `embedded-graphics`.
 //!
-//! KDL owns geometry. These helpers deliberately use native-resolution bitmap
-//! fonts instead of scaling tiny glyphs: at 320x240 this gives crisper text with
-//! predictable no_std cost while keeping dense telemetry bounded.
+//! Text uses the native-resolution bitmap fonts: at 320x240 they are crisper
+//! than scaled glyphs and their cost is predictable.
 
 use embedded_graphics::{
     mono_font::{
-        MonoTextStyle,
+        MonoFont, MonoTextStyle,
         ascii::{FONT_6X12, FONT_7X13, FONT_8X13_BOLD},
     },
-    pixelcolor::{Rgb565, raw::RawU16},
+    pixelcolor::Rgb565,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
     text::{Baseline, Text},
 };
 use embedded_gui::Rect;
 
-use super::{gui::GuiFramebuffer, theme};
+use super::gui::GuiFramebuffer;
 
+pub const TITLE_FONT: &MonoFont<'static> = &FONT_8X13_BOLD;
+pub const BODY_FONT: &MonoFont<'static> = &FONT_7X13;
+pub const DENSE_FONT: &MonoFont<'static> = &FONT_6X12;
+
+/// Height of one line of `BODY_FONT` text.
 pub const BODY_LINE_HEIGHT: i32 = 13;
+/// Height of one line of `DENSE_FONT` text.
 pub const DENSE_LINE_HEIGHT: i32 = 12;
 
-pub fn white() -> Rgb565 {
-    raw_color(theme::WHITE_RGB565)
-}
-
-pub fn black() -> Rgb565 {
-    raw_color(theme::BLACK_RGB565)
-}
-
-pub fn dark_blue() -> Rgb565 {
-    raw_color(theme::DARK_BLUE_RGB565)
-}
-
-pub fn light_blue() -> Rgb565 {
-    raw_color(theme::LIGHT_BLUE_RGB565)
-}
-
-pub fn dark_gray() -> Rgb565 {
-    raw_color(theme::DARK_GRAY_RGB565)
-}
-
-pub fn light_gray() -> Rgb565 {
-    raw_color(theme::LIGHT_GRAY_RGB565)
-}
-
-fn raw_color(raw: u16) -> Rgb565 {
-    Rgb565::from(RawU16::new(raw))
-}
-
-pub fn fill_rect(frame: &mut GuiFramebuffer, rect: Rect, color: Rgb565) {
-    fill_box(frame, rect.x, rect.y, rect.w, rect.h, color);
-}
-
-pub fn fill_box(
-    frame: &mut GuiFramebuffer,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    color: Rgb565,
-) {
-    if width == 0 || height == 0 {
+pub fn fill(frame: &mut GuiFramebuffer, rect: Rect, color: Rgb565) {
+    if rect.w == 0 || rect.h == 0 {
         return;
     }
-    let _ = Rectangle::new(Point::new(x, y), Size::new(width, height))
+    let _ = Rectangle::new(Point::new(rect.x, rect.y), Size::new(rect.w, rect.h))
         .into_styled(PrimitiveStyle::with_fill(color))
         .draw(frame);
 }
 
+pub fn outline(frame: &mut GuiFramebuffer, rect: Rect, color: Rgb565) {
+    if rect.w == 0 || rect.h == 0 {
+        return;
+    }
+    let _ = Rectangle::new(Point::new(rect.x, rect.y), Size::new(rect.w, rect.h))
+        .into_styled(PrimitiveStyle::with_stroke(color, 1))
+        .draw(frame);
+}
+
 pub fn hline(frame: &mut GuiFramebuffer, x: i32, y: i32, width: u32, color: Rgb565) {
-    fill_box(frame, x, y, width, 1, color);
+    fill(frame, Rect::new(x, y, width, 1), color);
 }
 
 pub fn vline(frame: &mut GuiFramebuffer, x: i32, y: i32, height: u32, color: Rgb565) {
-    fill_box(frame, x, y, 1, height, color);
+    fill(frame, Rect::new(x, y, 1, height), color);
 }
 
-pub fn draw_title(frame: &mut GuiFramebuffer, text: &str, x: i32, y: i32, color: Rgb565) {
-    let style = MonoTextStyle::new(&FONT_8X13_BOLD, color);
-    let _ = Text::with_baseline(text, Point::new(x, y), style, Baseline::Top).draw(frame);
+/// Draw `text` with its top-left corner at `origin`.
+pub fn text(
+    frame: &mut GuiFramebuffer,
+    text: &str,
+    origin: Point,
+    font: &'static MonoFont<'static>,
+    color: Rgb565,
+) {
+    let style = MonoTextStyle::new(font, color);
+    let _ = Text::with_baseline(text, origin, style, Baseline::Top).draw(frame);
 }
 
-pub fn draw_body(frame: &mut GuiFramebuffer, text: &str, x: i32, y: i32, color: Rgb565) {
-    let style = MonoTextStyle::new(&FONT_7X13, color);
-    let _ = Text::with_baseline(text, Point::new(x, y), style, Baseline::Top).draw(frame);
-}
-
-pub fn draw_dense(frame: &mut GuiFramebuffer, text: &str, x: i32, y: i32, color: Rgb565) {
-    let style = MonoTextStyle::new(&FONT_6X12, color);
-    let _ = Text::with_baseline(text, Point::new(x, y), style, Baseline::Top).draw(frame);
-}
-
-pub fn draw_centered_body(frame: &mut GuiFramebuffer, rect: Rect, text: &str, color: Rgb565) {
-    let width = text.len() as i32 * 7;
+/// Draw `text` centered inside `rect`.
+pub fn centered_text(
+    frame: &mut GuiFramebuffer,
+    rect: Rect,
+    text: &str,
+    font: &'static MonoFont<'static>,
+    color: Rgb565,
+) {
+    let glyph = font.character_size;
+    let width = i32::try_from(text.chars().count()).unwrap_or(0) * glyph.width as i32;
     let x = rect.x + ((rect.w as i32 - width) / 2).max(0);
-    draw_body(frame, text, x, rect.y, color);
+    let y = rect.y + ((rect.h as i32 - glyph.height as i32) / 2).max(0);
+    self::text(frame, text, Point::new(x, y), font, color);
+}
+
+/// Writes consecutive lines of `BODY_FONT` text downwards from a start point.
+pub struct Lines<'a> {
+    frame: &'a mut GuiFramebuffer,
+    x: i32,
+    y: i32,
+}
+
+impl<'a> Lines<'a> {
+    pub fn new(frame: &'a mut GuiFramebuffer, origin: Point) -> Self {
+        Self {
+            frame,
+            x: origin.x,
+            y: origin.y,
+        }
+    }
+
+    pub fn line(&mut self, text: &str, color: Rgb565) {
+        self::text(
+            self.frame,
+            text,
+            Point::new(self.x, self.y),
+            BODY_FONT,
+            color,
+        );
+        self.y += BODY_LINE_HEIGHT;
+    }
 }

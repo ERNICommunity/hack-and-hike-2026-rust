@@ -1,6 +1,0 @@
-screen id="Imu" width=276 height=240 theme="light" {
-    grid cols="1fr" rows="52px 170px" gap=6 padding=6 {
-        label id="header_slot" text="" col=0 row=0
-        label id="attitude_slot" text="" col=0 row=1
-    }
-}

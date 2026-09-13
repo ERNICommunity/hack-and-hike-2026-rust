@@ -1036,7 +1036,7 @@ Keep large framebuffers and histories out of local task-stack variables.
 | --- | --- |
 | Create a new device experience | `src/bin/my_app.rs` |
 | Change the full demo | `src/bin/demo/` |
-| Add a demo screen | `src/bin/demo/views/` |
+| Add a demo screen | `src/bin/demo/screens/` |
 | Change demo navigation | `src/bin/demo/navigation.rs` |
 | Add a reusable drawing helper | `src/ui/` |
 | Expose a new useful hardware operation | matching `src/capabilities/.../` module |
