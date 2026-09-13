@@ -4,10 +4,11 @@
 //! power management chip over the shared I2C bus. Only the newest request
 //! matters, so the transport is a replace-latest signal.
 
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
-use log::warn;
+mod runtime;
 
-use crate::platform::{self, i2c::SystemI2cBus};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+
+pub(crate) use runtime::spawn;
 
 /// Backlight brightness in percent, from [`Brightness::MIN`] to
 /// [`Brightness::FULL`]. There is no "off": the lowest setting keeps the panel
@@ -72,9 +73,16 @@ impl Backlight {
     }
 }
 
+/// CPU1 side of the signal.
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
     service: &'static Service,
+}
+
+impl Runtime {
+    async fn next_request(self) -> Brightness {
+        self.service.request.wait().await
+    }
 }
 
 pub(crate) struct Endpoints {
@@ -86,20 +94,5 @@ pub(crate) fn endpoints() -> Endpoints {
     Endpoints {
         handle: Backlight { service: &SERVICE },
         runtime: Runtime { service: &SERVICE },
-    }
-}
-
-/// CPU1 task that applies brightness requests over the shared system bus.
-#[embassy_executor::task]
-pub(crate) async fn task(bus: SystemI2cBus, runtime: Runtime) {
-    loop {
-        let brightness = runtime.service.request.wait().await;
-        let result = {
-            let mut i2c = bus.lock().await;
-            platform::power::set_lcd_backlight(&mut *i2c, brightness.percent()).await
-        };
-        if let Err(error) = result {
-            warn!("LCD brightness update failed: {:?}", error);
-        }
     }
 }

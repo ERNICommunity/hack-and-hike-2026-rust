@@ -1,5 +1,7 @@
 //! AXP2101 power-rail policy for this board.
 
+use super::registers::{AsyncRegisters, Registers};
+
 const AXP2101_ADDR: u8 = 0x34;
 const OUTPUT_ENABLE_REGISTER: u8 = 0x90;
 
@@ -20,49 +22,14 @@ const SPEAKER_ALDO1_1V8_CODE: u8 = 18 - 5;
 const MICROPHONE_ALDO2_3V3_CODE: u8 = 33 - 5;
 const CAMERA_ALDO3_3V3_CODE: u8 = 33 - 5;
 
-// The CoreS3 backlight is powered from DLDO1. Keep runtime dimming inside the
-// documented 2.6-3.3 V operating range rather than exposing PMIC register codes
-// to presentation code. AXP2101 encodes this range as 0x15..=0x1C.
+// The CoreS3 backlight is powered from DLDO1. Runtime dimming stays inside
+// the documented 2.6-3.3 V operating range, which AXP2101 encodes as
+// 0x15..=0x1C: eight usable steps.
 const LCD_BACKLIGHT_MIN_CODE: u8 = 0x15;
 const LCD_BACKLIGHT_MAX_CODE: u8 = 0x1C;
 
-fn read_register<I2C>(i2c: &mut I2C, register: u8) -> Result<u8, I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    let mut value = [0u8; 1];
-    i2c.write_read(AXP2101_ADDR, &[register], &mut value)?;
-    Ok(value[0])
-}
-
-fn update_register_bits<I2C>(
-    i2c: &mut I2C,
-    register: u8,
-    mask: u8,
-    value: u8,
-) -> Result<(), I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    let current = read_register(i2c, register)?;
-    let next = (current & !mask) | (value & mask);
-    i2c.write(AXP2101_ADDR, &[register, next])
-}
-
-async fn update_register_bits_async<I2C>(
-    i2c: &mut I2C,
-    register: u8,
-    mask: u8,
-    value: u8,
-) -> Result<(), I2C::Error>
-where
-    I2C: embedded_hal_async::i2c::I2c,
-{
-    let mut current = [0u8; 1];
-    i2c.write_read(AXP2101_ADDR, &[register], &mut current)
-        .await?;
-    let next = (current[0] & !mask) | (value & mask);
-    i2c.write(AXP2101_ADDR, &[register, next]).await
+fn pmic<I2C: embedded_hal::i2c::I2c>(i2c: &mut I2C) -> Registers<'_, I2C> {
+    Registers::new(i2c, AXP2101_ADDR)
 }
 
 /// Enable the LCD backlight rail (DLDO1) at full brightness.
@@ -70,30 +37,31 @@ pub(crate) fn enable_lcd_backlight<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    i2c.write(
-        AXP2101_ADDR,
-        &[DLDO1_VOLTAGE_REGISTER, LCD_BACKLIGHT_MAX_CODE],
-    )?;
-    update_register_bits(i2c, OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, DLDO1_ENABLE)
+    let mut pmic = pmic(i2c);
+    pmic.write(DLDO1_VOLTAGE_REGISTER, LCD_BACKLIGHT_MAX_CODE)?;
+    pmic.update_bits(OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, DLDO1_ENABLE)
 }
 
-/// Apply a 1-100 % backlight brightness to the DLDO1 rail.
-///
-/// The rail has eight usable voltage steps: 1 % maps to 2.6 V and 100 % to
+/// The DLDO1 voltage code for a 1-100 % brightness: 1 % is 2.6 V, 100 % is
 /// 3.3 V. Dimming never switches the rail off.
-pub(crate) async fn set_lcd_backlight<I2C>(i2c: &mut I2C, percent: u8) -> Result<(), I2C::Error>
-where
-    I2C: embedded_hal_async::i2c::I2c,
-{
+fn backlight_code(percent: u8) -> u8 {
     const PERCENT_SPAN: u16 = 99;
     let steps = LCD_BACKLIGHT_MAX_CODE - LCD_BACKLIGHT_MIN_CODE;
     let offset = u16::from(percent.clamp(1, 100) - 1);
     let scaled = (offset * u16::from(steps) + PERCENT_SPAN / 2) / PERCENT_SPAN;
-    let code = LCD_BACKLIGHT_MIN_CODE + u8::try_from(scaled).unwrap_or(steps);
+    LCD_BACKLIGHT_MIN_CODE + scaled as u8
+}
 
-    i2c.write(AXP2101_ADDR, &[DLDO1_VOLTAGE_REGISTER, code])
+/// Apply a 1-100 % backlight brightness to the DLDO1 rail.
+pub(crate) async fn set_lcd_backlight<I2C>(i2c: &mut I2C, percent: u8) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal_async::i2c::I2c,
+{
+    let mut pmic = AsyncRegisters::new(i2c, AXP2101_ADDR);
+    pmic.write(DLDO1_VOLTAGE_REGISTER, backlight_code(percent))
         .await?;
-    update_register_bits_async(i2c, OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, DLDO1_ENABLE).await
+    pmic.update_bits(OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, DLDO1_ENABLE)
+        .await
 }
 
 /// Enable the microphone rail (ALDO2) at 3.3 V.
@@ -103,29 +71,23 @@ pub(crate) fn enable_microphone<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    i2c.write(
-        AXP2101_ADDR,
-        &[ALDO2_VOLTAGE_REGISTER, MICROPHONE_ALDO2_3V3_CODE],
-    )?;
-    update_register_bits(i2c, OUTPUT_ENABLE_REGISTER, ALDO2_ENABLE, ALDO2_ENABLE)
+    let mut pmic = pmic(i2c);
+    pmic.write(ALDO2_VOLTAGE_REGISTER, MICROPHONE_ALDO2_3V3_CODE)?;
+    pmic.update_bits(OUTPUT_ENABLE_REGISTER, ALDO2_ENABLE, ALDO2_ENABLE)
 }
 
 /// Enable the onboard GC0308 camera power domain.
 ///
 /// CoreS3/CoreS3-Lite camera bring-up requires AXP2101 ALDO3 plus BLDO1 and
-/// BLDO2 to be enabled together. Espressif's CoreS3 BSP uses the same 0x34 mask
-/// in register 0x90 for BSP_FEATURE_CAMERA, while ALDO3 register 0x94 is set to
-/// 3.3 V. The AW9523 owns the separate camera reset line.
+/// BLDO2 to be enabled together, with ALDO3 at 3.3 V; Espressif's CoreS3 BSP
+/// uses the same mask. The AW9523 owns the separate camera reset line.
 pub(crate) fn enable_camera<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    i2c.write(
-        AXP2101_ADDR,
-        &[ALDO3_VOLTAGE_REGISTER, CAMERA_ALDO3_3V3_CODE],
-    )?;
-    update_register_bits(
-        i2c,
+    let mut pmic = pmic(i2c);
+    pmic.write(ALDO3_VOLTAGE_REGISTER, CAMERA_ALDO3_3V3_CODE)?;
+    pmic.update_bits(
         OUTPUT_ENABLE_REGISTER,
         CAMERA_POWER_ENABLE,
         CAMERA_POWER_ENABLE,
@@ -140,9 +102,7 @@ pub(crate) fn enable_speaker_amplifier<I2C>(i2c: &mut I2C) -> Result<(), I2C::Er
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    i2c.write(
-        AXP2101_ADDR,
-        &[ALDO1_VOLTAGE_REGISTER, SPEAKER_ALDO1_1V8_CODE],
-    )?;
-    update_register_bits(i2c, OUTPUT_ENABLE_REGISTER, ALDO1_ENABLE, ALDO1_ENABLE)
+    let mut pmic = pmic(i2c);
+    pmic.write(ALDO1_VOLTAGE_REGISTER, SPEAKER_ALDO1_1V8_CODE)?;
+    pmic.update_bits(OUTPUT_ENABLE_REGISTER, ALDO1_ENABLE, ALDO1_ENABLE)
 }

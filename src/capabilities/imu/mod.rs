@@ -4,18 +4,17 @@
 //! enclosure distortion, and fuses everything into an orientation. CPU0
 //! receives [`Sample`]s through the [`Imu`] handle. Sensor registers stay
 //! private to this module; the math lives in `hack_and_hike_core::imu`, where
-//! it is unit-tested on the host.
+//! it is tested on the host.
 
 mod bmi270;
-mod channels;
 mod magnetic;
-mod task;
+mod runtime;
+
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 
 use hack_and_hike_core::imu::{Orientation, frames::screen_from_body};
 
-pub use channels::Imu;
-pub(crate) use channels::{Endpoints, Runtime, endpoints};
-pub(crate) use task::capture_task;
+pub(crate) use runtime::spawn;
 
 /// Health of the accelerometer/gyroscope acquisition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,7 +34,7 @@ pub enum Status {
 pub enum MagStatus {
     /// No magnetometer is answering; heading drifts with the gyroscope.
     Missing,
-    /// Calibration is collecting samples; move the device in all directions.
+    /// Calibration is collecting samples; move the board in all directions.
     Learning,
     /// Calibrated and delivering plausible fields.
     Ready,
@@ -72,15 +71,19 @@ impl Attitude {
     /// the Euler angles inside `Orientation` follow the sensor's body frame.
     fn from_orientation(orientation: &Orientation) -> Self {
         let [down_x, down_y, down_z] = orientation.gravity_screen;
-        let roll_deg = libm::atan2f(down_y, down_z).to_degrees();
-        let pitch_deg = libm::atan2f(-down_x, libm::hypotf(down_y, down_z)).to_degrees();
         Self {
-            roll_deg,
-            pitch_deg,
+            roll_deg: libm::atan2f(down_y, down_z).to_degrees(),
+            pitch_deg: libm::atan2f(-down_x, libm::hypotf(down_y, down_z)).to_degrees(),
             heading_deg: heading_0_to_360(orientation.yaw_deg),
             down: orientation.gravity_screen,
             north: orientation.north_screen,
         }
+    }
+}
+
+impl Default for Attitude {
+    fn default() -> Self {
+        Self::from_orientation(&Orientation::default())
     }
 }
 
@@ -91,12 +94,6 @@ fn heading_0_to_360(degrees: f32) -> f32 {
         wrapped + 360.0
     } else {
         wrapped
-    }
-}
-
-impl Default for Attitude {
-    fn default() -> Self {
-        Self::from_orientation(&Orientation::default())
     }
 }
 
@@ -123,7 +120,7 @@ pub struct Sample {
     pub mag_calibration_percent: u8,
 }
 
-/// Physical measurements of one sample before fusion, in the screen frame.
+/// Physical measurements of one sample before fusion, in the body frame.
 #[derive(Clone, Copy, Debug, Default)]
 struct Measurements {
     acceleration_m_s2: Option<[f32; 3]>,
@@ -138,5 +135,54 @@ impl Measurements {
             angular_velocity_deg_s: self.angular_velocity_deg_s.map(screen_from_body),
             magnetic_field_ut: self.magnetic_field_ut.map(screen_from_body),
         }
+    }
+}
+
+struct Service {
+    latest: Signal<CriticalSectionRawMutex, Sample>,
+}
+
+static SERVICE: Service = Service {
+    latest: Signal::new(),
+};
+
+/// Application handle for the motion sensors.
+///
+/// CPU1 publishes about 100 samples per second. Only the newest one is kept,
+/// so an application that polls slower than that always sees fresh data and
+/// can detect skipped samples through [`Sample::revision`].
+pub struct Imu {
+    service: &'static Service,
+}
+
+impl Imu {
+    /// The newest sample, or `None` when nothing new was published since the
+    /// previous call.
+    pub fn latest(&mut self) -> Option<Sample> {
+        self.service.latest.try_take()
+    }
+}
+
+/// CPU1 side of the signal.
+#[derive(Clone, Copy)]
+pub(crate) struct Runtime {
+    service: &'static Service,
+}
+
+impl Runtime {
+    fn publish(self, sample: Sample) {
+        self.service.latest.signal(sample);
+    }
+}
+
+pub(crate) struct Endpoints {
+    pub(crate) handle: Imu,
+    pub(crate) runtime: Runtime,
+}
+
+pub(crate) fn endpoints() -> Endpoints {
+    Endpoints {
+        handle: Imu { service: &SERVICE },
+        runtime: Runtime { service: &SERVICE },
     }
 }

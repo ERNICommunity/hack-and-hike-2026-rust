@@ -132,7 +132,7 @@ pub(super) fn initialize(
         .orientation(orientation)
         .refresh_order(refresh_order)
         .init(&mut delay)
-        .unwrap();
+        .expect("ILI9342C initialization over SPI failed");
 
     let (di, _model, _reset) = display.release();
     let (spi_device, dc) = di.release();

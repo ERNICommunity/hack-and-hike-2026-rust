@@ -6,6 +6,8 @@
 
 use esp_hal::delay::Delay;
 
+use super::registers::Registers;
+
 const AW9523_ADDR: u8 = 0x58;
 
 const PORT0_OUTPUT_REGISTER: u8 = 0x02;
@@ -30,8 +32,8 @@ const AMPLIFIER_RESET_PULSE_MS: u32 = 10;
 const AMPLIFIER_SETTLE_MS: u32 = 50;
 
 // M5Stack's CoreS3 AW9523 bootstrap values. P0_2 normally appears high in the
-// reference value (0x07); we deliberately hold it low here until the AW88298
-// rail has been enabled and the speaker reset sequence is executed.
+// reference value (0x07); it is held low here until the AW88298 rail has been
+// enabled and the speaker reset sequence is executed.
 const PORT0_BOOT_OUTPUTS: u8 = 0b0000_0011;
 const PORT1_BOOT_OUTPUTS: u8 = 0b1000_1111;
 const PORT0_DIRECTIONS: u8 = 0b0001_1000;
@@ -39,27 +41,8 @@ const PORT1_DIRECTIONS: u8 = 0b0000_1100;
 const PORT0_PUSH_PULL: u8 = 0b0001_0000;
 const GPIO_MODE_ALL: u8 = 0xFF;
 
-fn read_register<I2C>(i2c: &mut I2C, register: u8) -> Result<u8, I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    let mut value = [0u8; 1];
-    i2c.write_read(AW9523_ADDR, &[register], &mut value)?;
-    Ok(value[0])
-}
-
-fn update_register_bits<I2C>(
-    i2c: &mut I2C,
-    register: u8,
-    mask: u8,
-    value: u8,
-) -> Result<(), I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    let current = read_register(i2c, register)?;
-    let next = (current & !mask) | (value & mask);
-    i2c.write(AW9523_ADDR, &[register, next])
+fn expander<I2C: embedded_hal::i2c::I2c>(i2c: &mut I2C) -> Registers<'_, I2C> {
+    Registers::new(i2c, AW9523_ADDR)
 }
 
 /// Establish the CoreS3-Lite AW9523 GPIO policy and reset LCD + touch.
@@ -70,20 +53,23 @@ pub(crate) fn reset_display_and_touch<I2C>(i2c: &mut I2C, delay: Delay) -> Resul
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    i2c.write(AW9523_ADDR, &[PORT0_OUTPUT_REGISTER, PORT0_BOOT_OUTPUTS])?;
-    i2c.write(AW9523_ADDR, &[PORT1_OUTPUT_REGISTER, PORT1_BOOT_OUTPUTS])?;
-    i2c.write(AW9523_ADDR, &[PORT0_DIRECTION_REGISTER, PORT0_DIRECTIONS])?;
-    i2c.write(AW9523_ADDR, &[PORT1_DIRECTION_REGISTER, PORT1_DIRECTIONS])?;
-    i2c.write(AW9523_ADDR, &[GLOBAL_CONTROL_REGISTER, PORT0_PUSH_PULL])?;
-    i2c.write(AW9523_ADDR, &[PORT0_MODE_REGISTER, GPIO_MODE_ALL])?;
-    i2c.write(AW9523_ADDR, &[PORT1_MODE_REGISTER, GPIO_MODE_ALL])?;
+    let mut expander = expander(i2c);
+    expander.write_all(&[
+        (PORT0_OUTPUT_REGISTER, PORT0_BOOT_OUTPUTS),
+        (PORT1_OUTPUT_REGISTER, PORT1_BOOT_OUTPUTS),
+        (PORT0_DIRECTION_REGISTER, PORT0_DIRECTIONS),
+        (PORT1_DIRECTION_REGISTER, PORT1_DIRECTIONS),
+        (GLOBAL_CONTROL_REGISTER, PORT0_PUSH_PULL),
+        (PORT0_MODE_REGISTER, GPIO_MODE_ALL),
+        (PORT1_MODE_REGISTER, GPIO_MODE_ALL),
+    ])?;
 
-    update_register_bits(i2c, PORT1_OUTPUT_REGISTER, LCD_RESET, 0)?;
-    update_register_bits(i2c, PORT0_OUTPUT_REGISTER, TOUCH_RESET, 0)?;
+    expander.update_bits(PORT1_OUTPUT_REGISTER, LCD_RESET, 0)?;
+    expander.update_bits(PORT0_OUTPUT_REGISTER, TOUCH_RESET, 0)?;
     delay.delay_millis(LCD_TOUCH_RESET_PULSE_MS);
 
-    update_register_bits(i2c, PORT1_OUTPUT_REGISTER, LCD_RESET, LCD_RESET)?;
-    update_register_bits(i2c, PORT0_OUTPUT_REGISTER, TOUCH_RESET, TOUCH_RESET)?;
+    expander.update_bits(PORT1_OUTPUT_REGISTER, LCD_RESET, LCD_RESET)?;
+    expander.update_bits(PORT0_OUTPUT_REGISTER, TOUCH_RESET, TOUCH_RESET)?;
     delay.delay_millis(LCD_TOUCH_RESET_SETTLE_MS);
     Ok(())
 }
@@ -93,17 +79,17 @@ pub(crate) fn reset_camera<I2C>(i2c: &mut I2C, delay: Delay) -> Result<(), I2C::
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    // Make camera reset self-contained so camera-only firmware does not depend
-    // on the display/touch bootstrap having configured AW9523 first. Drive the
-    // latch low before switching P1_0 to an output to avoid a high-going glitch.
-    update_register_bits(i2c, PORT1_MODE_REGISTER, CAMERA_RESET, CAMERA_RESET)?;
-    update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, 0)?;
-    update_register_bits(i2c, PORT1_DIRECTION_REGISTER, CAMERA_RESET, 0)?;
+    let mut expander = expander(i2c);
+    // Drive the latch low before switching P1_0 to an output to avoid a
+    // high-going glitch.
+    expander.update_bits(PORT1_MODE_REGISTER, CAMERA_RESET, CAMERA_RESET)?;
+    expander.update_bits(PORT1_OUTPUT_REGISTER, CAMERA_RESET, 0)?;
+    expander.update_bits(PORT1_DIRECTION_REGISTER, CAMERA_RESET, 0)?;
     delay.delay_millis(CAMERA_RESET_PULSE_MS);
 
     // GC0308 RESETB is active-low. Release it and allow the external 20 MHz
     // camera clock to run before SCCB access.
-    update_register_bits(i2c, PORT1_OUTPUT_REGISTER, CAMERA_RESET, CAMERA_RESET)?;
+    expander.update_bits(PORT1_OUTPUT_REGISTER, CAMERA_RESET, CAMERA_RESET)?;
     delay.delay_millis(CAMERA_CLOCK_SETTLE_MS);
     Ok(())
 }
@@ -124,13 +110,14 @@ where
     // Make the control pin unambiguously a push-pull GPIO before resetting the
     // amplifier. Drive the output latch low before changing its direction to
     // avoid a high-going glitch if firmware inherited a different expander state.
-    i2c.write(AW9523_ADDR, &[GLOBAL_CONTROL_REGISTER, PORT0_PUSH_PULL])?;
-    update_register_bits(i2c, PORT0_MODE_REGISTER, SPEAKER_RESET, SPEAKER_RESET)?;
-    update_register_bits(i2c, PORT0_OUTPUT_REGISTER, SPEAKER_RESET, 0)?;
-    update_register_bits(i2c, PORT0_DIRECTION_REGISTER, SPEAKER_RESET, 0)?;
+    let mut expander = expander(i2c);
+    expander.write(GLOBAL_CONTROL_REGISTER, PORT0_PUSH_PULL)?;
+    expander.update_bits(PORT0_MODE_REGISTER, SPEAKER_RESET, SPEAKER_RESET)?;
+    expander.update_bits(PORT0_OUTPUT_REGISTER, SPEAKER_RESET, 0)?;
+    expander.update_bits(PORT0_DIRECTION_REGISTER, SPEAKER_RESET, 0)?;
     delay.delay_millis(AMPLIFIER_RESET_PULSE_MS);
 
-    update_register_bits(i2c, PORT0_OUTPUT_REGISTER, SPEAKER_RESET, SPEAKER_RESET)?;
+    expander.update_bits(PORT0_OUTPUT_REGISTER, SPEAKER_RESET, SPEAKER_RESET)?;
     delay.delay_millis(AMPLIFIER_SETTLE_MS);
     Ok(())
 }

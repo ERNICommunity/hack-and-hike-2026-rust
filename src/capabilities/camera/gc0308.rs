@@ -5,8 +5,13 @@
 
 use esp_hal::delay::Delay;
 
-pub(super) const ADDRESS: u8 = 0x21;
-pub(super) const EXPECTED_PID: u8 = 0x9b;
+use crate::platform::registers::Registers;
+
+use super::BringUpError;
+
+const ADDRESS: u8 = 0x21;
+const PID_REGISTER: u8 = 0x00;
+const EXPECTED_PID: u8 = 0x9b;
 
 const PAGE_SELECT: u8 = 0xfe;
 const OUTPUT_FORMAT: u8 = 0x24;
@@ -261,68 +266,58 @@ const DEFAULT_REGS: &[(u8, u8)] = &[
     (0xfe, 0x00),
 ];
 
-pub(super) fn init<I2C>(i2c: &mut I2C, delay: Delay) -> Result<u8, I2C::Error>
+/// Program the sensor for 320x240 RGB565 and check that it is a GC0308.
+pub(super) fn init<I2C>(i2c: &mut I2C, delay: Delay) -> Result<(), BringUpError<I2C::Error>>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    program(&mut Registers::new(i2c, ADDRESS), delay).map_err(BringUpError::Bus)?;
+
+    let pid = Registers::new(i2c, ADDRESS)
+        .read(PID_REGISTER)
+        .map_err(BringUpError::Bus)?;
+    if pid == EXPECTED_PID {
+        Ok(())
+    } else {
+        Err(BringUpError::UnexpectedPid(pid))
+    }
+}
+
+fn program<I2C>(sensor: &mut Registers<'_, I2C>, delay: Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
     // Software reset, matching the sensor driver's documented startup sequence.
-    write(i2c, PAGE_SELECT, 0xf0)?;
+    sensor.write(PAGE_SELECT, 0xf0)?;
     delay.delay_millis(80u32);
 
-    for &(register, value) in DEFAULT_REGS {
-        write(i2c, register, value)?;
-    }
+    sensor.write_all(DEFAULT_REGS)?;
     delay.delay_millis(80u32);
 
     // Native QVGA via 1/2 subsampling. This preserves the full field of view
     // while producing exactly 320x240 pixels for LCD_CAM.
-    write(i2c, PAGE_SELECT, 0x00)?;
-    write(i2c, OUTPUT_FORMAT, RGB565_BE)?;
-    write(i2c, PAGE_SELECT, 0x01)?;
-    update_bits(i2c, 0x53, 0x80, 0x80)?;
-    update_bits(i2c, 0x55, 0x01, 0x01)?;
-    write(i2c, 0x54, 0x22)?;
-    write(i2c, 0x56, 0x00)?;
-    write(i2c, 0x57, 0x00)?;
-    write(i2c, 0x58, 0x00)?;
-    write(i2c, 0x59, 0x00)?;
-    write(i2c, PAGE_SELECT, 0x00)?;
+    sensor.write(PAGE_SELECT, 0x00)?;
+    sensor.write(OUTPUT_FORMAT, RGB565_BE)?;
+    sensor.write(PAGE_SELECT, 0x01)?;
+    sensor.update_bits(0x53, 0x80, 0x80)?;
+    sensor.update_bits(0x55, 0x01, 0x01)?;
+    sensor.write_all(&[
+        (0x54, 0x22),
+        (0x56, 0x00),
+        (0x57, 0x00),
+        (0x58, 0x00),
+        (0x59, 0x00),
+    ])?;
+    sensor.write(PAGE_SELECT, 0x00)?;
 
-    // CoreS3 Lite mounts the sensor 180 degrees relative to the LCD. Keep the
-    // sensor-side vertical flip that corrects the physical upside-down mounting,
-    // but leave the horizontal axis reversed to present a familiar mirrored
-    // camera preview. Doing this in the GC0308 keeps the LCD/DMA hot path free of
-    // per-pixel framebuffer work.
-    update_bits(
-        i2c,
+    // CoreS3 Lite mounts the sensor 180 degrees relative to the LCD. The
+    // sensor-side vertical flip corrects the upside-down mounting; the
+    // horizontal axis stays reversed so the preview is mirrored like a
+    // selfie camera. Doing this in the sensor keeps the LCD/DMA path free of
+    // per-pixel work.
+    sensor.update_bits(
         ORIENTATION,
         ORIENTATION_MASK,
         ORIENTATION_VERTICAL_FLIP_MASK,
-    )?;
-
-    read(i2c, 0x00)
-}
-
-fn write<I2C>(i2c: &mut I2C, register: u8, value: u8) -> Result<(), I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    i2c.write(ADDRESS, &[register, value])
-}
-
-fn read<I2C>(i2c: &mut I2C, register: u8) -> Result<u8, I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    let mut value = [0u8; 1];
-    i2c.write_read(ADDRESS, &[register], &mut value)?;
-    Ok(value[0])
-}
-
-fn update_bits<I2C>(i2c: &mut I2C, register: u8, mask: u8, value: u8) -> Result<(), I2C::Error>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    let current = read(i2c, register)?;
-    write(i2c, register, (current & !mask) | (value & mask))
+    )
 }

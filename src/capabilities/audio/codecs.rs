@@ -2,7 +2,7 @@
 
 use esp_hal::delay::Delay;
 
-use crate::platform;
+use crate::platform::{self, registers::Registers};
 
 const ES7210_ADDR: u8 = 0x40;
 const AW88298_ADDR: u8 = 0x36;
@@ -21,10 +21,9 @@ fn init_es7210<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    platform::power::enable_microphone(i2c)?;
-    i2c.write(ES7210_ADDR, &[0x00, 0xFF])?;
-
+    // Reset, then the M5Unified register program for this board.
     const ES7210_INIT: &[(u8, u8)] = &[
+        (0x00, 0xFF),
         (0x00, 0x41),
         (0x01, 0x1F),
         (0x06, 0x00),
@@ -56,10 +55,8 @@ where
         (0x01, 0x14),
     ];
 
-    for &(register, value) in ES7210_INIT {
-        i2c.write(ES7210_ADDR, &[register, value])?;
-    }
-    Ok(())
+    platform::power::enable_microphone(i2c)?;
+    Registers::new(i2c, ES7210_ADDR).write_all(ES7210_INIT)
 }
 
 /// Release and configure the onboard AW88298 speaker amplifier for the same
@@ -80,6 +77,7 @@ where
     Ok(())
 }
 
+/// The AW88298 has 16-bit registers, unlike the other chips on the bus.
 fn aw88298_write<I2C>(i2c: &mut I2C, register: u8, value: u16) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,

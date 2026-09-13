@@ -4,7 +4,10 @@ use embassy_time::{Duration, Instant};
 use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use hack_and_hike::{
     capabilities::display::Surface,
-    support::logging::{HistoryBuffer, LogHistory},
+    support::{
+        logging::{Line, LogHistory},
+        memory::storage,
+    },
     ui::{Canvas, common, gui, theme},
 };
 
@@ -22,7 +25,10 @@ const _: () = assert!(generated::LogApp::HEIGHT == layout::CONTENT_SIZE.height);
 
 pub(crate) struct LogScreen {
     history: LogHistory,
-    buffer: HistoryBuffer,
+    /// As many lines as fit the body, filled from the history.
+    lines: &'static mut [Line],
+    shown: usize,
+    revision: Option<u32>,
     gui: &'static mut gui::Context<NODES>,
     body: Rectangle,
     last_refresh: Instant,
@@ -33,11 +39,15 @@ impl LogScreen {
     pub(crate) fn new(history: LogHistory) -> Self {
         let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::LogApp::build(gui).expect("log.kdl fits the GUI capacities");
+        let body = gui::slot(gui, app.widgets.body);
+        let visible = (body.size.height as usize / common::DENSE_LINE_HEIGHT as usize).max(1);
         Self {
             history,
-            buffer: HistoryBuffer::new(),
-            body: gui::slot(gui, app.widgets.body),
+            lines: storage::leaked_slice(visible, Line::new()),
+            shown: 0,
+            revision: None,
             gui,
+            body,
             last_refresh: Instant::now(),
             dirty: true,
         }
@@ -54,7 +64,11 @@ impl Screen for LogScreen {
             return;
         }
         self.last_refresh = now;
-        if self.buffer.refresh(&mut self.history) {
+
+        let revision = self.history.revision();
+        if self.revision != Some(revision) {
+            self.revision = Some(revision);
+            self.shown = self.history.newest(self.lines);
             self.dirty = true;
         }
     }
@@ -67,11 +81,7 @@ impl Screen for LogScreen {
 
         canvas.clear(theme::WHITE);
         gui::render(self.gui, canvas);
-
-        let text = self.buffer.text().unwrap_or_default();
-        let visible = (self.body.size.height as i32 / common::DENSE_LINE_HEIGHT).max(1) as usize;
-        let skip = text.lines().count().saturating_sub(visible);
-        for (index, line) in text.lines().skip(skip).enumerate() {
+        for (index, line) in self.lines[..self.shown].iter().enumerate() {
             let origin =
                 self.body.top_left + Point::new(0, index as i32 * common::DENSE_LINE_HEIGHT);
             common::text(canvas, line, origin, common::DENSE_FONT, theme::CHARCOAL);

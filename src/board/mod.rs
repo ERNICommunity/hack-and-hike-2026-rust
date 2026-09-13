@@ -12,7 +12,7 @@
 mod cpu1;
 
 use esp_hal::{clock::CpuClock, delay::Delay, timer::timg::TimerGroup};
-use log::{LevelFilter, info, warn};
+use log::{LevelFilter, info};
 
 use crate::{
     capabilities::{
@@ -72,7 +72,7 @@ impl Board {
         let peripherals = esp_hal::init(config);
 
         memory::enable_psram(peripherals.PSRAM);
-        let log = logging::enable_psram_history();
+        let log = logging::enable_history();
         memory::report("after PSRAM setup");
 
         let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -85,24 +85,34 @@ impl Board {
             scl: peripherals.GPIO11,
         };
 
-        // Power rails and reset lines are driven over a short-lived I2C owner.
-        // Dropping it frees the pins for the camera's slower bus below.
-        let camera_powered = {
+        // Power rails and reset lines are driven over a short-lived I2C owner;
+        // dropping it frees the pins for the camera's slower bus.
+        {
             let mut i2c = i2c::init(i2c_resources.reborrow());
             power::enable_lcd_backlight(&mut i2c).expect("AXP2101 power chip did not answer");
             io_expander::reset_display_and_touch(&mut i2c, delay)
                 .expect("AW9523 IO expander did not answer");
-            camera::power_on(&mut i2c, delay)
-        };
-        let camera_sensor = camera_powered
-            .map_err(camera::BringUpError::Bus)
-            .and_then(|()| {
-                let mut sccb = i2c::init_camera_sccb(i2c_resources.reborrow());
-                camera::init_sensor(&mut sccb, delay)
-            });
+        }
 
-        // The final system I2C driver moves to CPU1 once the codecs are set up.
-        let mut system_i2c = i2c::init(i2c_resources);
+        let camera = camera::bring_up(
+            &mut i2c_resources,
+            delay,
+            camera::Resources {
+                lcd_cam: peripherals.LCD_CAM,
+                dma: peripherals.DMA_CH2,
+                pclk: peripherals.GPIO45,
+                vsync: peripherals.GPIO46,
+                href: peripherals.GPIO38,
+                d0: peripherals.GPIO39,
+                d1: peripherals.GPIO40,
+                d2: peripherals.GPIO41,
+                d3: peripherals.GPIO42,
+                d4: peripherals.GPIO15,
+                d5: peripherals.GPIO16,
+                d6: peripherals.GPIO48,
+                d7: peripherals.GPIO47,
+            },
+        );
 
         let display = display::init(
             display::Resources {
@@ -116,35 +126,8 @@ impl Board {
             delay,
         );
 
-        let camera = match camera_sensor {
-            Ok(()) => {
-                info!("GC0308 camera ready");
-                Some(camera::init(camera::Resources {
-                    lcd_cam: peripherals.LCD_CAM,
-                    dma: peripherals.DMA_CH2,
-                    pclk: peripherals.GPIO45,
-                    vsync: peripherals.GPIO46,
-                    href: peripherals.GPIO38,
-                    d0: peripherals.GPIO39,
-                    d1: peripherals.GPIO40,
-                    d2: peripherals.GPIO41,
-                    d3: peripherals.GPIO42,
-                    d4: peripherals.GPIO15,
-                    d5: peripherals.GPIO16,
-                    d6: peripherals.GPIO48,
-                    d7: peripherals.GPIO47,
-                }))
-            }
-            Err(camera::BringUpError::Bus(error)) => {
-                warn!("Camera disabled: I2C error {:?}", error);
-                None
-            }
-            Err(camera::BringUpError::UnexpectedPid(pid)) => {
-                warn!("Camera disabled: unexpected sensor ID 0x{:02x}", pid);
-                None
-            }
-        };
-
+        // The final system I2C driver moves to CPU1 once the codecs are set up.
+        let mut system_i2c = i2c::init(i2c_resources);
         audio::init_codecs(&mut system_i2c, delay).expect("audio codecs did not answer");
 
         let audio::Endpoints {

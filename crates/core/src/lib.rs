@@ -6,5 +6,8 @@
 
 #![no_std]
 
+pub mod audio;
 pub mod imu;
+pub mod lines;
 pub mod network;
+pub mod touch;

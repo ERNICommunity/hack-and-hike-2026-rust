@@ -52,14 +52,9 @@ fn run(cpu1: Cpu1) {
         // interrupt, so the blocking driver is converted here rather than on CPU0.
         let system_bus = i2c::into_async(cpu1.system_i2c);
 
-        spawner.spawn(
-            backlight::task(system_bus, cpu1.backlight).expect("backlight task already spawned"),
-        );
-        spawner.spawn(imu::capture_task(system_bus, cpu1.imu).expect("IMU task already spawned"));
+        backlight::spawn(&spawner, system_bus, cpu1.backlight);
+        imu::spawn(&spawner, system_bus, cpu1.imu);
         touch::spawn(&spawner, system_bus, cpu1.touch);
-        spawner.spawn(
-            audio::capture_task(cpu1.audio_resources, spawner, cpu1.audio)
-                .expect("audio task already spawned"),
-        );
+        audio::spawn(&spawner, cpu1.audio_resources, cpu1.audio);
     });
 }

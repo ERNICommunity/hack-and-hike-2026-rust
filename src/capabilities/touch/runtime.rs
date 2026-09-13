@@ -4,12 +4,14 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use embedded_graphics::prelude::Point;
 
+use hack_and_hike_core::touch::decode_report;
+
 use crate::platform::{self, i2c::SystemI2cBus};
 
 use super::{Runtime, TouchEvent};
 
 const FT6336_ADDR: u8 = 0x38;
-const FT6336_TOUCH_DATA: u8 = 0x02;
+const FT6336_REPORT_REGISTER: u8 = 0x02;
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
@@ -25,26 +27,24 @@ enum Sample {
 /// Poll the controller once. `None` when the read failed or the reported
 /// position is outside the panel; such samples are simply skipped.
 async fn read_sample(bus: SystemI2cBus) -> Option<Sample> {
-    let mut data = [0u8; 5];
+    let mut report = [0u8; 5];
     {
         let mut i2c = bus.lock().await;
-        i2c.write_read_async(FT6336_ADDR, &[FT6336_TOUCH_DATA], &mut data)
+        i2c.write_read_async(FT6336_ADDR, &[FT6336_REPORT_REGISTER], &mut report)
             .await
             .ok()?;
     }
 
-    // Low nibble: number of touch points; high nibbles of the coordinate
-    // bytes carry event flags.
-    if data[0] & 0x0F == 0 {
+    let Some(raw) = decode_report(report) else {
         return Some(Sample::Up);
-    }
-    let x = (u16::from(data[1] & 0x0F) << 8) | u16::from(data[2]);
-    let y = (u16::from(data[3] & 0x0F) << 8) | u16::from(data[4]);
-    if usize::from(x) >= platform::DISPLAY_WIDTH || usize::from(y) >= platform::DISPLAY_HEIGHT {
+    };
+    if usize::from(raw.x) >= platform::DISPLAY_WIDTH
+        || usize::from(raw.y) >= platform::DISPLAY_HEIGHT
+    {
         return None;
     }
 
-    let (x, y) = platform::logical_display_point(x, y);
+    let (x, y) = platform::logical_display_point(raw.x, raw.y);
     Some(Sample::Down(Point::new(i32::from(x), i32::from(y))))
 }
 

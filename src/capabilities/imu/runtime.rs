@@ -1,5 +1,6 @@
 //! CPU1 IMU acquisition loop.
 
+use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use log::{info, trace, warn};
 
@@ -12,10 +13,9 @@ use hack_and_hike_core::imu::{
 };
 
 use super::{
-    MagStatus, Measurements, Status,
+    Attitude, MagStatus, Measurements, Runtime, Sample, Status,
     bmi270::{Bmi270, RawSample},
-    channels::{Publisher, Runtime},
-    magnetic::MagneticState,
+    magnetic::{MagneticReport, MagneticState},
 };
 
 /// Host sampling rate; fusion runs once per sample.
@@ -39,8 +39,12 @@ const GYRO_NEAR_SATURATION_DPS: f32 = 1950.0;
 /// Trace every 20th sample: five lines per second.
 const TRACE_EVERY_SAMPLES: u32 = 20;
 
+pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
+    spawner.spawn(capture_task(bus, runtime).expect("IMU task already spawned"));
+}
+
 #[embassy_executor::task]
-pub(crate) async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
+async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
     let sensor = Bmi270::new(bus);
     let mut publisher = Publisher::new(runtime);
     // Calibration describes the physical sensor and enclosure, not one
@@ -119,6 +123,43 @@ pub(crate) async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
                 }
             }
         }
+    }
+}
+
+/// Numbers the samples and hands them to the application side.
+struct Publisher {
+    runtime: Runtime,
+    revision: u32,
+}
+
+impl Publisher {
+    const fn new(runtime: Runtime) -> Self {
+        Self {
+            runtime,
+            revision: 0,
+        }
+    }
+
+    fn publish(
+        &mut self,
+        status: Status,
+        measurements: Measurements,
+        orientation: Orientation,
+        magnetic: MagneticReport,
+    ) {
+        self.revision = self.revision.wrapping_add(1);
+        let measurements = measurements.in_screen_frame();
+        self.runtime.publish(Sample {
+            revision: self.revision,
+            status,
+            attitude: Attitude::from_orientation(&orientation),
+            acceleration_m_s2: measurements.acceleration_m_s2,
+            angular_velocity_deg_s: measurements.angular_velocity_deg_s,
+            magnetic_field_ut: measurements.magnetic_field_ut,
+            mag_status: magnetic.status,
+            mag_field_strength_ut: magnetic.field_ut,
+            mag_calibration_percent: magnetic.calibration_percent,
+        });
     }
 }
 

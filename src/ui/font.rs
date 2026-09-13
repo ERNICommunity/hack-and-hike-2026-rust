@@ -44,7 +44,7 @@ impl Font for TopAnchored {
         let mut buffer = [0u8; 4];
         let text = ch.encode_utf8(&mut buffer);
         let mut glyph = Glyph { draw_pixel };
-        let _ = Text::with_baseline(text, Point::zero(), style, Baseline::Top).draw(&mut glyph);
+        let Ok(_) = Text::with_baseline(text, Point::zero(), style, Baseline::Top).draw(&mut glyph);
     }
 }
 
