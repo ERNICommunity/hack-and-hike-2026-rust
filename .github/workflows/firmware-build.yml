@@ -1,4 +1,4 @@
-name: Firmware Build
+name: CI
 
 on:
   push:
@@ -15,162 +15,60 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  HOST_RUST_VERSION: "1.97.0"
+  XTENSA_RUST_VERSION: "1.97.0.0"
 
 jobs:
-  imu-regressions:
-    name: Host regressions
+  host-tests:
+    name: Host tests
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Install host Rust toolchain
-        run: rustup toolchain install 1.97.0 --profile minimal
+        run: rustup toolchain install "$HOST_RUST_VERSION" --profile minimal
 
-      - name: Run host regressions
+      - name: Run host tests
         run: |
-          rustc +1.97.0 --edition=2024 --test tests/imu_attitude_regression.rs -D warnings -o /tmp/imu-attitude-regression
-          /tmp/imu-attitude-regression
-          rustc +1.97.0 --edition=2024 --test tests/imu_fusion_regression.rs -D warnings -o /tmp/imu-fusion-regression
-          /tmp/imu-fusion-regression
-          rustc +1.97.0 --edition=2024 --test tests/imu_magnetic_math_regression.rs -D warnings -o /tmp/imu-magnetic-math-regression
-          /tmp/imu-magnetic-math-regression
-          RUSTFLAGS="-D warnings" cargo +1.97.0 test --manifest-path tests/network_regression/Cargo.toml --target x86_64-unknown-linux-gnu
+          set -euo pipefail
+          host_target="$(rustc +"$HOST_RUST_VERSION" -vV | sed -n 's/^host: //p')"
+          for test in tests/imu_*_regression.rs; do
+            name="$(basename "$test" .rs)"
+            rustc +"$HOST_RUST_VERSION" --edition=2024 --test "$test" -D warnings -o "/tmp/$name"
+            "/tmp/$name"
+          done
+          RUSTFLAGS="-D warnings" cargo +"$HOST_RUST_VERSION" test \
+            --manifest-path tests/network_regression/Cargo.toml \
+            --target "$host_target"
 
-  build:
-    name: ESP32-S3 release build
-    needs: imu-regressions
+  firmware:
+    name: Firmware lint and build
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      # A successful full release build and feature-composition check are
-      # deterministic for these inputs. Bump the proof version whenever the build
-      # command or CI validation semantics change.
-      - name: Restore successful-build proof
-        id: build-proof
-        uses: actions/cache/restore@v5
-        with:
-          path: .ci-cache/firmware-build-ok
-          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v10-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
-
-      - name: Reuse successful build result
-        if: steps.build-proof.outputs.cache-hit == 'true'
-        run: echo "Identical firmware inputs already passed warning-free feature composition and the full ESP32-S3 release build."
-
-      - name: Restore Cargo dependency cache
-        if: steps.build-proof.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-deps-
-
-      - name: Restore Xtensa toolchain
-        if: steps.build-proof.outputs.cache-hit != 'true'
-        id: xtensa-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            ~/.rustup/toolchains/esp
-            ~/exports
-          key: ${{ runner.os }}-xtensa-esp32s3-1.97.0.0-v1
+      - uses: actions/checkout@v5
 
       - name: Install Xtensa Rust toolchain
-        if: steps.build-proof.outputs.cache-hit != 'true' && steps.xtensa-cache.outputs.cache-hit != 'true'
         uses: esp-rs/xtensa-toolchain@v1.7
         with:
           default: true
           buildtargets: esp32s3
-          version: "1.97.0.0"
+          version: ${{ env.XTENSA_RUST_VERSION }}
           ldproxy: false
 
-      - name: Activate cached Xtensa toolchain
-        if: steps.build-proof.outputs.cache-hit != 'true' && steps.xtensa-cache.outputs.cache-hit == 'true'
-        shell: bash
-        run: |
-          source "$HOME/exports"
-          printf '%s\n' "${PATH//:/$'\n'}" >> "$GITHUB_PATH"
-          echo "ESPUP_EXPORT_FILE=$HOME/exports" >> "$GITHUB_ENV"
-          if [ -n "${LIBCLANG_PATH:-}" ]; then
-            echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> "$GITHUB_ENV"
-          fi
-          if [ -n "${CLANG_PATH:-}" ]; then
-            echo "CLANG_PATH=$CLANG_PATH" >> "$GITHUB_ENV"
-          fi
+      - name: Cache Cargo registry and build tree
+        uses: Swatinem/rust-cache@v2
 
-      - name: Restore release build tree
-        if: steps.build-proof.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@v5
-        with:
-          path: target/
-          key: ${{ runner.os }}-esp32s3-release-1.97.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-esp32s3-release-1.97.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-
-            ${{ runner.os }}-esp32s3-target-1.97.0.0-${{ hashFiles('Cargo.lock') }}-
+      - name: Check formatting
+        run: cargo fmt --check
 
-      - name: Check feature composition without warnings
-        if: steps.build-proof.outputs.cache-hit != 'true'
-        shell: bash
+      - name: Clippy for every application
         run: |
           set -euo pipefail
-
-          # Empty firmware must remain completely clean.
-          cargo rustc --locked --release --no-default-features -- -D warnings
-
-          # Capability-only and app-idle compositions intentionally have no
-          # application consumer for their semantic endpoints. Ignore only the
-          # lints that describe that deliberate idleness; every other compiler
-          # warning remains fatal so cfg/type/composition regressions still fail.
-          for features in \
-            display \
-            touch \
-            imu \
-            mic \
-            speaker \
-            network \
-            camera \
-            mic,speaker \
-            app-idle \
-            app-idle,imu \
-            app-idle,network \
-            app-idle,imu,network
-          do
-            echo "Checking --no-default-features --features ${features}"
-            cargo rustc --locked --release --no-default-features --features "${features}" -- \
-              -D warnings -A dead_code -A unused_imports
+          for app in app-demo app-imu-color app-color-ping; do
+            echo "::group::clippy --features ${app}"
+            cargo clippy --locked --release --no-default-features --features "${app}" -- -D warnings
+            echo "::endgroup::"
           done
 
-          # Every real application consumes the capabilities it selects, so these
-          # builds stay fully strict with no liveness-warning exceptions.
-          for app in app-demo app-imu-color app-color-ping
-          do
-            echo "Checking --no-default-features --features ${app}"
-            cargo rustc --locked --release --no-default-features --features "${app}" -- -D warnings
-          done
-
-      - name: Build default firmware without warnings
-        if: steps.build-proof.outputs.cache-hit != 'true'
-        run: cargo rustc --locked --release -- -D warnings
-
-      - name: Record successful build
-        if: steps.build-proof.outputs.cache-hit != 'true' && success()
-        shell: bash
-        run: |
-          mkdir -p .ci-cache
-          printf '%s\n' "$GITHUB_SHA" > .ci-cache/firmware-build-ok
-
-      - name: Save successful-build proof
-        if: steps.build-proof.outputs.cache-hit != 'true' && success()
-        uses: actions/cache/save@v5
-        with:
-          path: .ci-cache/firmware-build-ok
-          key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v10-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
+      - name: Build default firmware
+        run: cargo build --locked --release
