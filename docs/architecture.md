@@ -1,7 +1,8 @@
 # Architecture
 
 How the Hack & Hike firmware is put together. The [README](../README.md)
-gets you building; this document explains the machinery underneath.
+gets you building and explains the Rust you will meet; this document explains
+the machinery underneath.
 
 - [The layers](#the-layers)
 - [What `Board::init()` does](#what-boardinit-does)
@@ -12,8 +13,8 @@ gets you building; this document explains the machinery underneath.
 - [Cooperative scheduling](#cooperative-scheduling)
 - [Memory and PSRAM](#memory-and-psram)
 - [The camera path](#the-camera-path)
+- [The network protocol](#the-network-protocol)
 - [Tests and the core crate](#tests-and-the-core-crate)
-- [The Rust ideas you will meet](#the-rust-ideas-you-will-meet)
 - [Common mistakes](#common-mistakes)
 - [Glossary](#glossary)
 - [Design rules](#design-rules)
@@ -24,21 +25,21 @@ gets you building; this document explains the machinery underneath.
 flowchart TD
     Hardware["Hardware"] --> Platform["platform: pins, power, I2C"]
     Platform --> Capabilities["capabilities: Display, Touch, Imu, ..."]
-    Core["crates/core: fusion, protocol"] --> Capabilities
+    Core["crates/core: fusion, protocol, rings"] --> Capabilities
     Capabilities --> Board["board: Board::init()"]
     Board --> App["src/bin/*: your application"]
-    UI["ui: palette, widgets, embedded-gui glue"] --> App
+    UI["ui, synth: canvas, palette, tones"] --> App
 ```
 
 | Layer | Path | Owns |
 | --- | --- | --- |
-| Application | `src/bin/` | What the device does: screens, rules, message types |
+| Application | `src/bin/` | What the board does: screens, rules, message types |
 | Board | `src/board/` | The power-up order and the second CPU core |
 | Capabilities | `src/capabilities/` | One hardware function each, behind a small handle |
-| Core | `crates/core/` | Math and protocol code with no hardware dependency, tested on the host |
-| Platform | `src/platform/` | Facts about the PCB: pins, power rails, reset lines, the I2C bus |
+| Core | `crates/core/` | Math, protocol and buffer code with no hardware dependency, tested on the host |
+| Platform | `src/platform/` | Facts about the PCB: pins, power rails, reset lines, the I2C bus, register access |
 | Support | `src/support/` | Logging with on-device history, PSRAM allocation helpers |
-| UI | `src/ui/` | Palette, drawing helpers, a slider widget, the `embedded-gui` glue |
+| UI and synth | `src/ui/`, `src/synth.rs` | Canvas, palette, text helpers, a slider, the `embedded-gui` glue; sine waves |
 
 Dependencies point downwards only. An application never imports `esp_hal`; a
 capability never knows what a screen is.
@@ -53,9 +54,9 @@ sequenceDiagram
     participant CPU1 as CPU1
 
     Main->>Board: init()
-    Board->>Board: heap, logger, PSRAM, RTOS timer
-    Board->>I2C: enable backlight rail, reset LCD + touch, power camera
-    Board->>I2C: probe the camera sensor (100 kHz)
+    Board->>Board: heap, logger, PSRAM, log history, RTOS timer
+    Board->>I2C: enable backlight rail, reset LCD + touch
+    Board->>I2C: power the camera, program the sensor (100 kHz)
     Board->>Board: initialize the display over SPI DMA
     Board->>I2C: configure microphone and speaker codecs
     Board->>CPU1: start the executor with I2C, I2S and the radio
@@ -63,7 +64,8 @@ sequenceDiagram
 ```
 
 The order matters because several chips share one I2C bus and the camera
-needs a slower bus during its setup. All of that stays inside `src/board/`.
+needs a slower bus during its setup. All of that stays inside `src/board/`
+and `camera::bring_up`.
 
 Bring-up fails fast: a chip that does not answer panics with a message naming
 it, because the board is unusable without it. The camera is the exception and
@@ -114,30 +116,35 @@ for milliseconds, which is why the loop draws only when something changed.
 
 ## How a capability is built
 
-Every capability follows the same shape, documented once in
-`src/capabilities/mod.rs`:
+Every CPU1 capability has the same two files:
 
-- a `static SERVICE` holding the cross-core queues or signals,
-- a **handle** (`Display`, `Touch`, `Imu`, ...): the public type the
-  application owns and calls,
-- a `pub(crate) Runtime`: the CPU1 side that talks to the hardware,
-- `endpoints()`, which hands one of each to `Board::init()`.
+- `mod.rs`: the public types, the **handle** (`Touch`, `Imu`, ...) that the
+  application owns and calls, a `static SERVICE` holding the cross-core
+  queues or signals, a `pub(crate) Runtime` (the CPU1 side of the same
+  queues), and `endpoints()`, which hands one handle and one runtime to
+  `Board::init()`.
+- `runtime.rs`: `spawn(spawner, hardware, runtime)` and the task that talks
+  to the chip.
 
 Data crosses the cores in one of two ways:
 
 | Pattern | Used by | Application sees |
 | --- | --- | --- |
 | Latest value (`Signal`) | IMU samples, network snapshots, backlight requests | `latest()` returns `Some` only once per new value |
-| Bounded queue (`Channel`) | touch events, network messages, microphone blocks | events wait until read; the oldest is dropped when the queue is full |
+| Bounded queue (`Channel`) | touch events, network messages, microphone blocks | `next_*()` returns events in order; the oldest is dropped when the queue is full |
 
-The speaker is the reverse direction: the application writes into a ring that
-CPU1 drains into the DMA buffer. Only the application writes, so a write of at
-most `available_frames()` frames is always accepted in full.
+The speaker is the reverse direction: the application writes into a
+`FrameRing` that CPU1 drains into the DMA buffer. Only the application writes,
+so a write of at most `available_frames()` frames is always accepted in full.
+
+The display and the camera are CPU0 capabilities: their handles drive the
+hardware directly, with DMA, from the application's own loop.
 
 ## Drawing
 
 The display capability owns the LCD. An application borrows a `Surface` for
-one `Region` and draws inside it; nothing can escape the rectangle.
+one `Rectangle` and draws inside it; nothing can escape the rectangle, and a
+rectangle outside the panel is a panic at the point where it is used.
 
 ```mermaid
 flowchart LR
@@ -149,28 +156,31 @@ flowchart LR
 
 There are two ways to draw:
 
-- `surface.render_scanlines(|y, pixels| ...)` hands you one row of 16-bit
-  pixels at a time. Cheap and simple; both small applications use it.
+- `surface.render_scanlines(|y, row| ...)` hands you one row of `Rgb565`
+  pixels at a time. Cheap and simple; the two small applications use it.
 - `surface.render_from(&mut source)` streams rows that already are RGB565
-  bytes from a `ScanlineSource`, for example a framebuffer or a camera frame.
-  While the DMA sends one batch, the source gets a callback in which it can do
-  useful work, which is how the camera captures its next frame.
+  bytes from a `ScanlineSource`: a `Canvas` or a camera frame. While the DMA
+  sends one batch, the source gets a callback in which it can do useful work,
+  which is how the camera captures its next frame.
 
-Rows are sent to the panel in batches through two alternating DMA buffers, so
-the CPU prepares the next batch while the previous one is on the wire.
+Both go through the same pipeline: rows are sent to the panel in batches of
+seven through two alternating DMA buffers, so the CPU prepares the next batch
+while the previous one is on the wire.
 
 ### The `ui` module
 
-`src/ui/` is optional and used by the demo:
+`src/ui/` is optional:
 
-- `theme`: the six palette colours, as `Rgb565` and as raw pixels.
-- `common`: fill, outline, text helpers on a `Rect`, using the bitmap fonts at
-  native resolution.
+- `Canvas`: a rectangle of pixels in PSRAM that implements
+  `embedded_graphics::DrawTarget`, so every primitive, font and image of that
+  crate draws onto it; `canvas.show(&mut surface)` copies it to the panel.
+- `theme`: the six palette colours as `Rgb565`.
+- `common`: text helpers and the bitmap fonts at native resolution.
 - `font`: the same fonts adapted for `embedded-gui`, anchored at the top-left
   corner of their rectangle.
 - `widgets::Slider`: a touch-friendly slider.
-- `gui`: a `GuiSurface` framebuffer the size of the content area, the
-  `embedded-gui` context type, and `Pointer` for forwarding touches.
+- `gui`: the `embedded-gui` context type, KDL slots as `Rectangle`s, and the
+  forwarding of `TouchEvent`s to buttons.
 - `styles`: `embedded-gui` styles in the palette, referenced from KDL files.
 
 ## The demo application
@@ -184,8 +194,8 @@ flowchart LR
     Nav -- "rail tap" --> Shell["main.rs: active screen"]
     Nav -- "content touch" --> Screen["visible Screen"]
     Shell --> Screen
-    Screen --> Gui["GuiSurface"]
-    Gui --> Content["content Surface"]
+    Screen --> Canvas["Canvas"]
+    Canvas --> Content["content Surface"]
 ```
 
 Every screen implements one trait:
@@ -195,14 +205,16 @@ pub(crate) trait Screen {
     fn enter(&mut self) {}
     fn leave(&mut self) {}
     fn update(&mut self, _now: Instant) {}
-    fn handle_pointer(&mut self, _pointer: Pointer) {}
-    fn present(&mut self, gui: &mut GuiSurface, surface: &mut Surface<'_>);
+    fn handle_touch(&mut self, _event: TouchEvent) {}
+    fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>);
 }
 ```
 
 `update` runs for every screen on every iteration, visible or not; that is
 how the Speaker screen keeps playing while you look at the Log. `present` runs
-only for the visible screen and should return immediately when nothing changed.
+only for the visible screen and should return immediately when nothing
+changed. Touches arrive in content coordinates: the rail's width is already
+subtracted.
 
 To add a screen: write a type that implements `Screen`, add a field to
 `Screens` and a variant to `ViewId` in `navigation.rs` with a 16x16 icon.
@@ -226,24 +238,26 @@ screen id="Settings" width=276 height=240 {
 
 A button is one more node, for example
 `button id="play" text="PLAY" col=0 row=2 style="crate::styles::button()"`
-in the Speaker screen.
+in the Speaker screen. Each screen checks at compile time that its KDL size
+matches the content area.
 
 Rules that follow from how `embedded-gui` 0.2.6 works:
 
 - **Labels and buttons come from KDL.** `label` nodes carry their text;
   `button` nodes react to touches. Deliver touches with
-  `gui::click_buttons(...)`, which calls you back with the id of each clicked
-  button.
+  `gui::click_buttons(gui, event, ...)`, which calls you back with the id of
+  each clicked button.
 - **Text must be a string literal or another `&'static str`.** Change it with
-  `gui::set_text(...)`. Numbers that change go into a `value_label`
-  (`gui.add_value_label(...)` and `gui::set_value(...)`).
+  `gui::set_text(...)`. Numbers that change go into a value label
+  (`gui::add_value_label(...)` and `gui::set_value(...)`).
 - **Anything dynamic or free-form is drawn by you** into an empty
-  `label text=""` slot: the waveform, the peer list, the 3-D horizon, the
-  slider. `gui::slot(gui, id)` gives you the rectangle.
+  `label text=""` slot: the waveform, the peer list, the horizon, the slider.
+  `gui::slot(gui, id)` gives you its `Rectangle`.
 - **Sliders are ours.** The crate's slider cannot be dragged with a finger, so
   `ui::widgets::Slider` draws into a slot and maps touches itself.
 - Styles are referenced as `style="crate::styles::title()"`; the demo
-  re-exports `hack_and_hike::ui::styles` under that name.
+  re-exports `hack_and_hike::ui::styles` under that name because the code
+  generator only passes `crate::` paths through verbatim.
 - **Fonts come from `ui::font`, not straight from `embedded-graphics`.**
   `embedded-gui` draws an `embedded-graphics` font on its alphabetic baseline,
   which puts the glyphs one ascent above the rectangle they belong to.
@@ -286,12 +300,12 @@ Internal RAM is small (two heaps of about 72 KiB each) and the CPU1 task
 stack is 16 KiB. The board also has megabytes of PSRAM, which the firmware
 uses for large long-lived buffers:
 
-- the GUI framebuffer and the per-screen GUI contexts,
+- every `Canvas` and the per-screen GUI contexts,
 - the two camera frame buffers,
 - the log history.
 
-`support::memory::storage` has the helpers: `leaked_filled_slice` for a
-buffer that lives as long as the device, `PsramVec` for a growable one.
+`support::memory::storage` has the two helpers: `leaked_slice` for a buffer
+and `leaked_value` for one large object, both living as long as the device.
 
 Do not put a large array on the stack:
 
@@ -322,12 +336,36 @@ flowchart LR
 waits for the sensor's VSYNC and swaps. A camera application should reuse this
 path rather than copying frames.
 
+## The network protocol
+
+All boards use ESP-NOW on one Wi-Fi channel. Every board broadcasts a beacon
+four times a second; boards that hear each other become peers, and a peer
+that stays silent for half a second is forgotten.
+
+An application message is the `postcard` encoding of the application's type,
+wrapped in a small header: protocol version, sender, optional recipient and
+the **message kind**, a 32-bit hash of the name the application gave the type
+through `impl Message for T { const NAME: &'static str = "..."; }`. A board
+decodes a message only into a type with the same kind, and a payload with
+unused trailing bytes is rejected too, so two teams' messages cannot be
+confused even when their bytes happen to match.
+
+The format and the peer table live in `crates/core/src/network/` and are
+tested there; the radio itself is `src/capabilities/network/runtime.rs`.
+
 ## Tests and the core crate
 
-Code that needs no hardware lives in `crates/core`: the IMU math (vector
-helpers, sensor fusion, magnetometer compensation and calibration) and the
-network protocol, messages and peer table. It is a `no_std` library the
-firmware depends on, and it has ordinary tests:
+Code that needs no hardware lives in `crates/core`:
+
+| Module | Contents |
+| --- | --- |
+| `imu` | vector helpers, sensor fusion, magnetometer compensation and calibration |
+| `network` | wire protocol, typed messages, peer table |
+| `audio` | the speaker's `FrameRing`, the IMA ADPCM decoder |
+| `lines` | the log history |
+| `touch` | decoding of the touch controller's report |
+
+It is a `no_std` library the firmware depends on, and it has ordinary tests:
 
 ```bash
 ./scripts/test.sh
@@ -335,37 +373,6 @@ firmware depends on, and it has ordinary tests:
 
 The script passes your computer's target to `cargo test` because the repository
 targets the ESP32-S3 by default. CI runs it, and clippy, on every push.
-
-## The Rust ideas you will meet
-
-**Ownership.** Every value has one owner. `let Board { mut display, .. } =
-Board::init();` moves the display handle into your function; nobody else can
-use it. That is the whole reason the drivers need no locks.
-
-**Moving.** Passing a handle into a struct moves it: after
-`SettingsScreen::new(backlight)` the `backlight` variable is gone.
-
-**Borrowing.** `display.surface(region)` borrows the display temporarily; the
-`Surface` gives it back when it goes out of scope.
-
-**`Option<T>`.** A value that may be absent. `imu.latest()` is `None` when
-nothing new arrived; `camera` is `None` when no camera answered at boot.
-
-**`Result<T, E>`.** `network.broadcast(&msg)` returns `Ok(())` or an error
-such as `SendError::QueueFull`. Match on it, or check `.is_err()`, and decide
-what to do; `main` never returns, so `?` is not an option there.
-
-**`async` and `.await`.** `main` is async; every `.await` is a point where
-other tasks may run.
-
-**`-> !`.** The function never returns. Normal for a firmware `main`.
-
-**`no_std`.** No standard library, so no `String`, `Vec` or `println!` by
-default. `core` has slices, iterators, `Option`, `Result`, formatting via
-`core::fmt::Write` into a fixed buffer such as `arrayvec::ArrayString`.
-
-**Visibility.** `pub` items are the API applications use; `pub(crate)` items
-are internal to the library; everything else is private to its module.
 
 ## Common mistakes
 
@@ -386,17 +393,24 @@ instead.
 
 **Large arrays on the stack.** Use PSRAM through `support::memory::storage`.
 
+**A message name shared with another team.** The kind is derived from the
+name, so two applications with `NAME = "hello"` will decode each other's
+bytes. Put your team in the name.
+
 ## Glossary
 
-- **Application**: one binary in `src/bin/`; what the device does.
+- **Application**: one binary in `src/bin/`; what the board does.
 - **Capability**: one hardware function behind a small handle.
 - **Handle**: the value an application owns to use a capability.
 - **Runtime**: the CPU1 side of a capability; never seen by applications.
 - **Screen**: one view of the demo, implementing the `Screen` trait.
 - **Surface**: a borrowed rectangle of the display.
+- **Canvas**: an image in PSRAM to draw on, then show on a surface.
 - **PSRAM**: external RAM for large buffers.
 - **RGB565**: the 16-bit pixel format of the display and the camera.
-- **ESP-NOW**: connectionless Wi-Fi messaging between nearby devices.
+- **ESP-NOW**: connectionless Wi-Fi messaging between nearby boards.
+- **Message kind**: the hash of a message type's name, sent with every
+  message so that applications only decode their own.
 - **KDL**: the small document language the demo uses for screen layouts.
 
 ## Design rules
@@ -413,6 +427,6 @@ instead.
 
 When unsure where code belongs, ask two questions:
 
-> **What should this device do?** An application.
+> **What should this board do?** An application.
 >
 > **How does this hardware work?** A capability.

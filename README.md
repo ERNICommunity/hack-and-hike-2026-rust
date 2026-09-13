@@ -13,28 +13,32 @@ The idea is simple:
 > **Your application is one file. It takes the hardware it needs and runs a loop.**
 
 The hardware comes as **capabilities**: small Rust APIs, one per function of
-the device.
+the board.
 
 | Capability | Handle | What you get |
 | --- | --- | --- |
-| Display | `Display` | Draw pixels inside a rectangle |
+| Display | `Display` | Draw into a rectangle of the 320x240 screen |
 | Backlight | `Backlight` | Set the screen brightness |
-| Touch | `Touch` | Press and release events with a position |
-| IMU | `Imu` | Orientation, acceleration, rotation, magnetic heading |
-| Microphone | `Microphone` | 16 kHz stereo PCM blocks |
-| Speaker | `Speaker` | Play 16 kHz stereo PCM |
-| Network | `Network` | Send your own message types to nearby devices (ESP-NOW) |
-| Camera | `Camera` | RGB565 frames |
+| Touch | `Touch` | Press, move and release events with a position |
+| IMU | `Imu` | Roll, pitch, compass heading, acceleration, rotation |
+| Microphone | `Microphone` | 16 kHz stereo audio blocks |
+| Speaker | `Speaker` | Play 16 kHz stereo audio |
+| Network | `Network` | Send your own message types to nearby boards (ESP-NOW) |
+| Camera | `Camera` | RGB565 frames, 320x240 |
 | Log | `LogHistory` | Everything your code logged, for showing on screen |
 
 ## Contents
 
 - [Build](#build)
 - [Run the tests](#run-the-tests)
+- [The board](#the-board)
 - [Your first application](#your-first-application)
 - [Create your own application](#create-your-own-application)
+- [How the hardware reaches your loop](#how-the-hardware-reaches-your-loop)
 - [The capabilities](#the-capabilities)
-- [The three built-in applications](#the-three-built-in-applications)
+- [The built-in applications](#the-built-in-applications)
+- [The Rust you will meet](#the-rust-you-will-meet)
+- [Ideas for the weekend](#ideas-for-the-weekend)
 - [Project folders](#project-folders)
 - [Where does my code go?](#where-does-my-code-go)
 - [Reading order](#reading-order)
@@ -59,11 +63,18 @@ cargo build --release --bin demo
 Without `--bin`, `cargo build --release` builds all of them. The first build
 takes a few minutes; later builds take seconds.
 
+The library's documentation, with every capability and its methods, is one
+command away and opens in your browser:
+
+```bash
+cargo doc --open
+```
+
 ## Run the tests
 
-The hardware-independent logic (IMU math, the network protocol, the peer table)
-lives in the crate `crates/core` and has ordinary Rust tests that run on your
-computer:
+The hardware-independent logic (the IMU math, the network protocol and peer
+table, the audio ring buffer, the log history) lives in the crate
+`crates/core` and has ordinary Rust tests that run on your computer:
 
 ```bash
 ./scripts/test.sh
@@ -71,87 +82,46 @@ computer:
 
 The script exists because the repository's Cargo configuration targets the
 ESP32-S3; it runs `cargo test` for that crate with your computer's target
-instead. Put unit tests next to the code and scenario tests in
-`crates/core/tests/`.
+instead. Unit tests sit next to the code in a `#[cfg(test)] mod tests`
+(see `crates/core/src/network/protocol.rs`); tests that combine several
+modules are files in `crates/core/tests/`.
+
+## The board
+
+```text
+                 top edge: camera, +x of the IMU
+        ┌──────────────────────────────────────────┐
+        │ (0,0)                              (319,0)│  ▲
+        │                                          │  │ 240 px
+        │           320 x 240 pixels               │  │
+        │           touch = display coordinates    │  │
+        │                                          │  ▼
+        │ (0,239)                          (319,239)│
+        └──────────────────────────────────────────┘
+          speaker              microphones (L, R)
+```
+
+- **Screen and touch** share one coordinate system: `Point::new(x, y)` with
+  the origin in the top-left corner, `x` to the right, `y` down. Colours are
+  `Rgb565`; `hack_and_hike::ui::theme` has the project palette and
+  `Rgb565::RED`, `Rgb565::new(r, g, b)` and friends work too.
+- **The IMU** reports how the board is held in the *screen frame*: `x` points
+  out of the top edge (where the camera looks), `y` to the right across the
+  screen, `z` into the screen. Lying flat on a table, screen up, roll and
+  pitch are 0. Roll is positive when the right side is lower; pitch is
+  positive when the top edge is raised; the heading is where the top edge
+  points, in degrees clockwise from magnetic north.
+- **Audio** is signed 16-bit stereo at 16 kHz, interleaved left, right, left,
+  right, ...
+- **Every board in the room** talks on the same radio channel. Messages carry
+  the name of their type, so your application only decodes its own.
 
 ## Your first application
 
-`src/bin/imu_color.rs` makes the whole screen a compass-calibration gauge: red
-at 0 %, orange at 50 %, yellow at 75 % and green at 100 %, with a panel showing
-the sensor's own numbers. This is its `main`:
-
-```rust
-#[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
-    let Board {
-        mut display,
-        mut imu,
-        ..
-    } = Board::init();
-
-    let full_screen = Region::new(0, 0, WIDTH, HEIGHT);
-    let mut screen = GuiSurface::new(WIDTH, HEIGHT);
-    let mut shown = None;
-    let mut last_redraw = Instant::now();
-
-    screen.present_custom(&mut display.surface(full_screen), |frame| draw(frame, None));
-
-    loop {
-        if let Some(sample) = imu.latest() {
-            let reading = Reading::from_sample(&sample);
-            if shown != Some(reading) && Instant::now() - last_redraw >= REDRAW_PERIOD {
-                shown = Some(reading);
-                last_redraw = Instant::now();
-                screen.present_custom(&mut display.surface(full_screen), |frame| {
-                    draw(frame, Some(reading));
-                });
-            }
-        }
-
-        Timer::after(Duration::from_millis(10)).await;
-    }
-}
-```
-
-Line by line:
-
-- The file starts with `#![no_std]` and `#![no_main]`: this is firmware. There
-  is no operating system and no C-style `main`. You still have structs, enums,
-  `Option`, iterators, closures and modules. The `esp_app_desc!()` line writes
-  a small descriptor the bootloader expects; every application has it.
-- `#[esp_rtos::main] async fn main(...) -> !` is an async entry point that
-  never returns (`!`). The board runs your loop forever.
-- `Board::init()` powers up the whole board and returns one handle per
-  capability. The pattern `let Board { mut display, mut imu, .. } = ...` keeps
-  the two handles this application needs and drops the rest. Dropping a handle
-  is fine: the sensors keep running on the second CPU core.
-- `imu.latest()` returns `Some(sample)` when a new sample arrived since the
-  last call and `None` otherwise. Nothing blocks.
-- `display.surface(region)` borrows the display for one rectangle; nothing can
-  draw outside it. `GuiSurface` is a framebuffer the size of that rectangle:
-  `present_custom` hands your closure a `frame` to draw on and then copies it
-  to the panel in one go.
-- The `draw` function below `main` fills the background and writes the text,
-  using the helpers in `hack_and_hike::ui`. It is a plain function, so nothing
-  about it is specific to this application.
-- The screen is only redrawn when a value changed and at most four times a
-  second, because the sensor publishes a hundred samples per second.
-- `Timer::after(...).await` pauses this loop and lets other work on this core
-  run. Every loop needs an `.await` somewhere.
-
-The simplest way to draw is without a framebuffer at all:
-
-```rust
-let mut surface = display.surface(full_screen);
-surface.render_scanlines(|_y, pixels| {
-    pixels.fill(0x07E0); // green, as an RGB565 value
-});
-```
-
-## Create your own application
-
-Copy `src/bin/imu_color.rs` or `src/bin/color_ping.rs` to a new file, for
-example `src/bin/my_hack.rs`, and edit the loop:
+`src/bin/imu_color.rs` fills the screen with one of four colours to show how
+far the compass calibration has come: red at the start, orange from 50 %,
+yellow from 75 %, green when it is done. Turn the board slowly in every
+direction and watch it change. This is the whole file:
 
 ```rust
 #![no_std]
@@ -159,7 +129,8 @@ example `src/bin/my_hack.rs`, and edit the loop:
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use hack_and_hike::Board;
+use embedded_graphics::{pixelcolor::Rgb565, prelude::RgbColor as _};
+use hack_and_hike::{Board, capabilities::display::SCREEN};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -167,18 +138,87 @@ esp_bootloader_esp_idf::esp_app_desc!();
 async fn main(_spawner: Spawner) -> ! {
     let Board {
         mut display,
-        mut touch,
         mut imu,
         ..
     } = Board::init();
+    let mut shown = None;
 
     loop {
-        // Read input.
-        // Update your state.
-        // Draw when something changed.
+        if let Some(sample) = imu.latest() {
+            let color = calibration_color(sample.mag_calibration_percent);
+            if shown != Some(color) {
+                shown = Some(color);
+                display
+                    .surface(SCREEN)
+                    .render_scanlines(|_y, row| row.fill(color));
+            }
+        }
 
         Timer::after(Duration::from_millis(10)).await;
     }
+}
+
+/// One fixed colour per stage of the calibration.
+fn calibration_color(percent: u8) -> Rgb565 {
+    match percent {
+        0..50 => Rgb565::RED,
+        50..75 => Rgb565::new(31, 32, 0), // orange
+        75..100 => Rgb565::YELLOW,
+        _ => Rgb565::GREEN,
+    }
+}
+```
+
+Line by line:
+
+- `#![no_std]` and `#![no_main]`: this is firmware. There is no operating
+  system and no C-style `main`. You still have structs, enums, `Option`,
+  iterators, closures and modules. `esp_app_desc!()` writes a small
+  descriptor the bootloader expects; every application has it.
+- `#[esp_rtos::main] async fn main(...) -> !` is an async entry point that
+  never returns (`!`). The board runs your loop forever.
+- `Board::init()` powers up the whole board and returns one handle per
+  capability. The pattern `let Board { mut display, mut imu, .. } = ...` keeps
+  the two handles this application needs and drops the rest. Dropping a handle
+  is fine: the sensors keep running on the second CPU core.
+- `imu.latest()` returns `Some(sample)` when a new sample arrived since the
+  last call and `None` otherwise. Nothing waits.
+- `display.surface(SCREEN)` borrows the display for one rectangle (here the
+  whole screen). `render_scanlines` calls your closure once per row with a
+  slice of pixels to fill.
+- The screen is only redrawn when the colour changed. The IMU publishes a
+  hundred samples per second; drawing on every one would keep the display
+  busy for nothing.
+- `Timer::after(...).await` pauses this loop and lets other work on this core
+  run. Every loop needs an `.await` somewhere.
+- `calibration_color` is a plain function with a `match` over ranges. Rust
+  checks that every value of `percent` is covered.
+
+## Create your own application
+
+Copy `src/bin/template.rs` to a new file, for example `src/bin/my_hack.rs`.
+It is the loop of the first application with touch instead of the IMU, and it
+builds and runs as it is: the screen is dark blue and turns light blue while
+you touch it.
+
+```rust
+loop {
+    // 1. Read input.
+    while let Some(event) = touch.next_event() {
+        pressed = !matches!(event, TouchEvent::Released(_));
+    }
+
+    // 2. Update your state.
+    let color = if pressed { theme::LIGHT_BLUE } else { theme::DARK_BLUE };
+
+    // 3. Draw, but only when something changed.
+    if shown != Some(color) {
+        shown = Some(color);
+        display.surface(SCREEN).render_scanlines(|_y, row| row.fill(color));
+    }
+
+    // Let the rest of the system run. Every loop needs an `.await`.
+    Timer::after(Duration::from_millis(10)).await;
 }
 ```
 
@@ -195,62 +235,132 @@ every binary. When the application grows, turn it into a folder,
 Keep the rules of your application (what a touch means, what a message means,
 which colour is which) in your application. The capabilities stay generic.
 
+## How the hardware reaches your loop
+
+The chips are read and fed by tasks on the second CPU core. Your loop on the
+first core talks to them through a handle, which reads or writes a queue or a
+"latest value" slot. Nothing in a handle waits for hardware.
+
+```mermaid
+flowchart LR
+    subgraph CPU0["CPU0: your application"]
+        Loop["your loop"] --> Handle["handle, e.g. Touch"]
+    end
+    Handle <--> Queue["queue / latest value"]
+    subgraph CPU1["CPU1: the capability runtimes"]
+        Queue <--> Task["task, e.g. FT6336 polling"]
+        Task <--> Chip["chip over I2C / I2S / radio"]
+    end
+```
+
+The two exceptions run on your own core: **drawing** waits for the SPI DMA
+transfer to finish (a few milliseconds for the whole screen) and a **camera
+frame** waits for the sensor. That is why the applications draw only when
+something changed.
+
 ## The capabilities
 
-One snippet each. The handles come from `Board::init()`.
+One snippet each, with the `use` lines they need. The handles come from
+`Board::init()`.
 
-**Display.** Draw a rectangle row by row. `Pixel` is a 16-bit RGB565 value;
-`hack_and_hike::ui::theme::pixel` has the project palette.
+**Display.** The quickest way to draw is row by row; `row` is a slice of
+`Rgb565` pixels the width of the surface.
 
 ```rust
-let mut surface = display.surface(Region::new(0, 0, WIDTH, HEIGHT));
-surface.render_scanlines(|y, pixels| {
-    pixels.fill(if y < HEIGHT / 2 { 0x001F } else { 0xFFFF });
+use embedded_graphics::pixelcolor::Rgb565;
+use hack_and_hike::capabilities::display::{HEIGHT, SCREEN};
+
+display.surface(SCREEN).render_scanlines(|y, row| {
+    row.fill(if y < HEIGHT / 2 { Rgb565::BLUE } else { Rgb565::WHITE });
 });
 ```
 
-**Touch.** Events queue up until you read them.
+For text and shapes, draw into a `Canvas` (an image in memory that any
+`embedded-graphics` primitive can draw on) and show it in one go. Create the
+canvas once, outside the loop.
 
 ```rust
-while let Some(edge) = touch.next_edge() {
-    if let TouchEdge::Pressed(point) = edge {
-        // point.x and point.y are display coordinates.
+use embedded_graphics::{
+    prelude::*,
+    primitives::{Circle, PrimitiveStyle},
+};
+use hack_and_hike::{
+    capabilities::display::{SCREEN, SIZE},
+    ui::{Canvas, common, theme},
+};
+
+let mut canvas = Canvas::new(SIZE);
+
+canvas.clear(theme::WHITE);
+common::text(&mut canvas, "HELLO", Point::new(10, 10), common::TITLE_FONT, theme::DARK_BLUE);
+let Ok(()) = Circle::with_center(Point::new(160, 140), 60)
+    .into_styled(PrimitiveStyle::with_fill(theme::LIGHT_BLUE))
+    .draw(&mut canvas);
+canvas.show(&mut display.surface(SCREEN));
+```
+
+**Touch.** Events queue up until you read them, in the order they happened.
+
+```rust
+use hack_and_hike::capabilities::touch::TouchEvent;
+
+while let Some(event) = touch.next_event() {
+    match event {
+        TouchEvent::Pressed(point) => log::info!("finger down at {},{}", point.x, point.y),
+        TouchEvent::Moved(point) => log::info!("finger at {},{}", point.x, point.y),
+        TouchEvent::Released(point) => log::info!("finger up at {},{}", point.x, point.y),
     }
 }
 ```
 
-**IMU.** The newest fused sample, about 100 times per second.
+**IMU.** The newest sample, about 100 times per second.
 
 ```rust
+use hack_and_hike::capabilities::imu::MagStatus;
+
 if let Some(sample) = imu.latest() {
-    let roll = sample.orientation.roll_deg;
-    let heading = sample.orientation.yaw_deg;
-    let calibrated = sample.mag_status == MagStatus::Ready;
+    let roll = sample.attitude.roll_deg;
+    let pitch = sample.attitude.pitch_deg;
+    let heading = sample.attitude.heading_deg;
+    let heading_is_trustworthy = sample.mag_status == MagStatus::Ready;
 }
 ```
 
-**Microphone.** 32 ms blocks of interleaved stereo samples (left, right, ...).
+**Microphone.** 32 ms blocks of interleaved stereo samples.
 
 ```rust
+use hack_and_hike::capabilities::audio;
+
 let mut block = [0i16; audio::SAMPLES_PER_BLOCK];
-if let Some(info) = microphone.try_read(&mut block) {
+if let Some(info) = microphone.next_block(&mut block) {
     let loudest_left = info.peak_left;
 }
 ```
 
 **Speaker.** Queue a little audio on every loop iteration; the board plays
-silence when the queue runs empty. See `TonePlayer` in `src/bin/color_ping.rs`.
+silence when the queue runs empty. `SineWave` makes tones.
 
 ```rust
-let frames = speaker.available_frames().min(chunk.len() / audio::CHANNELS);
+use hack_and_hike::{capabilities::audio, synth::SineWave};
+
+let mut tone = SineWave::new(880.0);
+
+let mut chunk = [0i16; 128 * audio::CHANNELS];
+let frames = speaker.available_frames().min(128);
+for frame in chunk[..frames * audio::CHANNELS].chunks_exact_mut(audio::CHANNELS) {
+    frame.fill(tone.next_sample(0.2));
+}
 speaker.write(&chunk[..frames * audio::CHANNELS]);
 ```
 
-**Network.** Define your own message type; the network only moves bytes.
-Every board in the room shares one channel, so give the type a name that is
-unique to your application: only messages with that name decode as `Hello`.
+**Network.** Define your own message type and give it a name that is unique
+to your application. Every board in the room hears every message, and only
+messages with that name decode as `Hello`.
 
 ```rust
+use hack_and_hike::capabilities::network::Message;
+use serde::{Deserialize, Serialize};
+
 #[derive(Serialize, Deserialize)]
 struct Hello {
     number: u32,
@@ -260,8 +370,8 @@ impl Message for Hello {
     const NAME: &'static str = "team-otters.hello";
 }
 
-if network.broadcast(&Hello { number: 42 }).is_err() {
-    log::warn!("send queue is full, try again next loop");
+if let Err(error) = network.broadcast(&Hello { number: 42 }) {
+    log::warn!("not sent: {error}");
 }
 
 while let Some(message) = network.next_message() {
@@ -275,50 +385,54 @@ while let Some(message) = network.next_message() {
 ```
 
 **Camera.** `camera` is an `Option`: `None` when no camera answered at boot.
-A frame is a `ScanlineSource`, so it can be drawn directly.
+A frame can be drawn directly.
 
 ```rust
+use hack_and_hike::capabilities::display::SCREEN;
+
 if let Some(camera) = camera.as_mut()
     && let Some(mut frame) = camera.begin_frame()
 {
-    display.surface(full_screen).render_from(&mut frame);
+    display.surface(SCREEN).render_from(&mut frame);
     frame.finish();
 }
 ```
 
-**Backlight.**
+**Backlight.** `Brightness::new` is for numbers in the code;
+`Brightness::try_from(percent)` checks a number computed at run time.
 
 ```rust
-if let Some(dim) = Brightness::new(30) {
-    backlight.set(dim);
-}
+use hack_and_hike::capabilities::backlight::Brightness;
+
+backlight.set(Brightness::new(30));
 ```
 
-**Log.** Use the `log` macros anywhere; the demo's Log screen shows the
-history through `LogHistory`.
+**Log.** Use the `log` macros anywhere; they print to the USB serial port.
+The demo's Log screen shows the history through `LogHistory`.
 
 ```rust
 log::info!("button pressed at {}", point.x);
 ```
 
-## The three built-in applications
+## The built-in applications
 
 | Binary | Uses | What it shows |
 | --- | --- | --- |
 | `imu_color` | display, IMU | The smallest possible application (above) |
+| `template` | display, touch | The file to copy for your own application |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `demo` | everything | A screen per capability with navigation |
 
 **Color Ping** splits the screen into four colour bands. Tapping a band
-broadcasts that colour; every other device that receives it plays a 300 ms
-tone. A band lights up while you hold it, and on the receiving device while
-its tone plays. Flash it to two devices and tap.
+broadcasts that colour; every other board that receives it plays a 300 ms
+tone. A band lights up while you hold it, and on the receiving board while
+its tone plays. Flash it to two boards and tap.
 
 ```mermaid
 sequenceDiagram
-    participant A as Device A
+    participant A as Board A
     participant Radio as ESP-NOW
-    participant B as Device B
+    participant B as Board B
 
     A->>A: user taps Blue
     A->>Radio: ColorPing { Blue }
@@ -328,32 +442,88 @@ sequenceDiagram
 ```
 
 It is deliberately one loop: touch, network, audio and drawing each advance a
-little on every iteration, and nothing blocks. That is the pattern to copy.
+little on every iteration, and nothing blocks. The whole application is one
+struct, `ColorPingApp`, that owns its handles and its state. That is the
+pattern to copy when a program outgrows `main`.
 
 **Demo** is the full firmware: Network, IMU, Microphone, Speaker, Camera,
 Settings and Log screens behind a navigation rail. Every screen implements the
 same small `Screen` trait. `src/bin/demo/screens/settings/` is the one to copy
 when you add a screen: a KDL layout file, a slider, and one capability handle.
 
+## The Rust you will meet
+
+**Ownership.** Every value has one owner. `let Board { mut display, .. } =
+Board::init();` moves the display handle into your function; nobody else can
+use it. That is the whole reason the drivers need no locks.
+
+**Moving.** Passing a handle into a struct moves it: after
+`SettingsScreen::new(backlight)` the `backlight` variable is gone. If you
+want to call methods on something, keep it in a struct field and write the
+methods on the struct, like `ColorPingApp` does.
+
+**Borrowing.** `display.surface(SCREEN)` borrows the display until the
+`Surface` goes out of scope; `canvas.show(&mut surface)` borrows the surface
+for one call. The compiler makes sure two borrows never overlap.
+
+**`Option<T>`.** A value that may be absent. `imu.latest()` is `None` when
+nothing new arrived; `camera` is `None` when no camera answered at boot.
+`if let Some(x) = ...` and `while let Some(x) = ...` unpack it.
+
+**`Result<T, E>`.** `network.broadcast(&msg)` returns `Ok(())` or an error
+such as `SendError::QueueFull`. Handle it with `match` or `if let Err(e)`;
+`main` never returns, so `?` is not an option there. Drawing onto a `Canvas`
+cannot fail, which is why `let Ok(()) = shape.draw(&mut canvas);` compiles:
+the error type is `Infallible`, and the compiler knows.
+
+**`async` and `.await`.** `main` is async; every `.await` is a point where
+other tasks may run. A loop that never awaits starves everything else on the
+core.
+
+**`no_std`.** No standard library, so no `String`, `Vec` or `println!` by
+default. Text is built into a fixed buffer: `let mut text =
+ArrayString::<48>::new(); write!(text, "{} Hz", hz)`. The `log` macros
+replace `println!`.
+
+**Traits.** `impl Message for Hello { const NAME: &'static str = "..."; }`
+gives the network what it needs to know about your type. `derive(Serialize,
+Deserialize)` writes the byte encoding for you.
+
+**Visibility.** `pub` items are the API applications use; `pub(crate)` items
+are internal to the library; everything else is private to its module.
+
+## Ideas for the weekend
+
+| Idea | Capabilities |
+| --- | --- |
+| Tilt maze: a ball rolls with roll and pitch | display, IMU |
+| Reaction game: the first board to tap after the flash wins | display, touch, network |
+| Compass treasure hunt: an arrow to a heading, a beep when you face it | display, IMU, speaker |
+| Walkie-beep: Morse code between boards | touch, network, speaker |
+| Clap counter: count claps with the microphone peak | display, microphone |
+| Photo booth: freeze a camera frame on a tap | display, touch, camera |
+| Night light: brightness follows how the board is held | backlight, IMU |
+
 ## Project folders
 
 ```text
-crates/core/        hardware-independent logic with tests (IMU math, network protocol)
+crates/core/        hardware-independent logic with tests
 src/
 ├── lib.rs          the library every application uses
-├── bin/            the applications: demo/, imu_color.rs, color_ping.rs
+├── bin/            the applications: demo/, imu_color.rs, color_ping.rs, template.rs
 ├── board/          Board::init(): power-up order and the CPU1 runtimes
 ├── capabilities/   one module per capability: the APIs you call
 ├── platform/       facts about the PCB: pins, power rails, I2C bus
 ├── support/        logging with on-device history, PSRAM helpers
-└── ui/             palette, drawing helpers, slider widget, embedded-gui glue
+├── synth.rs        sine waves and note frequencies for the speaker
+└── ui/             canvas, palette, text helpers, slider, embedded-gui glue
 ```
 
 ## Where does my code go?
 
 | I want to... | Put it in... |
 | --- | --- |
-| Build a new device experience | `src/bin/my_app.rs` |
+| Build a new board experience | `src/bin/my_app.rs` |
 | Add a screen to the demo | `src/bin/demo/screens/` |
 | Change the demo's navigation rail | `src/bin/demo/navigation.rs` |
 | Add a reusable drawing helper or widget | `src/ui/` |
@@ -365,18 +535,18 @@ src/
 
 A rule of thumb:
 
-> If the code says **what the device should do**, it belongs in an application.
+> If the code says **what the board should do**, it belongs in an application.
 >
 > If the code says **how a piece of hardware works**, it belongs in a capability.
 
 ## Reading order
 
-1. `src/bin/imu_color.rs`
+1. `src/bin/imu_color.rs` and `src/bin/template.rs`
 2. `src/bin/color_ping.rs`
 3. `src/lib.rs` and `src/board/mod.rs`
 4. `src/bin/demo/main.rs`, then `src/bin/demo/screens/settings/`
 5. one capability API, for example `src/capabilities/imu/mod.rs`
-6. `src/capabilities/display/mod.rs`
+6. `src/capabilities/display/mod.rs` and `src/ui/canvas.rs`
 7. drivers and `crates/core` only when you need them
 
 ## Going deeper
@@ -384,4 +554,4 @@ A rule of thumb:
 [docs/architecture.md](docs/architecture.md) explains how the firmware is put
 together: what happens in `Board::init()`, what runs on which CPU core, how
 drawing and the demo's screens work, memory and PSRAM, the camera path, the
-Rust ideas you will meet, and the design rules behind the layout.
+network protocol, and the design rules behind the layout.
