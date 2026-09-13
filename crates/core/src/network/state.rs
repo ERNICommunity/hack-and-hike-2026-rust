@@ -6,21 +6,30 @@ use core::fmt;
 
 use arrayvec::ArrayVec;
 
-use super::protocol::{self, DeviceId, MacAddress, RssiDbm};
+use super::protocol::{self, DeviceId, MacAddress};
 
 /// Most peers tracked at once. The longest-unseen peer is replaced when full.
 pub const MAX_PEERS: usize = 10;
 
-/// A 2.4 GHz ESP-NOW channel number (1 to 14).
+/// A 2.4 GHz Wi-Fi channel number, 1 to 14. Boards only hear each other on
+/// the same channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Channel(u8);
+pub struct RadioChannel(u8);
 
-impl Channel {
-    /// Panics on a channel outside 1 to 14.
+/// The channel number was outside 1 to 14.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidChannel;
+
+impl RadioChannel {
+    pub const MIN: u8 = 1;
+    pub const MAX: u8 = 14;
+
+    /// For channel numbers written in the code. Panics outside 1 to 14, so
+    /// a typo fails at compile time in a `const`.
     pub const fn new(number: u8) -> Self {
         assert!(
-            number >= 1 && number <= 14,
-            "ESP-NOW channel must be 1 to 14"
+            number >= Self::MIN && number <= Self::MAX,
+            "Wi-Fi channel must be 1 to 14"
         );
         Self(number)
     }
@@ -30,7 +39,20 @@ impl Channel {
     }
 }
 
-impl fmt::Display for Channel {
+/// For channel numbers computed at run time.
+impl TryFrom<u8> for RadioChannel {
+    type Error = InvalidChannel;
+
+    fn try_from(number: u8) -> Result<Self, Self::Error> {
+        if (Self::MIN..=Self::MAX).contains(&number) {
+            Ok(Self(number))
+        } else {
+            Err(InvalidChannel)
+        }
+    }
+}
+
+impl fmt::Display for RadioChannel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
@@ -52,6 +74,7 @@ pub enum Status {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer {
     pub id: DeviceId,
+    /// Received signal strength in dBm; closer to zero is stronger.
     pub rssi_dbm: i8,
     /// Time since the peer was last heard.
     pub age_ms: u32,
@@ -69,7 +92,7 @@ pub struct Snapshot {
     pub revision: u32,
     pub status: Status,
     pub local_id: DeviceId,
-    pub channel: Channel,
+    pub channel: RadioChannel,
     peers: [Option<Peer>; MAX_PEERS],
     pub tx_packets: u32,
     pub rx_packets: u32,
@@ -92,28 +115,36 @@ impl Snapshot {
     pub fn peers(&self) -> impl Iterator<Item = &Peer> {
         self.peers.iter().flatten()
     }
+
+    pub fn into_peers(self) -> impl Iterator<Item = Peer> {
+        self.peers.into_iter().flatten()
+    }
 }
 
 #[derive(Clone, Copy)]
 struct PeerState {
     device_id: DeviceId,
     mac: MacAddress,
-    rssi_dbm: RssiDbm,
+    rssi_dbm: i8,
     last_seen_ms: u64,
-    uptime_ms: Option<u32>,
+    /// When the peer booted on our clock, worked out from the uptime in its
+    /// last beacon. Negative for a peer that booted before we did.
+    started_at_ms: Option<i64>,
 }
 
 /// What one received frame says about the device that sent it.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct Heard {
     pub device_id: DeviceId,
     pub mac: MacAddress,
-    pub rssi_dbm: RssiDbm,
+    pub rssi_dbm: i8,
     /// Uptime carried by a beacon; `None` for application messages.
     pub uptime_ms: Option<u32>,
 }
 
 /// What happened to the peer table when a frame arrived.
+#[doc(hidden)]
 pub struct Received {
     /// The sender was not a peer before this frame.
     pub is_new: bool,
@@ -122,17 +153,20 @@ pub struct Received {
 }
 
 /// Queue-full counters kept outside the state, passed in for the snapshot.
+#[doc(hidden)]
 #[derive(Clone, Copy, Default)]
 pub struct QueueCounters {
     pub tx_queue_full: u32,
     pub rx_queue_full: u32,
 }
 
+/// The radio's view of the network: the peer table and the counters.
+#[doc(hidden)]
 pub struct NetworkState {
     revision: u32,
-    status: Status,
+    radio: RadioStatus,
     local_id: DeviceId,
-    channel: Channel,
+    channel: RadioChannel,
     peer_timeout_ms: u64,
     next_sequence: u32,
     peers: [Option<PeerState>; MAX_PEERS],
@@ -143,11 +177,20 @@ pub struct NetworkState {
     peer_evictions: u32,
 }
 
+/// The radio's own state; whether peers are present is derived from the
+/// peer table when a snapshot is taken.
+#[derive(Clone, Copy)]
+enum RadioStatus {
+    Starting,
+    Ready,
+    Fault,
+}
+
 impl NetworkState {
-    pub fn new(local_id: DeviceId, channel: Channel, peer_timeout_ms: u64) -> Self {
+    pub fn new(local_id: DeviceId, channel: RadioChannel, peer_timeout_ms: u64) -> Self {
         Self {
             revision: 0,
-            status: Status::Starting,
+            radio: RadioStatus::Starting,
             local_id,
             channel,
             peer_timeout_ms,
@@ -162,12 +205,12 @@ impl NetworkState {
     }
 
     pub fn mark_ready(&mut self) {
-        self.status = Status::Ready;
+        self.radio = RadioStatus::Ready;
         self.bump_revision();
     }
 
     pub fn mark_fault(&mut self) {
-        self.status = Status::Fault;
+        self.radio = RadioStatus::Fault;
         self.bump_revision();
     }
 
@@ -182,7 +225,7 @@ impl NetworkState {
             device_id: self.local_id,
             sequence,
             // Wraps after 49 days, which is fine for an uptime hint.
-            uptime_ms: u32::try_from(now_ms % (u64::from(u32::MAX) + 1)).unwrap_or(u32::MAX),
+            uptime_ms: (now_ms % (u64::from(u32::MAX) + 1)) as u32,
         }
     }
 
@@ -223,9 +266,11 @@ impl NetworkState {
             peer.mac = heard.mac;
             peer.rssi_dbm = heard.rssi_dbm;
             peer.last_seen_ms = now_ms;
-            // An application message says nothing about uptime; keep the
-            // value from the peer's last beacon.
-            peer.uptime_ms = heard.uptime_ms.or(peer.uptime_ms);
+            // An application message says nothing about uptime; keep what
+            // the peer's last beacon said.
+            if let Some(uptime_ms) = heard.uptime_ms {
+                peer.started_at_ms = Some(started_at(now_ms, uptime_ms));
+            }
             return Received {
                 is_new: false,
                 evicted: None,
@@ -238,7 +283,9 @@ impl NetworkState {
             mac: heard.mac,
             rssi_dbm: heard.rssi_dbm,
             last_seen_ms: now_ms,
-            uptime_ms: heard.uptime_ms,
+            started_at_ms: heard
+                .uptime_ms
+                .map(|uptime_ms| started_at(now_ms, uptime_ms)),
         });
         Received {
             is_new: true,
@@ -286,32 +333,31 @@ impl NetworkState {
     }
 
     /// The current state as seen by applications.
-    pub fn snapshot(&mut self, now_ms: u64, queues: QueueCounters) -> Snapshot {
+    pub fn snapshot(&self, now_ms: u64, queues: QueueCounters) -> Snapshot {
         let mut peers = [None; MAX_PEERS];
         for (target, source) in peers.iter_mut().zip(self.peers.iter().flatten()) {
             let age_ms = now_ms.saturating_sub(source.last_seen_ms);
             *target = Some(Peer {
                 id: source.device_id,
-                rssi_dbm: source.rssi_dbm.0,
+                rssi_dbm: source.rssi_dbm,
                 age_ms: saturate(age_ms),
                 expires_in_ms: saturate(self.peer_timeout_ms.saturating_sub(age_ms)),
                 uptime_ms: source
-                    .uptime_ms
-                    .map(|uptime| uptime.saturating_add(saturate(age_ms))),
+                    .started_at_ms
+                    .map(|started_at_ms| saturate_signed(now_ms as i64 - started_at_ms)),
             });
         }
 
-        if matches!(self.status, Status::Ready | Status::PeerPresent) {
-            self.status = if peers.iter().flatten().next().is_none() {
-                Status::Ready
-            } else {
-                Status::PeerPresent
-            };
-        }
+        let status = match self.radio {
+            RadioStatus::Starting => Status::Starting,
+            RadioStatus::Fault => Status::Fault,
+            RadioStatus::Ready if peers.iter().flatten().next().is_none() => Status::Ready,
+            RadioStatus::Ready => Status::PeerPresent,
+        };
 
         Snapshot {
             revision: self.revision,
-            status: self.status,
+            status,
             local_id: self.local_id,
             channel: self.channel,
             peers,
@@ -324,6 +370,14 @@ impl NetworkState {
             rx_queue_full: queues.rx_queue_full,
         }
     }
+}
+
+fn started_at(now_ms: u64, uptime_ms: u32) -> i64 {
+    now_ms as i64 - i64::from(uptime_ms)
+}
+
+fn saturate_signed(ms: i64) -> u32 {
+    u32::try_from(ms.max(0)).unwrap_or(u32::MAX)
 }
 
 fn saturate(ms: u64) -> u32 {

@@ -41,7 +41,7 @@ fn run(cpu1: Cpu1) {
     let executor = EXECUTOR.init(esp_rtos::embassy::Executor::new());
 
     executor.run(move |spawner| {
-        network::start(
+        network::spawn(
             &spawner,
             cpu1.network_resources,
             network::Config::default(),

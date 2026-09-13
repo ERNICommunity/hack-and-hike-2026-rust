@@ -19,11 +19,11 @@ use static_cell::StaticCell;
 
 use hack_and_hike_core::network::{
     message::{IncomingMessage, OutgoingMessage},
-    protocol::{self, DeviceId, MacAddress, RssiDbm},
+    protocol::{self, DeviceId, MacAddress},
     state::{Heard, NetworkState},
 };
 
-use super::{Config, Resources, channels::Runtime};
+use super::{Config, Resources, Runtime};
 
 type SharedState = Mutex<CriticalSectionRawMutex, RefCell<NetworkState>>;
 
@@ -62,7 +62,7 @@ fn physical_device_id() -> DeviceId {
 ///
 /// A radio that fails to initialize is reported as [`super::Status::Fault`]
 /// instead of panicking, so the rest of the board keeps working.
-pub(crate) fn start(spawner: &Spawner, resources: Resources, config: Config, runtime: Runtime) {
+pub(crate) fn spawn(spawner: &Spawner, resources: Resources, config: Config, runtime: Runtime) {
     let local_id = physical_device_id();
     let state = STATE.init(Mutex::new(RefCell::new(NetworkState::new(
         local_id,
@@ -157,8 +157,13 @@ async fn send_message(
             .with_state(|state| state.route_for(peer))
             .map(|mac| mac.0),
     };
-    let encoded_len =
-        protocol::encode_application(radio.local_id, message.recipient, &message.payload, frame);
+    let packet = protocol::ApplicationPacket {
+        sender: radio.local_id,
+        recipient: message.recipient,
+        kind: message.kind,
+        payload: &message.payload,
+    };
+    let encoded_len = protocol::encode_application(packet, frame);
 
     let sent = match (destination, encoded_len) {
         (Some(destination), Some(len)) => {
@@ -199,7 +204,7 @@ async fn receive_task(
         let broadcast = received.info.dst_address == BROADCAST_ADDRESS;
 
         let mac = MacAddress(received.info.src_address);
-        let rssi_dbm = RssiDbm::from_dbm(received.info.rx_control.rssi);
+        let rssi_dbm = i8::try_from(received.info.rx_control.rssi).unwrap_or(i8::MIN);
         let (heard, application) = match protocol::decode_frame(received.data()) {
             Some(protocol::DecodedFrame::Beacon(beacon)) => (
                 Some(Heard {
@@ -240,10 +245,7 @@ async fn receive_task(
             forget_radio_peer(manager, evicted);
         }
         if outcome.is_new {
-            info!(
-                "ESP-NOW peer found: id={} rssi={} dBm",
-                sender_id, rssi_dbm.0
-            );
+            info!("ESP-NOW peer found: id={} rssi={} dBm", sender_id, rssi_dbm);
         }
         if broadcast && !manager.peer_exists(&mac.0) {
             let added = manager.add_peer(PeerInfo {
@@ -259,7 +261,8 @@ async fn receive_task(
         }
 
         if let Some(packet) = application
-            && let Some(message) = IncomingMessage::from_bytes(packet.sender, packet.payload)
+            && let Some(message) =
+                IncomingMessage::from_bytes(packet.sender, packet.kind, packet.payload)
         {
             radio.runtime.deliver(message);
         }

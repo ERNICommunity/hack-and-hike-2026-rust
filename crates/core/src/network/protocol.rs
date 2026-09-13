@@ -6,36 +6,42 @@
 //! ```text
 //! offset  0..4   magic "HNHN"
 //!         4      protocol version
-//!         5      kind: beacon or application
+//!         5      frame type: beacon or application
 //!         6      flags (application only)
 //!         7      reserved, zero
 //!         8..14  sender device id
 //! beacon: 14..18 sequence, 18..22 uptime ms, zero-padded to 32 bytes
-//! app:    14..20 recipient id or zero, 20..22 payload length, 22.. payload
+//! app:    14..20 recipient id or zero, 20..24 message kind,
+//!         24..26 payload length, 26.. payload
 //! ```
+//!
+//! The message kind names the application type inside the payload (see
+//! [`super::message::Message`]), so boards running different applications on
+//! the same channel can ignore each other's messages.
 
 use core::{fmt, ops::Range};
 
 pub const BEACON_PACKET_BYTES: usize = 32;
 pub const MAX_RADIO_PACKET_BYTES: usize = 250;
 /// Largest serialized application message that fits one radio frame.
-pub const MAX_PAYLOAD: usize = 228;
-pub const PROTOCOL_VERSION: u8 = 2;
+pub const MAX_PAYLOAD: usize = 224;
+pub const PROTOCOL_VERSION: u8 = 3;
 
 const MAGIC: [u8; 4] = *b"HNHN";
 const MAGIC_FIELD: Range<usize> = 0..4;
 const VERSION_OFFSET: usize = 4;
-const KIND_OFFSET: usize = 5;
+const FRAME_TYPE_OFFSET: usize = 5;
 const FLAGS_OFFSET: usize = 6;
 const SENDER_FIELD: Range<usize> = 8..14;
 const BEACON_SEQUENCE_FIELD: Range<usize> = 14..18;
 const BEACON_UPTIME_FIELD: Range<usize> = 18..22;
 const RECIPIENT_FIELD: Range<usize> = 14..20;
-const PAYLOAD_LEN_FIELD: Range<usize> = 20..22;
-const APPLICATION_HEADER_BYTES: usize = 22;
+const MESSAGE_KIND_FIELD: Range<usize> = 20..24;
+const PAYLOAD_LEN_FIELD: Range<usize> = 24..26;
+const APPLICATION_HEADER_BYTES: usize = 26;
 
-const KIND_BEACON: u8 = 1;
-const KIND_APPLICATION: u8 = 2;
+const FRAME_TYPE_BEACON: u8 = 1;
+const FRAME_TYPE_APPLICATION: u8 = 2;
 const FLAG_RECIPIENT: u8 = 1 << 0;
 
 const _: () = assert!(APPLICATION_HEADER_BYTES + MAX_PAYLOAD == MAX_RADIO_PACKET_BYTES);
@@ -86,16 +92,6 @@ fn write_mac(f: &mut fmt::Formatter<'_>, bytes: &[u8; 6]) -> fmt::Result {
     )
 }
 
-/// Received signal strength in dBm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RssiDbm(pub i8);
-
-impl RssiDbm {
-    pub fn from_dbm(dbm: i32) -> Self {
-        Self(i8::try_from(dbm).unwrap_or(i8::MIN))
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BeaconPacket {
     pub device_id: DeviceId,
@@ -108,7 +104,7 @@ impl BeaconPacket {
         let mut out = [0u8; BEACON_PACKET_BYTES];
         out[MAGIC_FIELD].copy_from_slice(&MAGIC);
         out[VERSION_OFFSET] = PROTOCOL_VERSION;
-        out[KIND_OFFSET] = KIND_BEACON;
+        out[FRAME_TYPE_OFFSET] = FRAME_TYPE_BEACON;
         out[SENDER_FIELD].copy_from_slice(&self.device_id.0);
         out[BEACON_SEQUENCE_FIELD].copy_from_slice(&self.sequence.to_le_bytes());
         out[BEACON_UPTIME_FIELD].copy_from_slice(&self.uptime_ms.to_le_bytes());
@@ -120,6 +116,8 @@ impl BeaconPacket {
 pub struct ApplicationPacket<'a> {
     pub sender: DeviceId,
     pub recipient: Option<DeviceId>,
+    /// Which application message type the payload holds.
+    pub kind: u32,
     pub payload: &'a [u8],
 }
 
@@ -132,25 +130,25 @@ pub enum DecodedFrame<'a> {
 /// Encode an application frame into `out`. Returns the frame length, or `None`
 /// when the payload is too large.
 pub fn encode_application(
-    sender: DeviceId,
-    recipient: Option<DeviceId>,
-    payload: &[u8],
+    packet: ApplicationPacket<'_>,
     out: &mut [u8; MAX_RADIO_PACKET_BYTES],
 ) -> Option<usize> {
-    let payload_len = u16::try_from(payload.len()).ok()?;
+    let payload = packet.payload;
     if payload.len() > MAX_PAYLOAD {
         return None;
     }
+    let payload_len = u16::try_from(payload.len()).ok()?;
 
     out.fill(0);
     out[MAGIC_FIELD].copy_from_slice(&MAGIC);
     out[VERSION_OFFSET] = PROTOCOL_VERSION;
-    out[KIND_OFFSET] = KIND_APPLICATION;
-    out[SENDER_FIELD].copy_from_slice(&sender.0);
-    if let Some(recipient) = recipient {
+    out[FRAME_TYPE_OFFSET] = FRAME_TYPE_APPLICATION;
+    out[SENDER_FIELD].copy_from_slice(&packet.sender.0);
+    if let Some(recipient) = packet.recipient {
         out[FLAGS_OFFSET] = FLAG_RECIPIENT;
         out[RECIPIENT_FIELD].copy_from_slice(&recipient.0);
     }
+    out[MESSAGE_KIND_FIELD].copy_from_slice(&packet.kind.to_le_bytes());
     out[PAYLOAD_LEN_FIELD].copy_from_slice(&payload_len.to_le_bytes());
     out[APPLICATION_HEADER_BYTES..APPLICATION_HEADER_BYTES + payload.len()]
         .copy_from_slice(payload);
@@ -160,16 +158,16 @@ pub fn encode_application(
 /// Decode a received frame. Anything that is not exactly a frame of this
 /// protocol version is rejected.
 pub fn decode_frame(bytes: &[u8]) -> Option<DecodedFrame<'_>> {
-    if bytes.len() <= KIND_OFFSET
+    if bytes.len() <= FRAME_TYPE_OFFSET
         || bytes[MAGIC_FIELD] != MAGIC
         || bytes[VERSION_OFFSET] != PROTOCOL_VERSION
     {
         return None;
     }
 
-    match bytes[KIND_OFFSET] {
-        KIND_BEACON => decode_beacon(bytes).map(DecodedFrame::Beacon),
-        KIND_APPLICATION => decode_application(bytes).map(DecodedFrame::Application),
+    match bytes[FRAME_TYPE_OFFSET] {
+        FRAME_TYPE_BEACON => decode_beacon(bytes).map(DecodedFrame::Beacon),
+        FRAME_TYPE_APPLICATION => decode_application(bytes).map(DecodedFrame::Application),
         _ => None,
     }
 }
@@ -208,6 +206,7 @@ fn decode_application(bytes: &[u8]) -> Option<ApplicationPacket<'_>> {
         return None;
     };
 
+    let kind = u32::from_le_bytes(bytes[MESSAGE_KIND_FIELD].try_into().ok()?);
     let payload_len = usize::from(u16::from_le_bytes(
         bytes[PAYLOAD_LEN_FIELD].try_into().ok()?,
     ));
@@ -218,6 +217,89 @@ fn decode_application(bytes: &[u8]) -> Option<ApplicationPacket<'_>> {
     Some(ApplicationPacket {
         sender,
         recipient,
+        kind,
         payload: &bytes[APPLICATION_HEADER_BYTES..],
     })
+}
+
+// Unit tests live next to the code they check. Scenario tests that combine
+// several modules are in `crates/core/tests/`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(last: u8) -> DeviceId {
+        DeviceId::try_from([1, 2, 3, 4, 5, last]).unwrap()
+    }
+
+    #[test]
+    fn beacon_roundtrips() {
+        let beacon = BeaconPacket {
+            device_id: id(6),
+            sequence: 7,
+            uptime_ms: 1234,
+        };
+        assert_eq!(
+            decode_frame(&beacon.encode()),
+            Some(DecodedFrame::Beacon(beacon))
+        );
+    }
+
+    #[test]
+    fn application_frame_roundtrips() {
+        let packet = ApplicationPacket {
+            sender: id(6),
+            recipient: Some(id(7)),
+            kind: 0xDEAD_BEEF,
+            payload: &[9, 8, 7, 6],
+        };
+        let mut frame = [0u8; MAX_RADIO_PACKET_BYTES];
+        let len = encode_application(packet, &mut frame).expect("payload fits");
+        assert_eq!(
+            decode_frame(&frame[..len]),
+            Some(DecodedFrame::Application(packet))
+        );
+    }
+
+    #[test]
+    fn oversized_payload_is_refused() {
+        let packet = ApplicationPacket {
+            sender: id(6),
+            recipient: None,
+            kind: 1,
+            payload: &[0; MAX_PAYLOAD + 1],
+        };
+        let mut frame = [0u8; MAX_RADIO_PACKET_BYTES];
+        assert_eq!(encode_application(packet, &mut frame), None);
+    }
+
+    #[test]
+    fn corrupted_frames_are_rejected() {
+        let packet = ApplicationPacket {
+            sender: id(6),
+            recipient: Some(id(7)),
+            kind: 1,
+            payload: &[9, 8, 7, 6],
+        };
+        let mut frame = [0u8; MAX_RADIO_PACKET_BYTES];
+        let len = encode_application(packet, &mut frame).unwrap();
+
+        // Each closure damages one copy of the good frame.
+        let damaged: [fn(&mut [u8]); 5] = [
+            |frame| frame[MAGIC_FIELD.start] ^= 0xFF,
+            |frame| frame[VERSION_OFFSET] += 1,
+            |frame| frame[PAYLOAD_LEN_FIELD].copy_from_slice(&99u16.to_le_bytes()),
+            |frame| frame[FLAGS_OFFSET] = 0x80,
+            // A recipient without the flag is not a broadcast either.
+            |frame| frame[FLAGS_OFFSET] = 0,
+        ];
+        for damage in damaged {
+            let mut copy = frame;
+            damage(&mut copy[..len]);
+            assert_eq!(decode_frame(&copy[..len]), None);
+        }
+
+        assert_eq!(decode_frame(&frame[..len - 1]), None);
+        assert_eq!(decode_frame(b"HNH"), None);
+    }
 }

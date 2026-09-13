@@ -247,6 +247,8 @@ speaker.write(&chunk[..frames * audio::CHANNELS]);
 ```
 
 **Network.** Define your own message type; the network only moves bytes.
+Every board in the room shares one channel, so give the type a name that is
+unique to your application: only messages with that name decode as `Hello`.
 
 ```rust
 #[derive(Serialize, Deserialize)]
@@ -254,14 +256,20 @@ struct Hello {
     number: u32,
 }
 
+impl Message for Hello {
+    const NAME: &'static str = "team-otters.hello";
+}
+
 if network.broadcast(&Hello { number: 42 }).is_err() {
     log::warn!("send queue is full, try again next loop");
 }
 
-while let Some(message) = network.receive() {
+while let Some(message) = network.next_message() {
     if let Ok(hello) = message.decode::<Hello>() {
         let reply = Hello { number: hello.number + 1 };
-        let _sent = network.send_to(message.sender, &reply);
+        if let Err(error) = network.send_to(message.sender, &reply) {
+            log::warn!("reply not sent: {error}");
+        }
     }
 }
 ```

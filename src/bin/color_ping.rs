@@ -22,7 +22,7 @@ use hack_and_hike::{
     capabilities::{
         audio::{self, Speaker},
         display::{HEIGHT, Region, WIDTH},
-        network::Network,
+        network::{Message, Network},
         touch::{Touch, TouchEdge},
     },
     ui::{
@@ -114,6 +114,12 @@ struct ColorPing {
     color: Color,
 }
 
+impl Message for ColorPing {
+    /// Every board in the room hears every message; the name keeps other
+    /// applications' messages out of our decoder.
+    const NAME: &'static str = "hack-and-hike.color-ping";
+}
+
 /// What the screen shows.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 struct Shown {
@@ -188,13 +194,11 @@ fn handle_touch(
 
 /// A colour from another board starts its tone here.
 fn handle_network(network: &mut Network, tone: &mut TonePlayer, shown: &mut Shown) {
-    while let Some(message) = network.receive() {
-        match message.decode::<ColorPing>() {
-            Ok(ping) => {
-                shown.heard = Some(ping.color);
-                tone.start(ping.color);
-            }
-            Err(_) => log::warn!("Received a message that is not a ColorPing"),
+    while let Some(message) = network.next_message() {
+        // Other applications' messages arrive here too; they fail to decode.
+        if let Ok(ping) = message.decode::<ColorPing>() {
+            shown.heard = Some(ping.color);
+            tone.start(ping.color);
         }
     }
 }

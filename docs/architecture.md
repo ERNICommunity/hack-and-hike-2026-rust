@@ -106,8 +106,11 @@ flowchart LR
 The camera is the one capability that runs on CPU0: its frames are drained
 while the display DMA is busy, which only works from the drawing loop.
 
-You never talk to CPU1 directly. Every handle method is non-blocking; it reads
-from or writes to a queue or a "latest value" slot shared between the cores.
+You never talk to CPU1 directly. Every handle method returns immediately; it
+reads from or writes to a queue or a "latest value" slot shared between the
+cores. The exceptions are on CPU0 itself: drawing waits for the SPI DMA to
+finish, and a camera frame waits for the sensor's VSYNC. Both block your loop
+for milliseconds, which is why the loop draws only when something changed.
 
 ## How a capability is built
 
@@ -366,8 +369,9 @@ are internal to the library; everything else is private to its module.
 
 ## Common mistakes
 
-**Application rules inside a capability.** Files like
-`capabilities/network/color_ping.rs` describe an application, not hardware.
+**Application rules inside a capability.** A `ColorPing` message type or a
+"tap means select" rule describes an application, not hardware; it belongs in
+`src/bin/`.
 
 **Touching the HAL from an application.** If your application imports
 `esp_hal`, a capability is probably missing an operation. Add it there.

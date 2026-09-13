@@ -10,7 +10,7 @@ use embedded_gui::Rect;
 use hack_and_hike::{
     capabilities::{
         display::Surface,
-        network::{self, Network},
+        network::{self, DecodeError, Message, Network},
     },
     ui::{
         common::{self, Lines},
@@ -38,6 +38,10 @@ enum DemoMessage {
     Pong { sequence: u32 },
 }
 
+impl Message for DemoMessage {
+    const NAME: &'static str = "hack-and-hike.demo.ping-pong";
+}
+
 #[derive(Clone, Copy, Default)]
 struct Counters {
     pings_sent: u32,
@@ -45,6 +49,8 @@ struct Counters {
     pongs_received: u32,
     send_errors: u32,
     decode_errors: u32,
+    /// Messages of other applications sharing the channel.
+    other_kinds: u32,
 }
 
 pub(crate) struct NetworkScreen {
@@ -80,7 +86,7 @@ impl NetworkScreen {
     }
 
     fn handle_messages(&mut self) {
-        while let Some(message) = self.network.receive() {
+        while let Some(message) = self.network.next_message() {
             match message.decode::<DemoMessage>() {
                 Ok(DemoMessage::Ping { sequence }) => {
                     self.counters.pings_received += 1;
@@ -90,7 +96,8 @@ impl NetworkScreen {
                     }
                 }
                 Ok(DemoMessage::Pong { .. }) => self.counters.pongs_received += 1,
-                Err(_) => self.counters.decode_errors += 1,
+                Err(DecodeError::WrongKind) => self.counters.other_kinds += 1,
+                Err(DecodeError::Malformed) => self.counters.decode_errors += 1,
             }
             self.dirty = true;
         }
@@ -122,7 +129,7 @@ impl Screen for NetworkScreen {
         }
         self.last_update = now;
 
-        let snapshot = self.network.snapshot().copied();
+        let snapshot = self.network.snapshot();
         if snapshot.map(|s| s.revision) != self.snapshot.map(|s| s.revision) {
             self.snapshot = snapshot;
             self.dirty = true;
@@ -206,6 +213,10 @@ fn draw_summary(
         counters.send_errors + snapshot.tx_queue_full + snapshot.rx_queue_full,
         counters.decode_errors + snapshot.rx_invalid
     );
+    lines.line(&text, theme::DARK_GRAY);
+
+    text.clear();
+    let _ = write!(text, "Other apps' messages {}", counters.other_kinds);
     lines.line(&text, theme::DARK_GRAY);
 }
 
