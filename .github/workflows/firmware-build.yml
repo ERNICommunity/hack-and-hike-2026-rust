@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install host Rust toolchain
         run: rustup toolchain install 1.97.0 --profile minimal
@@ -46,14 +46,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # A successful full release build and feature-composition check are
       # deterministic for these inputs. Bump the proof version whenever the build
       # command or CI validation semantics change.
       - name: Restore successful-build proof
         id: build-proof
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .ci-cache/firmware-build-ok
           key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v9-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
@@ -64,7 +64,7 @@ jobs:
 
       - name: Restore Cargo dependency cache
         if: steps.build-proof.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -77,7 +77,7 @@ jobs:
       - name: Restore Xtensa toolchain
         if: steps.build-proof.outputs.cache-hit != 'true'
         id: xtensa-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.rustup/toolchains/esp
@@ -109,7 +109,7 @@ jobs:
 
       - name: Restore release build tree
         if: steps.build-proof.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: target/
           key: ${{ runner.os }}-esp32s3-release-1.97.0.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
@@ -170,7 +170,7 @@ jobs:
 
       - name: Save successful-build proof
         if: steps.build-proof.outputs.cache-hit != 'true' && success()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .ci-cache/firmware-build-ok
           key: ${{ runner.os }}-esp32s3-build-ok-1.97.0.0-proof-v9-${{ hashFiles('src/**', 'assets/**', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'theme.toml', '.github/workflows/firmware-build.yml') }}
