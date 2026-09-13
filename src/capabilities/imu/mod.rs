@@ -93,6 +93,7 @@ impl Default for Orientation {
 /// valid reading for that sensor is available in the current acquisition session.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Sample {
+    #[allow(dead_code, reason = "field is part of the application-facing IMU sample capability contract")]
     pub(crate) revision: u32,
     #[allow(dead_code, reason = "raw physical measurements are part of the IMU capability contract")]
     pub(crate) acceleration_m_s2: Option<[f32; 3]>,
@@ -101,9 +102,13 @@ pub(crate) struct Sample {
     #[allow(dead_code, reason = "raw physical measurements are part of the IMU capability contract")]
     pub(crate) magnetic_field_ut: Option<[f32; 3]>,
     pub(crate) status: Status,
+    #[allow(dead_code, reason = "field is part of the application-facing IMU sample capability contract")]
     pub(crate) orientation: Orientation,
+    #[allow(dead_code, reason = "field is part of the application-facing IMU sample capability contract")]
     pub(crate) mag_status: MagStatus,
+    #[allow(dead_code, reason = "field is part of the application-facing IMU sample capability contract")]
     pub(crate) mag_field_strength_ut: f32,
+    #[allow(dead_code, reason = "field is part of the application-facing IMU sample capability contract")]
     pub(crate) mag_calibration_percent: u8,
 }
 

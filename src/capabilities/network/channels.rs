@@ -180,6 +180,7 @@ pub(crate) fn init_endpoints() -> Endpoints {
 
 impl Network {
     /// Refresh the CPU0 peer/diagnostic cache from the newest CPU1 snapshot.
+    #[allow(dead_code, reason = "part of the application-facing network diagnostics capability contract")]
     pub(crate) fn refresh(&mut self) -> bool {
         let Some(snapshot) = self.service.latest.try_take() else {
             return false;
@@ -188,6 +189,7 @@ impl Network {
         true
     }
 
+    #[allow(dead_code, reason = "part of the application-facing network diagnostics capability contract")]
     pub(crate) fn snapshot(&self) -> Option<&Snapshot> {
         self.snapshot.as_ref()
     }

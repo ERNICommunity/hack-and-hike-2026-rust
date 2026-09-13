@@ -14,15 +14,22 @@ The main idea is simple:
 
 Those parts are called **capabilities**.
 
-For example, an application can use the display, touch screen, IMU, microphone, speaker, network, or camera.
+A build selects one application. The repository contains three real applications that you can build and study:
+
+| Feature | Application | Purpose |
+| --- | --- | --- |
+| `app-demo` | Demo | Full Hack & Hike demo with all screens |
+| `app-imu-color` | IMU Color | Small display + IMU example |
+| `app-color-ping` | Color Ping | Display + touch + network + speaker example |
+
+There is also `app-idle`. It is a tiny headless application used for feature checks and simple experiments.
 
 ---
 
 ## Table of contents
 
-- [The short version](#the-short-version)
-- [Build the normal firmware](#build-the-normal-firmware)
-- [The big picture](#the-big-picture)
+- [Build an application](#build-an-application)
+- [The architecture in one picture](#the-architecture-in-one-picture)
 - [Project folders](#project-folders)
 - [Applications and capabilities](#applications-and-capabilities)
 - [How startup works](#how-startup-works)
@@ -30,9 +37,10 @@ For example, an application can use the display, touch screen, IMU, microphone, 
 - [Cargo features](#cargo-features)
 - [The Rust ideas you need](#the-rust-ideas-you-need)
 - [How drawing works](#how-drawing-works)
-- [How the stock application works](#how-the-stock-application-works)
-- [Example 1: add a simple IMU application](#example-1-add-a-simple-imu-application)
-- [Example 2: Color Ping](#example-2-color-ping)
+- [Application 1: Demo](#application-1-demo)
+- [Application 2: IMU Color](#application-2-imu-color)
+- [Application 3: Color Ping](#application-3-color-ping)
+- [Create your own application](#create-your-own-application)
 - [Add more screens](#add-more-screens)
 - [Use background tasks](#use-background-tasks)
 - [Headless applications](#headless-applications)
@@ -44,14 +52,44 @@ For example, an application can use the display, touch screen, IMU, microphone, 
 
 ---
 
-## The short version
+## Build an application
+
+The default build selects the full demo application:
+
+```bash
+cargo build --release
+```
+
+You can also select it explicitly:
+
+```bash
+cargo build --release --no-default-features --features app-demo
+```
+
+Build the small IMU example:
+
+```bash
+cargo build --release --no-default-features --features app-imu-color
+```
+
+Build Color Ping:
+
+```bash
+cargo build --release --no-default-features --features app-color-ping
+```
+
+`--no-default-features` matters when you select another application because the default feature set selects `app-demo`.
+
+Only one application feature should be enabled in a firmware build.
+
+---
+
+## The architecture in one picture
 
 The firmware has two main layers:
 
-1. **Capabilities** talk to hardware and provide simple Rust APIs.
-2. **The application** decides what the device does.
-
-There is only **one selected application** in a firmware build.
+1. **Capabilities** talk to hardware and provide focused Rust APIs.
+2. **One application** decides what the device does.
 
 ```mermaid
 flowchart TD
@@ -66,87 +104,29 @@ Examples:
 
 - The IMU capability reads the motion sensors and gives the application measurements.
 - The display capability owns the LCD and lets the application draw pixels.
-- The touch capability gives the application touch points and press/release events.
-- The network capability sends and receives typed messages.
-- The speaker capability accepts stereo PCM samples.
+- The touch capability reports touches.
+- The network capability sends and receives typed application messages.
+- The speaker capability accepts PCM audio samples.
 - The camera capability gives the application camera frames.
 
-The application does not need to know which I2C register contains an accelerometer value or which DMA channel is used by the display.
+The application should not need to know which I2C register contains a sensor value or which DMA channel is used by the display.
 
-That low-level work stays inside the capability.
-
----
-
-## Build the normal firmware
-
-The normal build uses the stock application:
-
-```bash
-cargo build --release
-```
-
-This is the same as:
-
-```bash
-cargo build --release --no-default-features --features app-stock
-```
-
-The repository already sets the ESP32-S3 target in `.cargo/config.toml`.
-
-The Rust version is set in `rust-toolchain.toml`.
-
----
-
-## The big picture
-
-The program starts in `src/main.rs`.
-
-The important part is very small:
-
-```rust
-#[esp_rtos::main]
-async fn main(cpu0_spawner: Spawner) -> ! {
-    let bootstrap = firmware::bootstrap();
-    applications::run(cpu0_spawner, bootstrap).await
-}
-```
-
-This tells the whole story:
-
-1. Start the hardware.
-2. Create the enabled capabilities.
-3. Give the application-facing handles to the selected application.
-4. Run that application forever.
-
-```mermaid
-flowchart LR
-    Main["main.rs"] --> Bootstrap["firmware::bootstrap()"]
-    Bootstrap --> Handles["Capability handles"]
-    Bootstrap --> Runtime["Hardware runtime work"]
-    Handles --> App["Selected application on CPU0"]
-    Runtime --> CPU1["CPU1 tasks"]
-```
-
-There is no required `Application` trait.
-
-There is no required screen framework.
-
-There is no required navigation system.
-
-Your application can have one screen, many screens, or no screen at all.
+That low-level work stays inside capabilities.
 
 ---
 
 ## Project folders
 
-The main folders are:
+The important part of the source tree looks like this:
 
 ```text
 src/
 ├── main.rs
 ├── applications/
 │   ├── mod.rs
-│   └── stock/
+│   ├── demo/
+│   ├── imu_color/
+│   └── color_ping/
 ├── capabilities/
 │   ├── display/
 │   ├── touch/
@@ -169,7 +149,7 @@ This is where device behavior belongs.
 An application decides:
 
 - what the device does,
-- what touch means,
+- what a touch means,
 - which screen is active,
 - when data is updated,
 - when pixels are drawn,
@@ -185,21 +165,21 @@ A capability hides low-level hardware work and gives the application useful valu
 
 ### `src/firmware/`
 
-This connects real board hardware to capabilities.
+This connects the real board hardware to capabilities.
 
-`firmware::bootstrap()` takes ESP32-S3 peripherals, starts the enabled hardware, starts CPU1 work when needed, and returns application-facing handles.
+`firmware::bootstrap()` starts enabled hardware and returns the application-facing handles.
 
 You normally do **not** edit this folder when you make a new application.
 
 ### `src/platform/`
 
-This contains facts about the physical board, such as pins, power rails, reset lines, and shared I2C setup.
+This contains facts about the physical CoreS3 Lite board, such as pins, reset lines, power rails, and shared I2C setup.
 
 ### `src/ui/`
 
 This contains reusable drawing helpers.
 
-The stock navigation does **not** live here. It belongs to the stock application.
+Using it is optional. A small application can draw directly through the display capability.
 
 ### `src/support/`
 
@@ -225,7 +205,7 @@ The current capabilities are:
 | `network` | `Network` | ESP-NOW peers and typed messages |
 | `camera` | `Camera` | RGB565 camera frames |
 
-The application should use these APIs instead of using raw HAL peripherals, DMA channels, GPIO numbers, or chip registers.
+Application code should use these APIs instead of raw ESP HAL peripherals, DMA channels, GPIO numbers, or chip registers.
 
 ### Example: IMU
 
@@ -239,18 +219,18 @@ if let Some(sample) = imu.latest() {
 }
 ```
 
-The application does not need to know how the BMI270 or BMM150 are configured.
+It does not need to know how the BMI270 or BMM150 are configured.
 
 ```mermaid
 flowchart LR
-    Sensor["BMI270 + BMM150"] --> Runtime["IMU runtime on CPU1"]
-    Runtime --> Sample["Imu::latest()"]
-    Sample --> App["Application on CPU0"]
+    Sensors["BMI270 + BMM150"] --> Runtime["IMU runtime on CPU1"]
+    Runtime --> Latest["Imu::latest()"]
+    Latest --> App["Application on CPU0"]
 ```
 
 ### Example: network
 
-Application code can define its own message type:
+The application owns its own message type:
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -261,7 +241,7 @@ struct Hello {
 }
 ```
 
-Then broadcast it:
+Broadcast it:
 
 ```rust
 let _ = network.send(None, &Hello { number: 42 });
@@ -269,7 +249,7 @@ let _ = network.send(None, &Hello { number: 42 });
 
 `None` means broadcast.
 
-A receiving application can decode it:
+Receive and decode it:
 
 ```rust
 while let Some(message) = network.receive() {
@@ -279,35 +259,46 @@ while let Some(message) = network.receive() {
 }
 ```
 
-The message schema belongs to the application. The network capability does not need to know what `Hello` means.
+The network capability moves the message. The application decides what `Hello` means.
 
 ---
 
 ## How startup works
 
-The startup code is in `firmware::bootstrap()`.
+The program starts in `src/main.rs`.
+
+The important part is very small:
+
+```rust
+#[esp_rtos::main]
+async fn main(cpu0_spawner: Spawner) -> ! {
+    let bootstrap = firmware::bootstrap();
+    applications::run(cpu0_spawner, bootstrap).await
+}
+```
+
+This means:
+
+1. Start the hardware.
+2. Create the enabled capabilities.
+3. Give their application handles to the selected application.
+4. Run that application forever.
 
 ```mermaid
 sequenceDiagram
     participant Main as main.rs
     participant Boot as firmware::bootstrap()
-    participant HW as Board hardware
-    participant CPU1 as CPU1 runtime
+    participant CPU1 as CPU1 capability work
     participant App as Selected application
 
     Main->>Boot: bootstrap()
-    Boot->>HW: initialize enabled hardware
     Boot->>CPU1: start enabled runtime tasks
     Boot-->>Main: Bootstrap with capability handles
     Main->>App: run(spawner, bootstrap)
     App->>App: run forever
 ```
 
-The returned value is called `Bootstrap`.
-
-It contains fields for the capabilities that are enabled by Cargo features.
-
-The selected application takes ownership of it and moves out the handles it needs.
+The selected application takes ownership of `Bootstrap` and moves out the handles it needs.
 
 Example:
 
@@ -319,7 +310,7 @@ let Bootstrap {
 } = bootstrap;
 ```
 
-Now the application owns `display` and `imu`.
+Now this application owns `display` and `imu`.
 
 ---
 
@@ -331,20 +322,11 @@ The ESP32-S3 has two CPU cores.
 
 CPU0 runs the selected application.
 
-This includes:
-
-- application logic,
-- touch decisions,
-- screen updates,
-- display drawing,
-- camera presentation,
-- optional application tasks.
+This includes application logic, touch decisions, drawing, and optional application tasks.
 
 ### CPU1
 
-CPU1 runs hardware work that benefits from running separately from the application loop.
-
-Depending on enabled features, this includes:
+CPU1 runs timing-sensitive capability work such as:
 
 - IMU acquisition,
 - touch polling,
@@ -353,12 +335,14 @@ Depending on enabled features, this includes:
 - display brightness I2C work,
 - runtime monitoring.
 
+The camera is special. Camera capture and presentation are coordinated on CPU0 so capture can move forward while display DMA is busy.
+
 ```mermaid
 flowchart LR
     subgraph CPU0["CPU0"]
         App["Selected application"]
-        Render["Display drawing"]
-        App --> Render
+        Draw["Drawing and app behavior"]
+        App --> Draw
     end
 
     subgraph CPU1["CPU1"]
@@ -366,19 +350,15 @@ flowchart LR
         Touch["Touch"]
         Audio["Audio"]
         Network["Network"]
-        Brightness["Brightness"]
     end
 
     IMU --> App
     Touch --> App
     Audio <--> App
     Network <--> App
-    App --> Brightness
 ```
 
-The important rule is:
-
-> Use the capability handle. Do not manage CPU1 yourself for normal hardware access.
+For normal hardware access, use the capability handle. Do not manage CPU1 yourself.
 
 ---
 
@@ -398,18 +378,12 @@ network
 camera
 ```
 
-There is also:
+There is also `ui`, which enables reusable GUI helpers and the display.
 
-```text
-ui
-```
-
-`ui` enables reusable graphical helpers and also enables `display`.
-
-The stock application feature is a bundle:
+The application features are:
 
 ```toml
-app-stock = [
+app-demo = [
     "ui",
     "touch",
     "imu",
@@ -418,23 +392,43 @@ app-stock = [
     "network",
     "camera",
 ]
-```
 
-A custom application should enable only what it needs.
-
-For example:
-
-```toml
 app-imu-color = ["display", "imu"]
-```
 
-or:
-
-```toml
 app-color-ping = ["display", "touch", "network", "speaker"]
 ```
 
-When you build a custom application, use `--no-default-features` so Cargo does not also enable `app-stock`.
+```mermaid
+flowchart TD
+    Demo["app-demo"] --> UI["ui / display"]
+    Demo --> Touch["touch"]
+    Demo --> IMU["imu"]
+    Demo --> Mic["mic"]
+    Demo --> Speaker["speaker"]
+    Demo --> Network["network"]
+    Demo --> Camera["camera"]
+
+    ImuColor["app-imu-color"] --> Display2["display"]
+    ImuColor --> IMU2["imu"]
+
+    ColorPing["app-color-ping"] --> Display3["display"]
+    ColorPing --> Touch3["touch"]
+    ColorPing --> Network3["network"]
+    ColorPing --> Speaker3["speaker"]
+```
+
+A small application only enables what it needs.
+
+### `#[cfg(...)]`
+
+You will see code like:
+
+```rust
+#[cfg(feature = "app-color-ping")]
+mod color_ping;
+```
+
+This means that module is compiled only when `app-color-ping` is enabled.
 
 ---
 
@@ -444,29 +438,35 @@ You can work on this project without being a Rust expert.
 
 ### Ownership
 
-Rust values have one owner.
+Rust values have an owner.
 
-Hardware handles also have one clear owner in this project.
+Hardware handles also have one clear owner.
 
 ```rust
-let Bootstrap { mut display, .. } = bootstrap;
+let Bootstrap {
+    mut display,
+    mut imu,
+    ..
+} = bootstrap;
 ```
 
-After this line, your application owns `display`.
+After this line, the application owns `display` and `imu`.
 
 ### Moving a value
 
-If you put a handle into another struct, the handle moves there.
+If you pass a handle into another struct, ownership moves with it.
 
 ```rust
-let model = MyModel::new(imu);
+let model = MyModel::new(network);
 ```
 
-Now `model` owns `imu`.
+Now `model` owns `network`.
+
+The old `network` variable cannot also be used.
 
 ### Borrowing with `&mut`
 
-You can temporarily borrow a handle.
+Sometimes code only needs temporary access.
 
 ```rust
 let mut surface = display.surface(region);
@@ -478,45 +478,50 @@ When the surface goes out of scope, the display can be used again.
 
 ### `Option<T>`
 
-`Option<T>` means a value may be present or missing.
+`Option<T>` means a value may or may not exist.
 
 ```rust
 if let Some(sample) = imu.latest() {
-    // A new sample is available.
+    // A new sample exists.
 }
 ```
+
+If no new sample exists, `latest()` returns `None`.
 
 ### `async` and `.await`
 
 Application `run` functions are async.
 
 ```rust
-pub(crate) async fn run(...) -> !
-```
-
-An async function can pause at `.await` and let other CPU0 work run.
-
-```rust
 Timer::after(Duration::from_millis(10)).await;
 ```
 
-Do not write a forever loop that never reaches `.await`.
+An `.await` gives other CPU0 work a chance to run.
+
+Do not create a forever loop that never reaches an `.await`.
 
 ### `-> !`
 
-`-> !` means the function never returns.
+```rust
+async fn run(...) -> !
+```
 
-That is normal for firmware.
+The `!` means the function never returns. That is normal for the top-level firmware application.
 
 ### `pub(crate)`
 
-`pub(crate)` means code can be used by other modules in this firmware crate, but not by outside crates.
+`pub(crate)` means code can be used inside this firmware crate but is not exported as a public library API.
 
 ### `no_std`
 
-This is embedded firmware, so it does not use the normal desktop Rust standard library.
+This is embedded firmware, so `main.rs` uses:
 
-You can still use normal Rust ideas such as structs, enums, `Option`, iterators, modules, and async code.
+```rust
+#![no_std]
+#![no_main]
+```
+
+You can still use normal Rust structs, enums, `Option`, iterators, modules, and async code.
 
 ---
 
@@ -524,137 +529,124 @@ You can still use normal Rust ideas such as structs, enums, `Option`, iterators,
 
 The display capability owns the physical LCD connection.
 
-The application asks it for a `Surface`.
+The application asks it for a rectangular `Surface`.
 
-A `Surface` is a rectangular part of the screen.
+```mermaid
+flowchart LR
+    App["Application"] --> Display["Display"]
+    Display --> Surface["Surface"]
+    Surface --> LCD["LCD"]
+```
+
+A full-screen region is:
 
 ```rust
-let region = Region::new(0, 0, WIDTH, HEIGHT);
-let mut surface = display.surface(region);
+let full_screen = Region::new(0, 0, WIDTH, HEIGHT);
+```
+
+Then draw one row at a time:
+
+```rust
+let mut surface = display.surface(full_screen);
 
 surface.render_scanlines(|_y, pixels| {
-    pixels.fill(0x0000);
+    pixels.fill(0x001F); // blue RGB565
 });
 ```
 
 A surface cannot draw outside its region.
 
-```mermaid
-flowchart LR
-    App["Application"] --> Display["Display"]
-    Display --> Surface["Bounded Surface"]
-    Surface --> LCD["LCD"]
-```
+### Shared GUI helpers
 
-The stock 44-pixel navigation rail is not a global rule. A custom application can use the full 320×240 screen.
+Applications that enable `ui` may use `GuiSurface` and the shared GUI helpers.
+
+This is optional. Both small example applications draw directly through `Surface`.
 
 ---
 
-## How the stock application works
+# Application 1: Demo
 
-The normal application lives in:
+Feature:
 
 ```text
-src/applications/stock/
+app-demo
 ```
+
+Source:
+
+```text
+src/applications/demo/
+```
+
+This is the full Hack & Hike demo.
 
 It owns:
 
-- the display,
-- touch input,
+- display,
+- touch,
 - IMU,
 - microphone,
 - speaker,
 - network,
 - camera,
 - brightness,
-- logs,
+- log history,
 - navigation,
-- all stock screen state.
+- all demo screen state.
 
-The stock screens are parts of one application.
+Its screens include Network, IMU, Microphone, Speaker, Camera, Settings, and Log.
 
 ```mermaid
 flowchart TD
-    Stock["app-stock"] --> Nav["Navigation"]
-    Stock --> Network["Network screen"]
-    Stock --> IMU["IMU screen"]
-    Stock --> Mic["Microphone screen"]
-    Stock --> Speaker["Speaker screen"]
-    Stock --> Camera["Camera screen"]
-    Stock --> Settings["Settings screen"]
-    Stock --> Log["Log screen"]
+    Demo["app-demo"] --> Nav["Navigation"]
+    Demo --> Network["Network screen"]
+    Demo --> IMU["IMU screen"]
+    Demo --> Mic["Microphone screen"]
+    Demo --> Speaker["Speaker screen"]
+    Demo --> Camera["Camera screen"]
+    Demo --> Settings["Settings screen"]
+    Demo --> Log["Log screen"]
 ```
 
-Your application does not have to copy this structure.
+Build it:
 
-Start with one file when that is enough.
+```bash
+cargo build --release --no-default-features --features app-demo
+```
+
+This application is useful when you want to see how a larger application owns several views and combines many capabilities.
 
 ---
 
-# Example 1: add a simple IMU application
+# Application 2: IMU Color
 
-This is a complete small example.
-
-The application uses:
-
-- `display`,
-- `imu`.
-
-It paints the screen green when the IMU is running. It paints the screen red while the IMU is not ready.
-
-The files you will touch are:
+Feature:
 
 ```text
-Cargo.toml
-src/applications/mod.rs
-src/applications/imu_color/mod.rs
+app-imu-color
 ```
 
-```mermaid
-flowchart LR
-    Cargo["Cargo feature"] --> Selector["applications/mod.rs"]
-    Selector --> App["applications/imu_color/mod.rs"]
-    IMU["Imu capability"] --> App
-    App --> Display["Display capability"]
-```
-
-## Step 1: add the feature
-
-Open `Cargo.toml`.
-
-Add this next to the other application features:
-
-```toml
-app-imu-color = ["display", "imu"]
-```
-
-This means that selecting `app-imu-color` also enables the display and IMU capabilities.
-
-## Step 2: create the application file
-
-Create:
+Source:
 
 ```text
 src/applications/imu_color/mod.rs
 ```
 
-Put this code in it:
+This is the smallest real graphical example in the repository.
+
+It uses only:
+
+```text
+display
+imu
+```
+
+The application reads the newest IMU sample. It paints the display green while the IMU status is `Running` and red otherwise.
+
+The important shape of the code is:
 
 ```rust
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-
-use crate::{
-    capabilities::{
-        display::{HEIGHT, Region, WIDTH},
-        imu::Status,
-    },
-    firmware::Bootstrap,
-};
-
 pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    // Move the two capability handles out of Bootstrap.
     let Bootstrap {
         mut display,
         mut imu,
@@ -662,19 +654,17 @@ pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
     } = bootstrap;
 
     let full_screen = Region::new(0, 0, WIDTH, HEIGHT);
-    let mut screen_color = 0x0000; // black
+    let mut screen_color = 0x0000;
 
     loop {
-        // Read a new IMU sample if one is available.
         if let Some(sample) = imu.latest() {
             screen_color = if sample.status == Status::Running {
-                0x07E0 // green in RGB565
+                0x07E0
             } else {
-                0xF800 // red in RGB565
+                0xF800
             };
         }
 
-        // Borrow the display only while drawing.
         {
             let mut surface = display.surface(full_screen);
             surface.render_scanlines(|_y, pixels| {
@@ -682,118 +672,54 @@ pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
             });
         }
 
-        // Let other CPU0 work run.
         Timer::after(Duration::from_millis(50)).await;
     }
 }
 ```
 
-There is no HAL code here.
-
-There are no GPIO numbers here.
-
-There are no sensor registers here.
-
-That is the point of the capability API.
-
-## Step 3: register the application
-
-Open:
-
-```text
-src/applications/mod.rs
-```
-
-For one custom application, a concrete version looks like this:
-
-```rust
-//! Build-time application selection.
-
-#[cfg(any(
-    all(feature = "app-stock", feature = "app-idle"),
-    all(feature = "app-stock", feature = "app-imu-color"),
-    all(feature = "app-idle", feature = "app-imu-color"),
-))]
-compile_error!("select exactly one application feature");
-
-#[cfg(feature = "app-stock")]
-mod stock;
-#[cfg(feature = "app-imu-color")]
-mod imu_color;
-
-use embassy_executor::Spawner;
-#[cfg(not(any(feature = "app-stock", feature = "app-imu-color")))]
-use embassy_time::{Duration, Timer};
-
-use crate::firmware::Bootstrap;
-
-#[cfg(feature = "app-stock")]
-pub(crate) async fn run(spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    stock::run(spawner, bootstrap).await
-}
-
-#[cfg(feature = "app-imu-color")]
-pub(crate) async fn run(spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    imu_color::run(spawner, bootstrap).await
-}
-
-#[cfg(not(any(feature = "app-stock", feature = "app-imu-color")))]
-pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    let _bootstrap = bootstrap;
-
-    loop {
-        Timer::after(Duration::from_millis(100)).await;
-    }
-}
-```
-
-The `compile_error!` is important. It stops an invalid build where two applications are selected at the same time.
-
-The fallback keeps capability-only and `app-idle` builds working.
-
-## Step 4: build it
-
-Run:
-
-```bash
-cargo build --release --no-default-features --features app-imu-color
-```
-
-Why `--no-default-features`?
-
-The default build selects `app-stock`. Without this option, Cargo would enable both applications.
-
-## Step 5: follow the data
+Follow the data:
 
 ```mermaid
 flowchart LR
     Sensor["IMU hardware"] --> Runtime["IMU runtime on CPU1"]
     Runtime --> Latest["Imu::latest()"]
-    Latest --> App["imu_color on CPU0"]
+    Latest --> App["app-imu-color"]
     App --> Surface["Display Surface"]
     Surface --> LCD["LCD"]
 ```
 
-That is a complete application.
+Build it:
 
-You can now grow it by adding touch, more views, networking, or audio.
+```bash
+cargo build --release --no-default-features --features app-imu-color
+```
+
+Use this application as the first template for a new small application.
 
 ---
 
-# Example 2: Color Ping
+# Application 3: Color Ping
 
-This example combines several capabilities.
+Feature:
 
-It is still one application.
+```text
+app-color-ping
+```
 
-The application uses:
+Source:
 
-- `display`,
-- `touch`,
-- `network`,
-- `speaker`.
+```text
+src/applications/color_ping/mod.rs
+```
 
-The screen has four color areas:
+This example combines:
+
+- display,
+- touch,
+- network,
+- speaker.
+
+The screen is split into four color bands:
 
 | Color | Tone |
 | --- | ---: |
@@ -805,416 +731,90 @@ The screen has four color areas:
 When you tap a color:
 
 1. this device selects the color,
-2. this device broadcasts a typed `ColorPing` message,
-3. another Hack & Hike device receives the message,
-4. the other device plays a **300 ms sine tone** for that color.
+2. it broadcasts a typed `ColorPing` message,
+3. another device receives the message,
+4. the receiving device plays a **300 ms sine tone** for that color.
 
-The sending device does not play its own broadcast message. The network runtime ignores frames that came from the same physical device.
+The sending device does not receive its own radio frame because the network runtime ignores messages from the local physical device.
 
 ```mermaid
 sequenceDiagram
     participant A as Device A
-    participant Net as ESP-NOW
+    participant Radio as ESP-NOW
     participant B as Device B
     participant Speaker as Device B speaker
 
     A->>A: user taps Blue
-    A->>Net: ColorPing { Blue }
-    Net->>B: broadcast message
+    A->>Radio: ColorPing { Blue }
+    Radio->>B: broadcast
     B->>B: decode ColorPing
-    B->>Speaker: play 1200 Hz for 300 ms
+    B->>Speaker: 1200 Hz sine for 300 ms
 ```
 
-This example shows an important architecture rule:
+### The application owns the message meaning
 
-> The network capability moves bytes. The application decides that a color means a pitch.
-
-## Step 1: add the feature
-
-Add this to `Cargo.toml`:
-
-```toml
-app-color-ping = ["display", "touch", "network", "speaker"]
-```
-
-The `network` feature already enables `serde` and `postcard`, so the application can use typed messages.
-
-## Step 2: create the application file
-
-Create:
-
-```text
-src/applications/color_ping/mod.rs
-```
-
-The full example below fits in one file.
+Color Ping defines its own schema:
 
 ```rust
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use serde::{Deserialize, Serialize};
-
-use crate::{
-    capabilities::{
-        display::{Display, HEIGHT, Region, WIDTH},
-        network::Network,
-        speaker::{self, Speaker},
-        touch::{Touch, TouchEdge},
-    },
-    firmware::Bootstrap,
-};
-
-const TONE_DURATION_MS: u32 = 300;
-const AUDIO_CHUNK_FRAMES: usize = 128;
-const AUDIO_CHUNK_SAMPLES: usize = AUDIO_CHUNK_FRAMES * speaker::CHANNELS;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-enum Color {
-    Red,
-    Green,
-    Blue,
-    Yellow,
-}
-
-impl Color {
-    fn from_x(x: u16) -> Self {
-        let column = usize::from(x) * 4 / WIDTH;
-        match column.min(3) {
-            0 => Self::Red,
-            1 => Self::Green,
-            2 => Self::Blue,
-            _ => Self::Yellow,
-        }
-    }
-
-    fn from_column(x: usize) -> Self {
-        match (x * 4 / WIDTH).min(3) {
-            0 => Self::Red,
-            1 => Self::Green,
-            2 => Self::Blue,
-            _ => Self::Yellow,
-        }
-    }
-
-    fn rgb565(self) -> u16 {
-        match self {
-            Self::Red => 0xF800,
-            Self::Green => 0x07E0,
-            Self::Blue => 0x001F,
-            Self::Yellow => 0xFFE0,
-        }
-    }
-
-    fn frequency_hz(self) -> u32 {
-        match self {
-            Self::Red => 800,
-            Self::Green => 1_000,
-            Self::Blue => 1_200,
-            Self::Yellow => 1_400,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct ColorPing {
     color: Color,
 }
-
-struct TonePlayer {
-    phase: u32,
-    phase_step: u32,
-    frames_left_to_generate: u32,
-    pending: [i16; AUDIO_CHUNK_SAMPLES],
-    pending_frames: usize,
-    pending_offset_frames: usize,
-}
-
-impl TonePlayer {
-    const fn new() -> Self {
-        Self {
-            phase: 0,
-            phase_step: 0,
-            frames_left_to_generate: 0,
-            pending: [0; AUDIO_CHUNK_SAMPLES],
-            pending_frames: 0,
-            pending_offset_frames: 0,
-        }
-    }
-
-    fn start(&mut self, color: Color) {
-        let frequency_hz = color.frequency_hz();
-
-        // One full oscillator turn is the complete u32 range.
-        self.phase = 0;
-        self.phase_step =
-            ((u64::from(frequency_hz) << 32) / u64::from(speaker::SAMPLE_RATE_HZ)) as u32;
-
-        self.frames_left_to_generate =
-            speaker::SAMPLE_RATE_HZ * TONE_DURATION_MS / 1_000;
-
-        // A new ping replaces a tone that was still playing.
-        self.pending_frames = 0;
-        self.pending_offset_frames = 0;
-    }
-
-    fn update(&mut self, speaker: &mut Speaker) {
-        loop {
-            // First finish sending samples that were generated earlier.
-            if self.pending_offset_frames < self.pending_frames {
-                let first_sample = self.pending_offset_frames * speaker::CHANNELS;
-                let last_sample = self.pending_frames * speaker::CHANNELS;
-
-                let written = speaker
-                    .try_write_interleaved(&self.pending[first_sample..last_sample]);
-
-                if written == 0 {
-                    return;
-                }
-
-                self.pending_offset_frames += written;
-
-                if self.pending_offset_frames < self.pending_frames {
-                    return;
-                }
-
-                self.pending_frames = 0;
-                self.pending_offset_frames = 0;
-            }
-
-            if self.frames_left_to_generate == 0 {
-                return;
-            }
-
-            let frames = speaker
-                .available_frames()
-                .min(AUDIO_CHUNK_FRAMES)
-                .min(self.frames_left_to_generate as usize);
-
-            if frames == 0 {
-                return;
-            }
-
-            // Generate one small piece of the sine tone.
-            let mut phase = self.phase;
-            let phase_step = self.phase_step;
-
-            for frame in self.pending[..frames * speaker::CHANNELS]
-                .chunks_exact_mut(speaker::CHANNELS)
-            {
-                let sample = sine_sample(phase);
-                phase = phase.wrapping_add(phase_step);
-                frame.fill(sample);
-            }
-
-            self.phase = phase;
-            self.frames_left_to_generate -= frames as u32;
-            self.pending_frames = frames;
-            self.pending_offset_frames = 0;
-        }
-    }
-}
-
-// A small sine lookup table keeps this example no_std and avoids floating point
-// trigonometry in the application loop. The output is reduced to a safe level.
-fn sine_sample(phase: u32) -> i16 {
-    const SINE: [i16; 32] = [
-        0, 6393, 12539, 18204, 23170, 27245, 30273, 32137,
-        32767, 32137, 30273, 27245, 23170, 18204, 12539, 6393,
-        0, -6393, -12539, -18204, -23170, -27245, -30273, -32137,
-        -32767, -32137, -30273, -27245, -23170, -18204, -12539, -6393,
-    ];
-
-    let index = (phase >> 27) as usize;
-    SINE[index] / 6
-}
-
-fn draw(display: &mut Display, selected: Color) {
-    let full_screen = Region::new(0, 0, WIDTH, HEIGHT);
-    let mut surface = display.surface(full_screen);
-
-    surface.render_scanlines(|y, pixels| {
-        for (x, pixel) in pixels.iter_mut().enumerate() {
-            let color = Color::from_column(x);
-
-            // Draw four vertical color areas.
-            *pixel = color.rgb565();
-
-            // Show the current selection with a white bar at the bottom.
-            if color == selected && y >= HEIGHT - 12 {
-                *pixel = 0xFFFF;
-            }
-        }
-    });
-}
-
-fn handle_touch(
-    touch: &mut Touch,
-    network: &mut Network,
-    selected: &mut Color,
-    redraw: &mut bool,
-) {
-    while let Some(edge) = touch.next_edge() {
-        if let TouchEdge::Pressed(point) = edge {
-            *selected = Color::from_x(point.x);
-            *redraw = true;
-
-            let ping = ColorPing { color: *selected };
-
-            // None means broadcast to all devices listening on this network.
-            if network.send(None, &ping).is_err() {
-                log::warn!("Color Ping send queue is full");
-            }
-        }
-    }
-}
-
-fn handle_network(network: &mut Network, tone: &mut TonePlayer) {
-    while let Some(message) = network.receive() {
-        match message.decode::<ColorPing>() {
-            Ok(ping) => tone.start(ping.color),
-            Err(_) => log::warn!("Received a network message with another schema"),
-        }
-    }
-}
-
-pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    let Bootstrap {
-        mut display,
-        mut touch,
-        mut network,
-        mut speaker,
-        ..
-    } = bootstrap;
-
-    let mut selected = Color::Red;
-    let mut redraw = true;
-    let mut tone = TonePlayer::new();
-
-    loop {
-        handle_touch(
-            &mut touch,
-            &mut network,
-            &mut selected,
-            &mut redraw,
-        );
-
-        // A received ping starts a tone on this device.
-        handle_network(&mut network, &mut tone);
-
-        // Keep the nonblocking speaker queue fed with small chunks.
-        tone.update(&mut speaker);
-
-        if redraw {
-            draw(&mut display, selected);
-            redraw = false;
-        }
-
-        Timer::after(Duration::from_millis(5)).await;
-    }
-}
 ```
 
-## What the Color Ping code is doing
+The network capability does not know about colors or pitches.
 
-The file has four small jobs.
+It only knows how to move typed application messages.
 
-### 1. `Color` is application state
+### Touch sends a ping
 
-`Color` belongs to the application because the hardware does not care about red, green, blue, or yellow.
-
-The application maps each color to:
-
-- a display color,
-- a pitch.
+A press chooses one of four parts of the screen.
 
 ```mermaid
 flowchart LR
-    Color["Color"] --> Pixel["RGB565 value"]
-    Color --> Pitch["Tone frequency"]
+    Touch["Touch press"] --> Color["Choose color"]
+    Color --> Draw["Update selection"]
+    Color --> Send["Network broadcast"]
 ```
 
-### 2. `ColorPing` is the network message
-
-The message is tiny:
+The broadcast call is:
 
 ```rust
-struct ColorPing {
-    color: Color,
+network.send(None, &ColorPing { color: selected })
+```
+
+Again, `None` means broadcast.
+
+### A received ping starts audio
+
+The receiving side does:
+
+```rust
+while let Some(message) = network.receive() {
+    if let Ok(ping) = message.decode::<ColorPing>() {
+        tone.start(ping.color);
+    }
 }
 ```
 
-The network capability serializes it with postcard and sends it over ESP-NOW.
+`TonePlayer` maps the color to a frequency and generates 300 ms of stereo sine-wave PCM.
 
-The capability still does not know what a color means.
-
-### 3. Touch sends the ping
-
-A press selects one quarter of the 320-pixel screen.
+The speaker queue is nonblocking, so the application does not create one giant audio write. It generates and writes small chunks while the main loop continues to handle touch and network input.
 
 ```mermaid
 flowchart LR
-    Touch["Touch press"] --> X["point.x"]
-    X --> Color["Select color"]
-    Color --> Draw["Redraw UI"]
-    Color --> Send["Broadcast ColorPing"]
+    Ping["Received ColorPing"] --> Tone["TonePlayer state"]
+    Tone --> Chunk["Small PCM chunk"]
+    Chunk --> Queue["Speaker queue"]
+    Queue --> Runtime["CPU1 audio runtime"]
+    Runtime --> Physical["Speaker"]
 ```
 
-### 4. A received ping starts the tone
+This is a useful embedded pattern:
 
-The other device decodes the message and calls:
+> Keep long actions as state, then advance them a little on every loop.
 
-```rust
-tone.start(ping.color);
-```
-
-The tone is not written as one huge audio buffer.
-
-The speaker capability has a small nonblocking queue, so the application feeds it in small pieces.
-
-```mermaid
-flowchart LR
-    Ping["Received ColorPing"] --> Start["TonePlayer::start"]
-    Start --> Generate["Generate small PCM chunk"]
-    Generate --> Queue["Speaker queue"]
-    Queue --> CPU1["Audio runtime on CPU1"]
-    CPU1 --> Speaker["Physical speaker"]
-```
-
-This is a useful pattern for embedded applications:
-
-> Keep long actions as small pieces of state, then advance them a little on every loop.
-
-That keeps touch, network, drawing, and audio responsive at the same time.
-
-## Step 3: register Color Ping
-
-If you are adding **Color Ping instead of the IMU example**, use the same selector pattern but replace `app-imu-color` with `app-color-ping` and `imu_color` with `color_ping`.
-
-The important additions are:
-
-```rust
-#[cfg(feature = "app-color-ping")]
-mod color_ping;
-
-#[cfg(feature = "app-color-ping")]
-pub(crate) async fn run(spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    color_ping::run(spawner, bootstrap).await
-}
-```
-
-The idle fallback condition must also include the new application:
-
-```rust
-#[cfg(not(any(feature = "app-stock", feature = "app-color-ping")))]
-```
-
-And the compile-time check must reject combinations such as `app-stock + app-color-ping` and `app-idle + app-color-ping`.
-
-If you keep **both tutorial applications** in your source tree, list both application features in the selector and keep them mutually exclusive. Only one is selected in a build.
-
-## Step 4: build Color Ping
-
-Run:
+Build Color Ping:
 
 ```bash
 cargo build --release --no-default-features --features app-color-ping
@@ -1222,54 +822,165 @@ cargo build --release --no-default-features --features app-color-ping
 
 Flash the same build to at least two devices.
 
-Both devices use the same default ESP-NOW channel.
-
-## Step 5: test with two devices
-
 A simple test is:
 
 1. Power both devices.
-2. Wait until they have discovered each other.
-3. Tap the blue area on Device A.
-4. Device A keeps blue selected on its screen.
-5. Device B receives `ColorPing { Blue }`.
-6. Device B plays a 1200 Hz sine tone for about 300 ms.
-7. Tap yellow on Device B.
-8. Device A should now play the 1400 Hz tone.
+2. Wait for ESP-NOW discovery.
+3. Tap Blue on Device A.
+4. Device B should play 1200 Hz for about 300 ms.
+5. Tap Yellow on Device B.
+6. Device A should play 1400 Hz for about 300 ms.
 
-```mermaid
-flowchart LR
-    TapA["Tap color on A"] --> SendA["A broadcasts ping"]
-    SendA --> ReceiveB["B receives ping"]
-    ReceiveB --> ToneB["B plays 300 ms tone"]
+---
 
-    TapB["Tap color on B"] --> SendB["B broadcasts ping"]
-    SendB --> ReceiveA["A receives ping"]
-    ReceiveA --> ToneA["A plays 300 ms tone"]
+# Create your own application
+
+The easiest way to create an application is to copy the structure of `imu_color` or `color_ping`.
+
+Assume you want a new application called **My Hack**.
+
+Its feature will be:
+
+```text
+app-my-hack
 ```
 
-## Why this example belongs in one application
+Its module will be:
 
-It may be tempting to put the color/pitch mapping inside the network capability or speaker capability.
+```text
+src/applications/my_hack/mod.rs
+```
 
-Do not do that.
+## Step 1: choose only the capabilities you need
 
-These parts are application behavior:
+Suppose My Hack needs display, touch, and IMU.
 
-- color buttons,
-- color selection,
-- `ColorPing`,
-- the color-to-pitch mapping,
-- the rule that receiving a ping plays a sound.
+Add this to `Cargo.toml`:
 
-The capabilities stay generic:
+```toml
+app-my-hack = ["display", "touch", "imu"]
+```
 
-- touch reports touches,
-- network moves typed application messages,
-- speaker accepts PCM samples,
-- display draws pixels.
+If it needs the shared GUI helpers, use `ui` instead of `display`:
 
-That is exactly the boundary this architecture is trying to keep.
+```toml
+app-my-hack = ["ui", "touch", "imu"]
+```
+
+## Step 2: create the module
+
+Create:
+
+```text
+src/applications/my_hack/mod.rs
+```
+
+Start small:
+
+```rust
+use embassy_executor::Spawner;
+use embassy_time::{Duration, Timer};
+
+use crate::firmware::Bootstrap;
+
+pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
+    let Bootstrap {
+        mut display,
+        mut touch,
+        mut imu,
+        ..
+    } = bootstrap;
+
+    loop {
+        // Read input.
+        // Update your application state.
+        // Draw when needed.
+
+        Timer::after(Duration::from_millis(10)).await;
+    }
+}
+```
+
+The compiler will tell you if a field does not exist because you forgot to enable its capability feature.
+
+## Step 3: register the module
+
+Open:
+
+```text
+src/applications/mod.rs
+```
+
+Add:
+
+```rust
+#[cfg(feature = "app-my-hack")]
+mod my_hack;
+```
+
+Add the run branch:
+
+```rust
+#[cfg(feature = "app-my-hack")]
+pub(crate) async fn run(spawner: Spawner, bootstrap: Bootstrap) -> ! {
+    my_hack::run(spawner, bootstrap).await
+}
+```
+
+Then add `app-my-hack` to the conditions that:
+
+- reject selecting two applications at once,
+- decide when the idle fallback should compile,
+- decide when the idle `Timer` import should compile.
+
+The selector is intentionally explicit. There is no application registry or framework trait hidden behind it.
+
+## Step 4: add it to CI
+
+Open:
+
+```text
+.github/workflows/firmware-build.yml
+```
+
+Add your feature to the real-application loop:
+
+```bash
+for app in app-demo app-imu-color app-color-ping app-my-hack
+```
+
+CI builds each real application with:
+
+```text
+-D warnings
+```
+
+That catches broken feature combinations early.
+
+## Step 5: build only your app
+
+```bash
+cargo build --release --no-default-features --features app-my-hack
+```
+
+## Step 6: keep application behavior in the application
+
+Good application code includes things such as:
+
+- screen state,
+- navigation,
+- message types,
+- color choices,
+- game rules,
+- timers,
+- mapping sensor values to visuals,
+- mapping messages to sounds.
+
+Do not put these rules in hardware capabilities.
+
+A useful test is:
+
+> If the hardware capability could still make sense in a completely different product, the boundary is probably good.
 
 ---
 
@@ -1277,7 +988,7 @@ That is exactly the boundary this architecture is trying to keep.
 
 A screen is just application code.
 
-You do not need a framework trait.
+You do not need a screen framework.
 
 A simple application can use an enum:
 
@@ -1289,13 +1000,13 @@ enum View {
 }
 ```
 
-Then store the active view:
+Store the active screen:
 
 ```rust
 let mut view = View::Dashboard;
 ```
 
-And render with a `match`:
+Render it with a `match`:
 
 ```rust
 match view {
@@ -1305,9 +1016,9 @@ match view {
 }
 ```
 
-Touch decides when the enum changes.
+Touch input can change the enum.
 
-The display capability does not know what a screen is.
+The touch capability does not know what a screen or button is.
 
 ---
 
@@ -1317,13 +1028,13 @@ An application can spawn extra CPU0 tasks if that makes the code clearer.
 
 But start with one loop.
 
-The Color Ping example is intentionally one loop because touch, networking, audio generation, and drawing can all be advanced quickly without blocking.
+Color Ping is intentionally one loop. Touch, networking, audio generation, and drawing can all move forward in small steps without blocking.
 
-A separate task becomes useful when some behavior has a truly independent loop.
+A separate task is useful when some behavior has a truly independent loop.
 
 ### CPU0 tasks are cooperative
 
-A CPU0 task gets a chance to run when another task reaches `.await`.
+CPU0 async work gets a chance to switch at `.await` points.
 
 Good:
 
@@ -1371,7 +1082,7 @@ app-sensor-node = ["imu", "network"]
 
 It can read IMU samples and send messages without drawing anything.
 
-The existing idle application can also be combined with capabilities for composition checks:
+The repository also keeps `app-idle` for feature-composition checks:
 
 ```bash
 cargo build --release --no-default-features --features app-idle,imu,network
@@ -1388,7 +1099,7 @@ The CoreS3 Lite also has PSRAM. This project uses it for large long-lived data s
 - GUI framebuffers,
 - camera frame buffers,
 - microphone history,
-- log history.
+- demo log history.
 
 ### Avoid huge local arrays
 
@@ -1400,9 +1111,9 @@ Do not put that on a normal task stack:
 let frame = [0u8; 320 * 240 * 2];
 ```
 
-Use the existing PSRAM patterns when you need large storage.
+Use existing PSRAM patterns when you need large storage.
 
-Small fixed arrays are fine. The Color Ping example uses only a 128-frame audio chunk.
+Small fixed arrays are fine. Color Ping uses a small 128-frame audio chunk.
 
 ---
 
@@ -1433,58 +1144,52 @@ If you make a camera application, reuse the existing `Camera`, `Frame`, and `Sur
 
 ### Putting application behavior in a capability
 
-Avoid code like:
+Avoid files such as:
 
 ```text
 capabilities/network/color_ping.rs
 capabilities/speaker/color_to_pitch.rs
 ```
 
-Those are application rules, so they belong in the application.
+Those rules describe an application, not generic hardware access.
 
 ### Accessing HAL hardware from an application
 
 If your application imports raw ESP HAL peripherals, DMA channels, or board register code, check the design first.
 
-Usually the capability should provide the operation you need.
+Usually a capability should provide the operation you need.
+
+### Adding a framework too early
+
+You do not need an `Application` trait because several applications have a `run` function.
+
+You do not need a generic `View` trait because several screens can draw.
+
+Prefer normal structs, enums, functions, and `match` until real duplication proves a shared abstraction is useful.
 
 ### Forgetting `--no-default-features`
 
-Use:
+When building a non-default application:
 
 ```bash
 cargo build --release --no-default-features --features app-color-ping
 ```
 
-The default feature selects `app-stock`.
+The default build enables `app-demo`.
 
-### Selecting two applications
+### Never yielding in an async loop
 
-A firmware build should contain one application.
-
-Keep the compile-time check in `src/applications/mod.rs` up to date when you add an application feature.
-
-### Never yielding
-
-Every long-running CPU0 loop needs regular `.await` points.
-
-### Blocking while writing audio
-
-The speaker API is nonblocking.
-
-Do not wait in a tight loop until all audio is accepted.
-
-Keep pending samples as state and continue on the next application loop, like `TonePlayer` does in the Color Ping example.
+A CPU0 loop that never reaches `.await` can stop other CPU0 tasks from running.
 
 ### Sharing one hardware handle everywhere
 
 Start with one clear owner.
 
-If several screens need the same information, share application state instead of sharing the hardware handle unless there is a strong reason not to.
+If several parts of your application need the same information, share application state where possible instead of sharing the hardware handle itself.
 
 ### Putting large data on the stack
 
-Keep large framebuffers and histories out of local stack variables.
+Keep large framebuffers and histories out of local task-stack variables.
 
 ---
 
@@ -1493,15 +1198,14 @@ Keep large framebuffers and histories out of local stack variables.
 | I want to... | Put it in... |
 | --- | --- |
 | Create a new device experience | `src/applications/my_app/` |
-| Add a screen to the stock firmware | `src/applications/stock/views/` |
-| Change stock navigation | `src/applications/stock/navigation.rs` |
-| Define a message only my app understands | my application |
-| Map a color to a sound | my application |
+| Change the full demo | `src/applications/demo/` |
+| Add a demo screen | `src/applications/demo/views/` |
+| Change demo navigation | `src/applications/demo/navigation.rs` |
 | Add a reusable drawing helper | `src/ui/` |
-| Expose a new hardware operation | the matching `src/capabilities/...` module |
-| Change sensor register setup | the matching capability |
-| Change board pins, resets, or power wiring | `src/platform/` |
-| Change how capabilities are wired at boot | `src/firmware/` |
+| Expose a new useful hardware operation | matching `src/capabilities/.../` module |
+| Change sensor register setup | matching capability |
+| Change board pins or power wiring | `src/platform/` |
+| Change capability startup wiring | `src/firmware/` |
 | Add logging or memory support | `src/support/` |
 
 A useful rule is:
@@ -1514,26 +1218,28 @@ A useful rule is:
 
 ## Suggested reading order
 
-If this is your first time in the repository, read in this order:
+If this is your first time in the repository, do not start with low-level drivers.
+
+Read in this order:
 
 1. `src/main.rs`
-2. this README
-3. `src/applications/mod.rs`
-4. one of the two tutorial applications above
-5. `src/applications/stock/mod.rs`
-6. `Cargo.toml`
-7. one small capability API, such as `src/capabilities/imu/mod.rs`
+2. `src/applications/mod.rs`
+3. `src/applications/imu_color/mod.rs`
+4. `src/applications/color_ping/mod.rs`
+5. `Cargo.toml`
+6. `src/applications/demo/mod.rs`
+7. one capability API such as `src/capabilities/imu/mod.rs`
 8. `src/capabilities/display/mod.rs`
 9. `src/firmware/bootstrap.rs`
 10. low-level drivers only when you need them
 
 ```mermaid
 flowchart LR
-    A["main.rs"] --> B["applications/mod.rs"]
-    B --> C["your application"]
-    C --> D["capability API"]
-    D --> E["firmware/bootstrap.rs"]
-    E --> F["hardware details"]
+    Main["main.rs"] --> Selector["applications/mod.rs"]
+    Selector --> Small["small example app"]
+    Small --> Cap["capability API"]
+    Cap --> Boot["firmware/bootstrap.rs"]
+    Boot --> Driver["hardware details"]
 ```
 
 ---
@@ -1544,13 +1250,17 @@ flowchart LR
 
 The top-level firmware behavior selected for a build.
 
+Examples: Demo, IMU Color, Color Ping.
+
 ### Capability
 
 A focused hardware/runtime API used by an application.
 
+Examples: `Imu`, `Display`, `Network`, `Speaker`.
+
 ### Handle
 
-A Rust value that gives the application access to a capability.
+A Rust value that gives an application access to a capability.
 
 ### View / screen
 
@@ -1558,7 +1268,7 @@ One visual part of an application.
 
 ### Cargo feature
 
-A compile-time switch that selects capabilities and applications.
+A compile-time switch used to select capabilities and applications.
 
 ### Ownership
 
@@ -1570,7 +1280,7 @@ Temporary access to a value without taking ownership.
 
 ### `Option<T>`
 
-A value that is either `Some(value)` or `None`.
+A value that may be `Some(value)` or `None`.
 
 ### Async task
 
@@ -1586,15 +1296,11 @@ The CPU core used for timing-sensitive capability runtime work such as sensors, 
 
 ### PSRAM
 
-Extra external RAM used for large data such as framebuffers and histories.
+External RAM used for large data such as framebuffers and histories.
 
 ### RGB565
 
-A 16-bit pixel format used by the display and camera.
-
-### PCM
-
-Raw audio samples. The speaker capability accepts signed 16-bit stereo PCM.
+The 16-bit pixel format used by the display and camera.
 
 ---
 
@@ -1604,7 +1310,7 @@ Raw audio samples. The speaker capability accepts signed 16-bit stereo PCM.
 2. **Applications own the capability handles they use.**
 3. **Capabilities hide hardware details.**
 4. **Screens and navigation belong to the application.**
-5. **Message schemas belong to the application that understands them.**
+5. **Application message schemas belong to the application.**
 6. **Shared UI code should stay reusable.**
 7. **Application code should not touch HAL peripherals directly.**
 8. **Keep ownership clear instead of adding global shared objects.**
@@ -1612,67 +1318,10 @@ Raw audio samples. The speaker capability accepts signed 16-bit stereo PCM.
 10. **Keep large buffers off the stack.**
 11. **Prefer simple Rust over a framework until a framework is truly needed.**
 
-The test for a good boundary is simple:
+When you are unsure where code belongs, ask two questions:
 
-> You should normally be able to add a new application without changing a capability.
-
-If you need a new hardware operation, improve the capability API.
-
-If you only need new behavior, keep the change in the application.
-
----
-
-## A final mental model
-
-```mermaid
-flowchart TB
-    subgraph AppLayer["Application layer"]
-        App["One selected application"]
-        Views["Views"]
-        State["State and behavior"]
-        Messages["Application message schemas"]
-        App --> Views
-        App --> State
-        App --> Messages
-    end
-
-    subgraph CapLayer["Capability layer"]
-        Display["Display"]
-        Touch["Touch"]
-        IMU["IMU"]
-        Mic["Microphone"]
-        Speaker["Speaker"]
-        Network["Network"]
-        Camera["Camera"]
-    end
-
-    subgraph HardwareLayer["Hardware and runtime"]
-        HAL["ESP HAL, DMA, I2C, radio, CPU1 tasks, board wiring"]
-    end
-
-    App --> Display
-    App --> Touch
-    App --> IMU
-    App --> Mic
-    App --> Speaker
-    App --> Network
-    App --> Camera
-
-    Display --> HAL
-    Touch --> HAL
-    IMU --> HAL
-    Mic --> HAL
-    Speaker --> HAL
-    Network --> HAL
-    Camera --> HAL
-```
-
-The application answers:
-
-> **What should this device do?**
-
-The capabilities answer:
-
-> **How do I use this piece of hardware safely?**
+> **What should this device do?** → application
+>
+> **How do I use this hardware safely?** → capability
 
 Keeping those two questions separate is the core of the architecture.

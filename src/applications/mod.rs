@@ -4,29 +4,60 @@
 //! to combine them. Applications may be graphical or headless: omitting the
 //! `display` capability is sufficient for a headless application.
 //!
-//! `app-stock` selects the normal Hack & Hike firmware. `app-idle` is a minimal
+//! `app-demo` selects the normal Hack & Hike demo firmware. `app-imu-color` and
+//! `app-color-ping` are small example applications. `app-idle` is a minimal
 //! headless application useful for capability-only builds. If no application
-//! feature is selected, the same idle application is used as a fallback so each
-//! hardware capability can still be compiled independently.
+//! feature is selected, the same idle behavior is used as a fallback.
 
-#[cfg(all(feature = "app-stock", feature = "app-idle"))]
-compile_error!("select exactly one application feature: `app-stock` or `app-idle`");
+#[cfg(any(
+    all(feature = "app-demo", feature = "app-idle"),
+    all(feature = "app-demo", feature = "app-imu-color"),
+    all(feature = "app-demo", feature = "app-color-ping"),
+    all(feature = "app-idle", feature = "app-imu-color"),
+    all(feature = "app-idle", feature = "app-color-ping"),
+    all(feature = "app-imu-color", feature = "app-color-ping"),
+))]
+compile_error!(
+    "select exactly one application feature: `app-demo`, `app-imu-color`, `app-color-ping`, or `app-idle`"
+);
 
-#[cfg(feature = "app-stock")]
-mod stock;
+#[cfg(feature = "app-demo")]
+mod demo;
+#[cfg(feature = "app-imu-color")]
+mod imu_color;
+#[cfg(feature = "app-color-ping")]
+mod color_ping;
 
 use embassy_executor::Spawner;
-#[cfg(not(feature = "app-stock"))]
+#[cfg(not(any(
+    feature = "app-demo",
+    feature = "app-imu-color",
+    feature = "app-color-ping",
+)))]
 use embassy_time::{Duration, Timer};
 
 use crate::firmware::Bootstrap;
 
-#[cfg(feature = "app-stock")]
+#[cfg(feature = "app-demo")]
 pub(crate) async fn run(spawner: Spawner, bootstrap: Bootstrap) -> ! {
-    stock::run(spawner, bootstrap).await
+    demo::run(spawner, bootstrap).await
 }
 
-#[cfg(not(feature = "app-stock"))]
+#[cfg(feature = "app-imu-color")]
+pub(crate) async fn run(spawner: Spawner, bootstrap: Bootstrap) -> ! {
+    imu_color::run(spawner, bootstrap).await
+}
+
+#[cfg(feature = "app-color-ping")]
+pub(crate) async fn run(spawner: Spawner, bootstrap: Bootstrap) -> ! {
+    color_ping::run(spawner, bootstrap).await
+}
+
+#[cfg(not(any(
+    feature = "app-demo",
+    feature = "app-imu-color",
+    feature = "app-color-ping",
+)))]
 pub(crate) async fn run(_spawner: Spawner, bootstrap: Bootstrap) -> ! {
     // Keep ownership of every enabled application-facing endpoint. CPU1
     // capability runtimes continue running even though this application does no

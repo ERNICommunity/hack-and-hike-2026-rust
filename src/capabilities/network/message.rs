@@ -29,7 +29,9 @@ pub(super) fn serialize_payload<T: Serialize>(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IncomingMessage {
+    #[allow(dead_code, reason = "field is part of the typed network message capability contract")]
     pub(crate) sender: DeviceId,
+    #[allow(dead_code, reason = "field is part of the typed network message capability contract")]
     pub(crate) recipient: Option<DeviceId>,
     payload: ArrayVec<u8, MAX_PAYLOAD>,
 }

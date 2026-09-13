@@ -4,7 +4,7 @@ mod stack;
 #[cfg(any(feature = "ui", feature = "mic", feature = "camera"))]
 pub(crate) mod storage;
 
-#[cfg(feature = "app-stock")]
+#[cfg(feature = "app-demo")]
 pub(crate) use monitor::HeapMonitor;
 pub(crate) use monitor::report;
 pub(crate) use psram::enable as enable_psram;

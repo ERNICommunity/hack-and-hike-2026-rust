@@ -9,11 +9,11 @@ use core::sync::atomic::{AtomicU32, Ordering};
 static TOUCH_READ_ERRORS: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "touch")]
 static TOUCH_EDGE_DROPS: AtomicU32 = AtomicU32::new(0);
-#[cfg(any(feature = "mic", feature = "speaker"))]
+#[cfg(feature = "mic")]
 static AUDIO_CAPTURE_ERRORS: AtomicU32 = AtomicU32::new(0);
 #[cfg(any(feature = "mic", feature = "speaker"))]
 static AUDIO_PLAYBACK_ERRORS: AtomicU32 = AtomicU32::new(0);
-#[cfg(any(feature = "mic", feature = "speaker"))]
+#[cfg(feature = "mic")]
 static AUDIO_FULL_DRAINS: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "network")]
 static NETWORK_INIT_ERRORS: AtomicU32 = AtomicU32::new(0);
@@ -28,7 +28,7 @@ static NETWORK_RX_INVALID: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "network")]
 static NETWORK_PEER_EVICTIONS: AtomicU32 = AtomicU32::new(0);
 
-#[cfg(feature = "app-stock")]
+#[cfg(feature = "app-demo")]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RuntimeCounters {
     pub(crate) touch_read_errors: u32,
@@ -57,7 +57,7 @@ pub(crate) fn record_touch_edge_drop() {
     TOUCH_EDGE_DROPS.fetch_add(1, Ordering::Relaxed);
 }
 
-#[cfg(any(feature = "mic", feature = "speaker"))]
+#[cfg(feature = "mic")]
 pub(crate) fn record_audio_capture_error() {
     AUDIO_CAPTURE_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
@@ -67,7 +67,7 @@ pub(crate) fn record_audio_playback_error() {
     AUDIO_PLAYBACK_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
-#[cfg(any(feature = "mic", feature = "speaker"))]
+#[cfg(feature = "mic")]
 pub(crate) fn record_audio_full_drain() {
     AUDIO_FULL_DRAINS.fetch_add(1, Ordering::Relaxed);
 }
@@ -102,7 +102,7 @@ pub(crate) fn record_network_peer_eviction() {
     NETWORK_PEER_EVICTIONS.fetch_add(1, Ordering::Relaxed);
 }
 
-#[cfg(feature = "app-stock")]
+#[cfg(feature = "app-demo")]
 pub(crate) fn snapshot() -> RuntimeCounters {
     RuntimeCounters {
         touch_read_errors: TOUCH_READ_ERRORS.load(Ordering::Relaxed),
