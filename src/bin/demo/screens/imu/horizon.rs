@@ -226,7 +226,6 @@ pub(super) fn draw_attitude(frame: &mut GuiFramebuffer, area: Rect, attitude: Di
 
     draw_perspective_world(frame, area, camera);
 
-    common::outline(frame, area, theme::LIGHT_GRAY);
     let cx = x0 + center_x;
     let cy = y0 + center_y;
     let arm = CROSSHAIR_ARM_LENGTH as i32;
@@ -354,10 +353,10 @@ fn draw_clipped_line(
     end: (i32, i32),
     plane: Plane,
 ) {
-    let min_x = 2;
-    let max_x = area.w as i32 - 3;
-    let min_y = 2;
-    let max_y = area.h as i32 - 3;
+    let min_x = 0;
+    let max_x = area.w as i32 - 1;
+    let min_y = 0;
+    let max_y = area.h as i32 - 1;
     if let Some((start, end)) = clip_line(start, end, min_x, max_x, min_y, max_y) {
         draw_line_pixels(frame, area, camera, start, end, plane);
     }

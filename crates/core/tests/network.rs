@@ -5,11 +5,31 @@ use serde::{Deserialize, Serialize};
 use hack_and_hike_core::network::{
     message::{IncomingMessage, SendError, serialize_payload},
     protocol::{self, DecodedFrame, DeviceId, MAX_PAYLOAD, MacAddress, RssiDbm},
-    state::{Channel, MAX_PEERS, NetworkState, QueueCounters, Status},
+    state::{Channel, Heard, MAX_PEERS, NetworkState, QueueCounters, Status},
 };
 
 fn id(bytes: [u8; 6]) -> DeviceId {
     DeviceId::try_from(bytes).unwrap()
+}
+
+/// A beacon, which carries the sender's uptime.
+fn beacon_from(device_id: DeviceId, mac: MacAddress, uptime_ms: u32) -> Heard {
+    Heard {
+        device_id,
+        mac,
+        rssi_dbm: RssiDbm(-42),
+        uptime_ms: Some(uptime_ms),
+    }
+}
+
+/// An application message, which says nothing about uptime.
+fn message_from(device_id: DeviceId, mac: MacAddress) -> Heard {
+    Heard {
+        device_id,
+        mac,
+        rssi_dbm: RssiDbm(-50),
+        uptime_ms: None,
+    }
 }
 
 fn state() -> NetworkState {
@@ -95,7 +115,7 @@ fn peer_state_tracks_routes_age_and_expiry() {
     let mac = MacAddress([10, 11, 12, 13, 14, 15]);
     let mut state = state();
 
-    let received = state.record_receive(peer, mac, RssiDbm(-42), 1000);
+    let received = state.record_receive(beacon_from(peer, mac, 60_000), 1000);
     assert!(received.is_new);
     assert!(received.evicted.is_none());
     assert_eq!(state.route_for(peer), Some(mac));
@@ -107,12 +127,25 @@ fn peer_state_tracks_routes_age_and_expiry() {
     assert_eq!(peer_snapshot.rssi_dbm, -42);
     assert_eq!(peer_snapshot.age_ms, 200);
     assert_eq!(peer_snapshot.expires_in_ms, 300);
+    // Uptime keeps counting between beacons.
+    assert_eq!(peer_snapshot.uptime_ms, Some(60_200));
 
-    assert!(state.expire_peers(1500).is_empty());
-    let expired = state.expire_peers(1501);
+    // An application message refreshes the peer but knows no uptime.
+    state.record_receive(message_from(peer, mac), 1300);
+    let peer_snapshot = *state
+        .snapshot(1300, QueueCounters::default())
+        .peers()
+        .next()
+        .unwrap();
+    assert_eq!(peer_snapshot.rssi_dbm, -50);
+    assert_eq!(peer_snapshot.uptime_ms, Some(60_000));
+
+    // The peer was last heard at 1300 and the timeout is 500 ms.
+    assert!(state.expire_peers(1800).is_empty());
+    let expired = state.expire_peers(1801);
     assert_eq!(expired.as_slice(), &[mac]);
     assert_eq!(state.route_for(peer), None);
-    let snapshot = state.snapshot(1501, QueueCounters::default());
+    let snapshot = state.snapshot(1801, QueueCounters::default());
     assert_eq!(snapshot.status, Status::Ready);
     assert_eq!(snapshot.peer_count(), 0);
 }
@@ -125,14 +158,14 @@ fn full_peer_table_evicts_the_longest_unseen_peer() {
 
     for n in 0..MAX_PEERS {
         let n = u8::try_from(n).unwrap();
-        let received =
-            state.record_receive(peer_id(n), peer_mac(n), RssiDbm(-50), 1000 + u64::from(n));
+        let heard = message_from(peer_id(n), peer_mac(n));
+        let received = state.record_receive(heard, 1000 + u64::from(n));
         assert!(received.is_new);
         assert!(received.evicted.is_none());
     }
 
     let newcomer = u8::try_from(MAX_PEERS).unwrap();
-    let received = state.record_receive(peer_id(newcomer), peer_mac(newcomer), RssiDbm(-50), 2000);
+    let received = state.record_receive(message_from(peer_id(newcomer), peer_mac(newcomer)), 2000);
     assert!(received.is_new);
     assert_eq!(received.evicted, Some(peer_mac(0)));
     assert_eq!(state.route_for(peer_id(0)), None);

@@ -1,5 +1,5 @@
 screen id="Network" width=276 height=240 {
-    grid cols="1fr" rows="18px 56px 1fr" gap=6 padding=8 {
+    grid cols="1fr" rows="18px 71px 1fr" gap=6 padding=8 {
         label id="title" text="NETWORK" col=0 row=0 style="crate::styles::title()"
         label id="summary" text="" col=0 row=1
         label id="peers" text="" col=0 row=2

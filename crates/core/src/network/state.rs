@@ -57,6 +57,9 @@ pub struct Peer {
     pub age_ms: u32,
     /// Time until the peer is forgotten if it stays silent.
     pub expires_in_ms: u32,
+    /// How long the peer has been running, from the uptime in its last
+    /// beacon plus the time since. `None` until its first beacon arrives.
+    pub uptime_ms: Option<u32>,
 }
 
 /// Peer table and counters as published by CPU1.
@@ -97,6 +100,17 @@ struct PeerState {
     mac: MacAddress,
     rssi_dbm: RssiDbm,
     last_seen_ms: u64,
+    uptime_ms: Option<u32>,
+}
+
+/// What one received frame says about the device that sent it.
+#[derive(Clone, Copy, Debug)]
+pub struct Heard {
+    pub device_id: DeviceId,
+    pub mac: MacAddress,
+    pub rssi_dbm: RssiDbm,
+    /// Uptime carried by a beacon; `None` for application messages.
+    pub uptime_ms: Option<u32>,
 }
 
 /// What happened to the peer table when a frame arrived.
@@ -196,13 +210,7 @@ impl NetworkState {
             .map(|peer| peer.mac)
     }
 
-    pub fn record_receive(
-        &mut self,
-        device_id: DeviceId,
-        mac: MacAddress,
-        rssi_dbm: RssiDbm,
-        now_ms: u64,
-    ) -> Received {
+    pub fn record_receive(&mut self, heard: Heard, now_ms: u64) -> Received {
         self.rx_packets = self.rx_packets.wrapping_add(1);
         self.bump_revision();
 
@@ -210,11 +218,14 @@ impl NetworkState {
             .peers
             .iter_mut()
             .flatten()
-            .find(|peer| peer.device_id == device_id)
+            .find(|peer| peer.device_id == heard.device_id)
         {
-            peer.mac = mac;
-            peer.rssi_dbm = rssi_dbm;
+            peer.mac = heard.mac;
+            peer.rssi_dbm = heard.rssi_dbm;
             peer.last_seen_ms = now_ms;
+            // An application message says nothing about uptime; keep the
+            // value from the peer's last beacon.
+            peer.uptime_ms = heard.uptime_ms.or(peer.uptime_ms);
             return Received {
                 is_new: false,
                 evicted: None,
@@ -223,10 +234,11 @@ impl NetworkState {
 
         let (index, evicted) = self.slot_for_new_peer();
         self.peers[index] = Some(PeerState {
-            device_id,
-            mac,
-            rssi_dbm,
+            device_id: heard.device_id,
+            mac: heard.mac,
+            rssi_dbm: heard.rssi_dbm,
             last_seen_ms: now_ms,
+            uptime_ms: heard.uptime_ms,
         });
         Received {
             is_new: true,
@@ -283,6 +295,9 @@ impl NetworkState {
                 rssi_dbm: source.rssi_dbm.0,
                 age_ms: saturate(age_ms),
                 expires_in_ms: saturate(self.peer_timeout_ms.saturating_sub(age_ms)),
+                uptime_ms: source
+                    .uptime_ms
+                    .map(|uptime| uptime.saturating_add(saturate(age_ms))),
             });
         }
 

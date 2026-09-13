@@ -4,6 +4,7 @@
 //! the palette, drawing helpers, a slider widget and the `embedded-gui` glue.
 
 pub mod common;
+pub mod font;
 pub mod gui;
 pub mod styles;
 pub mod theme;
