@@ -1,11 +1,11 @@
 //! Speaker synth application state and PCM generation.
 
-use hack_and_hike::capabilities::speaker::{self, Speaker};
+use hack_and_hike::capabilities::audio::{self, Speaker};
 
 use super::{Action, chime::FlashChime, melody::MelodySynth};
 
 const PCM_FILL_FRAMES: usize = 128;
-const PCM_FILL_SAMPLES: usize = PCM_FILL_FRAMES * speaker::CHANNELS;
+const PCM_FILL_SAMPLES: usize = PCM_FILL_FRAMES * audio::CHANNELS;
 
 /// Valid melody tempo in quarter-note beats per minute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,7 +84,7 @@ impl PlaybackEngine {
     }
 
     fn fill_interleaved(&mut self, samples: &mut [i16], state: SpeakerDisplay) {
-        for frame in samples.chunks_exact_mut(speaker::CHANNELS) {
+        for frame in samples.chunks_exact_mut(audio::CHANNELS) {
             let melody = if state.melody_playing {
                 self.melody.next_sample(state.tempo, state.pitch)
             } else {
@@ -100,9 +100,6 @@ pub(crate) struct Model {
     speaker: Speaker,
     display: SpeakerDisplay,
     engine: PlaybackEngine,
-    pending: [i16; PCM_FILL_SAMPLES],
-    pending_frames: usize,
-    pending_offset_frames: usize,
     dirty: bool,
 }
 
@@ -112,9 +109,6 @@ impl Model {
             speaker,
             display: SpeakerDisplay::DEFAULT,
             engine: PlaybackEngine::new(),
-            pending: [0; PCM_FILL_SAMPLES],
-            pending_frames: 0,
-            pending_offset_frames: 0,
             dirty: true,
         }
     }
@@ -148,40 +142,18 @@ impl Model {
         }
     }
 
-    /// Keep the bounded speaker queue fed independently of which screen is active.
+    /// Keep the speaker queue fed independently of which screen is active.
     pub(crate) fn update(&mut self) {
-        loop {
-            if self.pending_offset_frames < self.pending_frames {
-                let first_sample = self.pending_offset_frames * speaker::CHANNELS;
-                let last_sample = self.pending_frames * speaker::CHANNELS;
-                let written = self
-                    .speaker
-                    .try_write_interleaved(&self.pending[first_sample..last_sample]);
-                if written == 0 {
-                    return;
-                }
-                self.pending_offset_frames += written;
-                if self.pending_offset_frames < self.pending_frames {
-                    return;
-                }
-                self.pending_frames = 0;
-                self.pending_offset_frames = 0;
-            }
-
-            if !self.engine.has_audio(self.display) {
-                return;
-            }
-
+        while self.engine.has_audio(self.display) {
             let frames = self.speaker.available_frames().min(PCM_FILL_FRAMES);
             if frames == 0 {
                 return;
             }
 
-            let sample_count = frames * speaker::CHANNELS;
-            self.engine
-                .fill_interleaved(&mut self.pending[..sample_count], self.display);
-            self.pending_frames = frames;
-            self.pending_offset_frames = 0;
+            let mut pcm = [0i16; PCM_FILL_SAMPLES];
+            let samples = &mut pcm[..frames * audio::CHANNELS];
+            self.engine.fill_interleaved(samples, self.display);
+            self.speaker.write(samples);
         }
     }
 

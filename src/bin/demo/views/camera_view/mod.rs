@@ -4,7 +4,10 @@
 //! presentation-specific cropping and the concrete LCD scanline-pump view.
 
 use hack_and_hike::{
-    capabilities::{camera, display::Surface},
+    capabilities::{
+        camera,
+        display::{ScanlineSource, Surface},
+    },
     ui::theme,
 };
 
@@ -36,19 +39,25 @@ impl View {
     }
 
     fn render(&self, surface: &mut Surface<'_>, frame: &mut camera::Frame<'_>) {
-        // Preserve the proven direct QVGA RGB565 path. While LCD DMA transmits
-        // the current batch, the callback pumps the following camera frame into
-        // the capability's second PSRAM buffer.
-        let _ = surface.render_rgb565_be_scanlines_pumped(
-            frame,
-            |frame, local_y, bytes| {
-                let source = frame.scanline(local_y);
-                let cropped = &source[CAMERA_SOURCE_START_BYTE..CAMERA_SOURCE_END_BYTE];
-                bytes.copy_from_slice(cropped);
-                true
-            },
-            |frame| frame.pump(),
+        surface.render_from(&mut CenteredCrop { frame });
+    }
+}
+
+/// The middle of each camera row, as wide as the content area. While the LCD
+/// DMA is busy, the camera keeps capturing the next frame.
+struct CenteredCrop<'a, 'f> {
+    frame: &'a mut camera::Frame<'f>,
+}
+
+impl ScanlineSource for CenteredCrop<'_, '_> {
+    fn fill_row(&mut self, y: usize, row: &mut [u8]) {
+        row.copy_from_slice(
+            &self.frame.scanline(y)[CAMERA_SOURCE_START_BYTE..CAMERA_SOURCE_END_BYTE],
         );
+    }
+
+    fn while_transferring(&mut self) {
+        self.frame.pump();
     }
 }
 

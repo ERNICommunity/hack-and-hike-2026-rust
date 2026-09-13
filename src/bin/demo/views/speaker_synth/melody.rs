@@ -6,7 +6,7 @@
 //! note-on (or the loop boundary) so each note is as long as possible without
 //! overlapping the following note. Playback is transposed up two octaves.
 
-use hack_and_hike::capabilities::speaker::SAMPLE_RATE_HZ;
+use hack_and_hike::capabilities::audio::SAMPLE_RATE_HZ;
 
 use super::{PitchSemitones, TempoBpm};
 

@@ -243,7 +243,7 @@ async fn main(_spawner: Spawner) -> ! {
         speaker,
         network,
         mut camera,
-        brightness,
+        backlight,
         log,
     } = Board::init();
 
@@ -253,7 +253,7 @@ async fn main(_spawner: Spawner) -> ! {
         mic_waveform: views::mic_waveform::Application::new(microphone),
         speaker_synth: views::speaker_synth::Application::new(speaker),
         camera_view: views::camera_view::Application::new(),
-        settings: views::settings::Application::new(brightness),
+        settings: views::settings::Application::new(backlight),
         log_view: views::log_view::Application::new(log),
     };
     let mut ui = Ui::new(views, touch);

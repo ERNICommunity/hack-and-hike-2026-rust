@@ -1,6 +1,6 @@
 //! Settings application state.
 
-use hack_and_hike::capabilities::display::{Brightness, BrightnessControl};
+use hack_and_hike::capabilities::backlight::{Backlight, Brightness};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct DisplayState {
@@ -8,15 +8,15 @@ pub(super) struct DisplayState {
 }
 
 pub(super) struct Model {
-    control: BrightnessControl,
+    backlight: Backlight,
     display: DisplayState,
     dirty: bool,
 }
 
 impl Model {
-    pub(super) fn new(control: BrightnessControl) -> Self {
+    pub(super) fn new(backlight: Backlight) -> Self {
         Self {
-            control,
+            backlight,
             display: DisplayState {
                 brightness: Brightness::FULL,
             },
@@ -33,7 +33,7 @@ impl Model {
             return;
         }
         self.display.brightness = brightness;
-        self.control.set(brightness);
+        self.backlight.set(brightness);
         self.dirty = true;
     }
 

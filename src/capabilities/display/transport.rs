@@ -2,6 +2,11 @@
 //!
 //! One-time controller setup lives in `controller`; this module owns only the
 //! allocation-free steady-state DCS windowing and pixel DMA pipeline.
+//!
+//! Sending works in batches: the caller fills the free DMA buffer through
+//! [`Transport::prepare`], then [`Transport::send`] waits for the previous
+//! batch to leave the SPI bus and starts the new one. Two buffers alternate, so
+//! the caller can prepare the next batch while the current one is in flight.
 
 use core::ops::Range;
 
@@ -15,11 +20,14 @@ use esp_hal::{
     time::Rate,
 };
 
-use super::{Pixel, Resources, WIDTH, controller};
+use super::{Resources, WIDTH, controller};
 
 const DISPLAY_SPI_MHZ: u32 = 40;
-pub(super) const RAW_BATCH_LINES: usize = 7;
-const PIXEL_DMA_BYTES: usize = WIDTH * 2 * RAW_BATCH_LINES;
+/// Scanlines per DMA batch. Seven full-width rows are 4,480 bytes, which keeps
+/// a batch close to one 4 KiB GDMA descriptor while cutting per-transfer
+/// overhead for full-frame producers such as the camera.
+pub(super) const BATCH_LINES: usize = 7;
+pub(super) const BATCH_BYTES: usize = WIDTH * 2 * BATCH_LINES;
 const CONTROL_DMA_BYTES: usize = 256;
 
 const DCS_COLUMN_ADDRESS_SET: u8 = 0x2A;
@@ -29,11 +37,11 @@ const DCS_MEMORY_WRITE: u8 = 0x2C;
 type DisplaySpiDma = SpiDma<'static, Blocking>;
 type PixelTransfer = SpiDmaTransfer<'static, Blocking, DmaTxBuf>;
 
-enum PipelineState {
+enum Pipeline {
     Idle {
         spi: DisplaySpiDma,
-        first: DmaTxBuf,
-        second: DmaTxBuf,
+        free: DmaTxBuf,
+        spare: DmaTxBuf,
     },
     InFlight {
         transfer: PixelTransfer,
@@ -41,10 +49,26 @@ enum PipelineState {
     },
 }
 
-/// Ping-pong DMA state. While one chunk is leaving SPI, the caller can prepare
-/// the next chunk in the second static DMA buffer.
+impl Pipeline {
+    /// Wait until nothing is in flight, calling `while_transferring` meanwhile.
+    fn drain(self, mut while_transferring: impl FnMut()) -> (DisplaySpiDma, DmaTxBuf, DmaTxBuf) {
+        match self {
+            Self::Idle { spi, free, spare } => (spi, free, spare),
+            Self::InFlight { transfer, free } => {
+                while !transfer.is_done() {
+                    while_transferring();
+                    core::hint::spin_loop();
+                }
+                let (spi, done) = transfer.wait();
+                (spi, free, done)
+            }
+        }
+    }
+}
+
 pub(super) struct Transport {
-    state: Option<PipelineState>,
+    // `None` only while a method is moving the pipeline between states.
+    pipeline: Option<Pipeline>,
     cs: Output<'static>,
     dc: Output<'static>,
 }
@@ -63,65 +87,63 @@ pub(super) fn init(resources: Resources, delay: Delay) -> Transport {
         spi2,
         SpiConfig::default().with_frequency(Rate::from_mhz(DISPLAY_SPI_MHZ)),
     )
-    .unwrap()
+    .expect("LCD SPI configuration is valid")
     .with_sck(sck)
     .with_mosi(mosi)
     .with_dma(dma);
 
-    let control_rx = esp_hal::dma_rx_buffer!(CONTROL_DMA_BYTES).unwrap();
-    let control_tx = esp_hal::dma_tx_buffer!(CONTROL_DMA_BYTES).unwrap();
+    let control_rx = esp_hal::dma_rx_buffer!(CONTROL_DMA_BYTES).expect("LCD control DMA buffer");
+    let control_tx = esp_hal::dma_tx_buffer!(CONTROL_DMA_BYTES).expect("LCD control DMA buffer");
     let dma_bus = spi.with_buffers(control_rx, control_tx);
 
     let dc = Output::new(dc, Level::Low, OutputConfig::default());
     let cs = Output::new(cs, Level::High, OutputConfig::default());
     let controller::Initialized { spi, cs, dc } = controller::initialize(dma_bus, cs, dc, delay);
 
-    // Seven rows cut Camera pixel submissions from 60 to 35 per 240-row frame.
-    // The centered 276-pixel Camera region is 3,864 bytes per full batch, below
-    // a single 4 KiB GDMA payload; normal UI rendering still queues one row.
-    let first =
-        esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init pixel DMA buffer 1");
-    let second =
-        esp_hal::dma_tx_buffer!(PIXEL_DMA_BYTES).expect("Could not init pixel DMA buffer 2");
+    let free = esp_hal::dma_tx_buffer!(BATCH_BYTES).expect("LCD pixel DMA buffer");
+    let spare = esp_hal::dma_tx_buffer!(BATCH_BYTES).expect("LCD pixel DMA buffer");
 
     Transport {
-        state: Some(PipelineState::Idle { spi, first, second }),
+        pipeline: Some(Pipeline::Idle { spi, free, spare }),
         cs,
         dc,
     }
 }
 
 impl Transport {
+    fn take_pipeline(&mut self) -> Pipeline {
+        self.pipeline
+            .take()
+            .expect("LCD pipeline is only empty inside Transport methods")
+    }
+
     fn write_command(&mut self, bus: &mut DisplaySpiDma, command: u8, data: &[u8]) {
         self.cs.set_low();
         self.dc.set_low();
 
-        bus.write(&[command]).expect("LCD command DMA failed");
-        bus.flush().expect("LCD command flush failed");
+        bus.write(&[command]).expect("LCD command write failed");
+        bus.flush().expect("LCD command write failed");
 
         if !data.is_empty() {
             self.dc.set_high();
-            bus.write(data).expect("LCD command-data DMA failed");
-            bus.flush().expect("LCD command-data flush failed");
+            bus.write(data).expect("LCD command write failed");
+            bus.flush().expect("LCD command write failed");
         }
 
         self.cs.set_high();
     }
 
-    fn set_window(
-        &mut self,
-        mut spi: DisplaySpiDma,
-        columns: Range<usize>,
-        pages: Range<usize>,
-    ) -> DisplaySpiDma {
-        debug_assert!(!columns.is_empty());
-        debug_assert!(!pages.is_empty());
+    /// Program one rectangular GRAM window. The controller auto-increments
+    /// through that window, so the pixel path only streams consecutive RGB565
+    /// bytes afterwards. Any batch still in flight is completed first.
+    pub(super) fn begin_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
+        debug_assert!(!columns.is_empty() && !pages.is_empty());
 
-        let x0 = columns.start as u16;
-        let x1 = (columns.end - 1) as u16;
-        let y0 = pages.start as u16;
-        let y1 = (pages.end - 1) as u16;
+        let (mut spi, free, spare) = self.take_pipeline().drain(|| {});
+        self.cs.set_high();
 
+        let [x0, x1] = [columns.start, columns.end - 1].map(panel_coordinate);
+        let [y0, y1] = [pages.start, pages.end - 1].map(panel_coordinate);
         let columns = [(x0 >> 8) as u8, x0 as u8, (x1 >> 8) as u8, x1 as u8];
         let pages = [(y0 >> 8) as u8, y0 as u8, (y1 >> 8) as u8, y1 as u8];
 
@@ -129,172 +151,49 @@ impl Transport {
         self.write_command(&mut spi, DCS_PAGE_ADDRESS_SET, &pages);
         self.write_command(&mut spi, DCS_MEMORY_WRITE, &[]);
 
-        spi
+        self.pipeline = Some(Pipeline::Idle { spi, free, spare });
     }
 
-    /// Program one rectangular GRAM window before any of its pixel chunks are
-    /// queued. The controller auto-increments through that window, so the pixel
-    /// path only needs to stream consecutive RGB565 bytes afterwards.
-    pub(super) fn begin_region(&mut self, columns: Range<usize>, pages: Range<usize>) {
-        if columns.is_empty() || pages.is_empty() {
+    /// The free DMA buffer, to be filled with at most [`BATCH_BYTES`] of
+    /// big-endian RGB565 pixel data before calling [`Transport::send`].
+    pub(super) fn prepare(&mut self) -> &mut [u8] {
+        match self.pipeline.as_mut() {
+            Some(Pipeline::Idle { free, .. } | Pipeline::InFlight { free, .. }) => {
+                free.as_mut_slice()
+            }
+            None => unreachable!("LCD pipeline is only empty inside Transport methods"),
+        }
+    }
+
+    /// Send the first `byte_len` bytes of the prepared buffer. While the
+    /// previous batch is still on the bus, `while_transferring` is called
+    /// repeatedly so the caller can do useful work instead of waiting.
+    pub(super) fn send(&mut self, byte_len: usize, while_transferring: impl FnMut()) {
+        debug_assert!(byte_len <= BATCH_BYTES);
+        if byte_len == 0 {
             return;
         }
 
-        let state = self.state.take().expect("LCD DMA pipeline state missing");
-        let PipelineState::Idle { spi, first, second } = state else {
-            self.state = Some(state);
-            panic!("LCD region started while pixel DMA was still in flight");
-        };
-
-        let spi = self.set_window(spi, columns, pages);
-        self.state = Some(PipelineState::Idle { spi, first, second });
-    }
-
-    fn encode_pixels(buffer: &mut DmaTxBuf, pixels: &[Pixel]) -> usize {
-        let byte_len = pixels.len() * 2;
-        let bytes = &mut buffer.as_mut_slice()[..byte_len];
-
-        for (dst, value) in bytes.chunks_exact_mut(2).zip(pixels.iter().copied()) {
-            dst[0] = (value >> 8) as u8;
-            dst[1] = value as u8;
-        }
-
+        let (spi, mut buffer, free) = self.take_pipeline().drain(while_transferring);
         buffer.set_length(byte_len);
-        byte_len
-    }
 
-    fn copy_bytes(buffer: &mut DmaTxBuf, bytes: &[u8]) -> usize {
-        let byte_len = bytes.len();
-        debug_assert!(byte_len <= PIXEL_DMA_BYTES);
-        buffer.as_mut_slice()[..byte_len].copy_from_slice(bytes);
-        buffer.set_length(byte_len);
-        byte_len
-    }
-
-    fn start_pixel_transfer(
-        &mut self,
-        spi: DisplaySpiDma,
-        buffer: DmaTxBuf,
-        byte_len: usize,
-        free: DmaTxBuf,
-    ) {
         self.dc.set_high();
         self.cs.set_low();
-
-        match spi.write_buffer(byte_len, buffer) {
-            Ok(transfer) => {
-                self.state = Some(PipelineState::InFlight { transfer, free });
-            }
-            Err((err, spi, buffer)) => {
-                self.cs.set_high();
-                self.state = Some(PipelineState::Idle {
-                    spi,
-                    first: buffer,
-                    second: free,
-                });
-                panic!("LCD pixel DMA start failed: {:?}", err);
-            }
-        }
-    }
-
-    /// Queue one decoded RGB565 scanline inside the active window.
-    pub(super) fn queue_line(&mut self, pixels: &[Pixel]) {
-        if pixels.is_empty() {
-            return;
-        }
-
-        let state = self.state.take().expect("LCD DMA pipeline state missing");
-        match state {
-            PipelineState::Idle {
-                spi,
-                mut first,
-                second,
-            } => {
-                let byte_len = Self::encode_pixels(&mut first, pixels);
-                self.start_pixel_transfer(spi, first, byte_len, second);
-            }
-            PipelineState::InFlight { transfer, mut free } => {
-                let byte_len = Self::encode_pixels(&mut free, pixels);
-                let (spi, completed) = transfer.wait();
-                self.start_pixel_transfer(spi, free, byte_len, completed);
-            }
-        }
-    }
-
-    /// Queue one raw RGB565 byte batch. While the prior SPI-DMA transfer is
-    /// shifting pixels to the panel, `pump` can advance an independent producer
-    /// such as the next camera frame.
-    pub(super) fn queue_bytes_pumped(&mut self, bytes: &[u8], mut pump: impl FnMut()) {
-        if bytes.is_empty() {
-            return;
-        }
-        debug_assert!(bytes.len() <= PIXEL_DMA_BYTES);
-
-        let state = self.state.take().expect("LCD DMA pipeline state missing");
-        match state {
-            PipelineState::Idle {
-                spi,
-                mut first,
-                second,
-            } => {
-                let byte_len = Self::copy_bytes(&mut first, bytes);
-                self.start_pixel_transfer(spi, first, byte_len, second);
-            }
-            PipelineState::InFlight { transfer, mut free } => {
-                let byte_len = Self::copy_bytes(&mut free, bytes);
-                while !transfer.is_done() {
-                    pump();
-                    core::hint::spin_loop();
-                }
-                pump();
-                let (spi, completed) = transfer.wait();
-                self.start_pixel_transfer(spi, free, byte_len, completed);
-            }
-        }
-    }
-
-    pub(super) fn finish(&mut self) {
-        let Some(state) = self.state.take() else {
-            return;
+        let transfer = match spi.write_buffer(byte_len, buffer) {
+            Ok(transfer) => transfer,
+            Err((error, _, _)) => panic!("LCD pixel DMA start failed: {:?}", error),
         };
-
-        match state {
-            PipelineState::Idle { .. } => self.state = Some(state),
-            PipelineState::InFlight { transfer, free } => {
-                let (spi, completed) = transfer.wait();
-                self.cs.set_high();
-                self.state = Some(PipelineState::Idle {
-                    spi,
-                    first: free,
-                    second: completed,
-                });
-            }
-        }
+        self.pipeline = Some(Pipeline::InFlight { transfer, free });
     }
 
-    /// Finish the final LCD transfer while continuing to pump an independent
-    /// producer until the last SPI byte of the current region has left the panel.
-    pub(super) fn finish_pumped(&mut self, mut pump: impl FnMut()) {
-        let Some(state) = self.state.take() else {
-            return;
-        };
-
-        match state {
-            PipelineState::Idle { .. } => self.state = Some(state),
-            PipelineState::InFlight { transfer, free } => {
-                while !transfer.is_done() {
-                    pump();
-                    core::hint::spin_loop();
-                }
-                pump();
-                let (spi, completed) = transfer.wait();
-                self.cs.set_high();
-                self.state = Some(PipelineState::Idle {
-                    spi,
-                    first: free,
-                    second: completed,
-                });
-            }
-        }
+    /// Wait for the last batch of the current region to reach the panel.
+    pub(super) fn finish(&mut self, while_transferring: impl FnMut()) {
+        let (spi, free, spare) = self.take_pipeline().drain(while_transferring);
+        self.cs.set_high();
+        self.pipeline = Some(Pipeline::Idle { spi, free, spare });
     }
+}
+
+fn panel_coordinate(value: usize) -> u16 {
+    u16::try_from(value).expect("region coordinates fit the panel")
 }

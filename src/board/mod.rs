@@ -4,6 +4,10 @@
 //! starts the CPU1 capability runtimes and returns one handle per capability.
 //! The application takes ownership of the handles it needs and drops the rest;
 //! the CPU1 runtimes keep running either way.
+//!
+//! Bring-up is fail-fast: a peripheral that does not answer on I2C panics with
+//! a message naming it, because the board is unusable without it. The camera
+//! is the one exception and simply comes back as `None`.
 
 mod cpu1;
 
@@ -12,13 +16,12 @@ use log::{LevelFilter, info, warn};
 
 use crate::{
     capabilities::{
-        audio,
+        audio::{self, Microphone, Speaker},
+        backlight::{self, Backlight},
         camera::{self, Camera},
-        display::{self, BrightnessControl, Display},
+        display::{self, Display},
         imu::{self, Imu},
-        mic::{self, Microphone},
         network::{self, Network},
-        speaker::{self, Speaker},
         touch::{self, Touch},
     },
     platform::{i2c, io_expander, power},
@@ -44,7 +47,7 @@ const INTERNAL_HEAP_BYTES: usize = 72 * 1024;
 /// ```
 pub struct Board {
     pub display: Display,
-    pub brightness: BrightnessControl,
+    pub backlight: Backlight,
     pub touch: Touch,
     pub imu: Imu,
     pub microphone: Microphone,
@@ -86,8 +89,9 @@ impl Board {
         // Dropping it frees the pins for the camera's slower bus below.
         let camera_powered = {
             let mut i2c = i2c::init(i2c_resources.reborrow());
-            power::enable_lcd_backlight(&mut i2c);
-            io_expander::reset_display_and_touch(&mut i2c, delay);
+            power::enable_lcd_backlight(&mut i2c).expect("AXP2101 power chip did not answer");
+            io_expander::reset_display_and_touch(&mut i2c, delay)
+                .expect("AW9523 IO expander did not answer");
             camera::power_on(&mut i2c, delay)
         };
         let camera_sensor = camera_powered
@@ -141,31 +145,29 @@ impl Board {
             }
         };
 
-        audio::init_es7210(&mut system_i2c).expect("ES7210 microphone codec did not answer");
-        audio::init_aw88298(&mut system_i2c, delay)
-            .expect("AW88298 speaker amplifier did not answer");
+        audio::init_codecs(&mut system_i2c, delay).expect("audio codecs did not answer");
 
         let audio::Endpoints {
+            microphone,
+            speaker,
             runtime: audio_runtime,
-            mic: mic_reader,
-            speaker: speaker_writer,
-        } = audio::init_endpoints();
+        } = audio::endpoints();
+        let backlight::Endpoints {
+            handle: backlight,
+            runtime: backlight_runtime,
+        } = backlight::endpoints();
         let imu::Endpoints {
-            runtime: imu_runtime,
             input: imu,
+            runtime: imu_runtime,
         } = imu::init_endpoints();
         let network::Endpoints {
-            runtime: network_runtime,
             network,
+            runtime: network_runtime,
         } = network::init_endpoints();
         let touch::Endpoints {
+            handle: touch,
             runtime: touch_runtime,
-            input: touch,
-        } = touch::init_endpoints();
-        let display::BrightnessEndpoints {
-            runtime: brightness_runtime,
-            control: brightness,
-        } = display::init_brightness_endpoints();
+        } = touch::endpoints();
 
         memory::report("before CPU1 start");
         cpu1::start(
@@ -186,20 +188,20 @@ impl Board {
                     wifi: peripherals.WIFI,
                 },
                 audio: audio_runtime,
+                backlight: backlight_runtime,
                 imu: imu_runtime,
                 network: network_runtime,
                 touch: touch_runtime,
-                brightness: brightness_runtime,
             },
         );
 
         Board {
             display,
-            brightness,
+            backlight,
             touch,
             imu,
-            microphone: mic::from_reader(mic_reader),
-            speaker: speaker::from_writer(speaker_writer),
+            microphone,
+            speaker,
             network,
             camera,
             log,

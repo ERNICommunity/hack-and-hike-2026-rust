@@ -11,7 +11,7 @@ use esp_hal::{
 use static_cell::StaticCell;
 
 use crate::{
-    capabilities::{audio, display, imu, network, touch},
+    capabilities::{audio, backlight, imu, network, touch},
     platform::i2c,
 };
 
@@ -29,7 +29,7 @@ pub(super) struct Cpu1 {
     pub(super) imu: imu::Runtime,
     pub(super) network: network::Runtime,
     pub(super) touch: touch::Runtime,
-    pub(super) brightness: display::BrightnessRuntime,
+    pub(super) backlight: backlight::Runtime,
 }
 
 pub(super) fn start(cpu_ctrl: CPU_CTRL<'static>, interrupt: FROM_CPU_INTR1<'static>, cpu1: Cpu1) {
@@ -53,8 +53,7 @@ fn run(cpu1: Cpu1) {
         let system_bus = i2c::into_async(cpu1.system_i2c);
 
         spawner.spawn(
-            display::brightness_task(system_bus, cpu1.brightness)
-                .expect("brightness task already spawned"),
+            backlight::task(system_bus, cpu1.backlight).expect("backlight task already spawned"),
         );
         spawner.spawn(
             imu::capture_task(system_bus, imu::DEFAULT_CONFIG, cpu1.imu)

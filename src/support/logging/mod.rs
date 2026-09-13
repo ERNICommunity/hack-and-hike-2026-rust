@@ -227,7 +227,7 @@ pub(crate) fn enable_psram_history() -> LogHistory {
         *SERVICE.store.borrow(cs).borrow_mut() = Some(store);
     });
 
-    ::log::info!(
+    log::info!(
         "PSRAM log history enabled: {} rows, {} KiB",
         MAX_LOG_ROWS,
         HISTORY_BYTES / 1024

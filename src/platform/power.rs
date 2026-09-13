@@ -65,32 +65,31 @@ where
     i2c.write(AXP2101_ADDR, &[register, next]).await
 }
 
-/// Enable the LCD backlight rail (DLDO1) at 3.3 V.
-///
-/// Display-controller configuration itself remains owned by `display`.
-pub(crate) fn enable_lcd_backlight(i2c: &mut impl embedded_hal::i2c::I2c) {
-    // Preserve the existing best-effort startup behavior for the display rail.
-    let _ = i2c.write(
+/// Enable the LCD backlight rail (DLDO1) at full brightness.
+pub(crate) fn enable_lcd_backlight<I2C>(i2c: &mut I2C) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal::i2c::I2c,
+{
+    i2c.write(
         AXP2101_ADDR,
         &[DLDO1_VOLTAGE_REGISTER, LCD_BACKLIGHT_MAX_CODE],
-    );
-    let _ = update_register_bits(i2c, OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, DLDO1_ENABLE);
+    )?;
+    update_register_bits(i2c, OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, DLDO1_ENABLE)
 }
 
-/// Apply a semantic 1-100% LCD brightness request to the CoreS3 backlight rail.
+/// Apply a 1-100 % backlight brightness to the DLDO1 rail.
 ///
-/// The hardware has eight effective voltage steps in its supported backlight
-/// range. Runtime dimming never disables DLDO1: 1% maps to 2.6 V and 100% to
-/// 3.3 V. Turning display power off is deliberately not a slider operation.
+/// The rail has eight usable voltage steps: 1 % maps to 2.6 V and 100 % to
+/// 3.3 V. Dimming never switches the rail off.
 pub(crate) async fn set_lcd_backlight<I2C>(i2c: &mut I2C, percent: u8) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal_async::i2c::I2c,
 {
-    debug_assert!((1..=100).contains(&percent));
-
-    let span = u16::from(LCD_BACKLIGHT_MAX_CODE - LCD_BACKLIGHT_MIN_CODE);
-    let scaled = (u16::from(percent - 1) * span + 49) / 99;
-    let code = LCD_BACKLIGHT_MIN_CODE + scaled as u8;
+    const PERCENT_SPAN: u16 = 99;
+    let steps = LCD_BACKLIGHT_MAX_CODE - LCD_BACKLIGHT_MIN_CODE;
+    let offset = u16::from(percent.clamp(1, 100) - 1);
+    let scaled = (offset * u16::from(steps) + PERCENT_SPAN / 2) / PERCENT_SPAN;
+    let code = LCD_BACKLIGHT_MIN_CODE + u8::try_from(scaled).unwrap_or(steps);
 
     i2c.write(AXP2101_ADDR, &[DLDO1_VOLTAGE_REGISTER, code])
         .await?;

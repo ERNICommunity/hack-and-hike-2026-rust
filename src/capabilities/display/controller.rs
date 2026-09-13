@@ -1,7 +1,7 @@
 //! One-time ILI9342C controller initialization.
 //!
 //! Runtime pixel transport lives in `transport`; this module exists only to run
-//! the proven `mipidsi` setup sequence and return the owned SPI/DMA resources.
+//! the `mipidsi` setup sequence and return the owned SPI/DMA resources.
 
 use embedded_hal::{
     delay::DelayNs as _,

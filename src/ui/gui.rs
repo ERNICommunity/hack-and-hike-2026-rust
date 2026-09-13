@@ -4,22 +4,24 @@
 //! `GuiSurface`. The owning application chooses its dimensions; presentation
 //! then copies the frame through a bounded display [`Surface`].
 
-use embedded_graphics::{pixelcolor::Rgb565, prelude::DrawTarget as _, prelude::RgbColor as _};
-use embedded_gui::{
-    DMACapableFrameBufferBackend, EndianCorrectedBuffer, EndianCorrection, FrameBuf, GuiContext,
+use embedded_graphics::{
+    pixelcolor::{Rgb565, raw::RawU16},
+    prelude::{DrawTarget as _, Point, RawData as _, RgbColor as _},
 };
+use embedded_gui::{EndianCorrectedBuffer, EndianCorrection, FrameBuf, GuiContext};
 
-use crate::{capabilities::display::Surface, support::memory::storage};
+use crate::{
+    capabilities::display::{ScanlineSource, Surface},
+    support::memory::storage,
+};
 
 pub type GuiFramebufferBackend = EndianCorrectedBuffer<'static, Rgb565>;
 pub type GuiFramebuffer = FrameBuf<Rgb565, GuiFramebufferBackend>;
 
-const _: () = assert!(core::mem::size_of::<Rgb565>() == 2);
-
 /// One reusable fixed-size framebuffer whose dimensions are chosen by the
 /// owning graphical application.
 pub struct GuiSurface {
-    framebuffer: Option<GuiFramebuffer>,
+    framebuffer: GuiFramebuffer,
     width: usize,
     height: usize,
 }
@@ -30,7 +32,7 @@ impl GuiSurface {
         let pixels = storage::leaked_filled_slice(width * height, Rgb565::WHITE);
         let backend = EndianCorrectedBuffer::new(pixels, EndianCorrection::ToBigEndian);
         Self {
-            framebuffer: Some(FrameBuf::new(backend, width, height)),
+            framebuffer: FrameBuf::new(backend, width, height),
             width,
             height,
         }
@@ -61,30 +63,24 @@ impl GuiSurface {
         debug_assert_eq!(surface.width(), self.width);
         debug_assert_eq!(surface.height(), self.height);
 
-        let mut framebuffer = self
-            .framebuffer
-            .take()
-            .expect("embedded-gui framebuffer missing");
-        draw(&mut framebuffer);
-        present_framebuffer(surface, &framebuffer, self.width, self.height);
-        self.framebuffer = Some(framebuffer);
+        draw(&mut self.framebuffer);
+        surface.render_from(&mut FramebufferRows {
+            framebuffer: &self.framebuffer,
+        });
     }
 }
 
-fn present_framebuffer(
-    surface: &mut Surface<'_>,
-    framebuffer: &GuiFramebuffer,
-    width: usize,
-    height: usize,
-) {
-    let pixel_count = width * height;
-    let byte_count = pixel_count * core::mem::size_of::<Rgb565>();
-    let data = &framebuffer.data;
+/// Streams a rendered framebuffer to the display row by row.
+struct FramebufferRows<'a> {
+    framebuffer: &'a GuiFramebuffer,
+}
 
-    // SAFETY: `EndianCorrectedBuffer` owns one contiguous array of exactly
-    // `width * height` `Rgb565` values. The compile-time size assertion proves
-    // two bytes per pixel, and this borrowed byte view is read only for the
-    // synchronous LCD transfer.
-    let bytes = unsafe { core::slice::from_raw_parts(data.data_ptr().cast::<u8>(), byte_count) };
-    surface.render_rgb565_be_bytes(bytes);
+impl ScanlineSource for FramebufferRows<'_> {
+    fn fill_row(&mut self, y: usize, row: &mut [u8]) {
+        let y = i32::try_from(y).expect("framebuffer rows fit in i32");
+        for (x, bytes) in (0..).zip(row.chunks_exact_mut(2)) {
+            let color = self.framebuffer.get_color_at(Point::new(x, y));
+            bytes.copy_from_slice(&RawU16::from(color).into_inner().to_be_bytes());
+        }
+    }
 }

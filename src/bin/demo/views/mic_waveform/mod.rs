@@ -10,7 +10,7 @@ mod view;
 use embassy_time::Instant;
 
 use hack_and_hike::{
-    capabilities::{display::Surface, mic},
+    capabilities::{audio, display::Surface},
     ui::gui::GuiSurface,
 };
 
@@ -24,7 +24,7 @@ pub(crate) struct Application {
 }
 
 impl Application {
-    pub(crate) fn new(microphone: mic::Microphone) -> Self {
+    pub(crate) fn new(microphone: audio::Microphone) -> Self {
         Self {
             model: Model::new(microphone),
             view: View::new(),

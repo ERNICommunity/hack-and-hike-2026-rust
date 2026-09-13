@@ -13,18 +13,19 @@ use serde::{Deserialize, Serialize};
 use hack_and_hike::{
     Board,
     capabilities::{
+        audio::{self, Speaker},
         display::{Display, HEIGHT, Region, WIDTH},
         network::Network,
-        speaker::{self, Speaker},
         touch::{Touch, TouchEdge},
     },
 };
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-const TONE_DURATION_MS: u32 = 300;
+const TONE_DURATION_MS: usize = 300;
+const TONE_FRAMES: usize = audio::SAMPLE_RATE_HZ as usize * TONE_DURATION_MS / 1_000;
 const AUDIO_CHUNK_FRAMES: usize = 128;
-const AUDIO_CHUNK_SAMPLES: usize = AUDIO_CHUNK_FRAMES * speaker::CHANNELS;
+const AUDIO_CHUNK_SAMPLES: usize = AUDIO_CHUNK_FRAMES * audio::CHANNELS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Color {
@@ -72,13 +73,12 @@ struct ColorPing {
     color: Color,
 }
 
+/// A tone in progress. Each call to `update` generates as much of it as the
+/// speaker queue accepts, so the main loop never blocks on audio.
 struct TonePlayer {
     phase: u32,
     phase_step: u32,
-    frames_left_to_generate: u32,
-    pending: [i16; AUDIO_CHUNK_SAMPLES],
-    pending_frames: usize,
-    pending_offset_frames: usize,
+    frames_left: usize,
 }
 
 impl TonePlayer {
@@ -86,70 +86,35 @@ impl TonePlayer {
         Self {
             phase: 0,
             phase_step: 0,
-            frames_left_to_generate: 0,
-            pending: [0; AUDIO_CHUNK_SAMPLES],
-            pending_frames: 0,
-            pending_offset_frames: 0,
+            frames_left: 0,
         }
     }
 
     fn start(&mut self, color: Color) {
         self.phase = 0;
         self.phase_step =
-            ((u64::from(color.frequency_hz()) << 32) / u64::from(speaker::SAMPLE_RATE_HZ)) as u32;
-        self.frames_left_to_generate = speaker::SAMPLE_RATE_HZ * TONE_DURATION_MS / 1_000;
-        self.pending_frames = 0;
-        self.pending_offset_frames = 0;
+            ((u64::from(color.frequency_hz()) << 32) / u64::from(audio::SAMPLE_RATE_HZ)) as u32;
+        self.frames_left = TONE_FRAMES;
     }
 
     fn update(&mut self, speaker: &mut Speaker) {
-        loop {
-            if self.pending_offset_frames < self.pending_frames {
-                let first_sample = self.pending_offset_frames * speaker::CHANNELS;
-                let last_sample = self.pending_frames * speaker::CHANNELS;
-                let written =
-                    speaker.try_write_interleaved(&self.pending[first_sample..last_sample]);
-
-                if written == 0 {
-                    return;
-                }
-
-                self.pending_offset_frames += written;
-                if self.pending_offset_frames < self.pending_frames {
-                    return;
-                }
-
-                self.pending_frames = 0;
-                self.pending_offset_frames = 0;
-            }
-
-            if self.frames_left_to_generate == 0 {
-                return;
-            }
-
+        while self.frames_left > 0 {
             let frames = speaker
                 .available_frames()
                 .min(AUDIO_CHUNK_FRAMES)
-                .min(self.frames_left_to_generate as usize);
-
+                .min(self.frames_left);
             if frames == 0 {
                 return;
             }
 
-            let mut phase = self.phase;
-            let phase_step = self.phase_step;
-            for frame in
-                self.pending[..frames * speaker::CHANNELS].chunks_exact_mut(speaker::CHANNELS)
-            {
-                let sample = sine_sample(phase);
-                phase = phase.wrapping_add(phase_step);
-                frame.fill(sample);
+            let mut chunk = [0i16; AUDIO_CHUNK_SAMPLES];
+            let samples = &mut chunk[..frames * audio::CHANNELS];
+            for frame in samples.chunks_exact_mut(audio::CHANNELS) {
+                frame.fill(sine_sample(self.phase));
+                self.phase = self.phase.wrapping_add(self.phase_step);
             }
-
-            self.phase = phase;
-            self.frames_left_to_generate -= frames as u32;
-            self.pending_frames = frames;
-            self.pending_offset_frames = 0;
+            speaker.write(samples);
+            self.frames_left -= frames;
         }
     }
 }

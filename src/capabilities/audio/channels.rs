@@ -1,26 +1,38 @@
-//! Cross-core synchronization for the private shared audio runtime.
+//! Cross-core queues between the application handles (CPU0) and the audio
+//! runtime (CPU1).
 
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
-use static_cell::StaticCell;
+use core::cell::RefCell;
 
-use crate::capabilities::mic::{MicBlockInfo, QUEUE_CAPACITY_BLOCKS, SAMPLES_PER_BLOCK};
+use embassy_sync::{
+    blocking_mutex::{Mutex, raw::CriticalSectionRawMutex},
+    channel::Channel,
+};
+use log::debug;
 
-const SPEAKER_CHANNELS: usize = 2;
-// Buffer one complete DMA descriptor refill. esp-hal's default DMA descriptor
-// payload is 4092 bytes; 1024 stereo i16 frames are 4096 bytes. The old
-// 512-frame queue was smaller than one refill burst, so playback could drain it
-// and zero-pad the remainder before CPU0 generated more PCM.
-const SPEAKER_QUEUE_CAPACITY_FRAMES: usize = 1_024;
-const SPEAKER_QUEUE_CAPACITY_SAMPLES: usize = SPEAKER_QUEUE_CAPACITY_FRAMES * SPEAKER_CHANNELS;
+use super::{
+    CHANNELS, SAMPLES_PER_BLOCK,
+    microphone::{MicBlockInfo, Microphone},
+    speaker::Speaker,
+};
 
+/// Microphone blocks the application may fall behind by before the oldest
+/// unread block is dropped.
+const MIC_QUEUE_BLOCKS: usize = 4;
+/// Speaker frames buffered ahead of playback. One DMA descriptor refill takes
+/// up to 1023 frames, so the queue holds at least that much to keep a refill
+/// from draining it before the application tops it up.
+const SPEAKER_QUEUE_FRAMES: usize = 1_024;
+const SPEAKER_QUEUE_SAMPLES: usize = SPEAKER_QUEUE_FRAMES * CHANNELS;
+
+/// One captured microphone block as it travels from CPU1 to CPU0.
 #[derive(Clone, Copy)]
-struct MicQueueBlock {
-    samples: [i16; SAMPLES_PER_BLOCK],
-    info: MicBlockInfo,
+pub(super) struct MicBlock {
+    pub(super) samples: [i16; SAMPLES_PER_BLOCK],
+    pub(super) info: MicBlockInfo,
 }
 
-impl MicQueueBlock {
-    const EMPTY: Self = Self {
+impl MicBlock {
+    pub(super) const SILENT: Self = Self {
         samples: [0; SAMPLES_PER_BLOCK],
         info: MicBlockInfo {
             sequence: 0,
@@ -31,192 +43,103 @@ impl MicQueueBlock {
     };
 }
 
-struct MicQueue {
-    blocks: [MicQueueBlock; QUEUE_CAPACITY_BLOCKS],
+/// Ring of interleaved stereo samples written by CPU0 and drained by CPU1.
+pub(super) struct SpeakerQueue {
+    samples: [i16; SPEAKER_QUEUE_SAMPLES],
     read_index: usize,
     len: usize,
-    next_sequence: u32,
-    dropped_blocks: u32,
-}
-
-impl MicQueue {
-    const fn new() -> Self {
-        Self {
-            blocks: [MicQueueBlock::EMPTY; QUEUE_CAPACITY_BLOCKS],
-            read_index: 0,
-            len: 0,
-            next_sequence: 0,
-            dropped_blocks: 0,
-        }
-    }
-
-    fn push(&mut self, samples: &[i16; SAMPLES_PER_BLOCK], peak_left: u16, peak_right: u16) -> u32 {
-        self.next_sequence = self.next_sequence.wrapping_add(1);
-
-        if self.len == QUEUE_CAPACITY_BLOCKS {
-            self.read_index = (self.read_index + 1) % QUEUE_CAPACITY_BLOCKS;
-            self.len -= 1;
-            self.dropped_blocks = self.dropped_blocks.wrapping_add(1);
-        }
-
-        let write_index = (self.read_index + self.len) % QUEUE_CAPACITY_BLOCKS;
-        self.blocks[write_index].samples.copy_from_slice(samples);
-        self.blocks[write_index].info = MicBlockInfo {
-            sequence: self.next_sequence,
-            dropped_blocks: self.dropped_blocks,
-            peak_left,
-            peak_right,
-        };
-        self.len += 1;
-        self.next_sequence
-    }
-
-    fn pop(&mut self, out: &mut [i16; SAMPLES_PER_BLOCK]) -> Option<MicBlockInfo> {
-        if self.len == 0 {
-            return None;
-        }
-
-        let index = self.read_index;
-        out.copy_from_slice(&self.blocks[index].samples);
-        let info = self.blocks[index].info;
-        self.read_index = (self.read_index + 1) % QUEUE_CAPACITY_BLOCKS;
-        self.len -= 1;
-        Some(info)
-    }
-}
-
-struct SpeakerQueue {
-    samples: [i16; SPEAKER_QUEUE_CAPACITY_SAMPLES],
-    read_index: usize,
-    len_samples: usize,
 }
 
 impl SpeakerQueue {
     const fn new() -> Self {
         Self {
-            samples: [0; SPEAKER_QUEUE_CAPACITY_SAMPLES],
+            samples: [0; SPEAKER_QUEUE_SAMPLES],
             read_index: 0,
-            len_samples: 0,
+            len: 0,
         }
     }
 
-    fn available_frames(&self) -> usize {
-        (SPEAKER_QUEUE_CAPACITY_SAMPLES - self.len_samples) / SPEAKER_CHANNELS
+    pub(super) fn free_frames(&self) -> usize {
+        (SPEAKER_QUEUE_SAMPLES - self.len) / CHANNELS
     }
 
-    fn write_interleaved(&mut self, samples: &[i16]) -> usize {
-        let frames = (samples.len() / SPEAKER_CHANNELS).min(self.available_frames());
-        let sample_count = frames * SPEAKER_CHANNELS;
-        let write_index = (self.read_index + self.len_samples) % SPEAKER_QUEUE_CAPACITY_SAMPLES;
+    /// Append complete frames. Returns how many frames were accepted.
+    pub(super) fn write(&mut self, samples: &[i16]) -> usize {
+        let frames = (samples.len() / CHANNELS).min(self.free_frames());
+        let count = frames * CHANNELS;
+        let write_index = (self.read_index + self.len) % SPEAKER_QUEUE_SAMPLES;
+        let first = count.min(SPEAKER_QUEUE_SAMPLES - write_index);
 
-        for (offset, sample) in samples[..sample_count].iter().copied().enumerate() {
-            self.samples[(write_index + offset) % SPEAKER_QUEUE_CAPACITY_SAMPLES] = sample;
-        }
-        self.len_samples += sample_count;
+        self.samples[write_index..write_index + first].copy_from_slice(&samples[..first]);
+        self.samples[..count - first].copy_from_slice(&samples[first..count]);
+        self.len += count;
         frames
     }
 
-    fn read_interleaved(&mut self, out: &mut [i16]) -> usize {
-        let frames = (out.len() / SPEAKER_CHANNELS).min(self.len_samples / SPEAKER_CHANNELS);
-        let sample_count = frames * SPEAKER_CHANNELS;
+    /// Remove complete frames into `out`. Returns how many frames were read.
+    pub(super) fn read(&mut self, out: &mut [i16]) -> usize {
+        let frames = (out.len() / CHANNELS).min(self.len / CHANNELS);
+        let count = frames * CHANNELS;
+        let first = count.min(SPEAKER_QUEUE_SAMPLES - self.read_index);
 
-        for (offset, sample) in out[..sample_count].iter_mut().enumerate() {
-            *sample = self.samples[(self.read_index + offset) % SPEAKER_QUEUE_CAPACITY_SAMPLES];
-        }
-        self.read_index = (self.read_index + sample_count) % SPEAKER_QUEUE_CAPACITY_SAMPLES;
-        self.len_samples -= sample_count;
+        out[..first].copy_from_slice(&self.samples[self.read_index..self.read_index + first]);
+        out[first..count].copy_from_slice(&self.samples[..count - first]);
+        self.read_index = (self.read_index + count) % SPEAKER_QUEUE_SAMPLES;
+        self.len -= count;
         frames
     }
 }
 
-type MicQueueStore = Mutex<CriticalSectionRawMutex, MicQueue>;
-type SpeakerQueueStore = Mutex<CriticalSectionRawMutex, SpeakerQueue>;
-
-struct Service {
-    mic_queue: MicQueueStore,
-    speaker_queue: SpeakerQueueStore,
+pub(super) struct Service {
+    pub(super) mic_blocks: Channel<CriticalSectionRawMutex, MicBlock, MIC_QUEUE_BLOCKS>,
+    pub(super) speaker: Mutex<CriticalSectionRawMutex, RefCell<SpeakerQueue>>,
 }
 
-impl Service {
-    const fn new() -> Self {
-        Self {
-            mic_queue: Mutex::new(MicQueue::new()),
-            speaker_queue: Mutex::new(SpeakerQueue::new()),
-        }
-    }
-}
-
-static SERVICE: StaticCell<Service> = StaticCell::new();
+static SERVICE: Service = Service {
+    mic_blocks: Channel::new(),
+    speaker: Mutex::new(RefCell::new(SpeakerQueue::new())),
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
     service: &'static Service,
 }
 
-/// Private CPU0 endpoint wrapped by the public `mic::Microphone` capability.
-pub(crate) struct MicReader {
-    service: &'static Service,
-}
+impl Runtime {
+    /// True when publishing another block would drop the oldest unread one.
+    pub(super) fn microphone_queue_is_full(self) -> bool {
+        self.service.mic_blocks.is_full()
+    }
 
-/// Private CPU0 endpoint wrapped by the public `speaker::Speaker` capability.
-pub(crate) struct SpeakerWriter {
-    service: &'static Service,
+    /// Queue a captured block for the application, dropping the oldest unread
+    /// block first when the application has fallen behind.
+    pub(super) fn publish_microphone_block(self, block: MicBlock) {
+        if self.service.mic_blocks.is_full() {
+            let _dropped = self.service.mic_blocks.try_receive();
+        }
+        if self.service.mic_blocks.try_send(block).is_err() {
+            debug!("Microphone block lost: queue still full");
+        }
+    }
+
+    /// Take queued speaker frames for playback. Returns how many frames were read.
+    pub(super) fn read_speaker(self, out: &mut [i16]) -> usize {
+        self.service
+            .speaker
+            .lock(|queue| queue.borrow_mut().read(out))
+    }
 }
 
 pub(crate) struct Endpoints {
+    pub(crate) microphone: Microphone,
+    pub(crate) speaker: Speaker,
     pub(crate) runtime: Runtime,
-    pub(crate) mic: MicReader,
-    pub(crate) speaker: SpeakerWriter,
 }
 
-pub(crate) fn init_endpoints() -> Endpoints {
-    // `Service` contains the speaker PCM ring and can be several KiB. Construct it
-    // directly in the `StaticCell` so bootstrap does not need a same-sized stack
-    // temporary before moving the value into static storage.
-    let service: &'static Service = SERVICE.init_with(Service::new);
+pub(crate) fn endpoints() -> Endpoints {
     Endpoints {
-        runtime: Runtime { service },
-        mic: MicReader { service },
-        speaker: SpeakerWriter { service },
-    }
-}
-
-impl MicReader {
-    pub(crate) fn try_read(&mut self, out: &mut [i16; SAMPLES_PER_BLOCK]) -> Option<MicBlockInfo> {
-        let mut queue = self.service.mic_queue.try_lock().ok()?;
-        queue.pop(out)
-    }
-}
-
-impl SpeakerWriter {
-    pub(crate) fn try_write_interleaved(&mut self, samples: &[i16]) -> usize {
-        let Ok(mut queue) = self.service.speaker_queue.try_lock() else {
-            return 0;
-        };
-        queue.write_interleaved(samples)
-    }
-
-    pub(crate) fn available_frames(&self) -> usize {
-        let Ok(queue) = self.service.speaker_queue.try_lock() else {
-            return 0;
-        };
-        queue.available_frames()
-    }
-}
-
-impl Runtime {
-    pub(super) async fn publish_audio(
-        self,
-        samples: &[i16; SAMPLES_PER_BLOCK],
-        peak_left: u16,
-        peak_right: u16,
-    ) -> u32 {
-        let mut queue = self.service.mic_queue.lock().await;
-        queue.push(samples, peak_left, peak_right)
-    }
-
-    pub(super) async fn read_speaker_interleaved(self, out: &mut [i16]) -> usize {
-        let mut queue = self.service.speaker_queue.lock().await;
-        queue.read_interleaved(out)
+        microphone: Microphone { service: &SERVICE },
+        speaker: Speaker { service: &SERVICE },
+        runtime: Runtime { service: &SERVICE },
     }
 }
