@@ -8,7 +8,7 @@ use core::fmt;
 
 pub(super) const BEACON_PACKET_BYTES: usize = 32;
 pub(super) const MAX_RADIO_PACKET_BYTES: usize = 250;
-pub(crate) const MAX_PAYLOAD: usize = 228;
+pub const MAX_PAYLOAD: usize = 228;
 pub(super) const PROTOCOL_VERSION: u8 = 1;
 
 const MAGIC: [u8; 4] = *b"HNHN";
@@ -23,10 +23,10 @@ const _: () = assert!(APPLICATION_HEADER_BYTES + MAX_PAYLOAD == MAX_RADIO_PACKET
 /// An all-zero identifier is invalid and cannot be represented as `DeviceId`.
 /// MAC addresses used by ESP-NOW routing stay private to the capability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct DeviceId([u8; 6]);
+pub struct DeviceId([u8; 6]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct InvalidDeviceId;
+pub struct InvalidDeviceId;
 
 impl TryFrom<[u8; 6]> for DeviceId {
     type Error = InvalidDeviceId;

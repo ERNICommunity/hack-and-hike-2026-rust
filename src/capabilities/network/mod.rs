@@ -15,17 +15,18 @@ use core::fmt;
 use embassy_time::Duration;
 use esp_hal::peripherals::WIFI;
 
-pub(crate) use channels::{Endpoints, Network, Runtime, init_endpoints};
-pub(crate) use message::{IncomingMessage, SendError};
-pub(crate) use protocol::{DeviceId, MAX_PAYLOAD};
+pub use channels::Network;
+pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
+pub use message::{IncomingMessage, SendError};
+pub use protocol::{DeviceId, MAX_PAYLOAD};
 pub(crate) use radio::start;
 
-pub(crate) const MAX_PEERS: usize = 10;
+pub const MAX_PEERS: usize = 10;
 const _: () = assert!(MAX_PEERS > 0);
 
 /// Valid 2.4 GHz ESP-NOW channel number used by this firmware.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Channel(u8);
+pub struct Channel(u8);
 
 impl Channel {
     const fn new(number: u8) -> Self {
@@ -33,7 +34,7 @@ impl Channel {
         Self(number)
     }
 
-    pub(crate) const fn number(self) -> u8 {
+    pub const fn number(self) -> u8 {
         self.0
     }
 }
@@ -51,9 +52,9 @@ pub(crate) const DEFAULT_DEVICE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Radio configuration owned by the CPU1 network capability.
 #[derive(Clone, Copy)]
 pub(crate) struct Config {
-    pub(crate) channel: Channel,
-    pub(crate) beacon_period: Duration,
-    pub(crate) peer_timeout: Duration,
+    pub channel: Channel,
+    pub beacon_period: Duration,
+    pub peer_timeout: Duration,
 }
 
 pub(crate) const DEFAULT_CONFIG: Config = Config {
@@ -64,11 +65,11 @@ pub(crate) const DEFAULT_CONFIG: Config = Config {
 
 /// CPU1-owned physical resource required by ESP-NOW.
 pub(crate) struct Resources {
-    pub(crate) wifi: WIFI<'static>,
+    pub wifi: WIFI<'static>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Status {
+pub enum Status {
     Starting,
     Ready,
     PeerPresent,
@@ -122,96 +123,36 @@ impl fmt::Display for MacAddress {
 
 /// One currently discovered peer. Routing MAC addresses stay private.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Peer {
-    pub(crate) id: DeviceId,
-    #[allow(
-        dead_code,
-        reason = "field is part of the application-facing network diagnostics capability contract"
-    )]
-    pub(crate) rssi_dbm: i8,
-    #[allow(
-        dead_code,
-        reason = "field is part of the application-facing network diagnostics capability contract"
-    )]
-    pub(crate) age_ms: u32,
-    #[allow(
-        dead_code,
-        reason = "field is part of the application-facing network diagnostics capability contract"
-    )]
-    pub(crate) expires_in_ms: u32,
+pub struct Peer {
+    pub id: DeviceId,
+    pub rssi_dbm: i8,
+    pub age_ms: u32,
+    pub expires_in_ms: u32,
 }
 
 /// Replace-latest diagnostics/peer snapshot cached by the CPU0 `Network` handle.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Snapshot {
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) revision: u32,
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) status: Status,
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) local_id: DeviceId,
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) channel: Channel,
-    pub(crate) peers: [Option<Peer>; MAX_PEERS],
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) tx_packets: u32,
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) rx_packets: u32,
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) tx_errors: u32,
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) rx_invalid: u32,
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) peer_evictions: u32,
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) tx_queue_full: u32,
-    #[allow(
-        dead_code,
-        reason = "part of the network diagnostics capability contract"
-    )]
-    pub(crate) rx_queue_full: u32,
+pub struct Snapshot {
+    pub revision: u32,
+    pub status: Status,
+    pub local_id: DeviceId,
+    pub channel: Channel,
+    pub peers: [Option<Peer>; MAX_PEERS],
+    pub tx_packets: u32,
+    pub rx_packets: u32,
+    pub tx_errors: u32,
+    pub rx_invalid: u32,
+    pub peer_evictions: u32,
+    pub tx_queue_full: u32,
+    pub rx_queue_full: u32,
 }
 
 impl Snapshot {
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing network diagnostics capability contract"
-    )]
-    pub(crate) fn peer_count(&self) -> usize {
+    pub fn peer_count(&self) -> usize {
         self.peers.iter().flatten().count()
     }
 
-    pub(crate) fn peers(&self) -> impl Iterator<Item = &Peer> {
+    pub fn peers(&self) -> impl Iterator<Item = &Peer> {
         self.peers.iter().flatten()
     }
 }

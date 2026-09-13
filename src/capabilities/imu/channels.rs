@@ -28,13 +28,13 @@ pub(crate) struct Runtime {
 
 /// CPU0 semantic IMU reader. Hardware polling, sensor register formats and
 /// cross-core synchronization remain private to the capability.
-pub(crate) struct Imu {
+pub struct Imu {
     service: &'static Service,
 }
 
 pub(crate) struct Endpoints {
-    pub(crate) runtime: Runtime,
-    pub(crate) input: Imu,
+    pub runtime: Runtime,
+    pub input: Imu,
 }
 
 pub(crate) fn init_endpoints() -> Endpoints {
@@ -48,7 +48,7 @@ pub(crate) fn init_endpoints() -> Endpoints {
 impl Imu {
     /// Take the newest coherent semantic IMU sample, if CPU1 published one since
     /// the previous take. Multiple CPU1 updates collapse to one latest value.
-    pub(crate) fn latest(&mut self) -> Option<Sample> {
+    pub fn latest(&mut self) -> Option<Sample> {
         self.service.latest.try_take()
     }
 }

@@ -11,21 +11,21 @@ use embedded_gui::{
 
 use crate::{capabilities::display::Surface, support::memory::storage};
 
-pub(crate) type GuiFramebufferBackend = EndianCorrectedBuffer<'static, Rgb565>;
-pub(crate) type GuiFramebuffer = FrameBuf<Rgb565, GuiFramebufferBackend>;
+pub type GuiFramebufferBackend = EndianCorrectedBuffer<'static, Rgb565>;
+pub type GuiFramebuffer = FrameBuf<Rgb565, GuiFramebufferBackend>;
 
 const _: () = assert!(core::mem::size_of::<Rgb565>() == 2);
 
 /// One reusable fixed-size framebuffer whose dimensions are chosen by the
 /// owning graphical application.
-pub(crate) struct GuiSurface {
+pub struct GuiSurface {
     framebuffer: Option<GuiFramebuffer>,
     width: usize,
     height: usize,
 }
 
 impl GuiSurface {
-    pub(crate) fn new(width: usize, height: usize) -> Self {
+    pub fn new(width: usize, height: usize) -> Self {
         assert!(width != 0 && height != 0);
         let pixels = storage::leaked_filled_slice(width * height, Rgb565::WHITE);
         let backend = EndianCorrectedBuffer::new(pixels, EndianCorrection::ToBigEndian);
@@ -36,11 +36,7 @@ impl GuiSurface {
         }
     }
 
-    pub(crate) fn present_with_overlay<
-        const NODES: usize,
-        const TEXT: usize,
-        const EVENTS: usize,
-    >(
+    pub fn present_with_overlay<const NODES: usize, const TEXT: usize, const EVENTS: usize>(
         &mut self,
         surface: &mut Surface<'_>,
         gui: &mut GuiContext<'static, NODES, TEXT, EVENTS>,
@@ -53,7 +49,7 @@ impl GuiSurface {
         });
     }
 
-    pub(crate) fn present_overlay_only(
+    pub fn present_overlay_only(
         &mut self,
         surface: &mut Surface<'_>,
         overlay: impl FnOnce(&mut GuiFramebuffer),

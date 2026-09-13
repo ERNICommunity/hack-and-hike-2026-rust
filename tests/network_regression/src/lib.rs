@@ -161,9 +161,7 @@ mod tests {
         let mut state = NetworkState::new(local, Channel(6), 500);
         state.mark_ready();
 
-        let outcome = state.record_receive(peer, mac, RssiDbm(-42), 1000);
-        assert!(outcome.is_new);
-        assert!(!outcome.evicted);
+        assert!(state.record_receive(peer, mac, RssiDbm(-42), 1000));
         assert_eq!(state.route_for(peer), Some(mac));
 
         let snapshot = state.snapshot(1200);

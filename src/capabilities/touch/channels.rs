@@ -33,13 +33,13 @@ pub(crate) struct Runtime {
 
 /// CPU0 semantic touch reader. Hardware polling and cross-core synchronization
 /// remain private to the capability.
-pub(crate) struct Touch {
+pub struct Touch {
     service: &'static Service,
 }
 
 pub(crate) struct Endpoints {
-    pub(crate) runtime: Runtime,
-    pub(crate) input: Touch,
+    pub runtime: Runtime,
+    pub input: Touch,
 }
 
 pub(crate) fn init_endpoints() -> Endpoints {
@@ -51,15 +51,11 @@ pub(crate) fn init_endpoints() -> Endpoints {
 }
 
 impl Touch {
-    pub(crate) fn next_edge(&mut self) -> Option<TouchEdge> {
+    pub fn next_edge(&mut self) -> Option<TouchEdge> {
         self.service.edges.try_receive().ok()
     }
 
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing touch capability contract"
-    )]
-    pub(crate) fn take_latest_point(&mut self) -> Option<TouchPoint> {
+    pub fn take_latest_point(&mut self) -> Option<TouchPoint> {
         self.service.latest_point.try_take()
     }
 }

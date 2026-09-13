@@ -153,14 +153,14 @@ pub(crate) struct Runtime {
 }
 
 /// CPU0 application-facing network capability.
-pub(crate) struct Network {
+pub struct Network {
     service: &'static Service,
     snapshot: Option<Snapshot>,
 }
 
 pub(crate) struct Endpoints {
-    pub(crate) runtime: Runtime,
-    pub(crate) network: Network,
+    pub runtime: Runtime,
+    pub network: Network,
 }
 
 pub(crate) fn init_endpoints() -> Endpoints {
@@ -176,11 +176,7 @@ pub(crate) fn init_endpoints() -> Endpoints {
 
 impl Network {
     /// Refresh the CPU0 peer/diagnostic cache from the newest CPU1 snapshot.
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing network diagnostics capability contract"
-    )]
-    pub(crate) fn refresh(&mut self) -> bool {
+    pub fn refresh(&mut self) -> bool {
         let Some(snapshot) = self.service.latest.try_take() else {
             return false;
         };
@@ -188,24 +184,20 @@ impl Network {
         true
     }
 
-    #[allow(
-        dead_code,
-        reason = "part of the application-facing network diagnostics capability contract"
-    )]
-    pub(crate) fn snapshot(&self) -> Option<&Snapshot> {
+    pub fn snapshot(&self) -> Option<&Snapshot> {
         self.snapshot.as_ref()
     }
 
-    pub(crate) fn peers(&self) -> impl Iterator<Item = &Peer> {
+    pub fn peers(&self) -> impl Iterator<Item = &Peer> {
         self.snapshot.iter().flat_map(|snapshot| snapshot.peers())
     }
 
-    pub(crate) fn receive(&mut self) -> Option<IncomingMessage> {
+    pub fn receive(&mut self) -> Option<IncomingMessage> {
         let mut queue = self.service.rx.try_lock().ok()?;
         queue.pop()
     }
 
-    pub(crate) fn send<T: Serialize>(
+    pub fn send<T: Serialize>(
         &mut self,
         recipient: Option<DeviceId>,
         value: &T,

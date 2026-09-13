@@ -18,8 +18,8 @@ const LEARNING_FIELD_MAX_UT: f32 = 4000.0;
 /// Post-calibration magnitude gate. The calibration intentionally normalizes
 /// the accepted ellipsoid to 50 uT, so a much wider 5..150 uT window hid bad
 /// fits. This still leaves generous room for noise and transient disturbances.
-pub(crate) const GOOD_FIELD_MIN_UT: f32 = 25.0;
-pub(crate) const GOOD_FIELD_MAX_UT: f32 = 80.0;
+pub const GOOD_FIELD_MIN_UT: f32 = 25.0;
+pub const GOOD_FIELD_MAX_UT: f32 = 80.0;
 
 const CALIBRATION_TARGET_SPAN_UT: f32 = 35.0;
 const ORIGIN_WARMUP_SAMPLES: u32 = 36;
@@ -32,7 +32,7 @@ const MAX_SAMPLES_PER_DIRECTION_BIN: u8 = 32;
 const REFIT_INTERVAL_SAMPLES: u16 = 16;
 const MIN_REFIT_DIRECTION_BINS: u32 = 4;
 
-pub(crate) struct Calibration {
+pub struct Calibration {
     normal: [[f32; PARAMS]; PARAMS],
     rhs: [f32; PARAMS],
     min: [f32; 3],
@@ -51,7 +51,7 @@ pub(crate) struct Calibration {
 }
 
 impl Calibration {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             normal: [[0.0; PARAMS]; PARAMS],
             rhs: [0.0; PARAMS],
@@ -71,7 +71,7 @@ impl Calibration {
         }
     }
 
-    pub(crate) fn observe(&mut self, field_ut: [f32; 3]) {
+    pub fn observe(&mut self, field_ut: [f32; 3]) {
         if self.model.is_some() || !raw_sample_is_plausible(field_ut) {
             return;
         }
@@ -175,11 +175,11 @@ impl Calibration {
         }
     }
 
-    pub(crate) fn is_ready(&self) -> bool {
+    pub fn is_ready(&self) -> bool {
         self.model.is_some()
     }
 
-    pub(crate) fn progress_percent(&self) -> u8 {
+    pub fn progress_percent(&self) -> u8 {
         if self.model.is_some() {
             return 100;
         }
@@ -223,7 +223,7 @@ impl Calibration {
         (coverage_percent as u8).min(85)
     }
 
-    pub(crate) fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
+    pub fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
         self.model
             .map(|model| model.apply(field_ut))
             .unwrap_or(field_ut)
@@ -281,6 +281,6 @@ fn raw_sample_is_plausible(field_ut: [f32; 3]) -> bool {
     (LEARNING_FIELD_MIN_UT..=LEARNING_FIELD_MAX_UT).contains(&strength)
 }
 
-pub(crate) fn vector_length(value: [f32; 3]) -> f32 {
+pub fn vector_length(value: [f32; 3]) -> f32 {
     sqrt_approx(dot3(value, value))
 }

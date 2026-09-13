@@ -9,21 +9,15 @@ mod channels;
 mod codecs;
 mod playback;
 
-#[cfg(feature = "speaker")]
 use esp_hal::peripherals::GPIO13;
-#[cfg(feature = "mic")]
 use esp_hal::peripherals::GPIO14;
 use esp_hal::peripherals::{DMA_CH0, GPIO0, GPIO33, GPIO34, I2S0};
 
 pub(crate) use capture::capture_task;
-#[cfg(feature = "mic")]
 pub(crate) use channels::MicReader;
-#[cfg(feature = "speaker")]
 pub(crate) use channels::SpeakerWriter;
-pub(crate) use channels::{Runtime, init_endpoints};
-#[cfg(feature = "speaker")]
+pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 pub(crate) use codecs::init_aw88298;
-#[cfg(feature = "mic")]
 pub(crate) use codecs::init_es7210;
 
 /// Physical sample rate shared by the I2S0 clock domain.
@@ -36,8 +30,6 @@ pub(crate) struct Resources {
     pub(crate) mclk: GPIO0<'static>,
     pub(crate) bclk: GPIO34<'static>,
     pub(crate) word_select: GPIO33<'static>,
-    #[cfg(feature = "mic")]
     pub(crate) data_in: GPIO14<'static>,
-    #[cfg(feature = "speaker")]
     pub(crate) data_out: GPIO13<'static>,
 }

@@ -6,21 +6,19 @@
 //! handles, synchronization objects, stacks, atomics, and DMA descriptors remain
 //! in internal RAM.
 
-#[cfg(feature = "ui")]
 use allocator_api2::boxed::Box;
 use allocator_api2::vec::Vec;
 use esp_alloc::EspHeap;
 
 use super::psram;
 
-pub(crate) type PsramVec<T> = Vec<T, &'static EspHeap>;
+pub type PsramVec<T> = Vec<T, &'static EspHeap>;
 
-pub(crate) fn vec_with_capacity<T>(capacity: usize) -> PsramVec<T> {
+pub fn vec_with_capacity<T>(capacity: usize) -> PsramVec<T> {
     Vec::with_capacity_in(capacity, psram::heap())
 }
 
-#[cfg(feature = "app-demo")]
-pub(crate) fn zeroed_bytes(len: usize) -> PsramVec<u8> {
+pub fn zeroed_bytes(len: usize) -> PsramVec<u8> {
     let mut bytes = vec_with_capacity(len);
     bytes.resize(len, 0);
     bytes
@@ -31,8 +29,7 @@ pub(crate) fn zeroed_bytes(len: usize) -> PsramVec<u8> {
 /// This is for APIs such as framebuffer/DMA abstractions that require a static
 /// backing slice. The allocation happens once during bootstrap and is never
 /// replaced or resized afterwards.
-#[cfg(any(feature = "ui", feature = "camera"))]
-pub(crate) fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
+pub fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
     let mut storage = vec_with_capacity(len);
     storage.resize(len, value);
     storage.leak()
@@ -48,8 +45,7 @@ pub(crate) fn leaked_filled_slice<T: Clone + 'static>(len: usize, value: T) -> &
 /// `new_uninit_in` establishes the final aligned PSRAM destination first. The
 /// initializer is then written into that destination exactly once before the
 /// allocation is exposed as initialized `T`.
-#[cfg(feature = "ui")]
-pub(crate) fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
+pub fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'static mut T {
     let mut storage = Box::<T, _>::new_uninit_in(psram::heap());
     // SAFETY: `storage` owns one properly aligned, uninitialized allocation for
     // exactly one `T`. `init()` is evaluated before the write, its value is
@@ -63,40 +59,35 @@ pub(crate) fn leaked_value_with<T: 'static>(init: impl FnOnce() -> T) -> &'stati
 
 /// Fixed-size PSRAM-backed storage. Capacity is established once and never
 /// changes afterwards.
-#[cfg(any(feature = "mic", feature = "app-demo"))]
-pub(crate) struct FixedPsramBuffer<T> {
+pub struct FixedPsramBuffer<T> {
     storage: PsramVec<T>,
 }
 
-#[cfg(any(feature = "mic", feature = "app-demo"))]
 impl<T: Clone> FixedPsramBuffer<T> {
-    pub(crate) fn filled(len: usize, value: T) -> Self {
+    pub fn filled(len: usize, value: T) -> Self {
         let mut storage = vec_with_capacity(len);
         storage.resize(len, value);
         Self { storage }
     }
 }
 
-#[cfg(any(feature = "mic", feature = "app-demo"))]
 impl<T> FixedPsramBuffer<T> {
-    pub(crate) fn as_slice(&self) -> &[T] {
+    pub fn as_slice(&self) -> &[T] {
         &self.storage
     }
 
-    pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.storage
     }
 }
 
 /// Fixed-capacity byte ring whose backing bytes live in PSRAM.
-#[cfg(feature = "app-demo")]
 pub(crate) struct PsramByteRing {
     storage: PsramVec<u8>,
     start: usize,
     len: usize,
 }
 
-#[cfg(feature = "app-demo")]
 impl PsramByteRing {
     pub(crate) fn new(capacity: usize) -> Self {
         assert!(capacity > 0);

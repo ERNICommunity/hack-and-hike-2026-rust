@@ -11,12 +11,6 @@ struct PeerState {
     rx_packets: u32,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct ReceiveOutcome {
-    pub(super) is_new: bool,
-    pub(super) evicted: bool,
-}
-
 pub(super) struct NetworkState {
     revision: u32,
     status: Status,
@@ -107,7 +101,7 @@ impl NetworkState {
         mac: MacAddress,
         rssi_dbm: RssiDbm,
         now_ms: u64,
-    ) -> ReceiveOutcome {
+    ) -> bool {
         self.rx_packets = self.rx_packets.wrapping_add(1);
 
         if let Some(peer) = self
@@ -121,13 +115,10 @@ impl NetworkState {
             peer.last_seen_ms = now_ms;
             peer.rx_packets = peer.rx_packets.wrapping_add(1);
             self.bump_revision();
-            return ReceiveOutcome {
-                is_new: false,
-                evicted: false,
-            };
+            return false;
         }
 
-        let (index, evicted) = self.slot_for_new_peer();
+        let index = self.slot_for_new_peer();
         self.peers[index] = Some(PeerState {
             device_id,
             mac,
@@ -136,19 +127,17 @@ impl NetworkState {
             rx_packets: 1,
         });
         self.bump_revision();
-        ReceiveOutcome {
-            is_new: true,
-            evicted,
-        }
+        true
     }
 
-    fn slot_for_new_peer(&mut self) -> (usize, bool) {
+    /// Index of a free peer slot, evicting the longest-unseen peer if needed.
+    fn slot_for_new_peer(&mut self) -> usize {
         let mut oldest_index = 0usize;
         let mut oldest_seen = u64::MAX;
 
         for (index, peer) in self.peers.iter().enumerate() {
             let Some(peer) = peer else {
-                return (index, false);
+                return index;
             };
             if peer.last_seen_ms < oldest_seen {
                 oldest_seen = peer.last_seen_ms;
@@ -157,7 +146,7 @@ impl NetworkState {
         }
 
         self.peer_evictions = self.peer_evictions.wrapping_add(1);
-        (oldest_index, true)
+        oldest_index
     }
 
     fn expire_peers(&mut self, now_ms: u64) {

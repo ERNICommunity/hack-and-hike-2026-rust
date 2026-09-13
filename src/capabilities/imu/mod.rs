@@ -13,7 +13,7 @@ mod task;
 
 use embassy_time::Duration;
 
-pub(crate) use channels::Imu;
+pub use channels::Imu;
 pub(crate) use channels::{Endpoints, Runtime, init_endpoints};
 pub(crate) use task::capture_task;
 
@@ -27,9 +27,9 @@ pub(crate) const DEFAULT_MAG_HZ: u32 = 30;
 /// Runtime-tunable fusion parameters.
 #[derive(Clone, Copy)]
 pub(crate) struct Config {
-    pub(crate) sample_period: Duration,
-    pub(crate) roll_pitch_alpha: f32,
-    pub(crate) yaw_alpha: f32,
+    pub sample_period: Duration,
+    pub roll_pitch_alpha: f32,
+    pub yaw_alpha: f32,
 }
 
 pub(crate) const DEFAULT_CONFIG: Config = Config {
@@ -42,7 +42,7 @@ pub(crate) const DEFAULT_CONFIG: Config = Config {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
-pub(crate) enum Status {
+pub enum Status {
     Starting = 0,
     Running = 1,
     Degraded = 2,
@@ -51,7 +51,7 @@ pub(crate) enum Status {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
-pub(crate) enum MagStatus {
+pub enum MagStatus {
     Missing = 0,
     Learning = 1,
     Ready = 2,
@@ -59,19 +59,19 @@ pub(crate) enum MagStatus {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Orientation {
+pub struct Orientation {
     /// Euler values are presentation/diagnostic outputs only. They necessarily
     /// have branch singularities and must not be used to reconstruct 3-D pose.
-    pub(crate) roll_deg: f32,
-    pub(crate) pitch_deg: f32,
+    pub roll_deg: f32,
+    pub pitch_deg: f32,
     /// Magnetometer-corrected magnetic heading. No magnetic-declination
     /// correction is applied, so this is magnetic yaw.
-    pub(crate) yaw_deg: f32,
+    pub yaw_deg: f32,
     /// World gravity (down) expressed in the physical display/screen frame.
-    pub(crate) gravity_screen: [f32; 3],
+    pub gravity_screen: [f32; 3],
     /// Magnetic north expressed in the same screen frame and kept orthogonal to
     /// gravity by fusion. This remains well-defined through Euler poles.
-    pub(crate) north_screen: [f32; 3],
+    pub north_screen: [f32; 3],
 }
 
 impl Default for Orientation {
@@ -92,48 +92,16 @@ impl Default for Orientation {
 /// optional magnetic vector in microtesla. `None` measurements indicate that no
 /// valid reading for that sensor is available in the current acquisition session.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Sample {
-    #[allow(
-        dead_code,
-        reason = "field is part of the application-facing IMU sample capability contract"
-    )]
-    pub(crate) revision: u32,
-    #[allow(
-        dead_code,
-        reason = "raw physical measurements are part of the IMU capability contract"
-    )]
-    pub(crate) acceleration_m_s2: Option<[f32; 3]>,
-    #[allow(
-        dead_code,
-        reason = "raw physical measurements are part of the IMU capability contract"
-    )]
-    pub(crate) angular_velocity_deg_s: Option<[f32; 3]>,
-    #[allow(
-        dead_code,
-        reason = "raw physical measurements are part of the IMU capability contract"
-    )]
-    pub(crate) magnetic_field_ut: Option<[f32; 3]>,
-    pub(crate) status: Status,
-    #[allow(
-        dead_code,
-        reason = "field is part of the application-facing IMU sample capability contract"
-    )]
-    pub(crate) orientation: Orientation,
-    #[allow(
-        dead_code,
-        reason = "field is part of the application-facing IMU sample capability contract"
-    )]
-    pub(crate) mag_status: MagStatus,
-    #[allow(
-        dead_code,
-        reason = "field is part of the application-facing IMU sample capability contract"
-    )]
-    pub(crate) mag_field_strength_ut: f32,
-    #[allow(
-        dead_code,
-        reason = "field is part of the application-facing IMU sample capability contract"
-    )]
-    pub(crate) mag_calibration_percent: u8,
+pub struct Sample {
+    pub revision: u32,
+    pub acceleration_m_s2: Option<[f32; 3]>,
+    pub angular_velocity_deg_s: Option<[f32; 3]>,
+    pub magnetic_field_ut: Option<[f32; 3]>,
+    pub status: Status,
+    pub orientation: Orientation,
+    pub mag_status: MagStatus,
+    pub mag_field_strength_ut: f32,
+    pub mag_calibration_percent: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
