@@ -1,0 +1,6 @@
+screen id="Log" width=276 height=240 {
+    grid cols="1fr" rows="18px 1fr" gap=6 padding=8 {
+        label id="title" text="LOG" col=0 row=0 style="crate::styles::title()"
+        label id="body" text="" col=0 row=1
+    }
+}

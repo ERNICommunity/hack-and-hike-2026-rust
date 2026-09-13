@@ -1,8 +1,10 @@
-//! Shared presentation primitives available to graphical applications.
+//! Reusable presentation helpers for graphical applications.
 //!
-//! Applications own navigation, screen composition and concrete views. This
-//! module only contains reusable drawing/embedded-gui infrastructure.
+//! Applications own their screens and navigation; this module only provides
+//! the palette, drawing helpers, a slider widget and the `embedded-gui` glue.
 
 pub mod common;
 pub mod gui;
+pub mod styles;
 pub mod theme;
+pub mod widgets;

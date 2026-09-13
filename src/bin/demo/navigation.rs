@@ -1,18 +1,24 @@
-//! Stock-application navigation state, touch routing, and rail rendering.
+//! The navigation rail on the left and the routing of touches.
 //!
-//! Navigation is application policy rather than shared UI infrastructure. It
-//! owns the active destination and physical touch reader, routing one gesture to
-//! either the navigation rail or the active content screen.
+//! A touch that starts on the rail selects a screen when it is released on
+//! the same button. A touch that starts in the content area is forwarded to
+//! the visible screen as a [`Pointer`].
 
-use hack_and_hike::capabilities::{
-    display::Surface,
-    touch::{Touch, TouchEdge, TouchPoint},
+use hack_and_hike::{
+    capabilities::{
+        display::Surface,
+        touch::{Touch, TouchEdge, TouchPoint},
+    },
+    ui::{
+        gui::{Pointer, PointerPhase},
+        theme::pixel,
+    },
 };
 
-use super::design;
+use crate::layout::NAV_WIDTH;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ViewId {
+pub(crate) enum ViewId {
     Network,
     Imu,
     Microphone,
@@ -23,152 +29,185 @@ pub(super) enum ViewId {
 }
 
 impl ViewId {
-    pub(super) const fn initial() -> Self {
-        Self::Log
+    /// Top-to-bottom order on the rail; the first one is shown at boot.
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Network,
+        Self::Imu,
+        Self::Microphone,
+        Self::Speaker,
+        Self::Camera,
+        Self::Settings,
+        Self::Log,
+    ];
+
+    const fn icon(self) -> &'static Icon {
+        match self {
+            Self::Network => &NETWORK_ICON,
+            Self::Imu => &IMU_ICON,
+            Self::Microphone => &MICROPHONE_ICON,
+            Self::Speaker => &SPEAKER_ICON,
+            Self::Camera => &CAMERA_ICON,
+            Self::Settings => &SETTINGS_ICON,
+            Self::Log => &LOG_ICON,
+        }
     }
 }
 
-const ICON_X: usize = (design::UI.navigation.width - design::NAV_ICON_SIZE) / 2;
-const ICON_Y_IN_BUTTON: usize = (design::UI.navigation.button_height - design::NAV_ICON_SIZE) / 2;
+const ICON_SIZE: usize = 16;
+/// One row per line, most significant bit on the left.
+type Icon = [u16; ICON_SIZE];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PointerPhase {
-    Pressed,
-    Moved,
-    Released,
-}
+const BUTTON_HEIGHT: usize = hack_and_hike::capabilities::display::HEIGHT / ViewId::ALL.len();
+const ICON_X: usize = (NAV_WIDTH - ICON_SIZE) / 2;
+const ICON_Y: usize = (BUTTON_HEIGHT - ICON_SIZE) / 2;
+const _: () = assert!(BUTTON_HEIGHT > ICON_SIZE);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ContentPointer {
-    pub x: i32,
-    pub y: i32,
-    pub phase: PointerPhase,
-}
+const NETWORK_ICON: Icon = [
+    0x0000, 0x0000, 0x0180, 0x03C0, 0x0660, 0x0C30, 0x1818, 0x0180, 0x0180, 0x1818, 0x0C30, 0x0660,
+    0x03C0, 0x0180, 0x0000, 0x0000,
+];
+const IMU_ICON: Icon = [
+    0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x7FFE, 0x0180, 0x0180, 0x0180, 0x0180, 0x07E0, 0x0DB0,
+    0x198C, 0x0180, 0x0180, 0x0000,
+];
+const MICROPHONE_ICON: Icon = [
+    0x03C0, 0x0660, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0660, 0x03C0, 0x0180, 0x1FF8,
+    0x0180, 0x0180, 0x07E0, 0x0000,
+];
+const SPEAKER_ICON: Icon = [
+    0x0000, 0x0300, 0x0700, 0x0F18, 0x7F0C, 0x7F06, 0x7F06, 0x7F06, 0x7F06, 0x7F06, 0x7F0C, 0x0F18,
+    0x0700, 0x0300, 0x0000, 0x0000,
+];
+const CAMERA_ICON: Icon = [
+    0x0000, 0x0000, 0x0F00, 0x1980, 0x7FFE, 0x4002, 0x43C2, 0x4662, 0x4C32, 0x4C32, 0x4662, 0x43C2,
+    0x4002, 0x7FFE, 0x0000, 0x0000,
+];
+const SETTINGS_ICON: Icon = [
+    0x0000, 0x0180, 0x0DB0, 0x1FF8, 0x319C, 0x6186, 0x6786, 0x6606, 0x6606, 0x6786, 0x6186, 0x319C,
+    0x1FF8, 0x0DB0, 0x0180, 0x0000,
+];
+const LOG_ICON: Icon = [
+    0x0000, 0x0000, 0x3FFC, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004,
+    0x3FFC, 0x0000, 0x0000, 0x0000,
+];
 
+/// Which part of the display a touch started on.
 #[derive(Clone, Copy)]
-enum GestureTarget {
-    Navigation(Option<ViewId>),
+enum Gesture {
+    /// Started on a rail button; `None` once the finger left that button.
+    Rail(Option<ViewId>),
     Content,
 }
 
-pub(super) struct NavigationInput {
+/// Owns the touch handle and turns raw touches into screen selections and
+/// content pointers.
+pub(crate) struct Navigation {
     touch: Touch,
-    target: Option<GestureTarget>,
+    gesture: Option<Gesture>,
 }
 
-impl NavigationInput {
-    pub(super) const fn new(touch: Touch) -> Self {
+impl Navigation {
+    pub(crate) const fn new(touch: Touch) -> Self {
         Self {
             touch,
-            target: None,
+            gesture: None,
         }
     }
 
-    pub(super) fn poll(&mut self, mut on_content: impl FnMut(ContentPointer)) -> Option<ViewId> {
+    /// Process all pending touches. Content touches go to `on_content`; the
+    /// return value is a screen the user selected on the rail, if any.
+    pub(crate) fn poll(&mut self, mut on_content: impl FnMut(Pointer)) -> Option<ViewId> {
         let mut selected = None;
 
         while let Some(edge) = self.touch.next_edge() {
-            self.flush_latest_movement(&mut on_content);
-
+            self.forward_movement(&mut on_content);
             match edge {
                 TouchEdge::Pressed(point) => {
-                    self.target = if usize::from(point.x) < design::UI.navigation.width {
-                        Some(GestureTarget::Navigation(view_at(point)))
+                    self.gesture = Some(if usize::from(point.x) < NAV_WIDTH {
+                        Gesture::Rail(view_at(point))
                     } else {
                         on_content(content_pointer(point, PointerPhase::Pressed));
-                        Some(GestureTarget::Content)
-                    };
+                        Gesture::Content
+                    });
                 }
                 TouchEdge::Released(point) => {
-                    match self.target {
-                        Some(GestureTarget::Navigation(candidate))
-                            if candidate.is_some() && candidate == view_at(point) =>
-                        {
-                            selected = candidate;
+                    match self.gesture {
+                        Some(Gesture::Rail(Some(view))) if view_at(point) == Some(view) => {
+                            selected = Some(view);
                         }
-                        Some(GestureTarget::Content) => {
+                        Some(Gesture::Content) => {
                             on_content(content_pointer(point, PointerPhase::Released));
                         }
                         _ => {}
                     }
-                    self.target = None;
+                    self.gesture = None;
                 }
             }
         }
 
-        self.flush_latest_movement(&mut on_content);
-        if self.target.is_none() {
+        self.forward_movement(&mut on_content);
+        if self.gesture.is_none() {
+            // Discard movement that belongs to no gesture.
             let _ = self.touch.take_latest_point();
         }
-
         selected
     }
 
-    fn flush_latest_movement(&mut self, on_content: &mut impl FnMut(ContentPointer)) {
+    fn forward_movement(&mut self, on_content: &mut impl FnMut(Pointer)) {
         let Some(point) = self.touch.take_latest_point() else {
             return;
         };
-
-        match &mut self.target {
-            Some(GestureTarget::Navigation(candidate)) => {
+        match &mut self.gesture {
+            Some(Gesture::Rail(candidate)) => {
                 if view_at(point) != *candidate {
                     *candidate = None;
                 }
             }
-            Some(GestureTarget::Content) => {
-                on_content(content_pointer(point, PointerPhase::Moved));
-            }
+            Some(Gesture::Content) => on_content(content_pointer(point, PointerPhase::Moved)),
             None => {}
         }
     }
 }
 
-fn content_pointer(point: TouchPoint, phase: PointerPhase) -> ContentPointer {
-    ContentPointer {
-        x: i32::from(point.x) - design::UI.navigation.width as i32,
+fn content_pointer(point: TouchPoint, phase: PointerPhase) -> Pointer {
+    Pointer {
+        x: i32::from(point.x) - NAV_WIDTH as i32,
         y: i32::from(point.y),
         phase,
     }
 }
 
 fn view_at(point: TouchPoint) -> Option<ViewId> {
-    let nav = design::UI.navigation;
-    if usize::from(point.x) >= nav.width {
+    if usize::from(point.x) >= NAV_WIDTH {
         return None;
     }
-
-    let index = (usize::from(point.y) / nav.button_height).min(nav.items.len() - 1);
-    nav.items.get(index).map(|item| item.view)
+    let index = (usize::from(point.y) / BUTTON_HEIGHT).min(ViewId::ALL.len() - 1);
+    Some(ViewId::ALL[index])
 }
 
-pub(super) fn render(surface: &mut Surface<'_>, active: ViewId) {
-    let nav = design::UI.navigation;
-    debug_assert_eq!(surface.width(), nav.width);
-    surface.render_scanlines(|screen_y, pixels| {
-        let button_index = (screen_y / nav.button_height).min(nav.items.len() - 1);
-        let item = &nav.items[button_index];
-        let selected = item.view == active;
-        let background = if selected {
-            nav.selected_background
+/// Draw the rail with `active` highlighted.
+pub(crate) fn render(surface: &mut Surface<'_>, active: ViewId) {
+    debug_assert_eq!(surface.width(), NAV_WIDTH);
+    surface.render_scanlines(|y, pixels| {
+        let index = (y / BUTTON_HEIGHT).min(ViewId::ALL.len() - 1);
+        let view = ViewId::ALL[index];
+        let (background, foreground) = if view == active {
+            (pixel::LIGHT_BLUE, pixel::WHITE)
         } else {
-            nav.normal_background
-        };
-        let foreground = if selected {
-            nav.selected_icon
-        } else {
-            nav.normal_icon
+            (pixel::DARK_BLUE, pixel::LIGHT_GRAY)
         };
 
-        pixels.fill(background.raw());
-        pixels[nav.width - 1] = nav.divider.raw();
+        pixels.fill(background);
+        pixels[NAV_WIDTH - 1] = pixel::LIGHT_GRAY;
 
-        let button_start = button_index * nav.button_height;
-        let local_y = screen_y - button_start;
-        if (ICON_Y_IN_BUTTON..ICON_Y_IN_BUTTON + design::NAV_ICON_SIZE).contains(&local_y) {
-            let row_bits = item.icon[local_y - ICON_Y_IN_BUTTON];
-            for icon_x in 0..design::NAV_ICON_SIZE {
-                if row_bits & (1 << (design::NAV_ICON_SIZE - 1 - icon_x)) != 0 {
-                    pixels[ICON_X + icon_x] = foreground.raw();
+        let row_in_button = y - index * BUTTON_HEIGHT;
+        if let Some(row) = row_in_button.checked_sub(ICON_Y)
+            && row < ICON_SIZE
+        {
+            let bits = view.icon()[row];
+            for (column, pixel) in pixels[ICON_X..ICON_X + ICON_SIZE].iter_mut().enumerate() {
+                if bits & (1 << (ICON_SIZE - 1 - column)) != 0 {
+                    *pixel = foreground;
                 }
             }
         }

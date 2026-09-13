@@ -1,8 +1,0 @@
-screen id="Microphone" width=276 height=240 theme="light" {
-    grid cols="10px 256px 10px" rows="18px 101px 18px 101px 2px" gap=0 padding=0 {
-        label id="left_label_slot" text="" col=1 row=0
-        label id="left_waveform" text="" col=1 row=1
-        label id="right_label_slot" text="" col=1 row=2
-        label id="right_waveform" text="" col=1 row=3
-    }
-}
