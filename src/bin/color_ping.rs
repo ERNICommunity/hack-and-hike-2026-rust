@@ -1,8 +1,9 @@
 //! Display, touch, radio and speaker in one loop.
 //!
 //! Tapping one of four colour bands broadcasts that colour to every board
-//! nearby, and each of them plays a 300 ms tone for it. Flash this to two
-//! boards and tap.
+//! nearby, and each of them plays a 300 ms tone for it. A band lights up
+//! while you hold it, and on the receiving board while its tone plays. Flash
+//! this to two boards and tap.
 
 #![no_std]
 #![no_main]
@@ -73,20 +74,26 @@ impl Color {
         }
     }
 
-    const fn fill(self) -> Rgb565 {
-        match self {
-            Self::Red => Rgb565::new(31, 0, 0),
-            Self::Green => Rgb565::new(0, 63, 0),
-            Self::Blue => Rgb565::new(0, 0, 31),
-            Self::Yellow => Rgb565::new(31, 63, 0),
+    /// A band is dim until it is touched or its tone plays.
+    const fn fill(self, lit: bool) -> Rgb565 {
+        match (self, lit) {
+            (Self::Red, false) => Rgb565::new(15, 0, 0),
+            (Self::Red, true) => Rgb565::new(31, 0, 0),
+            (Self::Green, false) => Rgb565::new(0, 30, 0),
+            (Self::Green, true) => Rgb565::new(0, 63, 0),
+            (Self::Blue, false) => Rgb565::new(0, 0, 15),
+            (Self::Blue, true) => Rgb565::new(0, 0, 31),
+            (Self::Yellow, false) => Rgb565::new(15, 30, 0),
+            (Self::Yellow, true) => Rgb565::new(31, 63, 0),
         }
     }
 
     /// Readable text on top of [`Color::fill`].
-    const fn label(self) -> Rgb565 {
+    const fn label(self, lit: bool) -> Rgb565 {
         match self {
-            Self::Red | Self::Blue => theme::WHITE,
-            Self::Green | Self::Yellow => theme::CHARCOAL,
+            // The bright halves of these two are too pale for white text.
+            Self::Green | Self::Yellow if lit => theme::CHARCOAL,
+            _ => theme::WHITE,
         }
     }
 
@@ -110,8 +117,13 @@ struct ColorPing {
 /// What the screen shows.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 struct Shown {
+    /// The last colour this board broadcast.
     sent: Option<Color>,
+    /// The last colour another board asked for.
     heard: Option<Color>,
+    /// The band that is lit right now: the one under the finger, or the one
+    /// whose tone is playing.
+    lit: Option<Color>,
 }
 
 #[esp_rtos::main]
@@ -127,13 +139,15 @@ async fn main(_spawner: Spawner) -> ! {
     let full_screen = Region::new(0, 0, WIDTH, HEIGHT);
     let mut screen = GuiSurface::new(WIDTH, HEIGHT);
     let mut shown = Shown::default();
+    let mut touched = None;
     let mut tone = TonePlayer::new();
     let mut drawn = None;
 
     loop {
-        handle_touch(&mut touch, &mut network, &mut shown);
+        handle_touch(&mut touch, &mut network, &mut shown, &mut touched);
         handle_network(&mut network, &mut tone, &mut shown);
         tone.update(&mut speaker);
+        shown.lit = touched.or(tone.playing());
 
         if drawn != Some(shown) {
             drawn = Some(shown);
@@ -146,10 +160,17 @@ async fn main(_spawner: Spawner) -> ! {
     }
 }
 
-/// A tap on a colour band selects that colour and broadcasts it.
-fn handle_touch(touch: &mut Touch, network: &mut Network, shown: &mut Shown) {
+/// A tap on a colour band selects that colour and broadcasts it. `touched`
+/// holds the band under the finger, so the screen can light it up.
+fn handle_touch(
+    touch: &mut Touch,
+    network: &mut Network,
+    shown: &mut Shown,
+    touched: &mut Option<Color>,
+) {
     while let Some(edge) = touch.next_edge() {
         let TouchEdge::Pressed(point) = edge else {
+            *touched = None;
             continue;
         };
         if i32::from(point.y) < BAND_TOP {
@@ -157,6 +178,7 @@ fn handle_touch(touch: &mut Touch, network: &mut Network, shown: &mut Shown) {
         }
 
         let color = Color::at_x(point.x);
+        *touched = Some(color);
         shown.sent = Some(color);
         if network.broadcast(&ColorPing { color }).is_err() {
             log::warn!("Send queue is full; the tap was not broadcast");
@@ -205,17 +227,18 @@ fn draw(frame: &mut GuiFramebuffer, shown: Shown) {
 
     for (band, color) in Color::ALL.into_iter().enumerate() {
         let x = band as i32 * BAND_WIDTH as i32;
+        let lit = shown.lit == Some(color);
         common::fill(
             frame,
             Rect::new(x, BAND_TOP, BAND_WIDTH, BAND_HEIGHT),
-            color.fill(),
+            color.fill(lit),
         );
         common::centered_text(
             frame,
             Rect::new(x, BAND_TOP + 30, BAND_WIDTH, 16),
             color.name(),
             common::TITLE_FONT,
-            color.label(),
+            color.label(lit),
         );
         text.clear();
         let _ = write!(text, "{} Hz", color.frequency_hz());
@@ -224,7 +247,7 @@ fn draw(frame: &mut GuiFramebuffer, shown: Shown) {
             Rect::new(x, BAND_TOP + 52, BAND_WIDTH, 14),
             &text,
             common::BODY_FONT,
-            color.label(),
+            color.label(lit),
         );
         if shown.sent == Some(color) {
             common::fill(
@@ -247,6 +270,8 @@ struct TonePlayer {
     phase: u32,
     phase_step: u32,
     frames_left: usize,
+    /// The colour being played, so the screen can light up its band.
+    color: Option<Color>,
 }
 
 impl TonePlayer {
@@ -255,7 +280,13 @@ impl TonePlayer {
             phase: 0,
             phase_step: 0,
             frames_left: 0,
+            color: None,
         }
+    }
+
+    /// The colour whose tone is playing, if any.
+    const fn playing(&self) -> Option<Color> {
+        self.color
     }
 
     fn start(&mut self, color: Color) {
@@ -263,6 +294,7 @@ impl TonePlayer {
         self.phase_step =
             ((u64::from(color.frequency_hz()) << 32) / u64::from(audio::SAMPLE_RATE_HZ)) as u32;
         self.frames_left = TONE_FRAMES;
+        self.color = Some(color);
     }
 
     fn update(&mut self, speaker: &mut Speaker) {
@@ -284,6 +316,7 @@ impl TonePlayer {
             speaker.write(samples);
             self.frames_left -= frames;
         }
+        self.color = None;
     }
 }
 
