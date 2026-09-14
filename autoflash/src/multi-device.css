@@ -1,0 +1,116 @@
+.terminal-card {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.terminal-tabs {
+  min-height: 42px;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: #101316;
+  scrollbar-color: #343d43 #101316;
+  scrollbar-width: thin;
+}
+
+.terminal-tabs:empty {
+  display: none;
+}
+
+.terminal-tab {
+  position: relative;
+  min-width: 124px;
+  padding: 8px 14px 7px 28px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 2px solid transparent;
+  background: #101316;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.terminal-tab::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+.terminal-tab.connected::before,
+.terminal-tab.flashing::before {
+  background: var(--accent);
+}
+
+.terminal-tab.error::before {
+  background: var(--danger);
+}
+
+.terminal-tab.active {
+  border-bottom-color: var(--accent);
+  background: #15191d;
+  color: var(--text);
+}
+
+.terminal-tab:hover {
+  background: #15191d;
+  color: var(--text);
+}
+
+.terminal-tab.autoflash {
+  margin-left: auto;
+  border-left: 1px solid var(--line);
+}
+
+.terminal-tab.autoflash::before {
+  background: var(--dim);
+}
+
+.terminal-tab span,
+.terminal-tab small {
+  display: block;
+  white-space: nowrap;
+}
+
+.terminal-tab span {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.terminal-tab small {
+  margin-top: 2px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 7px;
+}
+
+@media (max-width: 580px) {
+  .terminal-tab {
+    min-width: 108px;
+    padding-right: 10px;
+  }
+}
+
+.device-actions {
+  grid-template-columns: 1fr 1fr;
+}
+
+.device-actions #authorize-button {
+  grid-column: 1 / -1;
+}
+
+.button.remove-device {
+  color: var(--danger);
+}
+
+.button.remove-device:hover:not(:disabled) {
+  border-color: rgba(255, 112, 106, 0.48);
+  background: rgba(255, 112, 106, 0.08);
+}
