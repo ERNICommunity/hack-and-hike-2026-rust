@@ -66,18 +66,22 @@ Without `--bin`, `cargo build --release` builds all of them. The first build
 takes a few minutes; later builds take seconds.
 
 The library's documentation, with every capability and its methods, is one
-command away and opens in your browser:
+command away:
 
 ```bash
-cargo doc --open
+./scripts/doc.sh
 ```
+
+It builds the documentation and serves it at
+<http://localhost:8000/hack_and_hike/>; VS Code forwards the port from the
+devcontainer, so open that link in your browser. Stop the server with Ctrl+C.
 
 That shows the public API, what an application calls. Every private struct,
 field and function has a doc comment too, explaining how the firmware works
 inside; include them with:
 
 ```bash
-cargo doc --document-private-items --open
+./scripts/doc.sh --document-private-items
 ```
 
 In the editor, hover over any name to read the same comments.
