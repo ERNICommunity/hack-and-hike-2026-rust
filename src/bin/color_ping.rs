@@ -36,20 +36,31 @@ use hack_and_hike::{
     },
 };
 
+// Writes the application descriptor the bootloader checks before starting
+// the firmware. Every application needs this line exactly once.
 esp_bootloader_esp_idf::esp_app_desc!();
 
+/// How long a received colour's tone plays.
 const TONE_DURATION_MS: usize = 300;
+/// The same duration in audio frames.
 const TONE_FRAMES: usize = audio::SAMPLE_RATE_HZ as usize * TONE_DURATION_MS / 1_000;
+/// Tone loudness, 0.0 to 1.0.
 const TONE_VOLUME: f32 = 0.15;
+/// Frames generated per chunk: small enough for the stack, large enough to
+/// keep the speaker queue topped up at a 5 ms loop period.
 const AUDIO_CHUNK_FRAMES: usize = 128;
 
 /// The explanation at the top; the colour bands fill the rest.
 const BANNER: Rectangle = Rectangle::new(Point::zero(), Size::new(SIZE.width, 74));
+/// Where the bands start: touches above this line are ignored.
 const BAND_TOP: i32 = BANNER.size.height as i32;
+/// Each of the four bands.
 const BAND_SIZE: Size = Size::new(SIZE.width / 4, SIZE.height - BANNER.size.height);
 /// The bar marking the colour this board sent last.
 const MARKER_HEIGHT: u32 = 12;
 
+/// One of the four colour bands. It travels inside [`ColorPing`], so it
+/// derives `Serialize` and `Deserialize`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Color {
     Red,
@@ -77,6 +88,7 @@ impl Color {
         )
     }
 
+    /// The label drawn on the band.
     const fn name(self) -> &'static str {
         match self {
             Self::Red => "RED",
@@ -109,6 +121,7 @@ impl Color {
         }
     }
 
+    /// The pitch of the band's tone: one step higher per band.
     const fn frequency_hz(self) -> f32 {
         match self {
             Self::Red => 800.0,
@@ -154,10 +167,14 @@ struct ColorPingApp {
     tone: TonePlayer,
     /// The band under the finger, while one is pressed.
     touched: Option<Color>,
+    /// What the screen should show now.
     shown: Shown,
+    /// What was drawn last, to skip redrawing an unchanged picture.
     drawn: Option<Shown>,
 }
 
+/// The entry point: build the application, then advance touch, network,
+/// audio and drawing a little on every iteration.
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     let Board {
@@ -192,22 +209,22 @@ async fn main(_spawner: Spawner) -> ! {
 }
 
 impl ColorPingApp {
-    /// A tap on a colour band selects that colour and broadcasts it.
+    /// A tap on a colour band selects that colour and broadcasts it. The band
+    /// stays lit until the finger lifts.
     fn handle_touch(&mut self) {
         while let Some(event) = self.touch.next_event() {
-            let TouchEvent::Pressed(point) = event else {
-                self.touched = None;
-                continue;
-            };
-            if point.y < BAND_TOP {
-                continue;
-            }
-
-            let color = Color::at_x(point.x);
-            self.touched = Some(color);
-            self.shown.sent = Some(color);
-            if let Err(error) = self.network.broadcast(&ColorPing { color }) {
-                log::warn!("The tap was not broadcast: {error}");
+            match event {
+                TouchEvent::Pressed(point) if point.y >= BAND_TOP => {
+                    let color = Color::at_x(point.x);
+                    self.touched = Some(color);
+                    self.shown.sent = Some(color);
+                    if let Err(error) = self.network.broadcast(&ColorPing { color }) {
+                        log::warn!("The tap was not broadcast: {error}");
+                    }
+                }
+                TouchEvent::Released(_) => self.touched = None,
+                // Moves keep the band lit; presses on the banner do nothing.
+                TouchEvent::Pressed(_) | TouchEvent::Moved(_) => {}
             }
         }
     }
@@ -223,6 +240,8 @@ impl ColorPingApp {
         }
     }
 
+    /// Redraw when the picture changed; the canvas then sends only the
+    /// pixels that differ.
     fn draw_if_changed(&mut self) {
         if self.drawn == Some(self.shown) {
             return;
@@ -233,6 +252,7 @@ impl ColorPingApp {
     }
 }
 
+/// Paint the whole picture for `shown`: banner, status line and the bands.
 fn draw(canvas: &mut Canvas, shown: Shown) {
     canvas.fill(BANNER, theme::WHITE);
     common::text(
@@ -295,7 +315,9 @@ fn draw(canvas: &mut Canvas, shown: Shown) {
 /// speaker queue accepts, so the main loop never blocks on audio.
 #[derive(Default)]
 struct TonePlayer {
+    /// The oscillator of the tone in progress; `None` when silent.
     wave: Option<SineWave>,
+    /// Frames still to generate.
     frames_left: usize,
     /// The colour being played, so the screen can light up its band.
     color: Option<Color>,
@@ -307,12 +329,14 @@ impl TonePlayer {
         self.color
     }
 
+    /// Start (or restart) the tone for `color`.
     fn start(&mut self, color: Color) {
         self.wave = Some(SineWave::new(color.frequency_hz()));
         self.frames_left = TONE_FRAMES;
         self.color = Some(color);
     }
 
+    /// Queue as much of the tone as the speaker accepts right now.
     fn play(&mut self, speaker: &mut Speaker) {
         let Some(wave) = &mut self.wave else {
             return;

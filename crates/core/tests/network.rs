@@ -93,10 +93,10 @@ fn oversized_messages_are_refused_when_queued() {
         const NAME: &'static str = "huge";
     }
 
+    const _: () = assert!(8 * 32 > MAX_PAYLOAD);
     let huge = Huge {
         bytes: [[0; 32]; 8],
     };
-    assert!(8 * 32 > MAX_PAYLOAD);
     assert!(matches!(
         OutgoingMessage::new(None, &huge),
         Err(SendError::MessageTooLarge)
