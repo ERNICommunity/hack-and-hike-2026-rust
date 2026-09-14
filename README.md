@@ -218,27 +218,32 @@ Line by line:
 ## Create your own application
 
 Copy `src/bin/template.rs` to a new file, for example `src/bin/my_hack.rs`.
-It is the same loop with touch instead of the IMU and the simplest way to
-draw, and it builds and runs as it is: the screen is dark blue and turns light
-blue while you touch it.
+It builds and runs as it is: a light blue spot follows your finger on a dark
+blue screen. Its loop is the shape every application has:
 
 ```rust
 loop {
     // 1. Read input.
     while let Some(event) = touch.next_event() {
-        pressed = !matches!(event, TouchEvent::Released(_));
+        finger = match event {
+            TouchEvent::Pressed(point) | TouchEvent::Moved(point) => Some(point),
+            TouchEvent::Released(_) => None,
+        };
     }
 
-    // 2. Update your state.
-    let color = if pressed { theme::LIGHT_BLUE } else { theme::DARK_BLUE };
-
-    // 3. Draw, but only when something changed.
-    if shown != Some(color) {
-        shown = Some(color);
-        display.surface(SCREEN).render_scanlines(|_y, row| row.fill(color));
+    // 2. Update your state and draw, but only when something changed.
+    if finger != shown {
+        shown = finger;
+        canvas.clear(theme::DARK_BLUE);
+        if let Some(point) = finger {
+            let Ok(()) = Circle::with_center(point, SPOT_DIAMETER)
+                .into_styled(PrimitiveStyle::with_fill(theme::LIGHT_BLUE))
+                .draw(&mut canvas);
+        }
+        canvas.show(&mut display.surface(SCREEN));
     }
 
-    // Let the rest of the system run. Every loop needs an `.await`.
+    // 3. Let the rest of the system run. Every loop needs an `.await`.
     Timer::after(Duration::from_millis(10)).await;
 }
 ```
@@ -442,7 +447,7 @@ log::info!("button pressed at {}", point.x);
 | Binary | Uses | What it shows |
 | --- | --- | --- |
 | `imu_color` | display, IMU | The smallest possible application (above) |
-| `template` | display, touch | The file to copy for your own application |
+| `template` | display, touch | The file to copy: a spot follows your finger |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `demo` | everything | A screen per capability with navigation |
 
