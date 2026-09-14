@@ -21,11 +21,15 @@ use esp_hal::{
 
 use super::{BYTES_PER_PIXEL, Resources, ScanlineSource, WIDTH, controller};
 
-/// The SPI clock is the ceiling on drawing speed: a full frame is 153,600
-/// bytes, 15 ms at 80 MHz and 31 ms at 40 MHz. 80 MHz is the ESP32-S3's
-/// maximum; the panel is specified for less but runs it in practice. If the
-/// picture shows noise or wrong pixels, 40 MHz is the safe setting.
-const DISPLAY_SPI_MHZ: u32 = 80;
+/// Clock for controller setup and commands: the rate the panel is known to
+/// accept everything at.
+const COMMAND_SPI_MHZ: u32 = 40;
+/// Clock for pixel data, the ceiling on drawing speed: a full frame is
+/// 153,600 bytes, 15 ms at 80 MHz and 31 ms at 40 MHz. 80 MHz is the
+/// ESP32-S3's maximum; the panel is specified for less but takes pixel data
+/// at that rate in practice. If the picture shows noise or wrong pixels, set
+/// this to `COMMAND_SPI_MHZ`.
+const PIXEL_SPI_MHZ: u32 = 80;
 /// Scanlines per DMA batch. Seven full-width rows are 4,480 bytes, which keeps
 /// a batch close to one 4 KiB GDMA descriptor while cutting per-transfer
 /// overhead for full-frame producers such as the camera.
@@ -86,14 +90,11 @@ pub(super) fn init(resources: Resources, delay: Delay) -> Transport {
         cs,
     } = resources;
 
-    let spi = Spi::new(
-        spi2,
-        SpiConfig::default().with_frequency(Rate::from_mhz(DISPLAY_SPI_MHZ)),
-    )
-    .expect("LCD SPI configuration is valid")
-    .with_sck(sck)
-    .with_mosi(mosi)
-    .with_dma(dma);
+    let spi = Spi::new(spi2, spi_config(COMMAND_SPI_MHZ))
+        .expect("LCD SPI configuration is valid")
+        .with_sck(sck)
+        .with_mosi(mosi)
+        .with_dma(dma);
 
     let control_rx = esp_hal::dma_rx_buffer!(CONTROL_DMA_BYTES).expect("LCD control DMA buffer");
     let control_tx = esp_hal::dma_tx_buffer!(CONTROL_DMA_BYTES).expect("LCD control DMA buffer");
@@ -111,6 +112,15 @@ pub(super) fn init(resources: Resources, delay: Delay) -> Transport {
         cs,
         dc,
     }
+}
+
+fn spi_config(mhz: u32) -> SpiConfig {
+    SpiConfig::default().with_frequency(Rate::from_mhz(mhz))
+}
+
+fn set_clock(spi: &mut DisplaySpiDma, mhz: u32) {
+    spi.apply_config(&spi_config(mhz))
+        .expect("the LCD SPI clock is within the peripheral's range");
 }
 
 impl Transport {
@@ -187,6 +197,7 @@ impl Transport {
             &[y0_high, y0_low, y1_high, y1_low],
         );
         self.write_command(&mut spi, DCS_MEMORY_WRITE, &[]);
+        set_clock(&mut spi, PIXEL_SPI_MHZ);
 
         self.pipeline = Some(Pipeline::Idle { spi, free, spare });
     }
@@ -225,8 +236,9 @@ impl Transport {
 
     /// Wait for the last batch of the current region to reach the panel.
     fn finish(&mut self, while_transferring: impl FnMut()) {
-        let (spi, free, spare) = self.take_pipeline().drain(while_transferring);
+        let (mut spi, free, spare) = self.take_pipeline().drain(while_transferring);
         self.cs.set_high();
+        set_clock(&mut spi, COMMAND_SPI_MHZ);
         self.pipeline = Some(Pipeline::Idle { spi, free, spare });
     }
 }
