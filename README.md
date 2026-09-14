@@ -503,6 +503,7 @@ log::info!("button pressed at {}", point.x);
 | --- | --- | --- |
 | `imu_color` | display, IMU | The smallest possible application (above) |
 | `template` | display, touch | The file to copy: a spot follows your finger |
+| `light_meter` | display, light | Lux and proximity as numbers and a bar; dark colours in the dark |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `demo` | everything | A screen per capability with navigation |
 
@@ -595,7 +596,7 @@ are internal to the library; everything else is private to its module.
 crates/core/        hardware-independent logic with tests
 src/
 ├── lib.rs          the library every application uses
-├── bin/            the applications: demo/, imu_color.rs, color_ping.rs, template.rs
+├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, template.rs
 ├── board/          Board::init(): power-up order and the CPU1 runtimes
 ├── capabilities/   one module per capability: the APIs you call
 ├── platform/       facts about the PCB: pins, power rails, I2C bus
