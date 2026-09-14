@@ -27,8 +27,8 @@ static EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
 
 /// Everything CPU1 owns: its hardware and the runtime side of each capability.
 pub(super) struct Cpu1 {
-    /// The shared I2C bus of the power chip, IO expander, IMU and touch
-    /// controller, still in blocking mode.
+    /// The shared I2C bus of the power chip, IO expander, IMU, touch
+    /// controller and light sensor, still in blocking mode.
     pub(super) system_i2c: i2c::SystemI2cBlocking,
     /// I2S and its pins, for microphone and speaker.
     pub(super) audio_resources: audio::Resources,

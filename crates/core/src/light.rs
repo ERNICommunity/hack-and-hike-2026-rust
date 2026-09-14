@@ -91,11 +91,16 @@ pub fn decode(block: [u8; DATA_BLOCK_LEN]) -> Option<Reading> {
 
 /// Illuminance in lux from the raw counts, for the sensor's `gain` factor
 /// (1, 2, 4, 8, 48 or 96) and integration time in milliseconds (50 to 400).
+/// Both must be nonzero; a zero would divide by zero.
 ///
 /// The formula is appendix A of the LTR-553ALS-WA datasheet. Light that is
 /// almost entirely infrared (a ratio of 0.85 or more) counts as 0 lux, as the
 /// datasheet prescribes: the sensor cannot judge it.
 pub fn lux(channels: Channels, gain: u8, integration_ms: u16) -> f32 {
+    debug_assert!(
+        gain != 0 && integration_ms != 0,
+        "gain and integration time are nonzero"
+    );
     let ch0 = f32::from(channels.ch0);
     let ch1 = f32::from(channels.ch1);
     let total = ch0 + ch1;

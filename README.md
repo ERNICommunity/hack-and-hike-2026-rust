@@ -116,8 +116,9 @@ modules are files in `crates/core/tests/`.
 
 - **Screen and touch** share one coordinate system: `Point::new(x, y)` with
   the origin in the top-left corner, `x` to the right, `y` down. Colours are
-  `Rgb565`; `hack_and_hike::ui::theme` has the project palette and
-  `Rgb565::RED`, `Rgb565::new(r, g, b)` and friends work too.
+  `Rgb565`; `hack_and_hike::ui::theme` has the project palette, and with
+  `use embedded_graphics::prelude::*;` `Rgb565::RED`, `Rgb565::new(r, g, b)`
+  and friends work too.
 - **The IMU** reports how the board is held in the *screen frame*: `x` points
   out of the top edge (where the camera looks), `y` to the right across the
   screen, `z` into the screen. Lying flat on a table, screen up, roll and
@@ -332,7 +333,7 @@ One snippet each, with the `use` lines they need. The handles come from
 `Rgb565` pixels the width of the surface.
 
 ```rust
-use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
 use hack_and_hike::capabilities::display::{HEIGHT, SCREEN};
 
 display.surface(SCREEN).render_scanlines(|y, row| {

@@ -1,8 +1,8 @@
 //! The board's shared I2C bus.
 //!
 //! One pair of pins (SDA on GPIO12, SCL on GPIO11) connects the power chip,
-//! the IO expander, the audio codecs, the IMU, the touch controller and the
-//! camera sensor. During bring-up CPU0 creates short-lived drivers on it;
+//! the IO expander, the audio codecs, the IMU, the touch controller, the
+//! light and proximity sensor and the camera sensor. During bring-up CPU0 creates short-lived drivers on it;
 //! afterwards one async driver lives on CPU1, shared by the capability tasks
 //! through a mutex.
 

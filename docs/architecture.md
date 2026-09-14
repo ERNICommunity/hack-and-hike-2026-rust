@@ -55,6 +55,7 @@ sequenceDiagram
 
     Main->>Board: init()
     Board->>Board: heap, logger, PSRAM, log history, RTOS timer
+    Board->>I2C: free a bus a reset may have left busy
     Board->>I2C: enable backlight rail, reset LCD + touch
     Board->>I2C: power the camera, program the sensor (100 kHz)
     Board->>Board: initialize the display over SPI DMA
@@ -68,9 +69,11 @@ The order matters because several chips share one I2C bus and the camera
 needs a slower bus during its setup. All of that stays inside `src/board/`
 and `camera::bring_up`.
 
-Bring-up fails fast: a chip that does not answer panics with a message naming
-it, because the board is unusable without it. The camera and the light and
-proximity sensor are the exceptions and come back as `None`.
+Bring-up fails fast for the chips the board cannot work without: the power
+chip, the IO expander and the audio codecs must answer, or `init` panics with
+a message naming the chip. The camera and the light and proximity sensor are
+optional and come back as `None`. The IMU and the touch controller are first
+contacted from CPU1, where a failure is logged and retried, not fatal.
 
 ## CPU0 and CPU1
 
@@ -110,7 +113,7 @@ flowchart LR
     App --> Backlight
 ```
 
-The camera is the one capability that runs on CPU0: its frames are drained
+The camera is the one sensor that runs on CPU0: its frames are drained
 while the display DMA is busy, which only works from the drawing loop. The
 sensor streams continuously into a ring of a few milliseconds, so the demo
 also calls `camera.pump()` on every iteration and does not pause the loop
@@ -119,14 +122,15 @@ while the camera is visible (`Screen::may_idle`).
 You never talk to CPU1 directly. Every handle method returns immediately; it
 reads from or writes to a queue or a "latest value" slot shared between the
 cores. The exceptions are on CPU0 itself: drawing waits for the SPI DMA to
-finish, and `frame.finish()` waits for the sensor's next frame unless one
-completed while drawing. Both block your loop for milliseconds, which is why
+finish; `frame.finish()` waits for the sensor's next frame unless one
+completed while drawing; and the first `begin_frame()` after boot or `pause()`
+waits for a whole frame. All block your loop for milliseconds, which is why
 the loop draws only when something changed.
 
 ## How a capability is built
 
-Every CPU1 capability has at least these two files (the IMU and the audio
-capability add chip drivers next to them):
+Every CPU1 capability has these two files (the IMU, audio and light
+capabilities add chip drivers next to them):
 
 - `mod.rs`: the public types, the **handle** (`Touch`, `Imu`, ...) that the
   application owns and calls, a `static SERVICE` holding the cross-core
@@ -134,14 +138,16 @@ capability add chip drivers next to them):
   queues), and `endpoints()`, which hands the handle (audio: two, microphone
   and speaker) and the runtime to `Board::init()`.
 - `runtime.rs`: `spawn(spawner, hardware, runtime)`, plus configuration
-  where the chip needs it, and the task that talks to the chip.
+  where the chip needs it, and the task that talks to the chip. One task can
+  feed several handles: the light sensor's task also publishes for the
+  proximity capability, which therefore has only a `mod.rs`.
 
 Data crosses the cores in one of two ways:
 
 | Pattern | Used by | Application sees |
 | --- | --- | --- |
-| Latest value (`Signal`) | IMU, light and proximity samples, network snapshots; in the other direction, backlight requests | `latest()` returns `Some` only once per new value; `set` replaces a request not yet applied |
-| Bounded queue (`Channel`) | touch events, network messages, microphone blocks | `next_*()` returns events in order. When a queue is full, the microphone drops its oldest block; touch and network drop the newest event and count it |
+| Latest value (`Signal`) | IMU, light and proximity samples; in the other direction, backlight requests | `latest()` returns `Some` only once per new value; `set` replaces a request not yet applied. (`network.snapshot()` is the same idea but returns the newest snapshot every time.) |
+| Bounded queue (`Channel`) | touch events, network messages, microphone blocks | `next_*()` returns events in order. When a queue fills up: the microphone drops its oldest block; touch skips `Moved` events first so presses and releases still get through; incoming network messages are dropped and counted, and `broadcast` refuses with `SendError::QueueFull` |
 
 The speaker is the reverse direction: the application writes into a
 `FrameRing` that CPU1 drains into the DMA buffer. Only the application writes,
@@ -154,7 +160,7 @@ hardware directly, with DMA, from the application's own loop.
 
 The display capability owns the LCD. An application borrows a `Surface` for
 one `Rectangle` and draws inside it; nothing can escape the rectangle, and a
-rectangle outside the panel is a panic at the point where it is used.
+rectangle outside the panel is a panic in `display.surface(...)` itself.
 
 ```mermaid
 flowchart LR
@@ -355,7 +361,7 @@ and `leaked_value` for one large object, both living as long as the device.
 Do not put a large array on the stack:
 
 ```rust
-let frame = [0u8; 320 * 240 * 2]; // 150 KiB on a 16 KiB stack
+let frame = [0u8; 320 * 240 * 2]; // 150 KiB; the main stack has about 45 KiB, CPU1 tasks 16 KiB
 ```
 
 Small fixed arrays are fine; Color Ping keeps a 128-frame audio chunk.

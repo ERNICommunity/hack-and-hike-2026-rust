@@ -71,25 +71,29 @@ async fn main(_spawner: Spawner) -> ! {
         }
     };
 
-    let mut shown = Shown {
-        lux: 0,
-        proximity: 0,
-        raw_proximity: 0,
-    };
+    let mut lux = None;
+    let mut closeness = None;
     let mut drawn = None;
     loop {
-        // Each handle delivers its own samples; keep the newest of each.
+        // Each handle delivers its own samples; keep the newest of each and
+        // draw once both have arrived.
         if let Some(sample) = light.latest() {
-            shown.lux = sample.lux as u32;
+            lux = Some(sample.lux as u32);
         }
         if let Some(sample) = proximity.latest() {
-            shown.proximity = sample.percent;
-            shown.raw_proximity = sample.raw;
+            closeness = Some(sample);
         }
-        if drawn != Some(shown) {
-            drawn = Some(shown);
-            draw(&mut canvas, shown);
-            canvas.show(&mut display.surface(SCREEN));
+        if let (Some(lux), Some(closeness)) = (lux, closeness) {
+            let shown = Shown {
+                lux,
+                proximity: closeness.percent,
+                raw_proximity: closeness.raw,
+            };
+            if drawn != Some(shown) {
+                drawn = Some(shown);
+                draw(&mut canvas, shown);
+                canvas.show(&mut display.surface(SCREEN));
+            }
         }
 
         Timer::after(Duration::from_millis(20)).await;

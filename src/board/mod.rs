@@ -5,10 +5,12 @@
 //! The application takes ownership of the handles it needs and drops the
 //! rest; the CPU1 runtimes keep running either way.
 //!
-//! Bring-up is fail-fast: a chip that does not answer on I2C panics with a
-//! message naming it, because the board is unusable without it. The camera
-//! and the light and proximity sensor are the exceptions and simply come
-//! back as `None`.
+//! Bring-up is fail-fast for the chips the board cannot work without: the
+//! power chip, the IO expander and the audio codecs must answer on I2C, or
+//! `init` panics with a message naming the chip. The camera and the light
+//! and proximity sensor are optional and come back as `None`. The IMU and
+//! the touch controller are first contacted from CPU1, where a failure is
+//! logged and retried rather than fatal.
 //!
 //! The order of the steps matters:
 //!

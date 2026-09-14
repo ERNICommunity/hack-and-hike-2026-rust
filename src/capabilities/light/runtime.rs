@@ -32,6 +32,12 @@ const GAIN_UP_BELOW: u16 = 500;
 const GAIN_DOWN_ABOVE: u16 = 60000;
 /// The gain to start with: 8x, in the middle of the range.
 const INITIAL_GAIN_INDEX: usize = 3;
+/// Readings after a gain change that may still show the previous gain. A
+/// mismatch beyond that means the sensor lost its configuration (a brown-out
+/// resets it to standby at 1x) and is set up again.
+const SETTLE_READINGS: u8 = 2;
+/// Time between attempts to configure a sensor that does not answer.
+const CONFIGURE_RETRY: Duration = Duration::from_secs(1);
 
 /// Start polling the sensor on CPU1, feeding both handles.
 pub(crate) fn spawn(
@@ -49,20 +55,12 @@ pub(crate) fn spawn(
 #[embassy_executor::task]
 async fn poll_task(bus: SystemI2cBus, light: Runtime, proximity: proximity::Runtime) {
     let mut gain_index = INITIAL_GAIN_INDEX;
-    let configured = {
-        let mut i2c = bus.lock().await;
-        ltr553::configure(
-            &mut AsyncRegisters::new(&mut *i2c, ltr553::ADDRESS),
-            gain_index,
-        )
-        .await
-    };
-    if let Err(error) = configured {
-        warn!("LTR-553 light sensor setup failed: {:?}", error);
-        return;
-    }
+    configure_until_it_works(bus, gain_index).await;
 
     let mut read_failed = false;
+    let mut reset_logged = false;
+    // Readings still allowed to carry the previous gain after a change.
+    let mut settling = SETTLE_READINGS;
     loop {
         Timer::after(POLL_INTERVAL).await;
 
@@ -72,34 +70,95 @@ async fn poll_task(bus: SystemI2cBus, light: Runtime, proximity: proximity::Runt
             i2c.write_read_async(ltr553::ADDRESS, &[ltr553::DATA_START], &mut block)
                 .await
         };
-        match read {
+        let reading = match read {
             Ok(()) => {
                 read_failed = false;
-                if let Some(reading) = light::decode(block) {
-                    light.publish(light_sample(reading));
-                    proximity.publish(proximity_sample(reading));
-                    if let Some(next) = better_gain(gain_index, reading.channels) {
-                        gain_index = next;
-                        let mut i2c = bus.lock().await;
-                        let set = ltr553::set_als_gain(
-                            &mut AsyncRegisters::new(&mut *i2c, ltr553::ADDRESS),
-                            gain_index,
-                        )
-                        .await;
-                        if let Err(error) = set {
-                            warn!("LTR-553 gain change failed: {:?}", error);
-                        }
-                    }
-                }
+                light::decode(block)
             }
             Err(error) => {
                 if !read_failed {
                     warn!("LTR-553 light sensor read failed: {:?}", error);
                 }
                 read_failed = true;
+                None
+            }
+        };
+        let Some(reading) = reading else {
+            continue;
+        };
+
+        light.publish(light_sample(reading));
+        proximity.publish(proximity_sample(reading));
+
+        // Judge the gain only on a measurement taken at the gain we asked
+        // for; the first readings after a change may still be at the old one.
+        let Some(reported) = gain_index_of(reading.gain) else {
+            continue;
+        };
+        if reported != gain_index {
+            if settling > 0 {
+                settling -= 1;
+                continue;
+            }
+            if !reset_logged {
+                warn!(
+                    "LTR-553 reports gain {}x instead of the requested {}x: configuring it again",
+                    reading.gain,
+                    ltr553::ALS_GAIN_FACTORS[gain_index]
+                );
+                reset_logged = true;
+            }
+            configure_until_it_works(bus, gain_index).await;
+            settling = SETTLE_READINGS;
+            continue;
+        }
+        if let Some(next) = better_gain(gain_index, reading.channels) {
+            gain_index = next;
+            settling = SETTLE_READINGS;
+            let set = {
+                let mut i2c = bus.lock().await;
+                ltr553::set_als_gain(
+                    &mut AsyncRegisters::new(&mut *i2c, ltr553::ADDRESS),
+                    gain_index,
+                )
+                .await
+            };
+            if let Err(error) = set {
+                warn!("LTR-553 gain change failed: {:?}", error);
             }
         }
     }
+}
+
+/// Configure the sensor, retrying every second until it answers. The probe
+/// during bring-up saw the chip, so a failure here is transient.
+async fn configure_until_it_works(bus: SystemI2cBus, gain_index: usize) {
+    let mut logged = false;
+    loop {
+        let configured = {
+            let mut i2c = bus.lock().await;
+            ltr553::configure(
+                &mut AsyncRegisters::new(&mut *i2c, ltr553::ADDRESS),
+                gain_index,
+            )
+            .await
+        };
+        match configured {
+            Ok(()) => return,
+            Err(error) => {
+                if !logged {
+                    warn!("LTR-553 light sensor setup failed: {:?}; retrying", error);
+                    logged = true;
+                }
+                Timer::after(CONFIGURE_RETRY).await;
+            }
+        }
+    }
+}
+
+/// The index into `ALS_GAIN_CODES` of a gain factor the sensor reports.
+fn gain_index_of(factor: u8) -> Option<usize> {
+    ltr553::ALS_GAIN_FACTORS.iter().position(|&f| f == factor)
 }
 
 /// The next gain index to use, if the counts call for a change: one step up

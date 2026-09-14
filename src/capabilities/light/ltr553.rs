@@ -23,6 +23,9 @@ const ALS_ACTIVE: u8 = 0x01;
 /// 64k lux for daylight; 96x resolves a dark room. The sensor sits behind
 /// the tinted front glass, so it needs the high gains indoors.
 pub(super) const ALS_GAIN_CODES: [u8; 6] = [0, 1, 2, 3, 6, 7];
+/// The gain factor each entry of `ALS_GAIN_CODES` stands for; the sensor
+/// reports the factor of every measurement in its status register.
+pub(super) const ALS_GAIN_FACTORS: [u8; 6] = [1, 2, 4, 8, 48, 96];
 /// Where `ALS_GAIN_CODES` sits in `ALS_CONTR`.
 const ALS_GAIN_SHIFT: u8 = 2;
 
