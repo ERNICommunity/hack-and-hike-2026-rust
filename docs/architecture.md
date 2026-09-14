@@ -23,26 +23,28 @@ the machinery underneath.
 
 ```mermaid
 flowchart TD
-    Hardware["Hardware"] --> Platform["platform: pins, power, I2C"]
-    Platform --> Capabilities["capabilities: Display, Touch, Imu, ..."]
+    Hardware["Hardware"] --> Pcb["board: pins, power, I2C, PSRAM"]
+    Pcb --> Capabilities["capabilities: Display, Touch, Imu, ..."]
     Core["crates/core: fusion, protocol, rings"] --> Capabilities
-    Capabilities --> Board["board: Board::init()"]
-    Board --> App["src/bin/*: your application"]
-    UI["ui, synth: canvas, palette, tones"] --> App
+    Capabilities --> Init["board: Board::init()"]
+    Init --> App["src/bin/*: your application"]
+    UI["ui, synth, logging: canvas, palette, tones, log history"] --> App
 ```
 
 | Layer | Path | Owns |
 | --- | --- | --- |
 | Application | `src/bin/` | What the board does: screens, rules, message types |
-| Board | `src/board/` | The power-up order and the second CPU core |
+| Board | `src/board/` | Facts about the PCB (pins, power rails, reset lines, the I2C bus, register access, PSRAM), the power-up order and the second CPU core |
 | Capabilities | `src/capabilities/` | One hardware function each, behind a small handle |
 | Core | `crates/core/` | Math, protocol and buffer code with no hardware dependency, tested on the host |
-| Platform | `src/platform/` | Facts about the PCB: pins, power rails, reset lines, the I2C bus, register access |
-| Support | `src/support/` | Logging with on-device history, PSRAM allocation helpers |
+| Logging | `src/logging.rs` | The `log` backend with on-device history, a memory usage report |
 | UI and synth | `src/ui/`, `src/synth.rs` | Canvas, palette, text helpers, a slider, the `embedded-gui` glue; sine waves |
 
-Dependencies point downwards only. An application never imports `esp_hal`; a
-capability never knows what a screen is.
+Dependencies point downwards only. `board` appears twice: capabilities use
+its PCB facts, and `Board::init()` then brings those capabilities up. Both
+halves live in one folder because both describe the same board. An
+application never imports `esp_hal`; a capability never knows what a screen
+is.
 
 ## What `Board::init()` does
 
@@ -355,7 +357,7 @@ uses for large long-lived buffers:
 - the three camera frame buffers,
 - the log history.
 
-`support::memory::storage` has the two helpers: `leaked_slice` for a buffer
+`hack_and_hike::psram` has the two helpers: `leaked_slice` for a buffer
 and `leaked_value` for one large object, both living as long as the device.
 
 Do not put a large array on the stack:
@@ -449,7 +451,7 @@ and exists because seven screens share them. Two screens do not need a trait.
 **Sharing a hardware handle everywhere.** Give it one owner and share state
 instead.
 
-**Large arrays on the stack.** Use PSRAM through `support::memory::storage`.
+**Large arrays on the stack.** Use PSRAM through `psram::leaked_slice`.
 
 **A message name shared with another team.** The kind is derived from the
 name, so two applications with `NAME = "hello"` will decode each other's

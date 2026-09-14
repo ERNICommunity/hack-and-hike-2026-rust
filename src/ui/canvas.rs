@@ -16,8 +16,8 @@ use embedded_graphics::{
 };
 
 use crate::{
+    board::psram,
     capabilities::display::{BYTES_PER_PIXEL, ScanlineSource, Surface},
-    support::memory::storage,
 };
 
 /// Unchanged rows between two changed ones that are still sent in the same
@@ -89,8 +89,8 @@ impl Canvas {
         assert!(count != 0, "a canvas needs at least one pixel");
         let full = Bounds::of(Rectangle::new(Point::zero(), size));
         Self {
-            pixels: storage::leaked_slice(count, Rgb565::WHITE),
-            shown: storage::leaked_slice(count, Rgb565::WHITE),
+            pixels: psram::leaked_slice(count, Rgb565::WHITE),
+            shown: psram::leaked_slice(count, Rgb565::WHITE),
             size,
             panel_known: false,
             background: Rgb565::WHITE,

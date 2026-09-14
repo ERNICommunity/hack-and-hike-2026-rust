@@ -16,7 +16,7 @@ use mipidsi::options::{
     HorizontalRefreshOrder, Orientation, RefreshOrder, Rotation, VerticalRefreshOrder,
 };
 
-use crate::platform;
+use crate::board;
 
 /// The blocking SPI driver with DMA that both setup and the pixel path use.
 type DisplaySpiDma = SpiDma<'static, Blocking>;
@@ -125,7 +125,7 @@ pub(super) fn initialize(
     // The board is mounted 180 degrees, so logical top-to-bottom/left-to-right
     // GRAM writes travel physically bottom-to-top/right-to-left. Match the
     // controller refresh direction to that same physical direction.
-    let (orientation, refresh_order) = if platform::DISPLAY_ROTATED_180 {
+    let (orientation, refresh_order) = if board::DISPLAY_ROTATED_180 {
         (
             Orientation::new().rotate(Rotation::Deg180),
             RefreshOrder {

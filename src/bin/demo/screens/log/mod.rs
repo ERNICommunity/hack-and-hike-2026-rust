@@ -8,10 +8,8 @@ use embassy_time::{Duration, Instant};
 use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use hack_and_hike::{
     capabilities::display::Surface,
-    support::{
-        logging::{Line, LogHistory},
-        memory::storage,
-    },
+    logging::{Line, LogHistory},
+    psram,
     ui::{Canvas, common, gui, theme},
 };
 
@@ -63,7 +61,7 @@ impl LogScreen {
         let visible = (body.size.height as usize / common::DENSE_LINE_HEIGHT as usize).max(1);
         Self {
             history,
-            lines: storage::leaked_slice(visible, Line::new()),
+            lines: psram::leaked_slice(visible, Line::new()),
             shown: 0,
             revision: None,
             gui,

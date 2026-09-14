@@ -1,4 +1,12 @@
-//! Board bring-up.
+//! The M5Stack CoreS3 Lite board: its physical facts and its bring-up.
+//!
+//! This module owns what is specific to the PCB rather than to a chip: the
+//! shared I2C bus, the power rails of the AXP2101 power chip, the reset lines
+//! behind the AW9523 IO expander, the PSRAM chip and the display geometry.
+//! Register setup of a device stays with the capability that uses it: LCD
+//! controller setup in `display`, codec setup in `audio`, sensor setup in
+//! `imu`. Applications see only [`Board`] and [`psram`], both re-exported at
+//! the crate root.
 //!
 //! [`Board::init`] powers the CoreS3 Lite hardware in the required order,
 //! starts the CPU1 capability runtimes and returns one handle per capability.
@@ -25,6 +33,11 @@
 //! 7. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks.
 
 mod cpu1;
+pub(crate) mod i2c;
+pub(crate) mod io_expander;
+pub(crate) mod power;
+pub mod psram;
+pub(crate) mod registers;
 
 use esp_hal::{clock::CpuClock, delay::Delay, timer::timg::TimerGroup};
 use log::{LevelFilter, info, warn};
@@ -41,12 +54,28 @@ use crate::{
         proximity::{self, Proximity},
         touch::{self, Touch},
     },
-    platform::{i2c, io_expander, power},
-    support::{
-        logging::{self, LogHistory},
-        memory,
-    },
+    logging::{self, LogHistory},
 };
+
+/// Width of the LCD and of the touch panel's coordinate space.
+pub(crate) const DISPLAY_WIDTH: usize = 320;
+/// Height of the LCD and of the touch panel's coordinate space.
+pub(crate) const DISPLAY_HEIGHT: usize = 240;
+
+/// The panel is mounted upside down relative to its controller's native
+/// orientation. Both the LCD setup and the touch coordinates follow this, so
+/// what is drawn and what is touched share one coordinate system.
+pub(crate) const DISPLAY_ROTATED_180: bool = true;
+
+/// Convert a point from the touch controller's native panel coordinates into
+/// display coordinates.
+pub(crate) const fn logical_display_point(x: u16, y: u16) -> (u16, u16) {
+    if DISPLAY_ROTATED_180 {
+        hack_and_hike_core::touch::rotate_180(x, y, DISPLAY_WIDTH as u16, DISPLAY_HEIGHT as u16)
+    } else {
+        (x, y)
+    }
+}
 
 /// Attempts for the first I2C transaction after a reset: a chip may still be
 /// settling from the reset or from the power-up of its rail.
@@ -74,7 +103,7 @@ fn retry<T, E: core::fmt::Debug>(
 /// application runs (the esp-generate default for the ESP32-S3).
 const RECLAIMED_HEAP_BYTES: usize = 73744;
 /// Additional internal heap carved from DRAM. PSRAM is a separate heap; see
-/// [`crate::support::memory`].
+/// [`psram`].
 const INTERNAL_HEAP_BYTES: usize = 72 * 1024;
 
 /// One handle per capability of the CoreS3 Lite.
@@ -135,9 +164,9 @@ impl Board {
         let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
         let peripherals = esp_hal::init(config);
 
-        memory::enable_psram(peripherals.PSRAM);
+        psram::enable(peripherals.PSRAM);
         let log = logging::enable_history();
-        memory::report("after PSRAM setup");
+        logging::report_memory("after PSRAM setup");
 
         let timg0 = TimerGroup::new(peripherals.TIMG0);
         esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
@@ -245,7 +274,7 @@ impl Board {
             runtime: touch_runtime,
         } = touch::endpoints();
 
-        memory::report("before CPU1 start");
+        logging::report_memory("before CPU1 start");
         cpu1::start(
             peripherals.CPU_CTRL,
             peripherals.FROM_CPU_INTR1,

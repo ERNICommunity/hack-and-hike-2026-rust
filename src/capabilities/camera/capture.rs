@@ -37,7 +37,7 @@ use esp_hal::{
 };
 use log::warn;
 
-use crate::{capabilities::display::ScanlineSource, support::memory::storage};
+use crate::{board::psram, capabilities::display::ScanlineSource};
 
 /// Width of a camera frame in pixels.
 pub const WIDTH: usize = 320;
@@ -282,9 +282,9 @@ pub(crate) fn init(resources: Resources) -> Camera {
 
     Camera {
         stream: Some(Stream::Stopped { driver, buffer }),
-        display_buffer: storage::leaked_slice(FRAME_BYTES, 0),
-        capture_buffer: storage::leaked_slice(FRAME_BYTES, 0),
-        ready_buffer: storage::leaked_slice(FRAME_BYTES, 0),
+        display_buffer: psram::leaked_slice(FRAME_BYTES, 0),
+        capture_buffer: psram::leaked_slice(FRAME_BYTES, 0),
+        ready_buffer: psram::leaked_slice(FRAME_BYTES, 0),
         ready: false,
         display_ready: false,
         filled: 0,

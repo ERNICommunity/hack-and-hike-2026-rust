@@ -15,11 +15,12 @@ use core::{cell::RefCell, fmt::Write as _};
 
 use arrayvec::ArrayString;
 use critical_section::Mutex;
+use esp_alloc::HEAP;
 use log::{LevelFilter, Metadata, Record};
 
 use hack_and_hike_core::lines::LineHistory;
 
-use crate::support::memory::storage;
+use crate::board::psram;
 
 pub use hack_and_hike_core::lines::{LINE_BYTES, LINES, Line};
 
@@ -101,8 +102,25 @@ pub(crate) fn init(level: LevelFilter) {
 
 /// Start keeping a history of log records in PSRAM.
 pub(crate) fn enable_history() -> LogHistory {
-    let history = storage::leaked_value(LineHistory::new);
+    let history = psram::leaked_value(LineHistory::new);
     critical_section::with(|cs| *HISTORY.borrow(cs).borrow_mut() = Some(history));
     log::info!("Log history enabled: {LINES} lines of up to {LINE_BYTES} bytes");
     LogHistory { _private: () }
+}
+
+/// Log how much internal heap and PSRAM is in use, with `label` to tell
+/// reports apart. Handy when chasing an allocation failure.
+pub fn report_memory(label: &str) {
+    let internal = HEAP.stats();
+    let external = psram::heap().stats();
+    log::info!(
+        "MEM [{}] internal={}/{} KiB (peak {} KiB) | psram={}/{} KiB (peak {} KiB)",
+        label,
+        internal.current_usage / 1024,
+        internal.size / 1024,
+        internal.max_usage / 1024,
+        external.current_usage / 1024,
+        external.size / 1024,
+        external.max_usage / 1024,
+    );
 }

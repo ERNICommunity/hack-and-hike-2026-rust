@@ -38,12 +38,12 @@ use esp_hal::{
 };
 use static_cell::StaticCell;
 
-use crate::platform;
+use crate::board;
 
 /// Width of the panel in pixels.
-pub const WIDTH: usize = platform::DISPLAY_WIDTH;
+pub const WIDTH: usize = board::DISPLAY_WIDTH;
 /// Height of the panel in pixels.
-pub const HEIGHT: usize = platform::DISPLAY_HEIGHT;
+pub const HEIGHT: usize = board::DISPLAY_HEIGHT;
 /// The panel size in pixels.
 pub const SIZE: Size = Size::new(WIDTH as u32, HEIGHT as u32);
 /// The whole panel, for `display.surface(SCREEN)`.

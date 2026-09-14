@@ -30,7 +30,8 @@
 //! - [`ui`]: a [`Canvas`](ui::Canvas) to draw on, the colour palette, text
 //!   helpers and a slider.
 //! - [`synth`]: sine waves for the speaker.
-//! - [`support`]: the log history and PSRAM helpers.
+//! - [`logging`]: the log history and a memory usage report.
+//! - [`psram`]: long-lived buffers in the external PSRAM.
 //!
 //! Everything hardware-specific (pins, power rails, the second CPU core)
 //! stays inside this library; applications never need `esp_hal`.
@@ -47,9 +48,9 @@ use esp_backtrace as _;
 
 mod board;
 pub mod capabilities;
-pub(crate) mod platform;
-pub mod support;
+pub mod logging;
 pub mod synth;
 pub mod ui;
 
-pub use board::Board;
+// Both live in `src/board/`; the rest of that module stays private.
+pub use board::{Board, psram};

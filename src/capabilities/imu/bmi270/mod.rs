@@ -18,7 +18,7 @@ use core::fmt;
 use embassy_time::{Duration, Timer};
 use esp_hal::i2c::master::Error as I2cError;
 
-use crate::platform::i2c::SystemI2cBus;
+use crate::board::i2c::SystemI2cBus;
 
 use hack_and_hike_core::imu::bmm150::Trim;
 

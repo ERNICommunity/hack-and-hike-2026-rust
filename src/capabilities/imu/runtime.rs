@@ -10,7 +10,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use log::{info, trace, warn};
 
-use crate::platform::i2c::SystemI2cBus;
+use crate::board::i2c::SystemI2cBus;
 
 use hack_and_hike_core::imu::{
     Orientation,

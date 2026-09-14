@@ -24,7 +24,7 @@ use embedded_gui::{
 };
 use log::debug;
 
-use crate::{capabilities::touch::TouchEvent, support::memory::storage};
+use crate::{board::psram, capabilities::touch::TouchEvent};
 
 use super::Canvas;
 
@@ -42,7 +42,7 @@ pub type Context<const NODES: usize> = GuiContext<'static, NODES, EVENTS, DIRTY_
 /// lives for the rest of the run. A context is about 20 KiB, too large to
 /// keep in a struct on a task's stack.
 pub fn context<const NODES: usize>(width: u32, height: u32) -> &'static mut Context<NODES> {
-    storage::leaked_value(|| Context::new(Rect::new(0, 0, width, height)))
+    psram::leaked_value(|| Context::new(Rect::new(0, 0, width, height)))
 }
 
 /// The rectangle a KDL node occupies, in context coordinates.

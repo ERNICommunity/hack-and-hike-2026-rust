@@ -4,7 +4,7 @@
 //! Values are from the datasheet; each constant says what its bits do. The
 //! decoding of the data registers lives in `hack_and_hike_core::light`.
 
-use crate::platform::registers::AsyncRegisters;
+use crate::board::registers::AsyncRegisters;
 
 /// 7-bit I2C address.
 pub(super) const ADDRESS: u8 = 0x23;

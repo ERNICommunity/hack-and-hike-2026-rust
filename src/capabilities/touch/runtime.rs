@@ -9,7 +9,7 @@ use embedded_graphics::prelude::Point;
 
 use hack_and_hike_core::touch::decode_report;
 
-use crate::platform::{self, i2c::SystemI2cBus};
+use crate::board::{self, i2c::SystemI2cBus};
 
 use super::{Runtime, TouchEvent};
 
@@ -48,13 +48,11 @@ async fn read_sample(bus: SystemI2cBus) -> Option<Sample> {
     let Some(raw) = decode_report(report) else {
         return Some(Sample::Up);
     };
-    if usize::from(raw.x) >= platform::DISPLAY_WIDTH
-        || usize::from(raw.y) >= platform::DISPLAY_HEIGHT
-    {
+    if usize::from(raw.x) >= board::DISPLAY_WIDTH || usize::from(raw.y) >= board::DISPLAY_HEIGHT {
         return None;
     }
 
-    let (x, y) = platform::logical_display_point(raw.x, raw.y);
+    let (x, y) = board::logical_display_point(raw.x, raw.y);
     Some(Sample::Down(Point::new(i32::from(x), i32::from(y))))
 }
 

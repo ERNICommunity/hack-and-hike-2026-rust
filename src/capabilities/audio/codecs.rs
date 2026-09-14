@@ -7,7 +7,7 @@
 
 use esp_hal::delay::Delay;
 
-use crate::platform::{self, registers::Registers};
+use crate::board::{self, registers::Registers};
 
 /// I2C address of the ES7210 microphone ADC.
 const ES7210_ADDR: u8 = 0x40;
@@ -62,7 +62,7 @@ where
         (0x01, 0x14),
     ];
 
-    platform::power::enable_microphone(i2c)?;
+    board::power::enable_microphone(i2c)?;
     Registers::new(i2c, ES7210_ADDR).write_all(ES7210_INIT)
 }
 
@@ -72,7 +72,7 @@ fn init_aw88298<I2C>(i2c: &mut I2C, delay: Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    platform::io_expander::release_audio_amplifier(i2c, delay)?;
+    board::io_expander::release_audio_amplifier(i2c, delay)?;
 
     // CoreS3 reference configuration from M5Unified. At 16 kHz the rate-table
     // index is 3, therefore register 0x06 is 0x14C3 for 16-bit stereo BCK mode.

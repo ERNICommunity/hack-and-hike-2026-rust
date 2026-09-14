@@ -6,7 +6,7 @@
 
 use esp_hal::delay::Delay;
 
-use crate::platform::registers::Registers;
+use crate::board::registers::Registers;
 
 use super::BringUpError;
 

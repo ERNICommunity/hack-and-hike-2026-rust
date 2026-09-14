@@ -31,7 +31,7 @@ mod gc0308;
 use esp_hal::delay::Delay;
 use log::{info, warn};
 
-use crate::platform::{i2c, io_expander, power};
+use crate::board::{i2c, io_expander, power};
 
 pub(crate) use capture::Resources;
 pub use capture::{Camera, Frame, HEIGHT, WIDTH};

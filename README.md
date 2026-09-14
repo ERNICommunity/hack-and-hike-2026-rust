@@ -619,10 +619,9 @@ crates/core/        hardware-independent logic with tests
 src/
 ├── lib.rs          the library every application uses
 ├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, template.rs
-├── board/          Board::init(): power-up order and the CPU1 runtimes
+├── board/          the PCB: pins, power rails, I2C bus, PSRAM, Board::init() and CPU1
 ├── capabilities/   one module per capability: the APIs you call
-├── platform/       facts about the PCB: pins, power rails, I2C bus
-├── support/        logging with on-device history, PSRAM helpers
+├── logging.rs      logging with on-device history, memory usage report
 ├── synth.rs        sine waves and note frequencies for the speaker
 └── ui/             canvas, palette, text helpers, slider, embedded-gui glue
 ```
@@ -637,7 +636,7 @@ src/
 | Add a reusable drawing helper or widget | `src/ui/` |
 | Expose a new hardware operation | the matching `src/capabilities/...` module |
 | Change how a sensor is configured | the matching capability |
-| Change pins, power or reset wiring | `src/platform/` |
+| Change pins, power or reset wiring | `src/board/` |
 | Change the power-up order | `src/board/` |
 | Add logic that should have tests | `crates/core/` |
 

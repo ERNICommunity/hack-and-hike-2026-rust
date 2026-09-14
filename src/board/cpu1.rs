@@ -11,8 +11,8 @@ use esp_hal::{
 use static_cell::StaticCell;
 
 use crate::{
+    board::i2c,
     capabilities::{audio, backlight, imu, light, network, proximity, touch},
-    platform::i2c,
 };
 
 /// Stack of every task on CPU1 together: the executor polls them all on it.

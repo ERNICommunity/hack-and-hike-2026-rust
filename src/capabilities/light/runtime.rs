@@ -17,8 +17,8 @@ use hack_and_hike_core::light::{self, Channels, DATA_BLOCK_LEN, PROXIMITY_MAX};
 use log::warn;
 
 use crate::{
+    board::{i2c::SystemI2cBus, registers::AsyncRegisters},
     capabilities::proximity,
-    platform::{i2c::SystemI2cBus, registers::AsyncRegisters},
 };
 
 use super::{Runtime, Sample, ltr553};

@@ -24,7 +24,7 @@ mod runtime;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use log::{info, warn};
 
-use crate::platform::registers::Registers;
+use crate::board::registers::Registers;
 
 pub(crate) use runtime::spawn;
 
