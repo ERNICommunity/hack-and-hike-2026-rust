@@ -19,24 +19,39 @@ const STALE_AFTER: Duration = Duration::from_secs(1);
 const GOOD_SAMPLES_TO_READY: u8 = 8;
 const BAD_SAMPLES_TO_DISTURBED: u8 = 30;
 
+/// Everything known about the magnetometer between two samples.
 pub(super) struct MagneticState {
+    /// Factory trim values; `None` while no magnetometer answers.
     trim: Option<bmm150::Trim>,
+    /// Hard- and soft-iron calibration, learned while the board is moved.
     calibration: bmm150::Calibration,
+    /// Health as published to the application.
     status: MagStatus,
+    /// Strength of the latest field in µT, calibrated once possible.
     field_ut: f32,
+    /// The latest uncalibrated field in the body frame.
     vector_ut: Option<[f32; 3]>,
+    /// The raw frame seen last. The BMI270 repeats a frame until the 30 Hz
+    /// magnetometer delivers a new one; repeats are skipped.
     last_frame: Option<[u8; 8]>,
+    /// When the latest new frame arrived, to detect a stalled sensor.
     last_update: Instant,
+    /// When a missing magnetometer was last probed.
     last_retry: Instant,
+    /// Plausible fields in a row since the last implausible one.
     good_samples: u8,
+    /// Implausible fields in a row since the last plausible one.
     bad_samples: u8,
 }
 
 /// Magnetometer health as published alongside every IMU sample.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct MagneticReport {
+    /// See [`MagStatus`].
     pub(super) status: MagStatus,
+    /// Strength of the latest field in µT.
     pub(super) field_ut: f32,
+    /// Calibration progress, 0 to 100.
     pub(super) calibration_percent: u8,
 }
 
@@ -116,6 +131,8 @@ impl MagneticState {
         for_fusion
     }
 
+    /// Decode a new raw frame, feed the calibration and decide whether the
+    /// field may steer the heading.
     fn observe_new_frame(
         &mut self,
         data: [u8; 8],
@@ -173,6 +190,8 @@ impl MagneticState {
         None
     }
 
+    /// Count an implausible field; enough in a row mark the magnetometer as
+    /// disturbed.
     fn record_bad_sample(&mut self) {
         self.bad_samples = self.bad_samples.saturating_add(1);
         self.good_samples = 0;
@@ -181,14 +200,17 @@ impl MagneticState {
         }
     }
 
+    /// The current health.
     pub(super) const fn status(&self) -> MagStatus {
         self.status
     }
 
+    /// The latest uncalibrated field in the body frame.
     pub(super) const fn vector_ut(&self) -> Option<[f32; 3]> {
         self.vector_ut
     }
 
+    /// Health, strength and calibration progress for the next sample.
     pub(super) fn report(&self) -> MagneticReport {
         MagneticReport {
             status: self.status,

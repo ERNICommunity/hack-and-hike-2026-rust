@@ -1,4 +1,10 @@
-//! CPU1 IMU acquisition loop.
+//! CPU1 task reading the IMU and running the sensor fusion.
+//!
+//! Every 10 ms: read one sample (acceleration, rotation, the magnetometer
+//! frame and the sensor's own timestamp) in a single I2C transaction, correct
+//! the gyroscope bias, update the magnetometer calibration and fuse
+//! everything into an orientation. A sensor that stops answering is
+//! re-initialized; the calibration learned so far survives that.
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Ticker, Timer};
@@ -18,31 +24,42 @@ use super::{
     magnetic::{MagneticReport, MagneticState},
 };
 
-/// Host sampling rate; fusion runs once per sample.
+/// Samples read per second; fusion runs once per sample.
 const SAMPLE_HZ: u32 = 100;
+/// Time between two reads.
 const SAMPLE_PERIOD: Duration = Duration::from_hz(SAMPLE_HZ as u64);
-// BMI270 sensor time is a free-running 24-bit counter at 25.6 kHz.
+/// The BMI270's timestamp is a free-running 24-bit counter at 25.6 kHz.
 const SENSOR_TIME_HZ: u32 = 25_600;
+/// Seconds per timestamp tick.
 const SENSOR_TIME_TICK_SECONDS: f32 = 1.0 / SENSOR_TIME_HZ as f32;
+/// The counter wraps at 24 bits.
 const SENSOR_TIME_MASK: u32 = 0x00FF_FFFF;
+/// Timestamp ticks between two samples when none is lost.
 const NOMINAL_SAMPLE_TICKS: u32 = SENSOR_TIME_HZ / SAMPLE_HZ;
 /// A longer gap between samples means some were lost; the integration then
 /// uses one nominal step instead of the measured interval.
 const MAX_SAMPLE_GAP_TICKS: u32 = NOMINAL_SAMPLE_TICKS * 5;
+/// 1 g in m/s², to publish acceleration in SI units.
 const STANDARD_GRAVITY_M_S2: f32 = 9.80665;
 
+/// Wait after a failed initialization before trying again.
 const INIT_RETRY: Duration = Duration::from_secs(1);
+/// Wait before re-initializing a sensor that stopped answering.
 const REINIT_DELAY: Duration = Duration::from_millis(250);
+/// Failed reads in a row before the sensor is re-initialized.
 const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
 /// Near full scale the gyroscope clips, so integration cannot be trusted.
 const GYRO_NEAR_SATURATION_DPS: f32 = 1950.0;
 /// Trace every 20th sample: five lines per second.
 const TRACE_EVERY_SAMPLES: u32 = 20;
 
+/// Start IMU acquisition on CPU1.
 pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
     spawner.spawn(capture_task(bus, runtime).expect("IMU task already spawned"));
 }
 
+/// Initialize the sensors, then read and fuse samples forever. The outer loop
+/// re-initializes after a failure; the inner loop runs once per sample.
 #[embassy_executor::task]
 async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
     let sensor = Bmi270::new(bus);

@@ -1,4 +1,8 @@
 //! A fixed-size history of text lines, newest last.
+//!
+//! The firmware keeps the last lines of its log here, so the demo can show
+//! them on screen. Nothing is allocated: the history is one fixed array of
+//! fixed-capacity strings, used as a ring.
 
 use arrayvec::ArrayString;
 
@@ -6,8 +10,10 @@ use arrayvec::ArrayString;
 pub const LINES: usize = 64;
 /// Longest line kept; longer lines are cut and end in `...`.
 pub const LINE_BYTES: usize = 120;
+/// Appended to a line that was cut.
 const CUT_MARK: &str = "...";
 
+/// One line of history: a string of at most [`LINE_BYTES`] bytes.
 pub type Line = ArrayString<LINE_BYTES>;
 
 /// The last [`LINES`] lines pushed, oldest first.
@@ -28,6 +34,7 @@ impl Default for LineHistory {
 }
 
 impl LineHistory {
+    /// An empty history.
     pub const fn new() -> Self {
         Self {
             lines: [Line::new_const(); LINES],
@@ -37,14 +44,18 @@ impl LineHistory {
         }
     }
 
+    /// Increments with every [`push`](Self::push); compare it to see
+    /// whether anything new arrived.
     pub const fn revision(&self) -> u32 {
         self.revision
     }
 
+    /// Lines currently kept, at most [`LINES`].
     pub const fn len(&self) -> usize {
         self.count
     }
 
+    /// Whether no line was pushed yet.
     pub const fn is_empty(&self) -> bool {
         self.count == 0
     }

@@ -1,4 +1,13 @@
 //! Register access shared by the I2C chips on the board.
+//!
+//! Most chips on the bus expose 8-bit registers at 8-bit addresses: write the
+//! register address, then read or write the value. These two small wrappers
+//! bind a bus to one chip address so drivers read like a register map:
+//!
+//! ```ignore
+//! let mut pmic = Registers::new(&mut i2c, 0x34);
+//! pmic.update_bits(OUTPUT_ENABLE_REGISTER, DLDO1_ENABLE, DLDO1_ENABLE)?;
+//! ```
 
 /// One I2C chip with 8-bit registers, borrowed for a few transfers.
 pub(crate) struct Registers<'a, I2C> {
@@ -7,16 +16,19 @@ pub(crate) struct Registers<'a, I2C> {
 }
 
 impl<'a, I2C: embedded_hal::i2c::I2c> Registers<'a, I2C> {
+    /// The chip at 7-bit `address` on `i2c`.
     pub(crate) fn new(i2c: &'a mut I2C, address: u8) -> Self {
         Self { i2c, address }
     }
 
+    /// Read one register.
     pub(crate) fn read(&mut self, register: u8) -> Result<u8, I2C::Error> {
         let mut value = [0u8; 1];
         self.i2c.write_read(self.address, &[register], &mut value)?;
         Ok(value[0])
     }
 
+    /// Write one register.
     pub(crate) fn write(&mut self, register: u8, value: u8) -> Result<(), I2C::Error> {
         self.i2c.write(self.address, &[register, value])
     }
@@ -28,7 +40,8 @@ impl<'a, I2C: embedded_hal::i2c::I2c> Registers<'a, I2C> {
             .try_for_each(|&(register, value)| self.write(register, value))
     }
 
-    /// Change only the bits selected by `mask` to those of `value`.
+    /// Change only the bits selected by `mask` to those of `value`: read the
+    /// register, replace those bits, write it back.
     pub(crate) fn update_bits(
         &mut self,
         register: u8,
@@ -47,14 +60,17 @@ pub(crate) struct AsyncRegisters<'a, I2C> {
 }
 
 impl<'a, I2C: embedded_hal_async::i2c::I2c> AsyncRegisters<'a, I2C> {
+    /// The chip at 7-bit `address` on `i2c`.
     pub(crate) fn new(i2c: &'a mut I2C, address: u8) -> Self {
         Self { i2c, address }
     }
 
+    /// Write one register.
     pub(crate) async fn write(&mut self, register: u8, value: u8) -> Result<(), I2C::Error> {
         self.i2c.write(self.address, &[register, value]).await
     }
 
+    /// Change only the bits selected by `mask` to those of `value`.
     pub(crate) async fn update_bits(
         &mut self,
         register: u8,

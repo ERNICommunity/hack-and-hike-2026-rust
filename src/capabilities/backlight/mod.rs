@@ -1,8 +1,12 @@
 //! LCD backlight brightness.
 //!
-//! The application sets a [`Brightness`]; the CPU1 runtime applies it to the
-//! power management chip over the shared I2C bus. Only the newest request
-//! matters, so the transport is a replace-latest signal.
+//! The application sets a [`Brightness`]; a CPU1 task applies it to the power
+//! chip over the shared I2C bus. Only the newest request matters, so a
+//! request that has not been applied yet is replaced by a newer one.
+//!
+//! ```ignore
+//! backlight.set(Brightness::new(30));
+//! ```
 
 mod runtime;
 
@@ -21,7 +25,9 @@ pub struct Brightness(u8);
 pub struct InvalidBrightness;
 
 impl Brightness {
+    /// The dimmest setting, 1 %. The panel stays readable.
     pub const MIN: Self = Self(1);
+    /// Full brightness, 100 %: the setting at boot.
     pub const FULL: Self = Self(100);
 
     /// For percentages written in the code. Panics outside 1 to 100, so a
@@ -34,6 +40,7 @@ impl Brightness {
         Self(percent)
     }
 
+    /// The brightness in percent, 1 to 100.
     pub const fn percent(self) -> u8 {
         self.0
     }
@@ -60,7 +67,7 @@ static SERVICE: Service = Service {
     request: Signal::new(),
 };
 
-/// Application handle for the LCD backlight.
+/// Application handle for the LCD backlight; see the [module docs](self).
 pub struct Backlight {
     service: &'static Service,
 }
@@ -80,16 +87,21 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
+    /// Wait for the next brightness request.
     async fn next_request(self) -> Brightness {
         self.service.request.wait().await
     }
 }
 
+/// The two ends of the brightness signal, created once by the board.
 pub(crate) struct Endpoints {
+    /// For the application.
     pub(crate) handle: Backlight,
+    /// For the CPU1 task.
     pub(crate) runtime: Runtime,
 }
 
+/// Both ends of the brightness signal.
 pub(crate) fn endpoints() -> Endpoints {
     Endpoints {
         handle: Backlight { service: &SERVICE },

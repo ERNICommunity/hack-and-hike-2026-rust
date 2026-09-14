@@ -2,6 +2,26 @@
 //!
 //! `main` brings up the board, hands each screen the handles it owns, and
 //! runs the loop: route touches, update every screen, draw the visible one.
+//!
+//! ```text
+//! ┌────┬───────────────────────────┐
+//! │ 📶 │                           │
+//! │ 🧭 │   the visible screen      │
+//! │ 🎤 │   (content area,          │
+//! │ 🔊 │    276 x 240 pixels)      │
+//! │ 📷 │                           │
+//! │ ⚙  │                           │
+//! │ 📄 │                           │
+//! └────┴───────────────────────────┘
+//!  rail: navigation.rs
+//! ```
+//!
+//! The modules:
+//!
+//! - `layout`: where the rail and the content area are.
+//! - `navigation`: the rail's icons and the routing of touches.
+//! - `screens`: the [`Screen`] trait and one module per screen.
+//! - `styles`: the widget styles the KDL layout files refer to.
 
 #![no_std]
 #![no_main]
@@ -21,12 +41,16 @@ use screens::{
     network::NetworkScreen, settings::SettingsScreen, speaker::SpeakerScreen,
 };
 
+// Writes the application descriptor the bootloader checks before starting
+// the firmware. Every application needs this line exactly once.
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// Pause between loop iterations. Short enough for the camera and the IMU
 /// screen to feel live, long enough to let CPU0 tasks run.
 const LOOP_PERIOD: Duration = Duration::from_millis(2);
 
+/// Every screen, one field each. A struct rather than an array, because the
+/// screens are different types.
 struct Screens {
     network: NetworkScreen,
     imu: ImuScreen,
@@ -38,6 +62,8 @@ struct Screens {
 }
 
 impl Screens {
+    /// The screen for `id`, as a trait object: the shell calls the same
+    /// methods on every screen without knowing its type.
     fn get_mut(&mut self, id: ViewId) -> &mut dyn Screen {
         match id {
             ViewId::Network => &mut self.network,
@@ -50,6 +76,7 @@ impl Screens {
         }
     }
 
+    /// Let every screen do its background work, visible or not.
     fn update_all(&mut self, now: Instant) {
         for id in ViewId::ALL {
             self.get_mut(id).update(now);
@@ -57,6 +84,7 @@ impl Screens {
     }
 }
 
+/// The entry point: create the screens, then route, update and draw forever.
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     let Board {

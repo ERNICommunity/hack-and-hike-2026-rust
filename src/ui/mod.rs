@@ -1,8 +1,16 @@
 //! Drawing helpers for applications.
 //!
-//! Applications own their screens and navigation; this module provides a
-//! [`Canvas`] to draw on, the colour palette, text helpers, a slider widget
-//! and the `embedded-gui` glue the demo uses.
+//! Applications own their screens and navigation; this module provides the
+//! pieces:
+//!
+//! - [`Canvas`]: an image to draw on with `embedded-graphics`, shown on the
+//!   panel efficiently.
+//! - [`theme`]: the project colour palette.
+//! - [`common`]: fonts and text helpers.
+//! - [`widgets`]: a touch slider.
+//! - [`gui`], [`styles`], [`font`]: the glue for `embedded-gui`, which the
+//!   demo uses for layouts described in KDL files. Small applications do not
+//!   need it.
 
 pub mod canvas;
 pub mod common;

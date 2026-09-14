@@ -1,8 +1,15 @@
 //! Logging to the serial port, with a history that applications can show.
 //!
-//! Use the `log` macros anywhere, on either core. Every record goes to the
-//! USB serial port in full, and its first [`LINE_BYTES`] bytes are kept in a
-//! [`LineHistory`] in PSRAM that the [`LogHistory`] handle reads.
+//! Use the `log` macros anywhere, on either core:
+//!
+//! ```ignore
+//! log::info!("button pressed at {}", point.x);
+//! log::warn!("send failed: {error}");
+//! ```
+//!
+//! Every record goes to the USB serial port, and its first [`LINE_BYTES`]
+//! bytes are kept in a [`LineHistory`] in PSRAM that the [`LogHistory`]
+//! handle reads. Records at `debug` and `trace` level are filtered out.
 
 use core::{cell::RefCell, fmt::Write as _};
 
@@ -19,15 +26,27 @@ pub use hack_and_hike_core::lines::{LINE_BYTES, LINES, Line};
 /// Longest record printed in full on the serial port.
 const RECORD_BYTES: usize = 512;
 
-// The logger exists before PSRAM does, so the history is attached later.
+/// The history, shared by every core that logs. The logger exists before
+/// PSRAM does, so the history is attached later and is `None` until then.
 static HISTORY: Mutex<RefCell<Option<&'static mut LineHistory>>> = Mutex::new(RefCell::new(None));
 
+/// Run `f` on the history inside a critical section; `None` before the
+/// history exists.
 fn with_history<R>(f: impl FnOnce(&mut LineHistory) -> R) -> Option<R> {
     critical_section::with(|cs| HISTORY.borrow(cs).borrow_mut().as_deref_mut().map(f))
 }
 
 /// Application handle for the log history.
+///
+/// ```ignore
+/// let mut lines = [Line::new(); 16];
+/// if history.revision() != shown_revision {
+///     let count = history.newest(&mut lines);
+///     for line in &lines[..count] { /* draw line */ }
+/// }
+/// ```
 pub struct LogHistory {
+    /// Prevents construction outside this module.
     _private: (),
 }
 
@@ -44,6 +63,7 @@ impl LogHistory {
     }
 }
 
+/// The `log` backend: prints each record and keeps it in the history.
 struct Logger;
 
 impl log::Log for Logger {
@@ -70,6 +90,7 @@ impl log::Log for Logger {
 
 static LOGGER: Logger = Logger;
 
+/// Install the logger, dropping records below `level`.
 pub(crate) fn init(level: LevelFilter) {
     log::set_logger(&LOGGER)
         .map(|()| log::set_max_level(level))

@@ -10,19 +10,30 @@ use hack_and_hike_core::imu::vec3;
 
 /// Fixed-point scale of the horizon line coefficients (10 fractional bits).
 pub(super) const TAN_SCALE: i32 = 1024;
+/// Points closer to the camera than this (in world units) are clipped away:
+/// dividing by a depth near zero would throw them far off screen.
 pub(super) const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
 // tan(50deg) gives a 100deg horizontal FOV at any viewport width.
+/// Tangent of half the horizontal field of view.
 const HORIZONTAL_HALF_FOV_TAN: f32 = 1.1917536;
+/// Horizon distance used when the horizon is undefined (looking straight up
+/// or down), far enough from any pixel that the grid is not faded.
 const HORIZON_AT_INFINITY_DISTANCE_PX: f32 = 64.0;
 
+/// A line on screen: two `(x, y)` end points in viewport pixels.
 type ScreenLine = ((i32, i32), (i32, i32));
 
+/// What the view needs from one IMU sample.
 #[derive(Clone, Copy)]
 pub(super) struct DisplayAttitude {
+    /// Roll for the header, in degrees.
     pub(super) roll_deg: f32,
+    /// Pitch for the header, in degrees.
     pub(super) pitch_deg: f32,
+    /// Yaw for the header, in degrees, -180 to 180.
     pub(super) yaw_deg: f32,
+    /// The down and north directions the 3-D view is built from.
     basis: WorldBasis,
 }
 
@@ -30,14 +41,20 @@ pub(super) struct DisplayAttitude {
 /// forward, +Z is screen-down, and +Y completes the right-handed sensor frame.
 #[derive(Clone, Copy)]
 struct WorldBasis {
+    /// Unit vector towards the ground.
     gravity_screen: [f32; 3],
+    /// Unit vector towards magnetic north, horizontal.
     north_screen: [f32; 3],
 }
 
+/// Everything needed to project world points onto the viewport for one
+/// frame, computed once per frame by [`perspective_camera`].
 #[derive(Clone, Copy)]
 pub(super) struct PerspectiveCamera {
+    /// Viewport centre, in pixels from the viewport's top-left corner.
     pub(super) center_x: i32,
     pub(super) center_y: i32,
+    /// Pixels per unit of `x / z` and `y / z`: the zoom of the projection.
     pub(super) focal_x: f32,
     pub(super) focal_y: f32,
     // Compatibility geometry for the existing horizon rasterizer and compass
@@ -59,6 +76,7 @@ pub(super) struct PerspectiveCamera {
     pub(super) horizon_c_q10: i32,
 }
 
+/// The header angles and 3-D basis for `attitude`.
 pub(super) fn display_attitude(attitude: &Attitude) -> DisplayAttitude {
     DisplayAttitude {
         roll_deg: attitude.roll_deg,
@@ -85,6 +103,7 @@ fn wrap_degrees(degrees: f32) -> f32 {
     }
 }
 
+/// Build the camera for a viewport centred at `(center_x, center_y)`.
 pub(super) fn perspective_camera(
     attitude: DisplayAttitude,
     center_x: i32,
@@ -176,6 +195,8 @@ pub(super) fn perspective_camera(
     }
 }
 
+/// Rotate a world point (y up, -z north) into camera coordinates, where z is
+/// the viewing direction and x, y map to the viewport's columns and rows.
 pub(super) fn world_to_camera(point: [f32; 3], camera: PerspectiveCamera) -> [f32; 3] {
     [
         point[0] * camera.world_x_camera[0]
@@ -190,6 +211,8 @@ pub(super) fn world_to_camera(point: [f32; 3], camera: PerspectiveCamera) -> [f3
     ]
 }
 
+/// The point where the segment from `behind` (too close) to `front` crosses
+/// the near plane.
 pub(super) fn clip_camera_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
     let denominator = front[2] - behind[2];
     if denominator.abs() < 0.0001 {
@@ -203,6 +226,7 @@ pub(super) fn clip_camera_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// The viewport pixel of a camera-space point; `None` behind the near plane.
 pub(super) fn project_camera_point(
     point: [f32; 3],
     camera: PerspectiveCamera,
@@ -218,6 +242,8 @@ pub(super) fn project_camera_point(
     ))
 }
 
+/// Project a camera-space segment drawn `width` pixels thick, clipped to the
+/// near plane and to `area` so the thick line stays inside the viewport.
 pub(super) fn project_camera_solid_line(
     area: Rectangle,
     camera: PerspectiveCamera,
@@ -247,6 +273,8 @@ pub(super) fn project_camera_solid_line(
     )
 }
 
+/// Cohen-Sutherland clipping of the segment `a`-`b` to a rectangle; `None`
+/// when nothing of it is inside.
 pub(super) fn clip_line(
     mut a: (i32, i32),
     mut b: (i32, i32),
@@ -306,6 +334,8 @@ pub(super) fn clip_line(
     }
 }
 
+/// Which sides of the clip rectangle a point lies beyond: bit 0 left, 1
+/// right, 2 above, 3 below.
 fn outcode(x: i32, y: i32, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u8 {
     let mut code = 0;
     if x < min_x {
@@ -323,16 +353,21 @@ fn outcode(x: i32, y: i32, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u8
     code
 }
 
+/// Focal lengths for a viewport with centre `(center_x, center_y)`: a 100°
+/// horizontal field of view.
 fn perspective_focals(center_x: i32, center_y: i32) -> (f32, f32) {
     let focal_x = center_x.max(1) as f32 / HORIZONTAL_HALF_FOV_TAN;
     let focal_y = center_y.max(1) as f32;
     (focal_x, focal_y)
 }
 
+/// Round to the nearest pixel.
 pub(super) fn round_f32(value: f32) -> i32 {
     libm::roundf(value) as i32
 }
 
+/// A screen-frame vector in camera coordinates. The camera looks along the
+/// screen's x axis, out of the top edge of the board.
 fn screen_to_camera(value: [f32; 3]) -> [f32; 3] {
     [-value[1], -value[2], value[0]]
 }
@@ -345,6 +380,7 @@ fn horizontal_unit(value: [f32; 3], gravity: [f32; 3]) -> Option<[f32; 3]> {
     ))
 }
 
+/// Some horizontal direction, for when north is undefined.
 fn initial_horizontal_reference(gravity: [f32; 3]) -> [f32; 3] {
     horizontal_unit([1.0, 0.0, 0.0], gravity)
         .or_else(|| horizontal_unit([0.0, 1.0, 0.0], gravity))

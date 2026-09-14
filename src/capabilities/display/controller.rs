@@ -1,7 +1,10 @@
-//! One-time ILI9342C controller initialization.
+//! One-time setup of the ILI9342C panel controller.
 //!
-//! Runtime pixel transport lives in `transport`; this module exists only to run
-//! the `mipidsi` setup sequence and return the owned SPI/DMA resources.
+//! The `mipidsi` crate knows the controller's power-up sequence (sleep out,
+//! pixel format, orientation, display on). It wants an `SpiDevice`, which
+//! owns the bus for the whole display lifetime; we only borrow the bus for
+//! setup and then take it back, so the pixel path in [`super::transport`] can
+//! drive SPI DMA directly.
 
 use embedded_hal::{
     delay::DelayNs as _,
@@ -17,15 +20,20 @@ use crate::platform;
 
 type DisplaySpiDma = SpiDma<'static, Blocking>;
 
+/// What the transport needs back after setup.
 pub(super) struct Initialized {
+    /// The SPI DMA driver, with the command buffers still attached.
     pub(super) spi: DisplaySpiDma,
+    /// Chip select.
     pub(super) cs: Output<'static>,
+    /// Data/command select.
     pub(super) dc: Output<'static>,
 }
 
-/// Small owned `SpiDevice` adapter used only during `mipidsi` initialization.
-/// It can be deconstructed afterwards so steady-state rendering can use raw
-/// pipelined SPI-DMA.
+/// An `SpiDevice` that owns its bus and chip select only until `release`.
+///
+/// `embedded-hal-bus` has a similar `ExclusiveDevice`, but it cannot give the
+/// bus back, which the transport needs.
 struct OwnedSpiDevice<BUS, CS> {
     bus: BUS,
     cs: CS,
@@ -35,11 +43,13 @@ impl<BUS, CS> OwnedSpiDevice<BUS, CS>
 where
     CS: embedded_hal::digital::OutputPin,
 {
+    /// Take `bus` and `cs`, with chip select released (high).
     fn new(bus: BUS, mut cs: CS) -> Result<Self, CS::Error> {
         cs.set_high()?;
         Ok(Self { bus, cs })
     }
 
+    /// Give the bus and chip select back.
     fn release(self) -> (BUS, CS) {
         (self.bus, self.cs)
     }
@@ -58,6 +68,8 @@ where
     BUS: SpiBus<u8>,
     CS: embedded_hal::digital::OutputPin,
 {
+    /// Run `operations` with chip select low, stopping at the first error.
+    /// Chip select goes high again in every case.
     fn transaction(&mut self, operations: &mut [Operation<'_, u8>]) -> Result<(), Self::Error> {
         self.cs.set_low().map_err(DeviceError::Cs)?;
 
@@ -96,6 +108,8 @@ where
     }
 }
 
+/// Run the controller's power-up sequence for this board's panel and return
+/// the bus and control pins.
 pub(super) fn initialize(
     dma_bus: DisplaySpiDma,
     cs: Output<'static>,

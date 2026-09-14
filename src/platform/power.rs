@@ -1,8 +1,22 @@
-//! AXP2101 power-rail policy for this board.
+//! Power rails of the AXP2101 power management chip.
+//!
+//! The AXP2101 has several low-dropout regulators (LDOs), each with a voltage
+//! register and an enable bit. On the CoreS3 Lite they supply:
+//!
+//! | Rail | Voltage | Supplies |
+//! | --- | --- | --- |
+//! | ALDO1 | 1.8 V | speaker amplifier |
+//! | ALDO2 | 3.3 V | microphones |
+//! | ALDO3, BLDO1, BLDO2 | 3.3 V | camera |
+//! | DLDO1 | 2.6-3.3 V | LCD backlight (its voltage sets the brightness) |
+//!
+//! Everything else on the board is powered before the firmware starts.
 
 use super::registers::{AsyncRegisters, Registers};
 
+/// I2C address of the AXP2101.
 const AXP2101_ADDR: u8 = 0x34;
+/// One enable bit per LDO rail.
 const OUTPUT_ENABLE_REGISTER: u8 = 0x90;
 
 const ALDO1_VOLTAGE_REGISTER: u8 = 0x92;
@@ -28,6 +42,7 @@ const CAMERA_ALDO3_3V3_CODE: u8 = 33 - 5;
 const LCD_BACKLIGHT_MIN_CODE: u8 = 0x15;
 const LCD_BACKLIGHT_MAX_CODE: u8 = 0x1C;
 
+/// The AXP2101's registers on `i2c`.
 fn pmic<I2C: embedded_hal::i2c::I2c>(i2c: &mut I2C) -> Registers<'_, I2C> {
     Registers::new(i2c, AXP2101_ADDR)
 }

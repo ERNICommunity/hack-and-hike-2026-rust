@@ -207,9 +207,9 @@ Line by line:
   busy for nothing.
 - `draw` clears the canvas to the stage's colour and writes the percentage in
   the middle. Text goes through a fixed buffer, `ArrayString`, because there
-  is no `String` without an operating system. `canvas.show(...)` copies what
-  changed to the panel: the whole screen when the colour changed, otherwise
-  just the corner with the number.
+  is no `String` without an operating system. `canvas.show(...)` sends only
+  the pixels that changed: the whole screen when the colour changed,
+  otherwise just the rows of the number.
 - `Timer::after(...).await` pauses this loop and lets other work on this core
   run. Every loop needs an `.await` somewhere.
 - `colors` is a plain function with a `match` over ranges that returns a
@@ -303,9 +303,10 @@ display.surface(SCREEN).render_scanlines(|y, row| {
 
 For text and shapes, draw into a `Canvas` (an image in memory that any
 `embedded-graphics` primitive can draw on) and show it. Create the canvas
-once, outside the loop: it remembers what the panel shows and `show` sends
-only the rectangle that changed, so redrawing a number costs a fraction of a
-millisecond while a full screen takes about 30 ms.
+once, outside the loop. It remembers what the panel shows, and `show` sends
+only the pixels that differ: clear and redraw your whole picture whenever
+something changes, and a changed number still costs only a millisecond,
+while a full screen takes about 31 ms.
 
 ```rust
 use embedded_graphics::{

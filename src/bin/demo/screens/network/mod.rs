@@ -21,53 +21,77 @@ use serde::{Deserialize, Serialize};
 
 use crate::{layout, screens::Screen};
 
+// The layout file becomes Rust at compile time: a `...App` struct with a
+// `build` function and one `WidgetId` per named node.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/network/network.kdl");
 }
 
+/// Room for widgets in this screen's GUI context: the KDL nodes plus the
+/// widgets added in code.
 const NODES: usize = 16;
 const _: () = assert!(generated::NetworkApp::WIDTH == layout::CONTENT_SIZE.width);
 const _: () = assert!(generated::NetworkApp::HEIGHT == layout::CONTENT_SIZE.height);
+/// How often the screen checks for messages and a new peer table.
 const UPDATE_PERIOD: Duration = Duration::from_millis(50);
+/// How often this board broadcasts a ping.
 const PING_PERIOD: Duration = Duration::from_secs(1);
 
 /// The application's own message type; the network only moves bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum DemoMessage {
-    Ping { sequence: u32 },
-    Pong { sequence: u32 },
+    /// "Is anyone there?", broadcast every second.
+    Ping {
+        /// Counts the pings of the sending board.
+        sequence: u32,
+    },
+    /// The answer to a ping, sent back to the pinging board only.
+    Pong {
+        /// The sequence number of the ping it answers.
+        sequence: u32,
+    },
 }
 
 impl Message for DemoMessage {
     const NAME: &'static str = "hack-and-hike.demo.ping-pong";
 }
 
+/// What this screen has sent and received, shown in the summary.
 #[derive(Clone, Copy, Default)]
 struct Counters {
     pings_sent: u32,
     pings_received: u32,
     pongs_received: u32,
+    /// Pings or pongs that could not be queued.
     send_errors: u32,
+    /// Messages of our kind with bytes that did not decode.
     decode_errors: u32,
     /// Messages of other applications sharing the channel.
     other_kinds: u32,
 }
 
+/// The network screen: it pings, answers pings and lists peers.
 pub(crate) struct NetworkScreen {
     network: Network,
     counters: Counters,
+    /// Sequence number of the next ping.
     next_sequence: u32,
+    /// The peer table last shown.
     snapshot: Option<network::Snapshot>,
     last_update: Instant,
     last_ping: Instant,
     gui: &'static mut gui::Context<NODES>,
+    /// Where the status lines go.
     summary: Rectangle,
+    /// Where the peer list goes.
     peers: Rectangle,
+    /// Whether the screen needs a redraw.
     dirty: bool,
 }
 
 impl NetworkScreen {
+    /// Build the layout; the first ping goes out a second later.
     pub(crate) fn new(network: Network) -> Self {
         let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::NetworkApp::build(gui).expect("network.kdl fits the GUI capacities");
@@ -86,6 +110,7 @@ impl NetworkScreen {
         }
     }
 
+    /// Read every waiting message: count it, and answer pings with a pong.
     fn handle_messages(&mut self) {
         while let Some(message) = self.network.next_message() {
             match message.decode::<DemoMessage>() {
@@ -104,6 +129,7 @@ impl NetworkScreen {
         }
     }
 
+    /// Broadcast the next ping.
     fn send_ping(&mut self) {
         let ping = DemoMessage::Ping {
             sequence: self.next_sequence,
@@ -156,6 +182,7 @@ impl Screen for NetworkScreen {
     }
 }
 
+/// The status lines: radio state, this board, channel and counters.
 fn draw_summary(
     canvas: &mut Canvas,
     area: Rectangle,
@@ -220,6 +247,8 @@ fn draw_summary(
     lines.line(&text, theme::DARK_GRAY);
 }
 
+/// One line per peer in range, as many as fit `area`, or a hint when there is
+/// none.
 fn draw_peers(canvas: &mut Canvas, area: Rectangle, snapshot: Option<&network::Snapshot>) {
     let mut lines = Lines::new(canvas, area.top_left);
     let peers = snapshot.into_iter().flat_map(network::Snapshot::peers);

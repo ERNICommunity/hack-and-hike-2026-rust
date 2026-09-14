@@ -1,3 +1,11 @@
+//! The board's shared I2C bus.
+//!
+//! One pair of pins (SDA on GPIO12, SCL on GPIO11) connects the power chip,
+//! the IO expander, the audio codecs, the IMU, the touch controller and the
+//! camera sensor. During bring-up CPU0 creates short-lived drivers on it;
+//! afterwards one async driver lives on CPU1, shared by the capability tasks
+//! through a mutex.
+
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use esp_hal::{
     Async, Blocking,
@@ -10,19 +18,24 @@ use esp_hal::{
 use log::warn;
 use static_cell::StaticCell;
 
+/// Bus speed for every chip except the camera sensor.
 const SYSTEM_I2C_FREQUENCY_KHZ: u32 = 400;
+/// Bus speed while the camera sensor is programmed (its SCCB interface is
+/// slower than the other chips).
 const CAMERA_SCCB_FREQUENCY_KHZ: u32 = 100;
 /// Half a clock period while recovering the bus by hand: 100 kHz.
 const RECOVERY_HALF_PERIOD_US: u32 = 5;
 
-/// Physical resources for the board's runtime system-I2C service.
+/// The I2C controller and its two pins.
 ///
-/// CPU0 may temporarily reborrow these resources during bootstrap. The final
-/// owning driver is then moved to CPU1 and converted to async for runtime
-/// touch/IMU/display-control use.
+/// CPU0 reborrows these during bring-up for temporary drivers; the final
+/// driver takes them for good and moves to CPU1.
 pub(crate) struct Resources<'d> {
+    /// The I2C controller.
     pub(crate) i2c0: I2C0<'d>,
+    /// Data line.
     pub(crate) sda: GPIO12<'d>,
+    /// Clock line.
     pub(crate) scl: GPIO11<'d>,
 }
 
@@ -96,12 +109,15 @@ pub(crate) type SystemI2cBlocking = I2c<'static, Blocking>;
 /// interrupt handler is installed on the core that calls `into_async()`.
 type SystemI2c = I2c<'static, Async>;
 
-/// Runtime I2C is intentionally local to the CPU1 Embassy executor.
+/// The runtime bus is only used by tasks on the CPU1 executor, so a mutex
+/// without interrupt or cross-core protection is enough.
 type SystemI2cMutex = Mutex<NoopRawMutex, SystemI2c>;
+/// How CPU1 tasks share the bus: lock it for one transaction at a time.
 pub(crate) type SystemI2cBus = &'static SystemI2cMutex;
 
 static SYSTEM_I2C: StaticCell<SystemI2cMutex> = StaticCell::new();
 
+/// A blocking driver on `resources` at `frequency_khz`.
 fn init_with_frequency<'d>(resources: Resources<'d>, frequency_khz: u32) -> I2c<'d, Blocking> {
     let Resources { i2c0, sda, scl } = resources;
 
@@ -109,7 +125,7 @@ fn init_with_frequency<'d>(resources: Resources<'d>, frequency_khz: u32) -> I2c<
         i2c0,
         I2cConfig::default().with_frequency(Rate::from_khz(frequency_khz)),
     )
-    .expect("Failed to configure system I2C")
+    .expect("the I2C configuration is valid")
     .with_sda(sda)
     .with_scl(scl)
 }

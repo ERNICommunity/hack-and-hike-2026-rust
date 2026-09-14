@@ -40,6 +40,14 @@ const ORIGIN_PHASE_PERCENT: f32 = 20.0;
 const COVERAGE_PHASE_PERCENT: f32 = 65.0;
 const VALIDATION_PHASE_PERCENT: f32 = 14.0;
 
+/// Hard- and soft-iron calibration of the magnetometer, learned at run time.
+///
+/// Feed every raw field to [`Calibration::observe`] while the board is moved
+/// in all directions. Once enough directions are covered, an ellipsoid is
+/// fitted and checked against fresh samples; when it passes,
+/// [`Calibration::is_ready`] turns true and [`Calibration::apply`] corrects
+/// fields. [`Calibration::progress_percent`] tells the user how far along it
+/// is.
 pub struct Calibration {
     equations: NormalEquations,
     min: [f32; 3],
@@ -63,6 +71,7 @@ impl Default for Calibration {
 }
 
 impl Calibration {
+    /// No samples, no model.
     pub const fn new() -> Self {
         Self {
             equations: NormalEquations::new(),
@@ -91,10 +100,12 @@ impl Calibration {
         (EARTH_FIELD_MIN_UT..=EARTH_FIELD_MAX_UT).contains(&strength_ut)
     }
 
+    /// Whether a validated model is in use.
     pub fn is_ready(&self) -> bool {
         self.model.is_some()
     }
 
+    /// Correct a raw body-frame field; unchanged before the model is ready.
     pub fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
         self.model.map_or(field_ut, |model| model.apply(field_ut))
     }

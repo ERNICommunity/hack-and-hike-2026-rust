@@ -1,4 +1,7 @@
-//! CPU1 FT6336 polling.
+//! CPU1 task polling the FT6336 touch controller.
+//!
+//! The controller has an interrupt line, but polling every 5 ms is simpler,
+//! costs one short I2C read and keeps up with a fast finger.
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
@@ -10,17 +13,24 @@ use crate::platform::{self, i2c::SystemI2cBus};
 
 use super::{Runtime, TouchEvent};
 
+/// I2C address of the FT6336.
 const FT6336_ADDR: u8 = 0x38;
+/// First register of the report: touch count, then the first point.
 const FT6336_REPORT_REGISTER: u8 = 0x02;
+/// Time between two reads of the controller.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// Start polling the touch controller on CPU1.
 pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
     spawner.spawn(poll_task(bus, runtime).expect("touch task already spawned"));
 }
 
+/// What one read of the controller says.
 #[derive(Clone, Copy)]
 enum Sample {
+    /// No finger on the panel.
     Up,
+    /// A finger at this display position.
     Down(Point),
 }
 

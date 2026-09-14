@@ -1,8 +1,18 @@
 //! Glue between `embedded-gui` and the rest of the firmware.
 //!
-//! A graphical screen describes its layout in a KDL file, builds it into a
-//! [`Context`] once, renders the widgets into a [`Canvas`] with [`render`]
-//! and forwards touches with [`click_buttons`].
+//! A screen describes its layout in a KDL file next to its code. The
+//! `embedded_gui::include_gui!` macro turns the file into Rust at compile
+//! time. At run time the screen:
+//!
+//! 1. allocates a [`Context`] once with [`context`] and builds the layout
+//!    into it,
+//! 2. looks up the rectangles of empty slots with [`slot`] to draw its own
+//!    content there,
+//! 3. forwards touches with [`click_buttons`],
+//! 4. draws the widgets onto a [`Canvas`] with [`render`], then its own
+//!    content on top.
+//!
+//! See `src/bin/demo/screens/settings/` for a complete example.
 
 use embedded_graphics::{
     prelude::{Point, Size},
@@ -21,25 +31,32 @@ use super::Canvas;
 /// UI events one touch may queue before the screen drains them; a single tap
 /// produces about nine.
 pub const EVENTS: usize = 16;
+/// Regions `embedded-gui` tracks as needing a redraw. The canvas does its own
+/// change tracking, so this only needs to be non-zero.
 pub const DIRTY_RECTS: usize = 8;
 
 /// The `embedded-gui` context of one screen with room for `NODES` widgets.
 pub type Context<const NODES: usize> = GuiContext<'static, NODES, EVENTS, DIRTY_RECTS>;
 
-/// Allocate a screen's GUI context in PSRAM; it lives for the rest of the run.
+/// Allocate a screen's GUI context of `width` x `height` pixels in PSRAM; it
+/// lives for the rest of the run. A context is about 20 KiB, too large to
+/// keep in a struct on a task's stack.
 pub fn context<const NODES: usize>(width: u32, height: u32) -> &'static mut Context<NODES> {
     storage::leaked_value(|| Context::new(Rect::new(0, 0, width, height)))
 }
 
-/// The rectangle a KDL node occupies.
+/// The rectangle a KDL node occupies, in context coordinates.
 ///
-/// Panics when the id is unknown: the layout is fixed at compile time, so a
-/// missing node is a programming error, not a runtime condition.
+/// # Panics
+///
+/// When the id is unknown: the layout is fixed at compile time, so a missing
+/// node is a programming error, not a runtime condition.
 pub fn slot<const NODES: usize>(gui: &Context<NODES>, id: WidgetId) -> Rectangle {
     let rect = gui_rect(gui, id);
     Rectangle::new(Point::new(rect.x, rect.y), Size::new(rect.w, rect.h))
 }
 
+/// The rectangle of node `id` in `embedded-gui`'s own type.
 fn gui_rect<const NODES: usize>(gui: &Context<NODES>, id: WidgetId) -> Rect {
     gui.absolute_rect(id)
         .expect("every KDL node has a rectangle after build()")
@@ -47,6 +64,12 @@ fn gui_rect<const NODES: usize>(gui: &Context<NODES>, id: WidgetId) -> Rect {
 
 /// Put a numeric readout (a caption on the left, a number on the right) into
 /// the slot of the KDL node `id`. Change the number with [`set_value`].
+///
+/// KDL files cannot declare value labels, so screens add them in code.
+///
+/// # Panics
+///
+/// When the context has no room for another widget: raise its `NODES`.
 pub fn add_value_label<const NODES: usize>(
     gui: &mut Context<NODES>,
     id: WidgetId,
@@ -59,22 +82,29 @@ pub fn add_value_label<const NODES: usize>(
         .expect("the GUI context has room for a value label")
 }
 
-/// Change the text of a label or button.
+/// Change the text of a label or button. The text must live for the whole
+/// run, which in practice means a string literal.
 pub fn set_text<const NODES: usize>(gui: &mut Context<NODES>, id: WidgetId, text: &'static str) {
     if let Err(error) = gui.set_widget_property(id, PropertyKey::Text, PropertyValue::Str(text)) {
         debug!("GUI text update failed: {:?}", error);
     }
 }
 
-/// Change the number shown by a `value_label`.
+/// Change the number shown by a value label from [`add_value_label`].
 pub fn set_value<const NODES: usize>(gui: &mut Context<NODES>, id: WidgetId, value: i32) {
     if let Err(error) = gui.set_value_label(id, value) {
         debug!("GUI value update failed: {:?}", error);
     }
 }
 
-/// Deliver a touch to the widgets and call `on_click` for every button it
-/// clicked. `event` must be in the coordinates of the GUI context.
+/// Deliver a touch to the widgets and call `on_click` with the id of every
+/// button it clicked. `event` must be in the coordinates of the context.
+///
+/// ```ignore
+/// let mut clicked = None;
+/// gui::click_buttons(self.gui, event, |id| clicked = Some(id));
+/// if clicked == Some(self.play_button) { /* ... */ }
+/// ```
 pub fn click_buttons<const NODES: usize>(
     gui: &mut Context<NODES>,
     event: TouchEvent,

@@ -1,10 +1,28 @@
 //! Hardware-independent logic of the Hack & Hike firmware.
 //!
-//! Everything here is plain `no_std` Rust with no ESP32 dependency, so it is
-//! unit-tested on your computer. The firmware crate wraps these types with the
-//! hardware drivers.
+//! Everything here is plain `no_std` Rust with no ESP32 dependency, so it
+//! compiles for your computer too and has ordinary tests:
+//!
+//! ```text
+//! ./scripts/test.sh
+//! ```
+//!
+//! The firmware crate wraps these types with the hardware drivers:
+//!
+//! | Module | Contents | Used by |
+//! | --- | --- | --- |
+//! | [`audio`] | the speaker's ring buffer, an ADPCM decoder | audio capability, demo |
+//! | [`imu`] | sensor fusion, magnetometer compensation and calibration | IMU capability |
+//! | [`lines`] | a fixed-size history of text lines | log history |
+//! | [`network`] | wire protocol, typed messages, peer table | network capability |
+//! | [`touch`] | decoding of the touch controller's report | touch capability |
+//!
+//! A good place for new logic that deserves tests: if it does not need the
+//! hardware, put it here, test it on your computer, and call it from the
+//! firmware.
 
 #![no_std]
+#![warn(missing_docs)]
 
 pub mod audio;
 pub mod imu;

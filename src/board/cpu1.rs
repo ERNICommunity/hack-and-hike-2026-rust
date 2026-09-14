@@ -15,6 +15,7 @@ use crate::{
     platform::i2c,
 };
 
+/// Stack of every task on CPU1 together: the executor polls them all on it.
 const STACK_SIZE: usize = 16 * 1024;
 
 static STACK: StaticCell<Stack<STACK_SIZE>> = StaticCell::new();
@@ -22,21 +23,34 @@ static EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
 
 /// Everything CPU1 owns: its hardware and the runtime side of each capability.
 pub(super) struct Cpu1 {
+    /// The shared I2C bus of the power chip, IO expander, IMU and touch
+    /// controller, still in blocking mode.
     pub(super) system_i2c: i2c::SystemI2cBlocking,
+    /// I2S and its pins, for microphone and speaker.
     pub(super) audio_resources: audio::Resources,
+    /// The Wi-Fi radio, for ESP-NOW.
     pub(super) network_resources: network::Resources,
+    /// Queues shared with the microphone and speaker handles.
     pub(super) audio: audio::Runtime,
+    /// Signal shared with the IMU handle.
     pub(super) imu: imu::Runtime,
+    /// Queues shared with the network handle.
     pub(super) network: network::Runtime,
+    /// Queue shared with the touch handle.
     pub(super) touch: touch::Runtime,
+    /// Signal shared with the backlight handle.
     pub(super) backlight: backlight::Runtime,
 }
 
+/// Start the second core with its own async executor and the capability
+/// tasks. Returns immediately; CPU1 runs from here on.
 pub(super) fn start(cpu_ctrl: CPU_CTRL<'static>, interrupt: FROM_CPU_INTR1<'static>, cpu1: Cpu1) {
     let stack = STACK.init(Stack::new());
     esp_rtos::start_second_core(cpu_ctrl, interrupt, stack, move || run(cpu1));
 }
 
+/// The entry point of CPU1: spawn every capability task, then poll them
+/// forever.
 fn run(cpu1: Cpu1) {
     let executor = EXECUTOR.init(esp_rtos::embassy::Executor::new());
 

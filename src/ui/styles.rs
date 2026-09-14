@@ -1,13 +1,15 @@
-//! `embedded-gui` styles in the firmware palette.
+//! `embedded-gui` widget styles in the project palette.
 //!
-//! KDL screens reference them as `style="crate::styles::title()"`; the demo
-//! re-exports this module under that name.
+//! KDL layout files reference them as `style="crate::styles::title()"`. The
+//! code generator only passes `crate::` paths through, so the demo re-exports
+//! this module as `crate::styles`.
 
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_gui::{Style, WidgetStyle};
 
 use super::{font, theme};
 
+/// Rounded corners of buttons, in pixels.
 const BUTTON_CORNER_RADIUS: u8 = 4;
 
 /// Screen title.
@@ -50,6 +52,7 @@ pub fn secondary_button() -> WidgetStyle {
     filled_button(theme::LIGHT_GRAY, theme::CHARCOAL, theme::DARK_GRAY)
 }
 
+/// A flat button: `background` normally, `pressed_background` while touched.
 fn filled_button(background: Rgb565, text: Rgb565, pressed_background: Rgb565) -> WidgetStyle {
     let mut normal = Style::button();
     normal.background = Some(background);

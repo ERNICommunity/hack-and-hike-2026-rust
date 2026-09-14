@@ -1,9 +1,19 @@
-//! CoreS3 Lite camera capability.
+//! The camera.
 //!
 //! The GC0308 sensor is programmed once during bring-up over the shared I2C
-//! bus; afterwards frames stream through the LCD_CAM peripheral and DMA on
-//! CPU0. Frames are RGB565 with the most-significant byte first, so their
-//! rows can go straight to the display.
+//! bus; afterwards frames stream through the ESP32-S3's `LCD_CAM` peripheral
+//! and DMA on CPU0. Frames are 320x240 RGB565 with the most significant byte
+//! first, the same format the display takes, so rows go straight to the
+//! panel without conversion.
+//!
+//! ```ignore
+//! if let Some(camera) = camera.as_mut()
+//!     && let Some(mut frame) = camera.begin_frame()
+//! {
+//!     display.surface(SCREEN).render_from(&mut frame);
+//!     frame.finish();
+//! }
+//! ```
 //!
 //! The camera is the one part of the board that may be missing: bring-up
 //! returns `None` instead of panicking when no sensor answers.
@@ -19,7 +29,7 @@ use crate::platform::{i2c, io_expander, power};
 pub(crate) use capture::Resources;
 pub use capture::{Camera, Frame, HEIGHT, WIDTH};
 
-/// Settle time between enabling the camera power rail and releasing reset.
+/// Settle time between enabling the camera power rails and pulsing reset.
 const RAIL_SETTLE_MS: u32 = 10;
 
 /// Why the camera could not be brought up.

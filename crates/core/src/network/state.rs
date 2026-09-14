@@ -21,7 +21,9 @@ pub struct RadioChannel(u8);
 pub struct InvalidChannel;
 
 impl RadioChannel {
+    /// The lowest channel number.
     pub const MIN: u8 = 1;
+    /// The highest channel number.
     pub const MAX: u8 = 14;
 
     /// For channel numbers written in the code. Panics outside 1 to 14, so
@@ -34,6 +36,7 @@ impl RadioChannel {
         Self(number)
     }
 
+    /// The channel number, 1 to 14.
     pub const fn number(self) -> u8 {
         self.0
     }
@@ -58,6 +61,7 @@ impl fmt::Display for RadioChannel {
     }
 }
 
+/// What the network is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     /// The radio is being initialized.
@@ -73,6 +77,7 @@ pub enum Status {
 /// One currently known peer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer {
+    /// Which board it is; pass it to `Network::send_to`.
     pub id: DeviceId,
     /// Received signal strength in dBm; closer to zero is stronger.
     pub rssi_dbm: i8,
@@ -88,14 +93,21 @@ pub struct Peer {
 /// Peer table and counters as published by CPU1.
 #[derive(Clone, Copy, Debug)]
 pub struct Snapshot {
-    /// Increments with every change to the peer table or counters.
+    /// Increments with every change to the peer table or counters; compare
+    /// it to skip redrawing an unchanged snapshot.
     pub revision: u32,
+    /// What the network is doing.
     pub status: Status,
+    /// This board's own id.
     pub local_id: DeviceId,
+    /// The channel all boards use.
     pub channel: RadioChannel,
     peers: [Option<Peer>; MAX_PEERS],
+    /// Frames sent successfully: beacons and messages.
     pub tx_packets: u32,
+    /// Frames received from other boards.
     pub rx_packets: u32,
+    /// Frames the radio failed to send.
     pub tx_errors: u32,
     /// Frames that were not valid frames of this protocol.
     pub rx_invalid: u32,
@@ -108,24 +120,30 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// How many peers are in range.
     pub fn peer_count(&self) -> usize {
         self.peers().count()
     }
 
+    /// The peers in range, in no particular order.
     pub fn peers(&self) -> impl Iterator<Item = &Peer> {
         self.peers.iter().flatten()
     }
 
+    /// The peers in range, taking the snapshot.
     pub fn into_peers(self) -> impl Iterator<Item = Peer> {
         self.peers.into_iter().flatten()
     }
 }
 
+/// One row of the peer table, as the radio keeps it.
 #[derive(Clone, Copy)]
 struct PeerState {
     device_id: DeviceId,
+    /// Where to send unicast frames for this peer.
     mac: MacAddress,
     rssi_dbm: i8,
+    /// When the peer was last heard, on our clock.
     last_seen_ms: u64,
     /// When the peer booted on our clock, worked out from the uptime in its
     /// last beacon. Negative for a peer that booted before we did.
@@ -136,8 +154,11 @@ struct PeerState {
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct Heard {
+    /// The sender's id from the frame.
     pub device_id: DeviceId,
+    /// The sender's radio address.
     pub mac: MacAddress,
+    /// Signal strength of the frame.
     pub rssi_dbm: i8,
     /// Uptime carried by a beacon; `None` for application messages.
     pub uptime_ms: Option<u32>,
@@ -156,7 +177,9 @@ pub struct Received {
 #[doc(hidden)]
 #[derive(Clone, Copy, Default)]
 pub struct QueueCounters {
+    /// Messages refused because the send queue was full.
     pub tx_queue_full: u32,
+    /// Messages dropped because the receive queue was full.
     pub rx_queue_full: u32,
 }
 
@@ -187,6 +210,8 @@ enum RadioStatus {
 }
 
 impl NetworkState {
+    /// An empty peer table for this board; peers silent for longer than
+    /// `peer_timeout_ms` are forgotten by [`expire_peers`](Self::expire_peers).
     pub fn new(local_id: DeviceId, channel: RadioChannel, peer_timeout_ms: u64) -> Self {
         Self {
             revision: 0,
@@ -204,20 +229,24 @@ impl NetworkState {
         }
     }
 
+    /// The radio came up.
     pub fn mark_ready(&mut self) {
         self.radio = RadioStatus::Ready;
         self.bump_revision();
     }
 
+    /// The radio failed to come up.
     pub fn mark_fault(&mut self) {
         self.radio = RadioStatus::Fault;
         self.bump_revision();
     }
 
+    /// Note a change for the next snapshot.
     fn bump_revision(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// The next beacon to send, numbered.
     pub fn next_beacon(&mut self, now_ms: u64) -> protocol::BeaconPacket {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
@@ -229,16 +258,19 @@ impl NetworkState {
         }
     }
 
+    /// Count a frame the radio sent.
     pub fn record_send_ok(&mut self) {
         self.tx_packets = self.tx_packets.wrapping_add(1);
         self.bump_revision();
     }
 
+    /// Count a frame the radio failed to send.
     pub fn record_send_error(&mut self) {
         self.tx_errors = self.tx_errors.wrapping_add(1);
         self.bump_revision();
     }
 
+    /// Count a received frame that is not ours or is malformed.
     pub fn record_invalid_receive(&mut self) {
         self.rx_invalid = self.rx_invalid.wrapping_add(1);
         self.bump_revision();
@@ -253,6 +285,8 @@ impl NetworkState {
             .map(|peer| peer.mac)
     }
 
+    /// Add or refresh the sender of a valid frame. A new peer may replace the
+    /// longest-silent one when the table is full.
     pub fn record_receive(&mut self, heard: Heard, now_ms: u64) -> Received {
         self.rx_packets = self.rx_packets.wrapping_add(1);
         self.bump_revision();

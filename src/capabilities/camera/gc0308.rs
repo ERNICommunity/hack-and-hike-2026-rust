@@ -1,7 +1,8 @@
-//! Minimal GC0308 setup for the CoreS3 Lite onboard camera.
+//! Register setup of the GC0308 camera sensor.
 //!
-//! Sensor control stays on the board's startup I2C phase. Runtime capture uses
-//! the ESP32-S3 LCD_CAM peripheral directly and does not touch SCCB/I2C.
+//! The sensor is programmed once during bring-up, over the shared I2C bus
+//! (the sensor calls it SCCB). Capturing afterwards only uses the parallel
+//! bus and never touches I2C again.
 
 use esp_hal::delay::Delay;
 
@@ -9,13 +10,20 @@ use crate::platform::registers::Registers;
 
 use super::BringUpError;
 
+/// I2C address of the GC0308.
 const ADDRESS: u8 = 0x21;
+/// Product ID register.
 const PID_REGISTER: u8 = 0x00;
+/// The product ID a GC0308 reports.
 const EXPECTED_PID: u8 = 0x9b;
 
+/// The GC0308 has two register pages; this register selects one.
 const PAGE_SELECT: u8 = 0xfe;
+/// Output pixel format (page 0).
 const OUTPUT_FORMAT: u8 = 0x24;
+/// RGB565, most significant byte first: what the display wants.
 const RGB565_BE: u8 = 0xa6;
+/// Mirror and flip bits (page 0).
 const ORIENTATION: u8 = 0x14;
 const ORIENTATION_HORIZONTAL_MIRROR_MASK: u8 = 0x01;
 const ORIENTATION_VERTICAL_FLIP_MASK: u8 = 0x02;
@@ -283,6 +291,7 @@ where
     }
 }
 
+/// Reset the sensor and write the register program.
 fn program<I2C>(sensor: &mut Registers<'_, I2C>, delay: Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,

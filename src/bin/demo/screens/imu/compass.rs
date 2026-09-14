@@ -16,11 +16,16 @@ use super::projection::{
 // Off-axis rectilinear projection would otherwise magnify tangent signs even at
 // a fixed radial distance, so glyph dimensions are compensated per label while
 // the world anchor itself remains fixed to the same 256-unit compass ring.
+/// Distance of the letters from the viewer, in world units.
 const COMPASS_LABEL_RADIUS: f32 = 256.0;
+/// Size of one letter in world units before the per-label compensation.
 const COMPASS_GLYPH_WIDTH: f32 = 42.0;
 const COMPASS_GLYPH_HEIGHT: f32 = 78.0;
+/// Space between the letters of "NE", "SW", ...
 const COMPASS_GLYPH_GAP: f32 = 18.0;
+/// Thickness of the letter strokes on screen, in pixels.
 const COMPASS_STROKE_WIDTH: u32 = 3;
+/// `1 / √2`: the x and z of a diagonal direction.
 const INV_SQRT_2: f32 = 0.70710677;
 
 // Presentation-only alignment: the fused basis itself is correct, but the
@@ -38,6 +43,7 @@ const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
     ("NW", -INV_SQRT_2, INV_SQRT_2),
 ];
 
+// Letters as line strokes `[x0, y0, x1, y1]` in a 4 x 7 box, y up.
 const GLYPH_N_STROKES: [[f32; 4]; 3] = [
     [0.0, 0.0, 0.0, 7.0],
     [0.0, 7.0, 4.0, 0.0],
@@ -63,6 +69,8 @@ const GLYPH_W_STROKES: [[f32; 4]; 4] = [
     [3.2, 0.0, 4.0, 7.0],
 ];
 
+/// Draw every compass label that is in front of the camera, standing on the
+/// ground plane at `ground_y`.
 pub(super) fn draw_world_compass_labels(
     frame: &mut Canvas,
     area: Rectangle,
@@ -156,6 +164,7 @@ impl GlyphPlacement {
     }
 }
 
+/// Draw the strokes of one letter at its place on the ring.
 fn draw_world_compass_glyph(
     frame: &mut Canvas,
     area: Rectangle,
@@ -184,6 +193,7 @@ fn draw_world_compass_glyph(
     }
 }
 
+/// The strokes of `glyph`; empty for letters without a shape.
 fn compass_glyph_strokes(glyph: u8) -> &'static [[f32; 4]] {
     match glyph {
         b'N' => &GLYPH_N_STROKES,
@@ -194,6 +204,8 @@ fn compass_glyph_strokes(glyph: u8) -> &'static [[f32; 4]] {
     }
 }
 
+/// Bresenham's line from `start` to `end`, relative to `area`, with a square
+/// brush `width` pixels wide.
 fn draw_solid_line_pixels(
     frame: &mut Canvas,
     area: Rectangle,

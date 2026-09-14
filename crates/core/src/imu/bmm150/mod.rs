@@ -5,7 +5,7 @@
 //! hard/soft-iron calibration lives in the `calibration` submodule.
 //!
 //! The compensation equations are derived from Bosch Sensortec's BSD-3-Clause
-//! BMM150 SensorAPI v2.0.0.
+//! BMM150 `SensorAPI` v2.0.0.
 
 mod calibration;
 
@@ -50,10 +50,12 @@ impl Trim {
     }
 }
 
+/// One compensated magnetometer reading.
 #[derive(Clone, Copy, Debug)]
 pub struct Sample {
     /// Compensated field in the magnetometer's own axes.
     pub field_ut: [f32; 3],
+    /// Whether the sensor flagged this frame as a fresh measurement.
     pub data_ready: bool,
 }
 

@@ -3,7 +3,9 @@
 /// Position of a finger in the controller's own coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RawTouch {
+    /// Column, 0 to 319.
     pub x: u16,
+    /// Row, 0 to 239.
     pub y: u16,
 }
 

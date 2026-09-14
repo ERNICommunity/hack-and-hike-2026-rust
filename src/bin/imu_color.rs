@@ -18,8 +18,12 @@ use hack_and_hike::{
     ui::{Canvas, common, theme},
 };
 
+// Writes the application descriptor the bootloader checks before starting
+// the firmware. Every application needs this line exactly once.
 esp_bootloader_esp_idf::esp_app_desc!();
 
+/// The entry point: wait for IMU samples and redraw when the percentage
+/// changes.
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     let Board {
@@ -44,6 +48,8 @@ async fn main(_spawner: Spawner) -> ! {
     }
 }
 
+/// Paint the whole picture for `percent` onto the canvas. The canvas works
+/// out what changed when it is shown.
 fn draw(canvas: &mut Canvas, percent: u8) {
     let (background, text) = colors(percent);
     canvas.clear(background);

@@ -1,9 +1,15 @@
-//! IMU-view artificial horizon and perspective grid rendering.
+//! The artificial horizon: sky, ground, their perspective grids and the
+//! crosshair.
+//!
+//! The sky and the ground are filled column by column from the horizon line.
+//! The grids are lines on two horizontal planes above and below the viewer,
+//! projected with the camera from `projection`; each pixel is coloured by
+//! its distance from the horizon, so the lines fade into it.
 
-use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::{
     pixelcolor::Rgb565,
     prelude::{Point, Size},
+    primitives::Rectangle,
 };
 use hack_and_hike::ui::{Canvas, theme};
 
@@ -15,6 +21,8 @@ use super::{
     },
 };
 
+/// Below this cosine of the roll the horizon is nearly vertical, and the
+/// column-by-column fill switches to a side-of-line test.
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 
 // Crosshair in the middle of the view: a gap for the centre dot, a short
@@ -29,14 +37,19 @@ const CROSSHAIR_LOWER_BAR: (i32, u32) = (22, 24);
 // that are already sub-pixel close together. At +/-1024 world units the +/-8
 // floor/ceiling planes project to less than one pixel from the horizon, so this
 // is effectively the mathematical horizon at the display's resolution.
+/// Grid spacing up to `GRID_NEAR_EXTENT`; doubles after each extent below.
 const GRID_NEAR_SPACING: f32 = 8.0;
 const GRID_NEAR_EXTENT: f32 = 96.0;
 const GRID_MID_EXTENT: f32 = 192.0;
 const GRID_FAR_EXTENT: f32 = 384.0;
+/// How far the grid reaches in every direction, in world units.
 const GRID_EXTENT: f32 = 1024.0;
+/// Height of the sky plane above the viewer (and of the ground below).
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 
 // Grid line colour by pixel distance from the horizon: lines fade towards it.
+/// Index of the last entry of the fade tables: pixels this far from the
+/// horizon or farther get the full line colour.
 const GRID_FADE_LAST: usize = 56;
 const SKY_GRID_FADE: [Rgb565; 57] = [
     Rgb565::new(0, 40, 26),
@@ -157,10 +170,12 @@ const GROUND_GRID_FADE: [Rgb565; 57] = [
     Rgb565::new(22, 44, 22),
 ];
 
+/// A horizontal line `width` pixels long starting at `(x, y)`.
 fn hline(frame: &mut Canvas, x: i32, y: i32, width: u32, color: Rgb565) {
     frame.fill(Rectangle::new(Point::new(x, y), Size::new(width, 1)), color);
 }
 
+/// A vertical line `height` pixels long starting at `(x, y)`.
 fn vline(frame: &mut Canvas, x: i32, y: i32, height: u32, color: Rgb565) {
     frame.fill(
         Rectangle::new(Point::new(x, y), Size::new(1, height)),
@@ -171,11 +186,14 @@ fn vline(frame: &mut Canvas, x: i32, y: i32, height: u32, color: Rgb565) {
 /// Which of the two grid planes a line belongs to.
 #[derive(Clone, Copy)]
 enum Plane {
+    /// The plane above the viewer.
     Sky,
+    /// The plane below the viewer, where the compass letters stand.
     Ground,
 }
 
 impl Plane {
+    /// The plane's height in world units: positive is up.
     const fn height(self) -> f32 {
         match self {
             Self::Sky => PERSPECTIVE_PLANE_HEIGHT,
@@ -183,6 +201,7 @@ impl Plane {
         }
     }
 
+    /// Line colours by pixel distance from the horizon.
     const fn fade(self) -> &'static [Rgb565; GRID_FADE_LAST + 1] {
         match self {
             Self::Sky => &SKY_GRID_FADE,
@@ -191,6 +210,8 @@ impl Plane {
     }
 }
 
+/// Draw the whole view into `area`: sky and ground, both grids with the
+/// compass letters, and the crosshair on top.
 pub(super) fn draw_attitude(frame: &mut Canvas, area: Rectangle, attitude: DisplayAttitude) {
     let x0 = area.top_left.x;
     let y0 = area.top_left.y;
@@ -275,12 +296,14 @@ pub(super) fn draw_attitude(frame: &mut Canvas, area: Rectangle, attitude: Displ
     }
 }
 
+/// The grids of both planes and the compass letters.
 fn draw_perspective_world(frame: &mut Canvas, area: Rectangle, camera: PerspectiveCamera) {
     draw_world_grid_plane(frame, area, camera, Plane::Sky);
     draw_world_grid_plane(frame, area, camera, Plane::Ground);
     compass::draw_world_compass_labels(frame, area, camera, Plane::Ground.height());
 }
 
+/// All grid lines of one plane: dense near the viewer, sparse far away.
 fn draw_world_grid_plane(
     frame: &mut Canvas,
     area: Rectangle,
@@ -306,6 +329,8 @@ fn draw_world_grid_plane(
     }
 }
 
+/// The two lines of one plane at `coordinate`: one running north-south, one
+/// east-west.
 fn draw_world_grid_coordinate(
     frame: &mut Canvas,
     area: Rectangle,
@@ -332,6 +357,7 @@ fn draw_world_grid_coordinate(
     );
 }
 
+/// Project one world segment, clip it to the near plane and draw it.
 fn draw_world_segment(
     frame: &mut Canvas,
     area: Rectangle,
@@ -359,6 +385,7 @@ fn draw_world_segment(
     }
 }
 
+/// Clip a projected line to the viewport and draw it.
 fn draw_clipped_line(
     frame: &mut Canvas,
     area: Rectangle,

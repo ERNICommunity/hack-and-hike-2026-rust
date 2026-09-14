@@ -7,10 +7,13 @@ use crate::platform::{self, i2c::SystemI2cBus};
 
 use super::Runtime;
 
+/// Start applying brightness requests on CPU1.
 pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
     spawner.spawn(apply_task(bus, runtime).expect("backlight task already spawned"));
 }
 
+/// Wait for a request, apply it, repeat. A failed I2C write is logged and the
+/// next request tries again.
 #[embassy_executor::task]
 async fn apply_task(bus: SystemI2cBus, runtime: Runtime) {
     loop {

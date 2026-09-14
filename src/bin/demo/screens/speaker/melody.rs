@@ -1,4 +1,8 @@
 //! An eight-note melody played on a sine wave, looping forever.
+//!
+//! Every note lasts one beat. The synthesizer counts frames to know when the
+//! next note starts, and retunes its [`SineWave`] then (or when the pitch
+//! slider moves).
 
 use hack_and_hike::{
     capabilities::audio::SAMPLE_RATE_HZ,
@@ -10,20 +14,26 @@ use super::{PitchSemitones, TempoBpm};
 /// The score as MIDI note numbers: a C major scale. It starts at C6 because
 /// the tiny speaker distorts on sustained notes much below 600 Hz.
 const NOTES: [u8; 8] = [84, 86, 88, 89, 91, 93, 95, 96];
+/// Melody loudness, 0.0 to 1.0.
 const VOLUME: f32 = 0.15;
 /// Every note fades in and out over this many frames, so it starts and ends
 /// without a click. Two milliseconds at 16 kHz.
 const RAMP_FRAMES: u32 = 32;
 
+/// Plays [`NOTES`] in a loop, one frame at a time.
 pub(super) struct MelodySynth {
+    /// The oscillator of the current note.
     wave: SineWave,
+    /// Index of the current note in [`NOTES`].
     note: usize,
+    /// Frames of the current note already played.
     frames_into_note: u32,
     /// The pitch the wave was last tuned to, so a slider change retunes it.
     tuned_to: Option<PitchSemitones>,
 }
 
 impl MelodySynth {
+    /// A synthesizer at the first note.
     pub(super) fn new() -> Self {
         Self {
             wave: SineWave::new(midi_note_hz(f32::from(NOTES[0]))),
@@ -33,6 +43,7 @@ impl MelodySynth {
         }
     }
 
+    /// Go back to the first note.
     pub(super) fn restart(&mut self) {
         self.note = 0;
         self.frames_into_note = 0;
@@ -60,6 +71,7 @@ impl MelodySynth {
     }
 }
 
+/// How many audio frames one beat lasts at `tempo`.
 fn frames_per_beat(tempo: TempoBpm) -> u32 {
     SAMPLE_RATE_HZ * 60 / u32::from(tempo.get())
 }

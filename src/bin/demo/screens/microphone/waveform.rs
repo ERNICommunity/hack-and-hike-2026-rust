@@ -5,6 +5,9 @@ use hack_and_hike::{capabilities::display::Surface, ui::theme};
 
 use super::POINTS;
 
+/// Draw one channel into `area` of `surface`: a grey centre line and the
+/// points of `samples`, joined by vertical runs so steep slopes stay solid.
+/// Each point is `area.width / POINTS` pixels wide.
 pub(super) fn render(surface: &mut Surface<'_>, area: Rectangle, samples: &[i8; POINTS]) {
     let width = area.size.width as usize;
     let center_y = area.size.height as i32 / 2;

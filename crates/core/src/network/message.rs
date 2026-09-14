@@ -58,6 +58,7 @@ pub const fn message_kind(name: &str) -> u32 {
     hash
 }
 
+/// Why a message could not be queued for sending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SendError {
     /// The serialized message does not fit one radio frame ([`MAX_PAYLOAD`]).
@@ -80,6 +81,7 @@ impl fmt::Display for SendError {
 
 impl core::error::Error for SendError {}
 
+/// Why a received message could not be decoded into the requested type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeError {
     /// The message is of another type; check [`IncomingMessage::is`] first.
@@ -127,6 +129,7 @@ impl OutgoingMessage {
 /// A message received from another board. Decode it into your own type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IncomingMessage {
+    /// The board that sent the message; reply with `Network::send_to`.
     pub sender: DeviceId,
     kind: u32,
     payload: Payload,

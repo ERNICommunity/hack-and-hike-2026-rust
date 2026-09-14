@@ -19,17 +19,23 @@ use static_cell::ConstStaticCell;
 
 use crate::{layout, screens::Screen};
 
+// The layout file becomes Rust at compile time: a `...App` struct with a
+// `build` function and one `WidgetId` per named node.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/microphone/microphone.kdl");
 }
 
+/// Room for widgets in this screen's GUI context: the KDL nodes plus the
+/// widgets added in code.
 const NODES: usize = 16;
 const _: () = assert!(generated::MicrophoneApp::WIDTH == layout::CONTENT_SIZE.width);
 const _: () = assert!(generated::MicrophoneApp::HEIGHT == layout::CONTENT_SIZE.height);
+/// One microphone block lasts 32 ms; checking more often finds nothing new.
 const UPDATE_PERIOD: Duration = Duration::from_millis(32);
 /// Points drawn per channel; each covers `FRAMES_PER_BLOCK / POINTS` frames.
 pub(super) const POINTS: usize = 128;
+/// How far a point may swing from the centre line, in pixels.
 pub(super) const MAX_AMPLITUDE_PIXELS: i32 = 42;
 /// Quiet blocks are not stretched to full height beyond this peak.
 const PEAK_FLOOR: u16 = 1024;
@@ -41,13 +47,18 @@ static SAMPLES: ConstStaticCell<[i16; audio::SAMPLES_PER_BLOCK]> =
 /// One waveform point per channel, in pixels from the centre line.
 #[derive(Clone, Copy)]
 pub(super) struct WaveformFrame {
+    /// The left channel, oldest sample first.
     pub(super) left: [i8; POINTS],
+    /// The right channel, oldest sample first.
     pub(super) right: [i8; POINTS],
 }
 
+/// The microphone screen and the waveform it shows.
 pub(crate) struct MicrophoneScreen {
     microphone: Microphone,
+    /// The newest block, in static memory.
     samples: &'static mut [i16; audio::SAMPLES_PER_BLOCK],
+    /// The waveform being shown.
     frame: WaveformFrame,
     /// Dropped-block counter of the last block seen; `None` right after
     /// entering, because blocks dropped while another screen was visible do
@@ -55,13 +66,24 @@ pub(crate) struct MicrophoneScreen {
     dropped_blocks: Option<u32>,
     last_update: Instant,
     gui: &'static mut gui::Context<NODES>,
+    /// Where the left waveform is drawn.
     left: Rectangle,
+    /// Where the right waveform is drawn.
     right: Rectangle,
+    /// Whether the labels must be drawn (after entering the screen).
     labels_dirty: bool,
+    /// Whether the waveforms changed since they were drawn.
     frame_dirty: bool,
 }
 
 impl MicrophoneScreen {
+    /// Build the layout and check that the waveform areas suit the drawing
+    /// code.
+    ///
+    /// # Panics
+    ///
+    /// When the KDL layout changed so that a waveform area is not a multiple
+    /// of `POINTS` wide or too low for `MAX_AMPLITUDE_PIXELS`.
     pub(crate) fn new(microphone: Microphone) -> Self {
         let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app =
@@ -127,6 +149,8 @@ impl MicrophoneScreen {
     }
 }
 
+/// A sample as a pixel offset from the centre line, where `scale` is the
+/// sample value that reaches `MAX_AMPLITUDE_PIXELS`.
 fn quantize(sample: i16, scale: i32) -> i8 {
     ((i32::from(sample) * MAX_AMPLITUDE_PIXELS) / scale)
         .clamp(-MAX_AMPLITUDE_PIXELS, MAX_AMPLITUDE_PIXELS) as i8

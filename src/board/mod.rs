@@ -2,12 +2,23 @@
 //!
 //! [`Board::init`] powers the CoreS3 Lite hardware in the required order,
 //! starts the CPU1 capability runtimes and returns one handle per capability.
-//! The application takes ownership of the handles it needs and drops the rest;
-//! the CPU1 runtimes keep running either way.
+//! The application takes ownership of the handles it needs and drops the
+//! rest; the CPU1 runtimes keep running either way.
 //!
-//! Bring-up is fail-fast: a peripheral that does not answer on I2C panics with
-//! a message naming it, because the board is unusable without it. The camera
+//! Bring-up is fail-fast: a chip that does not answer on I2C panics with a
+//! message naming it, because the board is unusable without it. The camera
 //! is the one exception and simply comes back as `None`.
+//!
+//! The order of the steps matters:
+//!
+//! 1. Heaps and the logger, so everything after can allocate and log.
+//! 2. PSRAM and the log history, the RTOS timer.
+//! 3. I2C bus recovery, then the power chip and the IO expander: the display,
+//!    touch controller and camera are unpowered or held in reset until then.
+//! 4. The camera, which needs the shared I2C pins at a slower speed.
+//! 5. The display over SPI.
+//! 6. The audio codecs, then the whole system I2C bus moves to CPU1.
+//! 7. CPU1 starts the IMU, touch, audio, radio and backlight tasks.
 
 mod cpu1;
 
@@ -31,11 +42,14 @@ use crate::{
     },
 };
 
-/// The first I2C transaction after a reset gets a few attempts: a chip may
-/// still be settling from the reset or the power-up of its rail.
+/// Attempts for the first I2C transaction after a reset: a chip may still be
+/// settling from the reset or from the power-up of its rail.
 const FIRST_CONTACT_ATTEMPTS: u32 = 5;
+/// Pause between two of those attempts.
 const FIRST_CONTACT_RETRY_MS: u32 = 10;
 
+/// Run `attempt` until it succeeds, at most [`FIRST_CONTACT_ATTEMPTS`] times,
+/// logging every failure. Returns the last result.
 fn retry<T, E: core::fmt::Debug>(
     delay: Delay,
     mut attempt: impl FnMut() -> Result<T, E>,
@@ -59,20 +73,31 @@ const INTERNAL_HEAP_BYTES: usize = 72 * 1024;
 
 /// One handle per capability of the CoreS3 Lite.
 ///
-/// Destructure it and keep what your application needs:
+/// Destructure it and keep what your application needs; the `..` drops the
+/// rest:
 ///
 /// ```ignore
 /// let Board { mut display, mut imu, .. } = Board::init();
 /// ```
+///
+/// Each handle exists exactly once, so whoever owns it is the only code that
+/// can use that piece of hardware.
 pub struct Board {
+    /// The 320x240 LCD.
     pub display: Display,
+    /// The LCD backlight brightness.
     pub backlight: Backlight,
+    /// The touch panel on top of the LCD.
     pub touch: Touch,
+    /// Accelerometer, gyroscope and magnetometer, fused into an attitude.
     pub imu: Imu,
+    /// The two microphones, as 16 kHz stereo blocks.
     pub microphone: Microphone,
+    /// The loudspeaker, fed with 16 kHz stereo samples.
     pub speaker: Speaker,
+    /// ESP-NOW messaging with nearby boards.
     pub network: Network,
-    /// `None` when the camera module did not answer during bring-up.
+    /// The camera; `None` when it did not answer during bring-up.
     pub camera: Option<Camera>,
     /// History of everything written through the `log` macros.
     pub log: LogHistory,
@@ -80,6 +105,15 @@ pub struct Board {
 
 impl Board {
     /// Bring up the whole board. Call this once, first thing in `main`.
+    ///
+    /// Takes about half a second, most of it waiting for chips to come out of
+    /// reset.
+    ///
+    /// # Panics
+    ///
+    /// When called twice, or when the power chip, the IO expander or the
+    /// audio codecs do not answer. The message names the chip; a
+    /// power-cycle (unplug USB) is the first thing to try.
     pub fn init() -> Self {
         esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: RECLAIMED_HEAP_BYTES);
         esp_alloc::heap_allocator!(size: INTERNAL_HEAP_BYTES);
@@ -104,9 +138,12 @@ impl Board {
             scl: peripherals.GPIO11,
         };
 
+        // A reset in the middle of a CPU1 read can leave a chip holding the
+        // bus; free it before the first transaction.
+        i2c::recover_bus(&mut i2c_resources, delay);
+
         // Power rails and reset lines are driven over a short-lived I2C owner;
         // dropping it frees the pins for the camera's slower bus.
-        i2c::recover_bus(&mut i2c_resources, delay);
         {
             let mut i2c = i2c::init(i2c_resources.reborrow());
             retry(delay, || power::enable_lcd_backlight(&mut i2c))
@@ -150,6 +187,10 @@ impl Board {
         // The final system I2C driver moves to CPU1 once the codecs are set up.
         let mut system_i2c = i2c::init(i2c_resources);
         audio::init_codecs(&mut system_i2c, delay).expect("audio codecs did not answer");
+
+        // Every CPU1 capability comes as a pair: the handle for the
+        // application and the runtime side for its CPU1 task, sharing one set
+        // of queues.
 
         let audio::Endpoints {
             microphone,

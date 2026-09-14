@@ -25,26 +25,35 @@ use hack_and_hike_core::network::{
 
 use super::{Config, Resources, Runtime};
 
+/// The peer table, shared by the send and receive tasks on CPU1.
 type SharedState = Mutex<CriticalSectionRawMutex, RefCell<NetworkState>>;
 
+// The radio objects must outlive the tasks, which run forever.
 static STATE: StaticCell<SharedState> = StaticCell::new();
 static WIFI_CONTROLLER: StaticCell<WifiController<'static>> = StaticCell::new();
 static MANAGER: StaticCell<EspNowManager<'static>> = StaticCell::new();
 
-/// Everything the send and receive tasks share.
+/// Everything the send and receive tasks share. Cheap to copy: references and
+/// small values only.
 #[derive(Clone, Copy)]
 struct Radio {
+    /// The peer table and counters.
     state: &'static SharedState,
+    /// The queues to and from the application.
     runtime: Runtime,
+    /// This board's identity, from its factory MAC address.
     local_id: DeviceId,
+    /// Channel, beacon period and peer timeout.
     config: Config,
 }
 
 impl Radio {
+    /// Run `f` with the peer table locked.
     fn with_state<R>(self, f: impl FnOnce(&mut NetworkState) -> R) -> R {
         self.state.lock(|state| f(&mut state.borrow_mut()))
     }
 
+    /// Publish a fresh snapshot of the peer table to the application.
     fn publish(self, now: Instant) {
         let counters = self.runtime.queue_counters();
         let snapshot = self.with_state(|state| state.snapshot(now.as_millis(), counters));
@@ -52,6 +61,7 @@ impl Radio {
     }
 }
 
+/// This board's identity: its factory MAC address, which is unique.
 fn physical_device_id() -> DeviceId {
     let mac = efuse::base_mac_address();
     let bytes = <[u8; 6]>::try_from(mac.as_bytes()).expect("a MAC address is six bytes");
@@ -145,6 +155,8 @@ async fn transmit_task(
     }
 }
 
+/// Encode one application message and send it: as a broadcast, or to the
+/// MAC address the peer table knows for the recipient. Counts the result.
 async fn send_message(
     sender: &mut EspNowSender<'static>,
     radio: Radio,
@@ -174,6 +186,7 @@ async fn send_message(
     radio.with_state(|state| record_send(state, sent));
 }
 
+/// Count one send as successful or failed.
 fn record_send(state: &mut NetworkState, ok: bool) {
     if ok {
         state.record_send_ok();
@@ -182,6 +195,7 @@ fn record_send(state: &mut NetworkState, ok: bool) {
     }
 }
 
+/// Remove a peer from ESP-NOW's own peer list, which has limited room.
 fn forget_radio_peer(manager: &EspNowManager<'static>, mac: MacAddress) {
     if manager.peer_exists(&mac.0)
         && let Err(err) = manager.remove_peer(&mac.0)

@@ -27,7 +27,9 @@ impl TopAnchored {
     }
 }
 
+/// [`common::TITLE_FONT`] for `embedded-gui` widgets.
 pub static TITLE: TopAnchored = TopAnchored(common::TITLE_FONT);
+/// [`common::BODY_FONT`] for `embedded-gui` widgets.
 pub static BODY: TopAnchored = TopAnchored(common::BODY_FONT);
 
 impl Font for TopAnchored {
@@ -48,7 +50,9 @@ impl Font for TopAnchored {
     }
 }
 
-/// Collects the lit pixels of one glyph and passes them on.
+/// A draw target that forwards the lit pixels of one glyph to
+/// `embedded-gui`'s pixel callback. Its size is unlimited, so nothing is
+/// clipped here; `embedded-gui` clips afterwards.
 struct Glyph<'a> {
     draw_pixel: &'a mut dyn FnMut(i32, i32),
 }

@@ -21,12 +21,18 @@
 
 use core::{fmt, ops::Range};
 
+/// Length of every beacon frame.
 pub const BEACON_PACKET_BYTES: usize = 32;
+/// Largest frame ESP-NOW sends.
 pub const MAX_RADIO_PACKET_BYTES: usize = 250;
 /// Largest serialized application message that fits one radio frame.
 pub const MAX_PAYLOAD: usize = 224;
+/// Version of this format. Boards only understand frames of their own
+/// version, so firmware of an older layout is ignored instead of misread.
 pub const PROTOCOL_VERSION: u8 = 3;
 
+/// The first bytes of every frame: marks it as ours among other ESP-NOW
+/// traffic.
 const MAGIC: [u8; 4] = *b"HNHN";
 const MAGIC_FIELD: Range<usize> = 0..4;
 const VERSION_OFFSET: usize = 4;
@@ -52,6 +58,7 @@ const _: () = assert!(APPLICATION_HEADER_BYTES + MAX_PAYLOAD == MAX_RADIO_PACKET
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeviceId([u8; 6]);
 
+/// The six bytes of a device id were all zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvalidDeviceId;
 
@@ -92,14 +99,19 @@ fn write_mac(f: &mut fmt::Formatter<'_>, bytes: &[u8; 6]) -> fmt::Result {
     )
 }
 
+/// "I am here": sent by every board a few times per second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BeaconPacket {
+    /// The board sending the beacon.
     pub device_id: DeviceId,
+    /// Counts up with every beacon of this board.
     pub sequence: u32,
+    /// How long the board has been running.
     pub uptime_ms: u32,
 }
 
 impl BeaconPacket {
+    /// The beacon as a frame, ready to send.
     pub fn encode(self) -> [u8; BEACON_PACKET_BYTES] {
         let mut out = [0u8; BEACON_PACKET_BYTES];
         out[MAGIC_FIELD].copy_from_slice(&MAGIC);
@@ -112,18 +124,25 @@ impl BeaconPacket {
     }
 }
 
+/// A message from one application to another, as it travels on the radio.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ApplicationPacket<'a> {
+    /// The board that sent the message.
     pub sender: DeviceId,
+    /// The board it is for, or `None` for everyone.
     pub recipient: Option<DeviceId>,
     /// Which application message type the payload holds.
     pub kind: u32,
+    /// The `postcard` encoding of the message.
     pub payload: &'a [u8],
 }
 
+/// A received frame, after [`decode_frame`] has checked it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodedFrame<'a> {
+    /// A beacon: the sender is in range.
     Beacon(BeaconPacket),
+    /// An application message; `payload` borrows from the received bytes.
     Application(ApplicationPacket<'a>),
 }
 

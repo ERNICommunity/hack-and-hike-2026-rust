@@ -1,4 +1,10 @@
-//! CPU1 owner of I2S0: captures the microphone and plays the speaker queue.
+//! CPU1 tasks owning I2S0: one captures the microphones, one plays the
+//! speaker queue.
+//!
+//! Both directions use streaming DMA: the peripheral writes to (or reads
+//! from) a ring buffer continuously, and the tasks copy data out of (or into)
+//! it whenever enough is available. The data sits in DMA memory in the codec
+//! format, little-endian 16-bit samples.
 
 use embassy_executor::Spawner;
 use embassy_futures::yield_now;
@@ -13,7 +19,9 @@ use log::{info, warn};
 
 use super::{CHANNELS, FRAMES_PER_BLOCK, MicBlock, Resources, Runtime, SAMPLE_RATE_HZ};
 
+/// Bytes of one sample in the I2S stream.
 const BYTES_PER_SAMPLE: usize = size_of::<i16>();
+/// Bytes of one stereo frame in the I2S stream.
 const BYTES_PER_FRAME: usize = CHANNELS * BYTES_PER_SAMPLE;
 /// DMA ring for captured audio: 32 KiB is half a second of slack.
 const RX_DMA_BUFFER_BYTES: usize = 32 * 1024;
@@ -26,6 +34,8 @@ const TX_FILL_BYTES: usize = 1_024;
 const TX_FILL_SAMPLES: usize = TX_FILL_BYTES / BYTES_PER_SAMPLE;
 const _: () = assert!(RX_DRAIN_BYTES.is_multiple_of(BYTES_PER_FRAME));
 
+/// Start audio on CPU1: the capture task, which spawns the playback task
+/// once the shared I2S clock runs.
 pub(crate) fn spawn(spawner: &Spawner, resources: Resources, runtime: Runtime) {
     spawner.spawn(capture_task(resources, *spawner, runtime).expect("audio task already spawned"));
 }
@@ -117,13 +127,18 @@ async fn capture_blocks(
 
 /// Assembles raw DMA bytes into complete microphone blocks.
 struct BlockBuilder {
+    /// The block being filled.
     block: MicBlock,
+    /// Frames already in `block`.
     frames: usize,
+    /// Sequence number of the last published block.
     sequence: u32,
+    /// Blocks dropped so far because the queue was full.
     dropped_blocks: u32,
 }
 
 impl BlockBuilder {
+    /// An empty builder.
     const fn new() -> Self {
         Self {
             block: MicBlock::SILENT,
@@ -133,6 +148,7 @@ impl BlockBuilder {
         }
     }
 
+    /// Add whole frames from `bytes`, publishing every block that fills up.
     fn push_bytes(&mut self, bytes: &[u8], runtime: Runtime) {
         for frame in bytes.chunks_exact(BYTES_PER_FRAME) {
             let left = i16::from_le_bytes([frame[0], frame[1]]);
@@ -150,6 +166,7 @@ impl BlockBuilder {
         }
     }
 
+    /// Number the finished block, queue it and start the next one.
     fn publish(&mut self, runtime: Runtime) {
         self.sequence = self.sequence.wrapping_add(1);
         if runtime.microphone_queue_is_full() {

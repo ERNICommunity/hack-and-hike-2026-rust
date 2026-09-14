@@ -15,6 +15,7 @@ use hack_and_hike::{
 
 use crate::layout::NAV_WIDTH;
 
+/// Names one screen of the demo, and its button on the rail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ViewId {
     Network,
@@ -38,6 +39,7 @@ impl ViewId {
         Self::Log,
     ];
 
+    /// The rail button's picture.
     const fn icon(self) -> &'static Icon {
         match self {
             Self::Network => &NETWORK_ICON,
@@ -51,15 +53,20 @@ impl ViewId {
     }
 }
 
+/// Icons are 16 x 16 pixels.
 const ICON_SIZE: usize = 16;
-/// One row per line, most significant bit on the left.
+/// A 1-bit icon: one `u16` per row, most significant bit on the left, a set
+/// bit is a lit pixel. Write `0x0180` as binary to see the shape.
 type Icon = [u16; ICON_SIZE];
 
+/// The rail is split evenly between the buttons.
 const BUTTON_HEIGHT: usize = display::HEIGHT / ViewId::ALL.len();
+/// Where the icon starts inside its button, to centre it.
 const ICON_X: usize = (NAV_WIDTH as usize - ICON_SIZE) / 2;
 const ICON_Y: usize = (BUTTON_HEIGHT - ICON_SIZE) / 2;
 const _: () = assert!(BUTTON_HEIGHT > ICON_SIZE);
 
+// The icons, top row first.
 const NETWORK_ICON: Icon = [
     0x0000, 0x0000, 0x0180, 0x03C0, 0x0660, 0x0C30, 0x1818, 0x0180, 0x0180, 0x1818, 0x0C30, 0x0660,
     0x03C0, 0x0180, 0x0000, 0x0000,
@@ -92,8 +99,11 @@ const LOG_ICON: Icon = [
 /// Where the current touch started.
 #[derive(Clone, Copy)]
 enum Gesture {
-    /// On a rail button; `None` once the finger left that button.
+    /// On a rail button; `None` once the finger left that button, which
+    /// cancels the selection.
     Rail(Option<ViewId>),
+    /// In the content area; the visible screen gets every event until the
+    /// finger lifts.
     Content,
 }
 
@@ -101,10 +111,12 @@ enum Gesture {
 /// content touches.
 pub(crate) struct Navigation {
     touch: Touch,
+    /// The touch in progress; `None` while no finger is down.
     gesture: Option<Gesture>,
 }
 
 impl Navigation {
+    /// Route the touches of `touch`.
     pub(crate) const fn new(touch: Touch) -> Self {
         Self {
             touch,
@@ -152,6 +164,8 @@ impl Navigation {
     }
 }
 
+/// The same event with its point relative to the content area's top-left
+/// corner, the coordinates every screen works in.
 fn in_content_coordinates(event: TouchEvent) -> TouchEvent {
     let shift = |point: Point| point - Point::new(NAV_WIDTH as i32, 0);
     match event {
@@ -161,6 +175,7 @@ fn in_content_coordinates(event: TouchEvent) -> TouchEvent {
     }
 }
 
+/// The rail button under `point`, or `None` outside the rail.
 fn view_at(point: Point) -> Option<ViewId> {
     if point.x < 0 || point.x >= NAV_WIDTH as i32 || point.y < 0 {
         return None;

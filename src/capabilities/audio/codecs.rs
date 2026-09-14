@@ -1,10 +1,17 @@
-//! ES7210 microphone and AW88298 amplifier configuration.
+//! Register setup of the two audio chips: the ES7210 microphone ADC and the
+//! AW88298 speaker amplifier.
+//!
+//! Both are configured once, over I2C, for the same I2S format: 16 kHz,
+//! stereo, 16-bit samples. The register values come from M5Stack's
+//! M5Unified library for this board.
 
 use esp_hal::delay::Delay;
 
 use crate::platform::{self, registers::Registers};
 
+/// I2C address of the ES7210 microphone ADC.
 const ES7210_ADDR: u8 = 0x40;
+/// I2C address of the AW88298 speaker amplifier.
 const AW88298_ADDR: u8 = 0x36;
 
 /// Power and configure both audio codecs for 16 kHz stereo 16-bit I2S.

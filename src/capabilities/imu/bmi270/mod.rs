@@ -1,4 +1,15 @@
-//! BMI270 transport, initialization, auxiliary sensor hub, and sample decoding.
+//! Driver for the BMI270 accelerometer and gyroscope, and for the BMM150
+//! magnetometer connected behind it.
+//!
+//! The BMM150 is not on the board's I2C bus: it hangs off the BMI270's
+//! *auxiliary* interface. To configure it, the BMI270 forwards register
+//! reads and writes (manual mode). Once running, the BMI270 reads the
+//! magnetometer by itself and exposes its data next to its own, so one
+//! 23-byte I2C read returns magnetometer, accelerometer, gyroscope and
+//! timestamp together.
+//!
+//! The BMI270 also needs a configuration blob uploaded at every power-up
+//! before it measures anything; see [`config`].
 
 mod config;
 
@@ -77,10 +88,15 @@ const AUX_IF_TRIM_2K_PULLUP: u8 = 0x03;
 
 const ACC_G_PER_LSB: f32 = 4.0 / 32768.0;
 const GYR_DPS_PER_LSB: f32 = 2000.0 / 32768.0;
+/// Settle time after enabling the accelerometer and gyroscope.
 const SENSOR_STARTUP: Duration = Duration::from_millis(50);
+/// Bytes of the configuration blob written per I2C transaction.
+const CONFIG_CHUNK_BYTES: usize = 32;
 
+/// Why a BMI270 or BMM150 operation failed.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Error {
+    /// The I2C transaction failed, usually a missing acknowledge.
     Bus(I2cError),
     /// The chip at the BMI270 address reported this ID instead.
     ChipId(u8),
@@ -110,29 +126,39 @@ impl fmt::Display for Error {
     }
 }
 
+/// One reading, in the BMI270's own axes (the body frame).
 #[derive(Clone, Copy)]
 pub(super) struct RawSample {
+    /// Acceleration in g.
     pub(super) accel_g: [f32; 3],
+    /// Rotation rate in degrees per second, before bias correction.
     pub(super) gyro_dps: [f32; 3],
+    /// The magnetometer's raw data frame, decoded by `bmm150::compensate`.
     pub(super) mag_data: [u8; 8],
+    /// The BMI270's 24-bit timestamp of this sample.
     pub(super) sensor_time: u32,
 }
 
+/// The BMI270 on the shared system bus.
 pub(super) struct Bmi270 {
     bus: SystemI2cBus,
 }
 
 impl Bmi270 {
+    /// A driver for the BMI270 on `bus`. Nothing is sent until
+    /// [`Bmi270::initialize`].
     pub(super) const fn new(bus: SystemI2cBus) -> Self {
         Self { bus }
     }
 
+    /// Write one BMI270 register.
     async fn write_register(&self, register: u8, value: u8) -> Result<(), Error> {
         let mut i2c = self.bus.lock().await;
         i2c.write_async(BMI270_ADDR, &[register, value]).await?;
         Ok(())
     }
 
+    /// Read one BMI270 register.
     async fn read_register(&self, register: u8) -> Result<u8, Error> {
         let mut value = [0u8; 1];
         let mut i2c = self.bus.lock().await;
@@ -141,9 +167,12 @@ impl Bmi270 {
         Ok(value[0])
     }
 
+    /// Upload the configuration blob in chunks, each preceded by its
+    /// position in the chip's configuration memory.
     async fn upload_config(&self) -> Result<(), Error> {
-        for (offset, chunk) in config::MAXIMUM_FIFO_CONFIG.chunks(32).enumerate() {
-            let byte_offset = offset * 32;
+        let chunks = config::MAXIMUM_FIFO_CONFIG.chunks(CONFIG_CHUNK_BYTES);
+        for (index, chunk) in chunks.enumerate() {
+            let byte_offset = index * CONFIG_CHUNK_BYTES;
             // The init address is a word address split into a low nibble and
             // a high byte across two registers.
             let word_address = byte_offset >> 1;
@@ -153,7 +182,7 @@ impl Bmi270 {
                 u8::try_from(word_address >> 4).expect("BMI270 config fits its address space"),
             ];
 
-            let mut packet = [0u8; 33];
+            let mut packet = [0u8; 1 + CONFIG_CHUNK_BYTES];
             packet[0] = REG_INIT_DATA;
             packet[1..1 + chunk.len()].copy_from_slice(chunk);
 
@@ -166,6 +195,8 @@ impl Bmi270 {
         Ok(())
     }
 
+    /// Reset the BMI270, upload its configuration and start the
+    /// accelerometer (100 Hz, ±4 g) and gyroscope (400 Hz, ±2000 °/s).
     pub(super) async fn initialize(&self) -> Result<(), Error> {
         let chip_id = self.read_register(REG_CHIP_ID).await?;
         if chip_id != BMI270_CHIP_ID {
@@ -207,6 +238,8 @@ impl Bmi270 {
         Ok(())
     }
 
+    /// Wait a few milliseconds for the auxiliary interface to finish a
+    /// forwarded register access.
     async fn wait_aux_idle(&self) -> Result<(), Error> {
         for _ in 0..8 {
             if self.read_register(REG_STATUS).await? & AUX_BUSY == 0 {
@@ -217,12 +250,14 @@ impl Bmi270 {
         Err(Error::AuxBusy)
     }
 
+    /// Write one BMM150 register through the auxiliary interface.
     async fn aux_write_register(&self, register: u8, value: u8) -> Result<(), Error> {
         self.write_register(REG_AUX_WR_DATA, value).await?;
         self.write_register(REG_AUX_WR_ADDR, register).await?;
         self.wait_aux_idle().await
     }
 
+    /// Read one BMM150 register through the auxiliary interface.
     async fn aux_read_register(&self, register: u8) -> Result<u8, Error> {
         self.write_register(REG_AUX_IF_CONF, AUX_IF_MANUAL_MODE)
             .await?;
@@ -231,6 +266,7 @@ impl Bmi270 {
         self.read_register(REG_AUX_X_LSB).await
     }
 
+    /// Read `N` consecutive BMM150 registers starting at `first`.
     async fn aux_read_array<const N: usize>(&self, first: u8) -> Result<[u8; N], Error> {
         let mut result = [0u8; N];
         let mut register = first;
@@ -241,6 +277,8 @@ impl Bmi270 {
         Ok(result)
     }
 
+    /// Wake the BMM150 behind the auxiliary interface, read its factory trim
+    /// values, start it at 30 Hz and let the BMI270 read it automatically.
     pub(super) async fn initialize_bmm150(&self) -> Result<Trim, Error> {
         self.write_register(REG_IF_CONF, 0x20).await?;
         self.write_register(REG_PWR_CONF, 0x00).await?;
@@ -298,6 +336,8 @@ impl Bmi270 {
         }
     }
 
+    /// Read the newest magnetometer frame, acceleration, rotation and
+    /// timestamp in one I2C transaction.
     pub(super) async fn read_sample(&self) -> Result<RawSample, Error> {
         // DATA_0..DATA_19 followed by the three SENSORTIME bytes. Bosch defines
         // sensor time as shadowed at the start of a burst that begins in the data

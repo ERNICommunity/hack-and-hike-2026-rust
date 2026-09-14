@@ -22,6 +22,7 @@ pub struct Decoder {
 }
 
 impl Decoder {
+    /// The state at the start of a clip.
     pub const fn new() -> Self {
         Self {
             predictor: 0,

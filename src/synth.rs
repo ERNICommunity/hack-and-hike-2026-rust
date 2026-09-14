@@ -2,20 +2,40 @@
 //!
 //! The speaker plays signed 16-bit samples at [`SAMPLE_RATE_HZ`]. A
 //! [`SineWave`] produces them one at a time, so an application can fill the
-//! speaker queue a little on every loop iteration.
+//! speaker queue a little on every loop iteration:
+//!
+//! ```ignore
+//! let mut tone = SineWave::new(midi_note_hz(69.0)); // A4, 440 Hz
+//!
+//! // in the loop:
+//! let mut chunk = [0i16; 128 * audio::CHANNELS];
+//! let frames = speaker.available_frames().min(128);
+//! for frame in chunk[..frames * audio::CHANNELS].chunks_exact_mut(audio::CHANNELS) {
+//!     frame.fill(tone.next_sample(0.2));
+//! }
+//! speaker.write(&chunk[..frames * audio::CHANNELS]);
+//! ```
+//!
+//! The little speaker sounds best above about 600 Hz; low notes distort.
 
 use core::f32::consts::TAU;
 
 use crate::capabilities::audio::SAMPLE_RATE_HZ;
 
 /// A sine tone. Call [`SineWave::next_sample`] once per audio frame.
+///
+/// It is a phase accumulator: every sample advances the phase by a step
+/// that depends on the frequency, and the sample is the sine of the phase.
 #[derive(Clone, Copy, Debug)]
 pub struct SineWave {
+    /// Current position in the wave, in radians, `0.0..TAU`.
     phase: f32,
+    /// Phase advance per sample, in radians.
     step: f32,
 }
 
 impl SineWave {
+    /// A tone of `frequency_hz`, starting at phase zero (a silent sample).
     pub fn new(frequency_hz: f32) -> Self {
         Self {
             phase: 0.0,
@@ -38,6 +58,7 @@ impl SineWave {
     }
 }
 
+/// Radians per sample for a tone of `frequency_hz`.
 fn phase_step(frequency_hz: f32) -> f32 {
     TAU * frequency_hz / SAMPLE_RATE_HZ as f32
 }

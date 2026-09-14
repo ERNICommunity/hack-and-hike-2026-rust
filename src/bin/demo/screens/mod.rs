@@ -19,6 +19,13 @@ use hack_and_hike::{
     ui::Canvas,
 };
 
+/// What every demo screen does. All methods but `present` have an empty
+/// default, so a screen implements only what it needs.
+///
+/// The shell calls them in this order on every loop iteration:
+/// `handle_touch` (visible screen, for each touch), `update` (every screen),
+/// `present` (visible screen). `enter` and `leave` bracket the time a screen
+/// is visible.
 pub(crate) trait Screen {
     /// The screen is about to become visible.
     fn enter(&mut self) {}

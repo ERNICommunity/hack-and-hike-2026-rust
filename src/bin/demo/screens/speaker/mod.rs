@@ -1,7 +1,8 @@
-//! Melody synthesizer and chime playback with tempo and pitch controls.
+//! A looping melody and a chime, with tempo and pitch sliders.
 //!
 //! Audio keeps playing while another screen is visible, so the speaker queue
-//! is fed from `update`, which the shell calls for every screen.
+//! is fed from `update`, which the shell calls for every screen. The melody
+//! and the chime are mixed: both can play at once.
 
 mod chime;
 mod melody;
@@ -21,80 +22,123 @@ use crate::{layout, screens::Screen, styles};
 use chime::FlashChime;
 use melody::MelodySynth;
 
+// The layout file becomes Rust at compile time: a `...App` struct with a
+// `build` function and one `WidgetId` per named node.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/speaker/speaker.kdl");
 }
 
+/// Room for widgets in this screen's GUI context: the KDL nodes plus the
+/// widgets added in code.
 const NODES: usize = 16;
 const _: () = assert!(generated::SpeakerApp::WIDTH == layout::CONTENT_SIZE.width);
 const _: () = assert!(generated::SpeakerApp::HEIGHT == layout::CONTENT_SIZE.height);
+/// Frames generated per chunk when topping up the speaker queue.
 const PCM_CHUNK_FRAMES: usize = 128;
+/// The same chunk in samples.
 const PCM_CHUNK_SAMPLES: usize = PCM_CHUNK_FRAMES * audio::CHANNELS;
 
-/// Melody tempo in quarter-note beats per minute.
+/// A slider value outside the allowed range.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OutOfRange;
+
+/// Melody tempo in quarter-note beats per minute, 60 to 180.
+///
+/// A newtype: a plain `u16` could be a tempo, a pitch or anything else; a
+/// `TempoBpm` can only be a valid tempo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TempoBpm(u16);
 
 impl TempoBpm {
+    /// The slowest tempo.
     pub(crate) const MIN: Self = Self(60);
+    /// The tempo at boot.
     pub(crate) const DEFAULT: Self = Self(120);
+    /// The fastest tempo.
     pub(crate) const MAX: Self = Self(180);
 
-    pub(crate) const fn new(value: u16) -> Option<Self> {
-        if value >= Self::MIN.0 && value <= Self::MAX.0 {
-            Some(Self(value))
-        } else {
-            None
-        }
-    }
-
+    /// Beats per minute.
     pub(crate) const fn get(self) -> u16 {
         self.0
     }
 }
 
-/// Transposition of the melody in semitones.
+/// For slider values.
+impl TryFrom<i32> for TempoBpm {
+    type Error = OutOfRange;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        let value = u16::try_from(value).map_err(|_| OutOfRange)?;
+        if (Self::MIN.0..=Self::MAX.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(OutOfRange)
+        }
+    }
+}
+
+/// Transposition of the melody in semitones, -12 to +12 (an octave down or
+/// up).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PitchSemitones(i8);
 
 impl PitchSemitones {
+    /// One octave down.
     pub(crate) const MIN: Self = Self(-12);
+    /// No transposition: the pitch at boot.
     pub(crate) const CENTER: Self = Self(0);
+    /// One octave up.
     pub(crate) const MAX: Self = Self(12);
 
-    pub(crate) const fn new(value: i8) -> Option<Self> {
-        if value >= Self::MIN.0 && value <= Self::MAX.0 {
-            Some(Self(value))
-        } else {
-            None
-        }
-    }
-
+    /// Semitones up (positive) or down (negative).
     pub(crate) const fn get(self) -> i8 {
         self.0
     }
 }
 
+/// For slider values.
+impl TryFrom<i32> for PitchSemitones {
+    type Error = OutOfRange;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        let value = i8::try_from(value).map_err(|_| OutOfRange)?;
+        if (Self::MIN.0..=Self::MAX.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(OutOfRange)
+        }
+    }
+}
+
+/// The speaker screen, its two sound sources and its controls.
 pub(crate) struct SpeakerScreen {
     speaker: Speaker,
     melody: MelodySynth,
     chime: FlashChime,
+    /// Whether the melody is on.
     playing: bool,
     tempo: TempoBpm,
     pitch: PitchSemitones,
     gui: &'static mut gui::Context<NODES>,
+    /// PLAY / STOP.
     play_button: WidgetId,
+    /// PLAY CHIME.
     chime_button: WidgetId,
+    /// "MELODY PLAYING" / "MELODY STOPPED".
     status_label: WidgetId,
+    /// The tempo readout.
     tempo_value: WidgetId,
+    /// The pitch readout.
     pitch_value: WidgetId,
     tempo_slider: Slider,
     pitch_slider: Slider,
+    /// Whether the screen needs a redraw.
     dirty: bool,
 }
 
 impl SpeakerScreen {
+    /// Build the layout, the readouts and the sliders; nothing plays yet.
     pub(crate) fn new(speaker: Speaker) -> Self {
         let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::SpeakerApp::build(gui).expect("speaker.kdl fits the GUI capacities");
@@ -140,6 +184,8 @@ impl SpeakerScreen {
         }
     }
 
+    /// The next audio frame: the melody (when on) plus the chime, clamped to
+    /// the 16-bit range.
     fn next_sample(&mut self) -> i16 {
         let melody = if self.playing {
             self.melody.next_sample(self.tempo, self.pitch)
@@ -188,19 +234,17 @@ impl Screen for SpeakerScreen {
             self.chime.restart();
         }
 
-        if let Some(tempo) = self
+        if let Some(Ok(tempo)) = self
             .tempo_slider
             .handle_touch(event)
-            .and_then(|value| u16::try_from(value).ok())
-            .and_then(TempoBpm::new)
+            .map(TempoBpm::try_from)
         {
             self.tempo = tempo;
         }
-        if let Some(pitch) = self
+        if let Some(Ok(pitch)) = self
             .pitch_slider
             .handle_touch(event)
-            .and_then(|value| i8::try_from(value).ok())
-            .and_then(PitchSemitones::new)
+            .map(PitchSemitones::try_from)
         {
             self.pitch = pitch;
         }

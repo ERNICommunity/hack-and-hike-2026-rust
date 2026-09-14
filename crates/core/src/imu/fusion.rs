@@ -81,6 +81,7 @@ impl Default for GyroBias {
 }
 
 impl GyroBias {
+    /// No bias learned yet: rates pass through unchanged at first.
     pub const fn new() -> Self {
         Self {
             bias_dps: [0.0; 3],
@@ -148,6 +149,12 @@ impl SmoothedCandidate {
     }
 }
 
+/// The orientation filter: feed it one sample at a time with
+/// [`Fusion::update`].
+///
+/// The gyroscope predicts how the board turned since the last sample; the
+/// accelerometer pulls the prediction towards gravity (levels it) and a
+/// calibrated magnetometer pulls it towards magnetic north.
 #[derive(Clone, Copy)]
 pub struct Fusion {
     gains: Gains,
@@ -177,6 +184,7 @@ impl Fusion {
         Self::with_gains(Gains::PRODUCTION)
     }
 
+    /// Fusion with custom gains, for tests and tuning.
     pub const fn with_gains(gains: Gains) -> Self {
         Self {
             gains,
@@ -207,6 +215,8 @@ impl Fusion {
         self.large_innovation.clear();
     }
 
+    /// Forget the previous gyroscope rate, after samples were lost, so the
+    /// next integration step does not average across the gap.
     pub fn reset_rate_history(&mut self) {
         self.previous_gyro_screen_dps = None;
     }

@@ -160,26 +160,50 @@ There are two ways to draw:
   pixels at a time. Cheap and simple for plain fills; the demo's navigation
   rail uses it.
 - `surface.render_from(&mut source)` streams rows that already are RGB565
-  bytes from a `ScanlineSource`: a `Canvas` or a camera frame. While the DMA
+  bytes from a `ScanlineSource`, such as a camera frame. While the DMA
   sends one batch, the source gets a callback in which it can do useful work,
   which is how the camera captures its next frame.
 
 Both go through the same pipeline: rows are sent to the panel in batches of
 seven through two alternating DMA buffers, so the CPU prepares the next batch
-while the previous one is on the wire.
+while the previous one is on the wire. The clock is 40 MHz, which puts a
+full frame at about 31 ms; the ESP32-S3 could go to 80 MHz, but this panel
+shows noise at that rate. Drawing fast therefore means sending little.
+
+### The `Canvas`
+
+A `Canvas` is the usual way to draw text and shapes. It holds two images in
+PSRAM: what the application drew, and a *shadow* of what the panel shows.
+
+```mermaid
+flowchart LR
+    Draw["draw: primitives, text"] --> Pixels["canvas pixels"]
+    Pixels --> Compare{"differs from shadow?"}
+    Shadow["shadow: what the panel shows"] --> Compare
+    Compare -- "changed rows" --> Windows["a few rectangles"]
+    Windows --> Panel["panel via SPI DMA"]
+    Windows --> Shadow
+```
+
+`canvas.show(&mut surface)` compares the area touched since the last `show`
+with the shadow, groups the rows that changed into a few rectangles and
+sends only those. An application can therefore clear and redraw its whole
+picture whenever something changes: identical pixels are never sent, and a
+changed number costs a millisecond instead of a full frame.
+`canvas.clear(color)` with the same colour as last time only repaints what
+was drawn since.
+
+The shadow is only right while nothing else draws on the same part of the
+panel. After `render_scanlines`, a camera frame or another canvas drew there,
+`canvas.invalidate()` makes the next `show` send everything; the demo calls
+it whenever the visible screen changes.
 
 ### The `ui` module
 
 `src/ui/` is optional:
 
-- `Canvas`: a rectangle of pixels in PSRAM that implements
-  `embedded_graphics::DrawTarget`, so every primitive, font and image of that
-  crate draws onto it. `canvas.show(&mut surface)` copies only the rectangle
-  that changed since the last `show`, and `clear` with the same colour as
-  before repaints only what was drawn since; a full frame costs about 30 ms
-  on the SPI bus, a small change well under one. After drawing on the surface
-  without the canvas, `canvas.invalidate()` makes the next `show` send
-  everything again.
+- `Canvas`: an `embedded_graphics::DrawTarget` in PSRAM that sends only
+  changed pixels, described above.
 - `theme`: the six palette colours as `Rgb565`.
 - `common`: text helpers and the bitmap fonts at native resolution.
 - `font`: the same fonts adapted for `embedded-gui`, anchored at the top-left

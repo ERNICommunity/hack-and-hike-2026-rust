@@ -1,4 +1,9 @@
-//! Dedicated external-PSRAM allocator policy.
+//! The PSRAM heap.
+//!
+//! PSRAM gets its own heap instead of joining the global allocator, so a
+//! large buffer can only land there when the code asks for it explicitly
+//! (through [`super::storage`]), and ordinary allocations stay in fast
+//! internal RAM.
 
 use esp_alloc::{EspHeap, HeapRegion, MemoryCapability};
 use esp_hal::{
@@ -6,8 +11,10 @@ use esp_hal::{
     psram::{Psram, PsramConfig, PsramMode},
 };
 
+/// The allocator over PSRAM; empty until [`enable`] adds the memory.
 static PSRAM_HEAP: EspHeap = EspHeap::empty();
 
+/// Map the PSRAM chip into the address space and hand it to the PSRAM heap.
 pub fn enable(psram_peripheral: PSRAM<'static>) {
     let config = PsramConfig {
         mode: PsramMode::QuadSpi,
@@ -31,6 +38,7 @@ pub fn enable(psram_peripheral: PSRAM<'static>) {
     }
 }
 
+/// The PSRAM heap, for allocations that should live there.
 pub(super) fn heap() -> &'static EspHeap {
     &PSRAM_HEAP
 }

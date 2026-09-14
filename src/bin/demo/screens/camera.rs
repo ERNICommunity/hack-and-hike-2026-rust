@@ -1,4 +1,8 @@
 //! Live camera preview.
+//!
+//! Frames go straight from the camera's buffer to the display without a
+//! canvas: while a frame is being sent, the camera captures the next one.
+//! Without a camera the screen says so.
 
 use embedded_graphics::prelude::Dimensions as _;
 use hack_and_hike::{
@@ -12,19 +16,26 @@ use hack_and_hike::{
 use crate::{layout, screens::Screen};
 
 // The sensor image is wider than the content area: show its middle.
+/// Width of the content area, in pixels.
 const CONTENT_WIDTH: usize = layout::CONTENT_SIZE.width as usize;
+/// Camera columns cut off on the left (and as many on the right).
 const CROP_LEFT: usize = (camera::WIDTH - CONTENT_WIDTH) / 2;
+/// The bytes of each camera row that are shown.
 const SOURCE_BYTES: core::ops::Range<usize> =
     CROP_LEFT * BYTES_PER_PIXEL..(CROP_LEFT + CONTENT_WIDTH) * BYTES_PER_PIXEL;
 const _: () = assert!(camera::HEIGHT == layout::CONTENT_SIZE.height as usize);
 const _: () = assert!(camera::WIDTH >= CONTENT_WIDTH);
 
+/// The camera screen.
 pub(crate) struct CameraScreen {
+    /// `None` when no camera answered at boot.
     camera: Option<Camera>,
+    /// Whether the background (or the "no camera" message) must be drawn.
     background_dirty: bool,
 }
 
 impl CameraScreen {
+    /// A camera screen for `camera`, if there is one.
     pub(crate) const fn new(camera: Option<Camera>) -> Self {
         Self {
             camera,

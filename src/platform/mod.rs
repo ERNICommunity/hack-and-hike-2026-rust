@@ -1,16 +1,21 @@
 //! Physical facts about the M5Stack CoreS3 Lite board.
 //!
-//! This module owns pins, power rails, reset lines and the shared I2C bus.
-//! Device register setup stays with the owning capability: LCD controller
-//! setup in `display`, codec setup in `audio`, sensor setup in `imu`.
+//! This module owns what is specific to the PCB rather than to a chip: the
+//! shared I2C bus, the power rails of the AXP2101 power chip and the reset
+//! lines behind the AW9523 IO expander. Register setup of a device stays with
+//! the capability that uses it: LCD controller setup in `display`, codec
+//! setup in `audio`, sensor setup in `imu`.
+//!
+//! Nothing here is visible to applications.
 
 pub(crate) mod i2c;
 pub(crate) mod io_expander;
 pub(crate) mod power;
 pub(crate) mod registers;
 
-/// Native LCD/touch coordinate space of the CoreS3 Lite panel.
+/// Width of the LCD and of the touch panel's coordinate space.
 pub(crate) const DISPLAY_WIDTH: usize = 320;
+/// Height of the LCD and of the touch panel's coordinate space.
 pub(crate) const DISPLAY_HEIGHT: usize = 240;
 
 /// The panel is mounted upside down relative to its controller's native

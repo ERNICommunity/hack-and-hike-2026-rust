@@ -1,13 +1,18 @@
-//! AW9523 board-control policy for CoreS3-Lite.
+//! Reset lines behind the AW9523 IO expander.
 //!
-//! The expander owns reset/enable lines for several onboard peripherals. Keep
-//! those electrical details here; device drivers should only request the board
-//! transition they need.
+//! The ESP32-S3 has too few pins for everything on the board, so the reset
+//! lines of the LCD, the touch controller, the camera and the speaker
+//! amplifier hang off this I2C GPIO expander instead. It has two 8-bit ports,
+//! each with an output, a direction and a mode register.
+//!
+//! The functions here perform one board transition each (reset these chips,
+//! release that one); drivers never touch expander bits directly.
 
 use esp_hal::delay::Delay;
 
 use super::registers::Registers;
 
+/// I2C address of the AW9523.
 const AW9523_ADDR: u8 = 0x58;
 
 const PORT0_OUTPUT_REGISTER: u8 = 0x02;
@@ -18,9 +23,14 @@ const GLOBAL_CONTROL_REGISTER: u8 = 0x11;
 const PORT0_MODE_REGISTER: u8 = 0x12;
 const PORT1_MODE_REGISTER: u8 = 0x13;
 
+// Reset lines, all active low: 0 holds the chip in reset.
+/// Touch controller reset, port 0 bit 0.
 const TOUCH_RESET: u8 = 1 << 0;
+/// Speaker amplifier reset, port 0 bit 2.
 const SPEAKER_RESET: u8 = 1 << 2;
+/// Camera sensor reset, port 1 bit 0.
 const CAMERA_RESET: u8 = 1 << 0;
+/// LCD controller reset, port 1 bit 1.
 const LCD_RESET: u8 = 1 << 1;
 
 const LCD_TOUCH_RESET_PULSE_MS: u32 = 20;
@@ -41,6 +51,7 @@ const PORT1_DIRECTIONS: u8 = 0b0000_1100;
 const PORT0_PUSH_PULL: u8 = 0b0001_0000;
 const GPIO_MODE_ALL: u8 = 0xFF;
 
+/// The AW9523's registers on `i2c`.
 fn expander<I2C: embedded_hal::i2c::I2c>(i2c: &mut I2C) -> Registers<'_, I2C> {
     Registers::new(i2c, AW9523_ADDR)
 }

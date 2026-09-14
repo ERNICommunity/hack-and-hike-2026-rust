@@ -9,6 +9,32 @@
 //! message. Each message type carries a kind derived from its
 //! [`Message::NAME`]; a board only decodes the kinds it knows.
 //!
+//! ```ignore
+//! #[derive(Serialize, Deserialize)]
+//! struct Hello {
+//!     number: u32,
+//! }
+//!
+//! impl Message for Hello {
+//!     const NAME: &'static str = "team-otters.hello";
+//! }
+//!
+//! if let Err(error) = network.broadcast(&Hello { number: 42 }) {
+//!     log::warn!("not sent: {error}");
+//! }
+//! while let Some(message) = network.next_message() {
+//!     if let Ok(hello) = message.decode::<Hello>() { /* ... */ }
+//! }
+//! ```
+//!
+//! # Limits
+//!
+//! - A message is at most [`MAX_PAYLOAD`] bytes once encoded.
+//! - Delivery is not guaranteed; ESP-NOW is a radio in a noisy room. Send
+//!   again, or send the current state instead of changes.
+//! - Up to [`MAX_PEERS`] peers are tracked; beyond that the longest-silent
+//!   one is replaced. Broadcasts reach every board regardless.
+//!
 //! The wire format, MAC addresses and the radio itself stay private; the
 //! protocol and peer table live in `hack_and_hike_core::network`, where they
 //! are tested on the host.
@@ -44,6 +70,8 @@ const INCOMING_QUEUE_LENGTH: usize = 4;
 /// Radio configuration owned by the CPU1 network runtime.
 #[derive(Clone, Copy)]
 pub(crate) struct Config {
+    /// The Wi-Fi channel every board uses. Boards on different channels do
+    /// not hear each other.
     pub(crate) channel: RadioChannel,
     /// How often this board announces itself.
     pub(crate) beacon_period: Duration,
@@ -61,16 +89,24 @@ impl Default for Config {
     }
 }
 
-/// CPU1-owned physical resource required by ESP-NOW.
+/// The radio, owned by CPU1.
 pub(crate) struct Resources {
+    /// The Wi-Fi peripheral, used for ESP-NOW only.
     pub(crate) wifi: WIFI<'static>,
 }
 
+/// The queues and counters shared by the handle (CPU0) and the radio tasks
+/// (CPU1).
 struct Service {
+    /// The newest peer table and counters.
     latest: Signal<CriticalSectionRawMutex, Snapshot>,
+    /// Messages waiting to be sent.
     outgoing: Channel<CriticalSectionRawMutex, OutgoingMessage, OUTGOING_QUEUE_LENGTH>,
+    /// Messages waiting to be read.
     incoming: Channel<CriticalSectionRawMutex, IncomingMessage, INCOMING_QUEUE_LENGTH>,
+    /// Messages refused because `outgoing` was full.
     tx_queue_full: AtomicU32,
+    /// Messages dropped because `incoming` was full.
     rx_queue_full: AtomicU32,
 }
 
@@ -82,7 +118,7 @@ static SERVICE: Service = Service {
     rx_queue_full: AtomicU32::new(0),
 };
 
-/// Application handle for ESP-NOW messaging.
+/// Application handle for ESP-NOW messaging; see the [module docs](self).
 pub struct Network {
     service: &'static Service,
     /// The newest snapshot seen so far; refreshed whenever it is read.
@@ -110,14 +146,25 @@ impl Network {
         self.service.incoming.try_receive().ok()
     }
 
-    /// Queue `value` for every peer in range. Returns as soon as the message
-    /// is queued; the radio sends it shortly after.
+    /// Queue `value` for every board in range. Returns as soon as the
+    /// message is queued; the radio sends it shortly after.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError::MessageTooLarge`] when `value` encodes to more than
+    /// [`MAX_PAYLOAD`] bytes, [`SendError::QueueFull`] when the application
+    /// sends faster than the radio (try again on the next loop iteration).
     pub fn broadcast<T: Message>(&mut self, value: &T) -> Result<(), SendError> {
         self.enqueue(None, value)
     }
 
-    /// Queue `value` for one peer. Fails with [`SendError::UnknownPeer`] when
-    /// that board is not in the current peer table.
+    /// Queue `value` for one peer, typically the sender of a message you
+    /// received.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError::UnknownPeer`] when that board is not in the current peer
+    /// table, otherwise as for [`Network::broadcast`].
     pub fn send_to<T: Message>(&mut self, peer: DeviceId, value: &T) -> Result<(), SendError> {
         if !self.peers().any(|known| known.id == peer) {
             return Err(SendError::UnknownPeer);
@@ -125,6 +172,7 @@ impl Network {
         self.enqueue(Some(peer), value)
     }
 
+    /// Encode `value` and put it in the outgoing queue.
     fn enqueue<T: Message>(
         &mut self,
         recipient: Option<DeviceId>,
@@ -145,10 +193,12 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
+    /// Make `snapshot` the newest one for the application.
     fn publish(self, snapshot: Snapshot) {
         self.service.latest.signal(snapshot);
     }
 
+    /// The queue-full counters, which the handle updates on CPU0.
     fn queue_counters(self) -> QueueCounters {
         QueueCounters {
             tx_queue_full: self.service.tx_queue_full.load(Ordering::Relaxed),
@@ -170,11 +220,15 @@ impl Runtime {
     }
 }
 
+/// The two ends of the network queues, created once by the board.
 pub(crate) struct Endpoints {
+    /// For the application.
     pub(crate) handle: Network,
+    /// For the CPU1 radio tasks.
     pub(crate) runtime: Runtime,
 }
 
+/// Both ends of the network queues.
 pub(crate) fn endpoints() -> Endpoints {
     Endpoints {
         handle: Network {

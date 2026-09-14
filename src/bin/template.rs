@@ -22,10 +22,15 @@ use hack_and_hike::{
     ui::{Canvas, theme},
 };
 
+// Writes the application descriptor the bootloader checks before starting
+// the firmware. Every application needs this line exactly once.
 esp_bootloader_esp_idf::esp_app_desc!();
 
+/// Size of the spot under the finger, in pixels.
 const SPOT_DIAMETER: u32 = 120;
 
+/// The entry point. `async` because the loop waits with `.await`; `-> !`
+/// because firmware never returns.
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     // Keep the handles you need; the rest of the board keeps running anyway.

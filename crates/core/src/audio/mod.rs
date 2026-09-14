@@ -1,4 +1,7 @@
 //! Audio building blocks with no hardware dependency.
+//!
+//! - [`FrameRing`]: the queue between an application and the speaker.
+//! - [`adpcm`]: decoding of compressed sound clips.
 
 pub mod adpcm;
 
@@ -19,6 +22,11 @@ impl<const SAMPLES: usize, const CHANNELS: usize> Default for FrameRing<SAMPLES,
 }
 
 impl<const SAMPLES: usize, const CHANNELS: usize> FrameRing<SAMPLES, CHANNELS> {
+    /// An empty ring.
+    ///
+    /// # Panics
+    ///
+    /// At compile time when `SAMPLES` is not a multiple of `CHANNELS`.
     pub const fn new() -> Self {
         assert!(CHANNELS > 0 && SAMPLES.is_multiple_of(CHANNELS));
         Self {
@@ -28,6 +36,7 @@ impl<const SAMPLES: usize, const CHANNELS: usize> FrameRing<SAMPLES, CHANNELS> {
         }
     }
 
+    /// Frames the ring holds when full.
     pub const fn capacity_frames() -> usize {
         SAMPLES / CHANNELS
     }

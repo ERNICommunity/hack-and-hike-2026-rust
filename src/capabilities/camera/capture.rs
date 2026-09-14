@@ -1,10 +1,17 @@
-//! CPU0-owned LCD_CAM/DMA camera capture pipeline.
+//! The camera capture pipeline on CPU0.
 //!
-//! The GC0308 emits QVGA RGB565 over its 8-bit DVP bus. LCD_CAM streams it
-//! into a small internal DMA ring. Two PSRAM frame buffers decouple sensor
-//! timing from LCD timing: one complete frame is shown while CPU0 drains the
-//! next frame from the ring during LCD DMA wait time. Hardware VSYNC marks
-//! frame boundaries.
+//! The GC0308 sends 320x240 RGB565 over an 8-bit parallel bus. The
+//! `LCD_CAM` peripheral streams those bytes into a small DMA ring buffer.
+//! Two PSRAM frame buffers decouple the sensor's timing from the display's:
+//! one complete frame is shown while CPU0 copies the next one out of the
+//! ring, during the milliseconds the display's own DMA transfer is busy. The
+//! sensor's VSYNC signal marks where one frame ends and the next begins.
+//!
+//! ```text
+//! sensor ──> DMA ring ──(while the LCD is busy)──> capture buffer
+//!                                                     │ swap on VSYNC
+//!                                  LCD <── display buffer
+//! ```
 
 use esp_hal::{
     dma::DmaRxStreamBuf,
@@ -22,16 +29,26 @@ use log::warn;
 
 use crate::{capabilities::display::ScanlineSource, support::memory::storage};
 
+/// Width of a camera frame in pixels.
 pub const WIDTH: usize = 320;
+/// Height of a camera frame in pixels.
 pub const HEIGHT: usize = 240;
-const BYTES_PER_PIXEL: usize = 2;
+/// RGB565, like the display.
+const BYTES_PER_PIXEL: usize = crate::capabilities::display::BYTES_PER_PIXEL;
+/// Bytes in one row of a frame.
 const SCANLINE_BYTES: usize = WIDTH * BYTES_PER_PIXEL;
+/// Bytes in one whole frame.
 const FRAME_BYTES: usize = WIDTH * HEIGHT * BYTES_PER_PIXEL;
 
-/// The internal DMA ring is small; the renderer drains it while each LCD DMA
-/// batch is in flight, so most of the frame never has to sit in scarce DRAM.
+/// One DMA descriptor of the ring: five rows.
+///
+/// The ring lives in internal RAM, which is scarce, so it is small: 40 rows.
+/// That is enough because the renderer drains it while each LCD DMA batch is
+/// in flight; most of a frame never sits in the ring for long.
 const STREAM_CHUNK_BYTES: usize = SCANLINE_BYTES * 5;
+/// The whole DMA ring.
 const STREAM_BUFFER_BYTES: usize = STREAM_CHUNK_BYTES * 8;
+/// Log only the first bad frame and then every 32nd, not all of them.
 const BAD_FRAME_LOG_INTERVAL: u32 = 32;
 
 const _: () = assert!(STREAM_CHUNK_BYTES <= esp_hal::dma::CHUNK_SIZE);
@@ -39,6 +56,8 @@ const _: () = assert!(STREAM_BUFFER_BYTES.is_multiple_of(STREAM_CHUNK_BYTES));
 
 type InFlight = CameraTransfer<'static, DmaRxStreamBuf>;
 
+/// The peripherals and pins wired to the camera sensor, consumed once by
+/// [`init`].
 pub(crate) struct Resources {
     pub(crate) lcd_cam: LCD_CAM<'static>,
     pub(crate) dma: DMA_CH2<'static>,
@@ -55,6 +74,7 @@ pub(crate) struct Resources {
     pub(crate) d7: GPIO47<'static>,
 }
 
+/// The camera driver and its ring buffer, either idle or streaming.
 enum Stream {
     Stopped {
         driver: CameraDriver<'static>,
@@ -64,6 +84,7 @@ enum Stream {
 }
 
 impl Stream {
+    /// The same stream, stopped if it was running.
     fn stopped(self) -> Self {
         match self {
             Self::Stopped { .. } => self,
@@ -84,9 +105,13 @@ enum Progress {
     Complete(usize),
 }
 
+/// Why a frame could not be captured.
 enum CaptureError {
+    /// The DMA transfer did not start.
     DmaStart,
+    /// The DMA transfer stopped before the sensor signalled VSYNC.
     StreamEnded,
+    /// VSYNC came after this many bytes instead of a whole frame.
     BadLength(usize),
 }
 
@@ -100,13 +125,24 @@ impl core::fmt::Display for CaptureError {
     }
 }
 
+/// Application handle for the camera; see the [module docs](super).
+///
+/// Show frames with [`Camera::begin_frame`], draw the [`Frame`] and call
+/// [`Frame::finish`]. Call [`Camera::pause`] when the preview is hidden, so
+/// the next frame starts cleanly.
 pub struct Camera {
     // `None` only while a method moves the stream between states.
     stream: Option<Stream>,
+    /// The complete frame being shown, in PSRAM.
     display_buffer: &'static mut [u8],
+    /// The next frame, filled from the DMA ring; swapped with
+    /// `display_buffer` when complete.
     capture_buffer: &'static mut [u8],
+    /// Whether `display_buffer` holds a whole frame.
     display_ready: bool,
+    /// How far `capture_buffer` is filled.
     progress: Progress,
+    /// Frames dropped so far, for rate-limited logging.
     bad_frames: u32,
 }
 
@@ -153,6 +189,8 @@ impl ScanlineSource for Frame<'_> {
     }
 }
 
+/// Configure `LCD_CAM` for the sensor and allocate the two frame buffers.
+/// Capturing starts with the first [`Camera::begin_frame`].
 pub(crate) fn init(resources: Resources) -> Camera {
     let Resources {
         lcd_cam,
@@ -224,10 +262,12 @@ impl Camera {
         Some(Frame { camera: self })
     }
 
+    /// Stop the DMA transfer if it is running.
     fn stop_stream(&mut self) {
         self.stream = self.stream.take().map(Stream::stopped);
     }
 
+    /// Whether the DMA transfer is stopped.
     fn is_stopped(&self) -> bool {
         matches!(self.stream, Some(Stream::Stopped { .. }))
     }
@@ -350,6 +390,7 @@ impl Camera {
         self.finish_capture()
     }
 
+    /// Count a dropped frame and log it, rate-limited.
     fn report_bad_frame(&mut self, error: CaptureError) {
         self.bad_frames = self.bad_frames.saturating_add(1);
         if self.bad_frames == 1 || self.bad_frames.is_multiple_of(BAD_FRAME_LOG_INTERVAL) {

@@ -1,4 +1,14 @@
 //! Attitude and heading as a perspective horizon with a compass.
+//!
+//! The header shows the sensor status, the magnetometer state and roll,
+//! pitch and yaw as numbers. Below it, a small 3-D view looks out of the
+//! camera side of the board: a sky and a ground grid meet at the horizon,
+//! and N, E, S, W letters stand on the ground where those directions are.
+//!
+//! - `projection`: from the IMU's attitude to a perspective camera, plus
+//!   line clipping.
+//! - `horizon`: the sky, the ground, the grids and the crosshair.
+//! - `compass`: the direction letters, drawn as strokes in the 3-D world.
 
 mod compass;
 mod horizon;
@@ -19,37 +29,53 @@ use hack_and_hike::{
 
 use crate::{layout, screens::Screen};
 
+// The layout file becomes Rust at compile time: a `...App` struct with a
+// `build` function and one `WidgetId` per named node.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/imu/imu.kdl");
 }
 
+/// Room for widgets in this screen's GUI context.
 const NODES: usize = 16;
 const _: () = assert!(generated::ImuApp::WIDTH == layout::CONTENT_SIZE.width);
 const _: () = assert!(generated::ImuApp::HEIGHT == layout::CONTENT_SIZE.height);
 /// Matches the 100 Hz fusion rate; the handle keeps only the newest sample.
 const UPDATE_PERIOD: Duration = Duration::from_millis(10);
 
+// Text positions inside the header, in pixels from its top-left corner.
+/// Left margin of the header text.
 const HEADER_PADDING: i32 = 6;
+/// Row of the "IMU" title.
 const HEADER_TITLE_Y: i32 = 3;
+/// Row of the sensor status.
 const HEADER_STATUS_Y: i32 = 19;
+/// Row of the magnetometer state.
 const HEADER_MAGNETOMETER_Y: i32 = 35;
 /// Where the roll/pitch/yaw columns start inside the header.
 const HEADER_VALUES_X: i32 = 78;
+/// Row of the ROLL / PITCH / YAW captions.
 const VALUE_LABEL_Y: i32 = 3;
+/// Row of the numbers under the captions.
 const VALUE_Y: i32 = 22;
 
+/// The IMU screen and the sample it shows.
 pub(crate) struct ImuScreen {
     imu: Imu,
+    /// The newest sample; `None` until the first one arrives.
     sample: Option<Sample>,
     last_update: Instant,
     gui: &'static mut gui::Context<NODES>,
+    /// The numeric header at the top.
     header: Rectangle,
+    /// The 3-D view below it.
     attitude: Rectangle,
+    /// Whether the screen needs a redraw.
     dirty: bool,
 }
 
 impl ImuScreen {
+    /// Build the layout; nothing is shown until the first sample.
     pub(crate) fn new(imu: Imu) -> Self {
         let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::ImuApp::build(gui).expect("imu.kdl fits the GUI capacities");
@@ -104,6 +130,7 @@ impl Screen for ImuScreen {
     }
 }
 
+/// The header background with the title and `status`.
 fn draw_header_frame(canvas: &mut Canvas, area: Rectangle, status: &str) {
     canvas.fill(area, theme::DARK_BLUE);
     let x = area.top_left.x + HEADER_PADDING;
@@ -123,6 +150,7 @@ fn draw_header_frame(canvas: &mut Canvas, area: Rectangle, status: &str) {
     );
 }
 
+/// The whole header: status, magnetometer state and the three angles.
 fn draw_header(
     canvas: &mut Canvas,
     area: Rectangle,
@@ -174,6 +202,7 @@ fn draw_header(
     }
 }
 
+/// The header text for the sensor status.
 fn status_text(status: Status) -> &'static str {
     match status {
         Status::Starting => "STARTING",
@@ -183,6 +212,7 @@ fn status_text(status: Status) -> &'static str {
     }
 }
 
+/// Round to the nearest whole number for display.
 fn round(value: f32) -> i32 {
     libm::roundf(value) as i32
 }
