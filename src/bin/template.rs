@@ -24,7 +24,7 @@ use hack_and_hike::{
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-const SPOT_DIAMETER: u32 = 40;
+const SPOT_DIAMETER: u32 = 120;
 
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {

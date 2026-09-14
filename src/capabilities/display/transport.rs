@@ -21,7 +21,11 @@ use esp_hal::{
 
 use super::{BYTES_PER_PIXEL, Resources, ScanlineSource, WIDTH, controller};
 
-const DISPLAY_SPI_MHZ: u32 = 40;
+/// The SPI clock is the ceiling on drawing speed: a full frame is 153,600
+/// bytes, 15 ms at 80 MHz and 31 ms at 40 MHz. 80 MHz is the ESP32-S3's
+/// maximum; the panel is specified for less but runs it in practice. If the
+/// picture shows noise or wrong pixels, 40 MHz is the safe setting.
+const DISPLAY_SPI_MHZ: u32 = 80;
 /// Scanlines per DMA batch. Seven full-width rows are 4,480 bytes, which keeps
 /// a batch close to one 4 KiB GDMA descriptor while cutting per-transfer
 /// overhead for full-frame producers such as the camera.
