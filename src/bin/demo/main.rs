@@ -1,7 +1,8 @@
 //! Full Hack & Hike demo: one screen per capability plus settings and a log.
 //!
 //! `main` brings up the board, hands each screen the handles it owns, and
-//! runs the loop: route touches, update every screen, draw the visible one.
+//! runs the loop: route touches, update every screen, draw the visible one,
+//! pause briefly unless the visible screen forbids it.
 //!
 //! ```text
 //! ┌────┬───────────────────────────┐

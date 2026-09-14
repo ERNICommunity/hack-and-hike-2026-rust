@@ -15,6 +15,13 @@
 //! }
 //! ```
 //!
+//! `begin_frame` returns the newest complete frame at once. Drawing it drains
+//! the sensor's DMA ring while the display's DMA is busy, and `finish` swaps
+//! in the frame that completed meanwhile, or waits for the next one. The ring
+//! holds only a few milliseconds and the sensor never pauses, so a loop that
+//! does other work between frames calls [`Camera::pump`] there and does not
+//! sleep. The `capture` module explains the buffers behind this.
+//!
 //! The camera is the one part of the board that may be missing: bring-up
 //! returns `None` instead of panicking when no sensor answers.
 

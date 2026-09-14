@@ -2,7 +2,9 @@
 //!
 //! Frames go straight from the camera's buffer to the display without a
 //! canvas: while a frame is being sent, the camera captures the next one.
-//! Without a camera the screen says so.
+//! The sensor's DMA ring overflows within a few milliseconds, so the screen
+//! pumps the camera on every loop iteration and keeps the loop from pausing
+//! (`may_idle`). Without a camera the screen says so.
 
 use embassy_time::Instant;
 use embedded_graphics::prelude::Dimensions as _;
@@ -56,15 +58,16 @@ impl Screen for CameraScreen {
         }
     }
 
-    /// Keep the sensor's small buffer drained between frames. The loop sleeps
-    /// and updates the other screens between two `present` calls, which is
-    /// longer than the buffer lasts.
+    /// Keep the sensor's ring drained between two `present` calls, while the
+    /// loop polls touch and updates the other screens.
     fn update(&mut self, _now: Instant) {
         if let Some(camera) = &mut self.camera {
             camera.pump();
         }
     }
 
+    /// A pause would overflow the sensor's ring; without a camera there is
+    /// nothing to overflow.
     fn may_idle(&self) -> bool {
         self.camera.is_none()
     }

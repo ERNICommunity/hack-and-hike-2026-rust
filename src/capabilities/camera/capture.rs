@@ -156,8 +156,9 @@ impl core::fmt::Display for CaptureError {
 /// Application handle for the camera; see the [module docs](super).
 ///
 /// Show frames with [`Camera::begin_frame`], draw the [`Frame`] and call
-/// [`Frame::finish`]. Call [`Camera::pause`] when the preview is hidden, so
-/// the next frame starts cleanly.
+/// [`Frame::finish`]. Call [`Camera::pump`] wherever the loop does other work
+/// between frames, and [`Camera::pause`] when the preview is hidden, so the
+/// next frame starts cleanly.
 pub struct Camera {
     /// The camera driver and ring buffer, in whichever state they are.
     // `None` only while a method moves the stream between states.
@@ -183,7 +184,7 @@ pub struct Camera {
     bad_frames: u32,
 }
 
-/// One frozen camera frame being shown while the following frame is captured.
+/// One frozen camera frame being shown while the following frames are captured.
 pub struct Frame<'a> {
     /// The camera whose display buffer is shown and whose capture buffer
     /// keeps filling.

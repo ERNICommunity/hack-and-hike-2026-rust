@@ -107,14 +107,16 @@ flowchart LR
 
 The camera is the one capability that runs on CPU0: its frames are drained
 while the display DMA is busy, which only works from the drawing loop. The
-sensor streams continuously into a buffer of a few milliseconds, so the loop
-also calls `camera.pump()` on every iteration to keep it from overflowing.
+sensor streams continuously into a ring of a few milliseconds, so the demo
+also calls `camera.pump()` on every iteration and does not pause the loop
+while the camera is visible (`Screen::may_idle`).
 
 You never talk to CPU1 directly. Every handle method returns immediately; it
 reads from or writes to a queue or a "latest value" slot shared between the
 cores. The exceptions are on CPU0 itself: drawing waits for the SPI DMA to
-finish, and a camera frame waits for the sensor's VSYNC. Both block your loop
-for milliseconds, which is why the loop draws only when something changed.
+finish, and `frame.finish()` waits for the sensor's next frame unless one
+completed while drawing. Both block your loop for milliseconds, which is why
+the loop draws only when something changed.
 
 ## How a capability is built
 
@@ -237,6 +239,7 @@ pub(crate) trait Screen {
     fn enter(&mut self) {}
     fn leave(&mut self) {}
     fn update(&mut self, _now: Instant) {}
+    fn may_idle(&self) -> bool { true }
     fn handle_touch(&mut self, _event: TouchEvent) {}
     fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>);
 }
@@ -245,8 +248,10 @@ pub(crate) trait Screen {
 `update` runs for every screen on every iteration, visible or not; that is
 how the Speaker screen keeps playing while you look at the Log. `present` runs
 only for the visible screen and should return immediately when nothing
-changed. Touches arrive in content coordinates: the rail's width is already
-subtracted.
+changed. After it, the loop pauses for 2 ms unless the visible screen's
+`may_idle` says no: the camera screen does, because the sensor's DMA ring
+overflows within a few milliseconds. Touches arrive in content coordinates:
+the rail's width is already subtracted.
 
 To add a screen: write a type that implements `Screen`, add a field to
 `Screens` and a variant to `ViewId` in `navigation.rs` with a 16x16 icon.
@@ -366,12 +371,13 @@ flowchart LR
     Shown --> LCD["LCD DMA"]
 ```
 
-`camera.begin_frame()` gives you the finished frame; drawing it with
-`surface.render_from(&mut frame)` pumps the next capture; `frame.finish()`
-waits for the sensor's VSYNC and swaps. Between `finish` and the next
-`begin_frame` nothing drains the ring, so call `camera.pump()` wherever the
-loop does other work. A camera application should reuse this path rather than
-copying frames.
+`camera.begin_frame()` gives you the newest complete frame; drawing it with
+`surface.render_from(&mut frame)` pumps the ring; `frame.finish()` swaps in
+the frame that completed meanwhile, or waits for the sensor's next VSYNC.
+Between `finish` and the next `begin_frame` nothing drains the ring, so call
+`camera.pump()` wherever the loop does other work, and do not sleep between
+frames. A camera application should reuse this path rather than copying
+frames.
 
 ## The network protocol
 

@@ -24,8 +24,9 @@ use hack_and_hike::{
 ///
 /// The shell calls them in this order on every loop iteration:
 /// `handle_touch` (visible screen, for each touch), `update` (every screen),
-/// `present` (visible screen). `enter` and `leave` bracket the time a screen
-/// is visible.
+/// `present` (visible screen), then it pauses briefly unless `may_idle`
+/// (visible screen) says no. `enter` and `leave` bracket the time a screen is
+/// visible.
 pub(crate) trait Screen {
     /// The screen is about to become visible.
     fn enter(&mut self) {}

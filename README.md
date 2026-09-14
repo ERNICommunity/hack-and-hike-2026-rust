@@ -291,8 +291,8 @@ flowchart LR
 
 The two exceptions run on your own core: **drawing** waits for the SPI DMA
 transfer to finish (a few milliseconds for the whole screen) and a **camera
-frame** waits for the sensor. That is why the applications draw only when
-something changed.
+frame** waits for the sensor unless the next frame is already complete. That
+is why the applications draw only when something changed.
 
 ## The capabilities
 
@@ -437,10 +437,12 @@ if let Some(camera) = camera.as_mut()
 }
 ```
 
-The sensor never stops streaming, and its buffer holds only a few
-milliseconds. If your loop sleeps or does other work between two frames, call
-`camera.pump()` there, once per iteration is enough; otherwise frames are
-dropped and a warning is logged.
+The sensor never pauses, and its DMA buffer holds only a few milliseconds.
+Drawing the frame drains it, and a frame that completes while the previous
+one is still being drawn waits in a spare buffer. Between `frame.finish()`
+and the next `begin_frame()`, though, nothing drains it: call `camera.pump()`
+once per loop iteration and do not sleep between frames while the camera is
+live. Otherwise frames are dropped and a warning is logged.
 
 **Backlight.** `Brightness::new` is for numbers in the code;
 `Brightness::try_from(percent)` checks a number computed at run time.
