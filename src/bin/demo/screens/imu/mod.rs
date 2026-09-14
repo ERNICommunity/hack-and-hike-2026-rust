@@ -18,7 +18,11 @@ use core::fmt::Write as _;
 
 use arrayvec::ArrayString;
 use embassy_time::{Duration, Instant};
-use embedded_graphics::{prelude::Point, primitives::Rectangle};
+use embedded_graphics::{
+    pixelcolor::Rgb565,
+    prelude::{Point, RgbColor as _},
+    primitives::Rectangle,
+};
 use hack_and_hike::{
     capabilities::{
         display::Surface,
@@ -55,6 +59,10 @@ const HEADER_STATUS_Y: i32 = 19;
 const HEADER_MAGNETOMETER_Y: i32 = 35;
 /// Where the roll/pitch/yaw columns start inside the header.
 const HEADER_VALUES_X: i32 = 78;
+/// Background of the numeric header.
+const HEADER_BACKGROUND: Rgb565 = theme::WHITE;
+/// Every text in the numeric header.
+const HEADER_TEXT: Rgb565 = Rgb565::BLACK;
 /// Row of the ROLL / PITCH / YAW captions.
 const VALUE_LABEL_Y: i32 = 3;
 /// Row of the numbers under the captions.
@@ -136,21 +144,21 @@ impl Screen for ImuScreen {
 
 /// The header background with the title and `status`.
 fn draw_header_frame(canvas: &mut Canvas, area: Rectangle, status: &str) {
-    canvas.fill(area, theme::DARK_BLUE);
+    canvas.fill(area, HEADER_BACKGROUND);
     let x = area.top_left.x + HEADER_PADDING;
     common::text(
         canvas,
         "IMU",
         Point::new(x, area.top_left.y + HEADER_TITLE_Y),
         common::TITLE_FONT,
-        theme::WHITE,
+        HEADER_TEXT,
     );
     common::text(
         canvas,
         status,
         Point::new(x, area.top_left.y + HEADER_STATUS_Y),
         common::BODY_FONT,
-        theme::WHITE,
+        HEADER_TEXT,
     );
 }
 
@@ -176,7 +184,7 @@ fn draw_header(
         &magnetometer,
         area.top_left + Point::new(HEADER_PADDING, HEADER_MAGNETOMETER_Y),
         common::BODY_FONT,
-        theme::LIGHT_GRAY,
+        HEADER_TEXT,
     );
 
     let column_width = ((area.size.width as i32 - HEADER_VALUES_X) / 3).max(1);
@@ -192,7 +200,7 @@ fn draw_header(
             label,
             Point::new(x, area.top_left.y + VALUE_LABEL_Y),
             common::BODY_FONT,
-            theme::WHITE,
+            HEADER_TEXT,
         );
         let mut value = ArrayString::<12>::new();
         let _ = write!(value, "{:+}", round(degrees));
@@ -201,7 +209,7 @@ fn draw_header(
             &value,
             Point::new(x, area.top_left.y + VALUE_Y),
             common::TITLE_FONT,
-            theme::WHITE,
+            HEADER_TEXT,
         );
     }
 }
