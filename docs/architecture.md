@@ -120,22 +120,23 @@ the loop draws only when something changed.
 
 ## How a capability is built
 
-Every CPU1 capability has the same two files:
+Every CPU1 capability has at least these two files (the IMU and the audio
+capability add chip drivers next to them):
 
 - `mod.rs`: the public types, the **handle** (`Touch`, `Imu`, ...) that the
   application owns and calls, a `static SERVICE` holding the cross-core
   queues or signals, a `pub(crate) Runtime` (the CPU1 side of the same
-  queues), and `endpoints()`, which hands one handle and one runtime to
-  `Board::init()`.
-- `runtime.rs`: `spawn(spawner, hardware, runtime)` and the task that talks
-  to the chip.
+  queues), and `endpoints()`, which hands the handle (audio: two, microphone
+  and speaker) and the runtime to `Board::init()`.
+- `runtime.rs`: `spawn(spawner, hardware, runtime)`, plus configuration
+  where the chip needs it, and the task that talks to the chip.
 
 Data crosses the cores in one of two ways:
 
 | Pattern | Used by | Application sees |
 | --- | --- | --- |
-| Latest value (`Signal`) | IMU samples, network snapshots, backlight requests | `latest()` returns `Some` only once per new value |
-| Bounded queue (`Channel`) | touch events, network messages, microphone blocks | `next_*()` returns events in order; the oldest is dropped when the queue is full |
+| Latest value (`Signal`) | IMU samples, network snapshots; in the other direction, backlight requests | `latest()` returns `Some` only once per new value; `set` replaces a request not yet applied |
+| Bounded queue (`Channel`) | touch events, network messages, microphone blocks | `next_*()` returns events in order. When a queue is full, the microphone drops its oldest block; touch and network drop the newest event and count it |
 
 The speaker is the reverse direction: the application writes into a
 `FrameRing` that CPU1 drains into the DMA buffer. Only the application writes,
@@ -268,6 +269,8 @@ screen id="Settings" width=276 height=240 {
         label id="title" text="SETTINGS" col=0 row=0 col_span=3 style="crate::styles::title()"
         label id="brightness_value" text="" col=0 row=1 col_span=3
         label id="brightness_slider" text="" col=0 row=2 col_span=3
+        label id="minimum" text="DIM" col=0 row=3 style="crate::styles::hint()"
+        label id="maximum" text="MAX" col=2 row=3 style="crate::styles::hint()"
         label id="hint" text="Tap or drag to adjust" col=0 row=4 col_span=3 style="crate::styles::hint()"
     }
 }
@@ -426,7 +429,7 @@ targets the ESP32-S3 by default. CI runs it, and clippy, on every push.
 **Touching the HAL from an application.** If your application imports
 `esp_hal`, a capability is probably missing an operation. Add it there.
 
-**A framework before it is needed.** The demo's `Screen` trait is five methods
+**A framework before it is needed.** The demo's `Screen` trait is six methods
 and exists because seven screens share them. Two screens do not need a trait.
 
 **A loop without `.await`.** It starves the rest of CPU0.

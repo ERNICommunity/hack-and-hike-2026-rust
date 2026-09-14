@@ -134,6 +134,11 @@ is done, with the percentage in the middle. Turn the board slowly in every
 direction and watch it change. This is the whole file:
 
 ```rust
+//! The smallest application: the screen shows how far the compass calibration
+//! has come, as a colour and a percentage. Red at the start, orange from
+//! 50 %, yellow from 75 % and green once the compass is calibrated. Turn the
+//! board slowly in every direction.
+
 #![no_std]
 #![no_main]
 
@@ -149,8 +154,12 @@ use hack_and_hike::{
     ui::{Canvas, common, theme},
 };
 
+// Writes the application descriptor the bootloader checks before starting
+// the firmware. Every application needs this line exactly once.
 esp_bootloader_esp_idf::esp_app_desc!();
 
+/// The entry point: wait for IMU samples and redraw when the percentage
+/// changes.
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     let Board {
@@ -175,13 +184,21 @@ async fn main(_spawner: Spawner) -> ! {
     }
 }
 
+/// Paint the whole picture for `percent` onto the canvas. The canvas works
+/// out what changed when it is shown.
 fn draw(canvas: &mut Canvas, percent: u8) {
     let (background, text) = colors(percent);
     canvas.clear(background);
 
     let mut label = ArrayString::<8>::new();
     write!(label, "{percent} %").expect("the label fits its buffer");
-    common::centered_text(canvas, canvas.bounding_box(), &label, common::TITLE_FONT, text);
+    common::centered_text(
+        canvas,
+        canvas.bounding_box(),
+        &label,
+        common::TITLE_FONT,
+        text,
+    );
 }
 
 /// One fixed background per stage of the calibration, with a text colour
@@ -290,7 +307,7 @@ flowchart LR
 ```
 
 The two exceptions run on your own core: **drawing** waits for the SPI DMA
-transfer to finish (a few milliseconds for the whole screen) and a **camera
+transfer to finish (about 31 ms for the whole screen) and a **camera
 frame** waits for the sensor unless the next frame is already complete. That
 is why the applications draw only when something changed.
 

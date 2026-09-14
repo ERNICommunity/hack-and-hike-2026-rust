@@ -22,6 +22,7 @@
 //! only two buffers, the ring would back up behind the finished frame,
 //! overflow and stop the DMA.
 
+use embassy_time::{Duration, Instant};
 use esp_hal::{
     dma::DmaRxStreamBuf,
     lcd_cam::{
@@ -67,6 +68,10 @@ const STREAM_CHUNK_BYTES: usize = SCANLINE_BYTES * 5;
 const STREAM_BUFFER_BYTES: usize = STREAM_CHUNK_BYTES * 8;
 /// Log only the first bad frame and then every 32nd, not all of them.
 const BAD_FRAME_LOG_INTERVAL: u32 = 32;
+/// How long to wait for a frame boundary before giving up: several frame
+/// periods, so a sensor that answers on I2C but sends no frames cannot hang
+/// the application.
+const FRAME_TIMEOUT: Duration = Duration::from_millis(250);
 
 const _: () = assert!(STREAM_CHUNK_BYTES <= esp_hal::dma::CHUNK_SIZE);
 const _: () = assert!(STREAM_BUFFER_BYTES.is_multiple_of(STREAM_CHUNK_BYTES));
@@ -108,7 +113,8 @@ pub(crate) struct Resources {
 
 /// The camera driver and its ring buffer, either idle or streaming.
 enum Stream {
-    /// No transfer running: after `init`, after `pause` and while restarting.
+    /// No transfer running: after `init`, after `pause`, after the ring
+    /// overflowed and while restarting.
     Stopped {
         /// The configured camera driver, ready to start a transfer.
         driver: CameraDriver<'static>,
@@ -139,6 +145,8 @@ enum CaptureError {
     /// Nothing drained the DMA ring for too long: it overflowed and the
     /// transfer stopped before the sensor signalled VSYNC.
     StreamEnded,
+    /// The sensor signalled no frame boundary within `FRAME_TIMEOUT`.
+    Timeout,
     /// VSYNC came after this many bytes instead of a whole frame.
     BadLength(usize),
 }
@@ -148,6 +156,7 @@ impl core::fmt::Display for CaptureError {
         match self {
             Self::DmaStart => write!(f, "DMA start failed"),
             Self::StreamEnded => write!(f, "the DMA ring overflowed before VSYNC"),
+            Self::Timeout => write!(f, "no VSYNC within {} ms", FRAME_TIMEOUT.as_millis()),
             Self::BadLength(bytes) => write!(f, "{bytes} of {FRAME_BYTES} bytes before VSYNC"),
         }
     }
@@ -209,8 +218,9 @@ impl Frame<'_> {
     /// Make the next complete frame the frame to show.
     ///
     /// Returns at once if a frame completed while this one was drawn, and
-    /// otherwise waits for the sensor's next VSYNC, at most one frame period.
-    /// A capture fault is logged and the following `begin_frame` re-syncs.
+    /// otherwise waits for the sensor's next whole frame: normally one frame
+    /// period, two if the frame in progress turns out short. A capture fault
+    /// is logged and the following `begin_frame` re-syncs.
     pub fn finish(self) {
         if let Err(error) = self.camera.finish_capture() {
             self.camera.report_bad_frame(error);
@@ -311,7 +321,8 @@ impl Camera {
     /// Start showing the current frame.
     ///
     /// The first call after boot or `pause` blocks for up to two frame periods
-    /// to capture a complete frame. `None` when the sensor delivers nothing.
+    /// to capture a complete frame. `None`, with a logged warning, when the
+    /// sensor delivers nothing within a quarter of a second or the DMA fails.
     pub fn begin_frame(&mut self) -> Option<Frame<'_>> {
         if !self.display_ready
             && let Err(error) = self.prime()
@@ -349,6 +360,7 @@ impl Camera {
             }
         };
 
+        let deadline = Instant::now() + FRAME_TIMEOUT;
         let synced = loop {
             let (chunk, eof) = transfer.peek_until_eof();
             let available = chunk.len();
@@ -356,21 +368,23 @@ impl Camera {
                 transfer.consume(available);
             }
             if eof {
-                break true;
+                break Ok(());
             }
             if available == 0 && transfer.is_done() {
-                break false;
+                break Err(CaptureError::StreamEnded);
+            }
+            if Instant::now() > deadline {
+                break Err(CaptureError::Timeout);
             }
             core::hint::spin_loop();
         };
 
-        if synced {
+        if synced.is_ok() {
             self.stream = Some(Stream::Running(transfer));
-            Ok(())
         } else {
             self.stream = Some(Stream::Running(transfer).stopped());
-            Err(CaptureError::StreamEnded)
         }
+        synced
     }
 
     /// Copy every byte DMA has delivered into the frame in progress and, past
@@ -393,8 +407,12 @@ impl Camera {
             // meanwhile.
             let take = available.min(STREAM_CHUNK_BYTES);
             let copy_len = take.min(FRAME_BYTES.saturating_sub(self.filled));
-            self.capture_buffer[self.filled..self.filled + copy_len]
-                .copy_from_slice(&chunk[..copy_len]);
+            // Past the end of the buffer (a missed VSYNC) bytes are only
+            // counted, so the frame is reported as too long and dropped.
+            if copy_len != 0 {
+                self.capture_buffer[self.filled..self.filled + copy_len]
+                    .copy_from_slice(&chunk[..copy_len]);
+            }
             self.filled = self.filled.saturating_add(take);
             // Consuming zero bytes still returns an empty descriptor that
             // carries only the VSYNC flag.
@@ -421,20 +439,33 @@ impl Camera {
 
     /// Wait until a whole frame is ready and make it the frame to show.
     fn finish_capture(&mut self) -> Result<(), CaptureError> {
+        let deadline = Instant::now() + FRAME_TIMEOUT;
         loop {
             if self.ready {
                 self.ready = false;
                 core::mem::swap(&mut self.display_buffer, &mut self.ready_buffer);
                 self.display_ready = true;
                 if let Some(bytes) = self.short_frame.take() {
+                    // Logging blocks for milliseconds while the sensor keeps
+                    // streaming, so this can cost the frame in progress; the
+                    // rate limit keeps that rare.
                     self.report_bad_frame(CaptureError::BadLength(bytes));
                 }
                 return Ok(());
             }
-            if self.is_stopped() {
+            let failure = if self.is_stopped() {
+                Some(CaptureError::StreamEnded)
+            } else if Instant::now() > deadline {
+                self.stop_stream();
+                Some(CaptureError::Timeout)
+            } else {
+                None
+            };
+            if let Some(error) = failure {
                 self.display_ready = false;
                 self.filled = 0;
-                return Err(CaptureError::StreamEnded);
+                self.short_frame = None;
+                return Err(error);
             }
             self.pump_capture();
             core::hint::spin_loop();
@@ -446,6 +477,7 @@ impl Camera {
         self.display_ready = false;
         self.ready = false;
         self.filled = 0;
+        self.short_frame = None;
         self.start_stream_aligned()?;
         self.finish_capture()
     }

@@ -69,8 +69,9 @@ pub struct Canvas {
     /// Whether `shown` matches the panel. False before the first `show` and
     /// after `invalidate`, when something else may have drawn on the panel.
     panel_known: bool,
-    /// The colour of every pixel outside `drawn`, if the canvas was cleared.
-    background: Option<Rgb565>,
+    /// The colour of every pixel outside `drawn`: white until the first
+    /// `clear`.
+    background: Rgb565,
     /// Pixels drawn since the last `clear`.
     drawn: Bounds,
     /// Pixels drawn since the last `show`: the only ones `show` compares.
@@ -92,7 +93,7 @@ impl Canvas {
             shown: storage::leaked_slice(count, Rgb565::WHITE),
             size,
             panel_known: false,
-            background: Some(Rgb565::WHITE),
+            background: Rgb565::WHITE,
             drawn: Bounds::EMPTY,
             changed: full,
         }
@@ -109,7 +110,7 @@ impl Canvas {
     /// drawn since then, which is the common case of "clear, draw, show" in a
     /// loop.
     pub fn clear(&mut self, color: Rgb565) {
-        if self.background == Some(color) {
+        if self.background == color {
             if let Some(drawn) = self.drawn.rectangle() {
                 self.paint(drawn, color);
                 self.changed.include(drawn);
@@ -118,7 +119,7 @@ impl Canvas {
             self.pixels.fill(color);
             self.changed = Bounds::of(self.bounding_box());
         }
-        self.background = Some(color);
+        self.background = color;
         self.drawn = Bounds::EMPTY;
     }
 
