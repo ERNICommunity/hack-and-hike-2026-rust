@@ -236,7 +236,6 @@ impl Canvas {
         let Some(area) = window.rectangle() else {
             return;
         };
-        let area = even_columns(area, self.size);
         let start = self.index(area.top_left);
         let mut rows = Rows {
             pixels: &self.pixels[start..],
@@ -245,23 +244,6 @@ impl Canvas {
         };
         surface.subsurface(area).render_from(&mut rows);
     }
-}
-
-/// Widen `area` so that it starts on an even column and spans an even number
-/// of columns, staying inside a canvas of `size`.
-///
-/// A precaution for the SPI DMA, which sends 32-bit words: every row of an
-/// even-width window is a whole number of words. Odd-width windows showed
-/// shifted pixels once on the board, in a test that also ran the bus faster
-/// than it can go, so it is not certain that this is needed; it costs at most
-/// one extra column on each side.
-fn even_columns(area: Rectangle, size: Size) -> Rectangle {
-    let left = area.top_left.x & !1;
-    let right = ((area.top_left.x + area.size.width as i32 + 1) & !1).min(size.width as i32);
-    Rectangle::new(
-        Point::new(left, area.top_left.y),
-        Size::new((right - left) as u32, area.size.height),
-    )
 }
 
 impl Dimensions for Canvas {
