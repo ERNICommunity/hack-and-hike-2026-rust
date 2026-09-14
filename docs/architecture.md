@@ -173,7 +173,12 @@ while the previous one is on the wire.
 
 - `Canvas`: a rectangle of pixels in PSRAM that implements
   `embedded_graphics::DrawTarget`, so every primitive, font and image of that
-  crate draws onto it; `canvas.show(&mut surface)` copies it to the panel.
+  crate draws onto it. `canvas.show(&mut surface)` copies only the rectangle
+  that changed since the last `show`, and `clear` with the same colour as
+  before repaints only what was drawn since; a full frame costs about 30 ms
+  on the SPI bus, a small change well under one. After drawing on the surface
+  without the canvas, `canvas.invalidate()` makes the next `show` send
+  everything again.
 - `theme`: the six palette colours as `Rgb565`.
 - `common`: text helpers and the bitmap fonts at native resolution.
 - `font`: the same fonts adapted for `embedded-gui`, anchored at the top-left

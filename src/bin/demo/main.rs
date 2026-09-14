@@ -98,6 +98,9 @@ async fn main(_spawner: Spawner) -> ! {
             screens.get_mut(active).leave();
             active = next;
             screens.get_mut(active).enter();
+            // Some screens draw on the surface directly; the panel no
+            // longer shows what the canvas last showed.
+            canvas.invalidate();
             navigation::render(&mut display.surface(layout::NAV_AREA), active);
             log::info!("Screen {:?}", active);
         }
