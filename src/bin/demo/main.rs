@@ -85,9 +85,53 @@ impl Screens {
     }
 
     /// Let every screen do its background work, visible or not.
-    fn update_all(&mut self, now: Instant) {
+    fn update_all(&mut self, now: Instant, slowest: &mut Slowest) {
         for id in ViewId::ALL {
+            let started = Instant::now();
             self.get_mut(id).update(now);
+            slowest.record(UPDATE_NAMES[id as usize], started.elapsed());
+        }
+    }
+}
+
+/// DIAGNOSTIC (temporary): names of the update phases, indexed by `ViewId`.
+const UPDATE_NAMES: [&str; 7] = [
+    "update Network",
+    "update Imu",
+    "update Microphone",
+    "update Speaker",
+    "update Camera",
+    "update Settings",
+    "update Log",
+];
+
+/// DIAGNOSTIC (temporary): the slowest loop phase seen since the last report.
+struct Slowest {
+    /// Name and duration of the slowest phase so far.
+    phase: Option<(&'static str, Duration)>,
+    /// When the last report was logged; reports are at most one per second
+    /// so the logging itself does not slow the loop.
+    last_report: Instant,
+}
+
+impl Slowest {
+    /// Remember `elapsed` if it is the longest so far.
+    fn record(&mut self, name: &'static str, elapsed: Duration) {
+        if self.phase.is_none_or(|(_, longest)| elapsed > longest) {
+            self.phase = Some((name, elapsed));
+        }
+    }
+
+    /// Once per second, log the slowest phase if it exceeded 2 ms.
+    fn report(&mut self, now: Instant) {
+        if now - self.last_report < Duration::from_secs(1) {
+            return;
+        }
+        self.last_report = now;
+        if let Some((name, elapsed)) = self.phase.take()
+            && elapsed > Duration::from_millis(2)
+        {
+            log::warn!("slow phase: {} took {} us", name, elapsed.as_micros());
         }
     }
 }
@@ -120,6 +164,10 @@ async fn main(_spawner: Spawner) -> ! {
     // One canvas the size of the content area, shared by all screens.
     let mut canvas = Canvas::new(layout::CONTENT_SIZE);
 
+    let mut slowest = Slowest {
+        phase: None,
+        last_report: Instant::now(),
+    };
     let mut active = ViewId::ALL[0];
     navigation::render(&mut display.surface(layout::NAV_AREA), active);
     screens.get_mut(active).enter();
@@ -127,7 +175,9 @@ async fn main(_spawner: Spawner) -> ! {
     loop {
         let now = Instant::now();
 
+        let started = Instant::now();
         let selected = navigation.poll(|event| screens.get_mut(active).handle_touch(event));
+        slowest.record("poll touch", started.elapsed());
         if let Some(next) = selected
             && next != active
         {
@@ -141,11 +191,18 @@ async fn main(_spawner: Spawner) -> ! {
             log::info!("Screen {:?}", active);
         }
 
-        screens.update_all(now);
+        screens.update_all(now, &mut slowest);
+        let started = Instant::now();
         screens
             .get_mut(active)
             .present(&mut canvas, &mut display.surface(layout::CONTENT_AREA));
+        if active != ViewId::Camera {
+            slowest.record("present", started.elapsed());
+        }
+        slowest.report(now);
 
+        let started = Instant::now();
         Timer::after(LOOP_PERIOD).await;
+        slowest.record("sleep", started.elapsed());
     }
 }
