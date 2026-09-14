@@ -118,19 +118,26 @@ modules are files in `crates/core/tests/`.
 
 ## Your first application
 
-`src/bin/imu_color.rs` fills the screen with one of four colours to show how
-far the compass calibration has come: red at the start, orange from 50 %,
-yellow from 75 %, green when it is done. Turn the board slowly in every
+`src/bin/imu_color.rs` shows how far the compass calibration has come: the
+screen is red at the start, orange from 50 %, yellow from 75 %, green when it
+is done, with the percentage in the middle. Turn the board slowly in every
 direction and watch it change. This is the whole file:
 
 ```rust
 #![no_std]
 #![no_main]
 
+use core::fmt::Write as _;
+
+use arrayvec::ArrayString;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use embedded_graphics::{pixelcolor::Rgb565, prelude::RgbColor as _};
-use hack_and_hike::{Board, capabilities::display::SCREEN};
+use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
+use hack_and_hike::{
+    Board,
+    capabilities::display::{SCREEN, SIZE},
+    ui::{Canvas, common, theme},
+};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -141,16 +148,16 @@ async fn main(_spawner: Spawner) -> ! {
         mut imu,
         ..
     } = Board::init();
+    let mut canvas = Canvas::new(SIZE);
     let mut shown = None;
 
     loop {
         if let Some(sample) = imu.latest() {
-            let color = calibration_color(sample.mag_calibration_percent);
-            if shown != Some(color) {
-                shown = Some(color);
-                display
-                    .surface(SCREEN)
-                    .render_scanlines(|_y, row| row.fill(color));
+            let percent = sample.mag_calibration_percent;
+            if shown != Some(percent) {
+                shown = Some(percent);
+                draw(&mut canvas, percent);
+                canvas.show(&mut display.surface(SCREEN));
             }
         }
 
@@ -158,13 +165,23 @@ async fn main(_spawner: Spawner) -> ! {
     }
 }
 
-/// One fixed colour per stage of the calibration.
-fn calibration_color(percent: u8) -> Rgb565 {
+fn draw(canvas: &mut Canvas, percent: u8) {
+    let (background, text) = colors(percent);
+    canvas.clear(background);
+
+    let mut label = ArrayString::<8>::new();
+    write!(label, "{percent} %").expect("the label fits its buffer");
+    common::centered_text(canvas, canvas.bounding_box(), &label, common::TITLE_FONT, text);
+}
+
+/// One fixed background per stage of the calibration, with a text colour
+/// that reads well on it.
+fn colors(percent: u8) -> (Rgb565, Rgb565) {
     match percent {
-        0..50 => Rgb565::RED,
-        50..75 => Rgb565::new(31, 32, 0), // orange
-        75..100 => Rgb565::YELLOW,
-        _ => Rgb565::GREEN,
+        0..50 => (Rgb565::RED, theme::WHITE),
+        50..75 => (Rgb565::new(31, 32, 0), theme::WHITE), // orange
+        75..100 => (Rgb565::YELLOW, theme::CHARCOAL),
+        _ => (Rgb565::GREEN, theme::CHARCOAL),
     }
 }
 ```
@@ -181,25 +198,28 @@ Line by line:
   capability. The pattern `let Board { mut display, mut imu, .. } = ...` keeps
   the two handles this application needs and drops the rest. Dropping a handle
   is fine: the sensors keep running on the second CPU core.
+- `Canvas::new(SIZE)` is an image the size of the screen to draw into. It is
+  created once, before the loop, because its memory is never freed.
 - `imu.latest()` returns `Some(sample)` when a new sample arrived since the
   last call and `None` otherwise. Nothing waits.
-- `display.surface(SCREEN)` borrows the display for one rectangle (here the
-  whole screen). `render_scanlines` calls your closure once per row with a
-  slice of pixels to fill.
-- The screen is only redrawn when the colour changed. The IMU publishes a
+- The screen is only redrawn when the percentage changed. The IMU publishes a
   hundred samples per second; drawing on every one would keep the display
   busy for nothing.
+- `draw` clears the canvas to the stage's colour and writes the percentage in
+  the middle. Text goes through a fixed buffer, `ArrayString`, because there
+  is no `String` without an operating system. `canvas.show(...)` copies the
+  canvas to the panel in one go.
 - `Timer::after(...).await` pauses this loop and lets other work on this core
   run. Every loop needs an `.await` somewhere.
-- `calibration_color` is a plain function with a `match` over ranges. Rust
-  checks that every value of `percent` is covered.
+- `colors` is a plain function with a `match` over ranges that returns a
+  tuple. Rust checks that every value of `percent` is covered.
 
 ## Create your own application
 
 Copy `src/bin/template.rs` to a new file, for example `src/bin/my_hack.rs`.
-It is the loop of the first application with touch instead of the IMU, and it
-builds and runs as it is: the screen is dark blue and turns light blue while
-you touch it.
+It is the same loop with touch instead of the IMU and the simplest way to
+draw, and it builds and runs as it is: the screen is dark blue and turns light
+blue while you touch it.
 
 ```rust
 loop {

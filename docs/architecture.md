@@ -157,7 +157,7 @@ flowchart LR
 There are two ways to draw:
 
 - `surface.render_scanlines(|y, row| ...)` hands you one row of `Rgb565`
-  pixels at a time. Cheap and simple; the two small applications use it.
+  pixels at a time. Cheap and simple; the template uses it.
 - `surface.render_from(&mut source)` streams rows that already are RGB565
   bytes from a `ScanlineSource`: a `Canvas` or a camera frame. While the DMA
   sends one batch, the source gets a callback in which it can do useful work,
