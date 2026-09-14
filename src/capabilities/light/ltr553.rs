@@ -18,12 +18,13 @@ pub(super) const PART_NUMBER: u8 = 0x9;
 const ALS_CONTR: u8 = 0x80;
 /// `ALS_CONTR` bit 0: 1 = active, 0 = standby (the reset state).
 const ALS_ACTIVE: u8 = 0x01;
-/// `ALS_CONTR` bits 4:2: gain 1x (`000`), the range 1 to 64k lux. It covers
-/// a dim room to full daylight; higher gains resolve darker scenes at the
-/// price of saturating outdoors.
-const ALS_GAIN_1X: u8 = 0b000 << 2;
-/// The gain factor `ALS_GAIN_1X` stands for, for the lux formula.
-pub(super) const ALS_GAIN: u8 = 1;
+/// `ALS_CONTR` bits 4:2: the gain code. The codes in order of increasing
+/// gain: 1x, 2x, 4x, 8x, 48x, 96x (4 and 5 are reserved). 1x spans 1 to
+/// 64k lux for daylight; 96x resolves a dark room. The sensor sits behind
+/// the tinted front glass, so it needs the high gains indoors.
+pub(super) const ALS_GAIN_CODES: [u8; 6] = [0, 1, 2, 3, 6, 7];
+/// Where `ALS_GAIN_CODES` sits in `ALS_CONTR`.
+const ALS_GAIN_SHIFT: u8 = 2;
 
 /// `PS_CONTR`: proximity sensor mode.
 const PS_CONTR: u8 = 0x81;
@@ -36,10 +37,13 @@ const PS_LED: u8 = 0x82;
 /// 60 kHz (`011`), 100 % duty (`11`), 100 mA (`111`): the reset default.
 const PS_LED_DEFAULT: u8 = 0x7F;
 
-/// `PS_N_PULSES`: LED pulses per proximity measurement, 1 to 15.
+/// `PS_N_PULSES`: LED pulses per proximity measurement, 1 to 15. More
+/// pulses give a stronger, steadier reflection at the price of LED power;
+/// with one pulse (the reset default) a hand at 5 cm read only a few
+/// hundred of the 2047 counts.
 const PS_N_PULSES: u8 = 0x83;
-/// One pulse is the reset default.
-const PS_ONE_PULSE: u8 = 1;
+/// Eight pulses per measurement.
+const PS_PULSES: u8 = 8;
 
 /// `PS_MEAS_RATE`: time between two proximity measurements (bits 3:0).
 const PS_MEAS_RATE: u8 = 0x84;
@@ -59,17 +63,29 @@ pub(super) const ALS_INTEGRATION_MS: u16 = 100;
 /// `hack_and_hike_core::light::decode` for their layout.
 pub(super) const DATA_START: u8 = 0x88;
 
-/// Put both sensors into active mode, measuring every 100 ms. The first
-/// valid light reading comes one integration time later.
+/// Put both sensors into active mode, measuring every 100 ms, with the light
+/// sensor at the gain `ALS_GAIN_CODES[gain_index]`. The first valid light
+/// reading comes one integration time later.
 pub(super) async fn configure<I2C: embedded_hal_async::i2c::I2c>(
     registers: &mut AsyncRegisters<'_, I2C>,
+    gain_index: usize,
 ) -> Result<(), I2C::Error> {
     registers.write(PS_LED, PS_LED_DEFAULT).await?;
-    registers.write(PS_N_PULSES, PS_ONE_PULSE).await?;
+    registers.write(PS_N_PULSES, PS_PULSES).await?;
     registers.write(PS_MEAS_RATE, PS_RATE_100MS).await?;
     registers
         .write(ALS_MEAS_RATE, ALS_INT_100MS_RATE_100MS)
         .await?;
     registers.write(PS_CONTR, PS_ACTIVE).await?;
-    registers.write(ALS_CONTR, ALS_GAIN_1X | ALS_ACTIVE).await
+    set_als_gain(registers, gain_index).await
+}
+
+/// Switch the light sensor to the gain `ALS_GAIN_CODES[gain_index]`, keeping
+/// it active. The next measurement is flagged invalid while it settles.
+pub(super) async fn set_als_gain<I2C: embedded_hal_async::i2c::I2c>(
+    registers: &mut AsyncRegisters<'_, I2C>,
+    gain_index: usize,
+) -> Result<(), I2C::Error> {
+    let code = ALS_GAIN_CODES[gain_index] << ALS_GAIN_SHIFT;
+    registers.write(ALS_CONTR, code | ALS_ACTIVE).await
 }

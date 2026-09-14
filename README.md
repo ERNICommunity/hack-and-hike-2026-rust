@@ -123,9 +123,12 @@ modules are files in `crates/core/tests/`.
   pitch are 0. Roll is positive when the right side is lower; pitch is
   positive when the top edge is raised; the heading is where the top edge
   points, in degrees clockwise from magnetic north.
-- **The light sensor** faces the same way as the screen. It reports the
-  ambient light in lux and a proximity count: 0 with nothing in front of the
-  board, a few hundred with a hand a few centimetres away.
+- **The light sensor** faces the same way as the screen, behind the tinted
+  front glass. It reports the ambient light in lux, lower than a light meter
+  would show because of the glass, so use it relatively: near 0 in a dark
+  room, tens to a few hundred in a lit one, thousands with a torch pointed at
+  the board. The proximity count is 0 with nothing within about 20 cm of the
+  front and rises as something approaches, to 2047 at the glass.
 - **Audio** is signed 16-bit stereo at 16 kHz, interleaved left, right, left,
   right, ...
 - **Every board in the room** talks on the same radio channel. Messages carry
@@ -478,8 +481,9 @@ if let Some(light) = light.as_mut()
 }
 ```
 
-The lux value is an estimate from the sensor's formula; the useful proximity
-threshold depends on what comes close, so try a few values.
+The lux value is an estimate from the sensor's formula behind the front
+glass; the useful proximity threshold depends on what comes close, so try a
+few values.
 
 **Backlight.** `Brightness::new` is for numbers in the code;
 `Brightness::try_from(percent)` checks a number computed at run time.

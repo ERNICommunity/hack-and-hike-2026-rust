@@ -30,14 +30,17 @@ pub(crate) use runtime::spawn;
 /// One measurement of light and proximity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
-    /// Ambient light in lux: a dark room is below 10, an office a few
-    /// hundred, daylight thousands. Light that is almost entirely infrared
-    /// reads as 0.
+    /// Ambient light in lux. The sensor sits behind the tinted front glass,
+    /// so the values are lower than a light meter would show and are best
+    /// used relatively: a dark room reads near 0, a lit room tens to a few
+    /// hundred, a torch pointed at the board thousands. Light that is almost
+    /// entirely infrared reads as 0.
     pub lux: f32,
     /// How much of the sensor's own infrared light comes back: 0 with
-    /// nothing in front of the sensor, more the closer an object is, up to
-    /// [`Sample::PROXIMITY_MAX`]. The useful threshold depends on the
-    /// object; a hand a few centimetres away gives a few hundred.
+    /// nothing within about 20 cm of the front, more the closer an object
+    /// is, up to [`Sample::PROXIMITY_MAX`] when something nearly touches
+    /// the glass. The useful threshold depends on the object; try a few
+    /// values.
     pub proximity: u16,
 }
 

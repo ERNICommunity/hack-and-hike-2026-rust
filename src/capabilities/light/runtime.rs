@@ -2,10 +2,15 @@
 //!
 //! The sensor measures on its own every 100 ms; the task reads the result at
 //! the same rate, so every poll sees a fresh measurement.
+//!
+//! The light sensor's gain is adjusted automatically: raised when the counts
+//! are small, lowered before they saturate, so a dark room and daylight both
+//! resolve. The counts are converted with the gain the sensor reports along
+//! with them, so a change is never applied to the wrong measurement.
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use hack_and_hike_core::light::{self, DATA_BLOCK_LEN, PROXIMITY_MAX};
+use hack_and_hike_core::light::{self, Channels, DATA_BLOCK_LEN, PROXIMITY_MAX};
 use log::warn;
 
 use crate::platform::{i2c::SystemI2cBus, registers::AsyncRegisters};
@@ -14,6 +19,13 @@ use super::{Runtime, Sample, ltr553};
 
 /// Time between two reads, matching the sensor's measurement rate.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Raise the gain when the larger channel count is below this.
+const GAIN_UP_BELOW: u16 = 500;
+/// Lower the gain when the larger channel count is above this: close to the
+/// 65535 the counts saturate at.
+const GAIN_DOWN_ABOVE: u16 = 60000;
+/// The gain to start with: 8x, in the middle of the range.
+const INITIAL_GAIN_INDEX: usize = 3;
 
 /// Start polling the sensor on CPU1.
 pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
@@ -25,9 +37,14 @@ pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
 /// so a sensor that stops answering does not flood the log.
 #[embassy_executor::task]
 async fn poll_task(bus: SystemI2cBus, runtime: Runtime) {
+    let mut gain_index = INITIAL_GAIN_INDEX;
     let configured = {
         let mut i2c = bus.lock().await;
-        ltr553::configure(&mut AsyncRegisters::new(&mut *i2c, ltr553::ADDRESS)).await
+        ltr553::configure(
+            &mut AsyncRegisters::new(&mut *i2c, ltr553::ADDRESS),
+            gain_index,
+        )
+        .await
     };
     if let Err(error) = configured {
         warn!("LTR-553 light sensor setup failed: {:?}", error);
@@ -49,6 +66,18 @@ async fn poll_task(bus: SystemI2cBus, runtime: Runtime) {
                 read_failed = false;
                 if let Some(reading) = light::decode(block) {
                     runtime.publish(sample_from(reading));
+                    if let Some(next) = better_gain(gain_index, reading.channels) {
+                        gain_index = next;
+                        let mut i2c = bus.lock().await;
+                        let set = ltr553::set_als_gain(
+                            &mut AsyncRegisters::new(&mut *i2c, ltr553::ADDRESS),
+                            gain_index,
+                        )
+                        .await;
+                        if let Err(error) = set {
+                            warn!("LTR-553 gain change failed: {:?}", error);
+                        }
+                    }
                 }
             }
             Err(error) => {
@@ -61,15 +90,27 @@ async fn poll_task(bus: SystemI2cBus, runtime: Runtime) {
     }
 }
 
-/// The application's view of one reading: lux from the two channels, and a
-/// saturated proximity reported as the maximum count.
+/// The next gain index to use, if the counts call for a change: one step up
+/// when both channels are small, one step down when either is close to
+/// saturating. The thresholds are far enough apart that a change never
+/// triggers the opposite one.
+fn better_gain(gain_index: usize, channels: Channels) -> Option<usize> {
+    let largest = channels.ch0.max(channels.ch1);
+    if largest > GAIN_DOWN_ABOVE && gain_index > 0 {
+        Some(gain_index - 1)
+    } else if largest < GAIN_UP_BELOW && gain_index + 1 < ltr553::ALS_GAIN_CODES.len() {
+        Some(gain_index + 1)
+    } else {
+        None
+    }
+}
+
+/// The application's view of one reading: lux from the two channels at the
+/// gain they were measured with, and a saturated proximity reported as the
+/// maximum count.
 fn sample_from(reading: light::Reading) -> Sample {
     Sample {
-        lux: light::lux(
-            reading.channels,
-            ltr553::ALS_GAIN,
-            ltr553::ALS_INTEGRATION_MS,
-        ),
+        lux: light::lux(reading.channels, reading.gain, ltr553::ALS_INTEGRATION_MS),
         proximity: if reading.proximity_saturated {
             PROXIMITY_MAX
         } else {

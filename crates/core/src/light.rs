@@ -20,6 +20,10 @@ pub struct Channels {
 pub struct Reading {
     /// The ambient light counts.
     pub channels: Channels,
+    /// The gain the counts were measured with, as a factor: 1, 2, 4, 8, 48
+    /// or 96. The sensor reports it with the data, so a gain change is
+    /// never applied to counts taken at the old gain.
+    pub gain: u8,
     /// Reflected light from the sensor's own infrared LED, 0 to
     /// [`PROXIMITY_MAX`]: 0 with nothing in front of the sensor, more the
     /// closer an object comes.
@@ -34,13 +38,30 @@ pub const PROXIMITY_MAX: u16 = 0x07FF;
 /// Length of the data block starting at the first ALS data register.
 pub const DATA_BLOCK_LEN: usize = 7;
 
+/// The gain factor for a gain code, as written to `ALS_CONTR` bits 4:2 and
+/// read back from `ALS_PS_STATUS` bits 6:4. Codes 4 and 5 are reserved.
+pub fn gain_factor(code: u8) -> Option<u8> {
+    match code {
+        0 => Some(1),
+        1 => Some(2),
+        2 => Some(4),
+        3 => Some(8),
+        6 => Some(48),
+        7 => Some(96),
+        _ => None,
+    }
+}
+
 /// Decode the seven registers starting at `ALS_DATA_CH1_0` (`0x88`): channel
 /// 1 low and high, channel 0 low and high, the status register, proximity
 /// low and high. `None` when the status says the light data is invalid, which
-/// the sensor signals while it is still integrating after a mode change.
+/// the sensor signals while it is still integrating after a mode or gain
+/// change, or reports a reserved gain.
 pub fn decode(block: [u8; DATA_BLOCK_LEN]) -> Option<Reading> {
     /// ALS_PS_STATUS bit 7: 1 = the ALS data is invalid.
     const ALS_DATA_INVALID: u8 = 0x80;
+    /// ALS_PS_STATUS bits 6:4: the gain the data was measured with.
+    const ALS_GAIN_SHIFT: u8 = 4;
     /// PS_DATA_1 bit 7: the proximity measurement saturated.
     const PROXIMITY_SATURATED: u8 = 0x80;
 
@@ -56,11 +77,13 @@ pub fn decode(block: [u8; DATA_BLOCK_LEN]) -> Option<Reading> {
     if status & ALS_DATA_INVALID != 0 {
         return None;
     }
+    let gain = gain_factor((status >> ALS_GAIN_SHIFT) & 0x07)?;
     Some(Reading {
         channels: Channels {
             ch0: u16::from_le_bytes([ch0_low, ch0_high]),
             ch1: u16::from_le_bytes([ch1_low, ch1_high]),
         },
+        gain,
         proximity: u16::from_le_bytes([ps_low, ps_high]) & PROXIMITY_MAX,
         proximity_saturated: ps_high & PROXIMITY_SATURATED != 0,
     })
@@ -104,7 +127,8 @@ mod tests {
 
     #[test]
     fn decodes_channels_and_proximity() {
-        let reading = decode([0x34, 0x12, 0x78, 0x56, 0x00, 0xFF, 0x07]).unwrap();
+        let reading = decode([0x34, 0x12, 0x78, 0x56, 0x60, 0xFF, 0x07]).unwrap();
+        assert_eq!(reading.gain, 48);
         assert_eq!(
             reading.channels,
             Channels {
@@ -126,6 +150,13 @@ mod tests {
     #[test]
     fn invalid_light_data_is_rejected() {
         assert_eq!(decode([1, 0, 1, 0, 0x80, 0, 0]), None);
+    }
+
+    #[test]
+    fn reserved_gain_codes_are_rejected() {
+        assert_eq!(decode([1, 0, 1, 0, 0x40, 0, 0]), None);
+        assert_eq!(decode([1, 0, 1, 0, 0x50, 0, 0]), None);
+        assert_eq!(decode([1, 0, 1, 0, 0x70, 0, 0]).unwrap().gain, 96);
     }
 
     #[test]
