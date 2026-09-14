@@ -1,7 +1,10 @@
-//! CPU1 task polling the LTR-553 over the shared system bus.
+//! CPU1 task polling the LTR-553 over the shared system bus, for both the
+//! light and the proximity capability.
 //!
 //! The sensor measures on its own every 100 ms; the task reads the result at
-//! the same rate, so every poll sees a fresh measurement.
+//! the same rate, so every poll sees a fresh measurement, and publishes the
+//! light part to the light handle and the proximity part to the proximity
+//! handle.
 //!
 //! The light sensor's gain is adjusted automatically: raised when the counts
 //! are small, lowered before they saturate, so a dark room and daylight both
@@ -13,7 +16,10 @@ use embassy_time::{Duration, Timer};
 use hack_and_hike_core::light::{self, Channels, DATA_BLOCK_LEN, PROXIMITY_MAX};
 use log::warn;
 
-use crate::platform::{i2c::SystemI2cBus, registers::AsyncRegisters};
+use crate::{
+    capabilities::proximity,
+    platform::{i2c::SystemI2cBus, registers::AsyncRegisters},
+};
 
 use super::{Runtime, Sample, ltr553};
 
@@ -27,16 +33,21 @@ const GAIN_DOWN_ABOVE: u16 = 60000;
 /// The gain to start with: 8x, in the middle of the range.
 const INITIAL_GAIN_INDEX: usize = 3;
 
-/// Start polling the sensor on CPU1.
-pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
-    spawner.spawn(poll_task(bus, runtime).expect("light task already spawned"));
+/// Start polling the sensor on CPU1, feeding both handles.
+pub(crate) fn spawn(
+    spawner: &Spawner,
+    bus: SystemI2cBus,
+    light: Runtime,
+    proximity: proximity::Runtime,
+) {
+    spawner.spawn(poll_task(bus, light, proximity).expect("light task already spawned"));
 }
 
 /// Configure the sensor, then read and publish a sample every 100 ms. A
 /// failed read is skipped; the first failure is logged, later ones are not,
 /// so a sensor that stops answering does not flood the log.
 #[embassy_executor::task]
-async fn poll_task(bus: SystemI2cBus, runtime: Runtime) {
+async fn poll_task(bus: SystemI2cBus, light: Runtime, proximity: proximity::Runtime) {
     let mut gain_index = INITIAL_GAIN_INDEX;
     let configured = {
         let mut i2c = bus.lock().await;
@@ -65,7 +76,8 @@ async fn poll_task(bus: SystemI2cBus, runtime: Runtime) {
             Ok(()) => {
                 read_failed = false;
                 if let Some(reading) = light::decode(block) {
-                    runtime.publish(sample_from(reading));
+                    light.publish(light_sample(reading));
+                    proximity.publish(proximity_sample(reading));
                     if let Some(next) = better_gain(gain_index, reading.channels) {
                         gain_index = next;
                         let mut i2c = bus.lock().await;
@@ -105,22 +117,28 @@ fn better_gain(gain_index: usize, channels: Channels) -> Option<usize> {
     }
 }
 
-/// The application's view of one reading: lux from the two channels at the
-/// gain they were measured with, the raw proximity count with saturation
+/// The light part of one reading: lux from the two channels at the gain
+/// they were measured with.
+fn light_sample(reading: light::Reading) -> Sample {
+    Sample {
+        lux: light::lux(reading.channels, reading.gain, ltr553::ALS_INTEGRATION_MS),
+    }
+}
+
+/// The proximity part of one reading: the raw count, with saturation
 /// reported as the maximum, and the count spread evenly over the distance.
-fn sample_from(reading: light::Reading) -> Sample {
-    let raw_proximity = if reading.proximity_saturated {
+fn proximity_sample(reading: light::Reading) -> proximity::Sample {
+    let raw = if reading.proximity_saturated {
         PROXIMITY_MAX
     } else {
         reading.proximity
     };
-    Sample {
-        lux: light::lux(reading.channels, reading.gain, ltr553::ALS_INTEGRATION_MS),
-        proximity: light::closeness_percent(
-            raw_proximity,
+    proximity::Sample {
+        percent: light::closeness_percent(
+            raw,
             ltr553::PROXIMITY_FAR_COUNT,
             ltr553::PROXIMITY_NEAR_COUNT,
         ),
-        raw_proximity,
+        raw,
     }
 }

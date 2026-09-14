@@ -1,8 +1,8 @@
 //! A light meter: the screen shows the ambient light in lux and how close
 //! something is to the front of the board, as numbers and as a bar. The
-//! sensor's raw count is shown too, for calibrating the range. Cover the
-//! sensor with your hand, or switch the room light off: in the dark the
-//! screen turns dark too.
+//! proximity sensor's raw count is shown too, for calibrating the range.
+//! Cover the sensor with your hand, or switch the room light off: in the
+//! dark the screen turns dark too.
 
 #![no_std]
 #![no_main]
@@ -40,18 +40,22 @@ struct Shown {
     lux: u32,
     /// Closeness in percent.
     proximity: u8,
-    /// The sensor's raw count.
+    /// The proximity sensor's raw count.
     raw_proximity: u16,
 }
 
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     let Board {
-        mut display, light, ..
+        mut display,
+        light,
+        proximity,
+        ..
     } = Board::init();
     let mut canvas = Canvas::new(SIZE);
 
-    let Some(mut light) = light else {
+    // Both handles come from one chip: either both are there or neither.
+    let (Some(mut light), Some(mut proximity)) = (light, proximity) else {
         canvas.clear(theme::WHITE);
         let whole_screen = canvas.bounding_box();
         common::centered_text(
@@ -67,19 +71,25 @@ async fn main(_spawner: Spawner) -> ! {
         }
     };
 
-    let mut shown = None;
+    let mut shown = Shown {
+        lux: 0,
+        proximity: 0,
+        raw_proximity: 0,
+    };
+    let mut drawn = None;
     loop {
+        // Each handle delivers its own samples; keep the newest of each.
         if let Some(sample) = light.latest() {
-            let next = Shown {
-                lux: sample.lux as u32,
-                proximity: sample.proximity,
-                raw_proximity: sample.raw_proximity,
-            };
-            if shown != Some(next) {
-                shown = Some(next);
-                draw(&mut canvas, next);
-                canvas.show(&mut display.surface(SCREEN));
-            }
+            shown.lux = sample.lux as u32;
+        }
+        if let Some(sample) = proximity.latest() {
+            shown.proximity = sample.percent;
+            shown.raw_proximity = sample.raw;
+        }
+        if drawn != Some(shown) {
+            drawn = Some(shown);
+            draw(&mut canvas, shown);
+            canvas.show(&mut display.surface(SCREEN));
         }
 
         Timer::after(Duration::from_millis(20)).await;

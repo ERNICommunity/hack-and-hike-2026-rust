@@ -13,7 +13,7 @@
 //! | --- | --- | --- |
 //! | [`audio`] | the speaker's ring buffer, an ADPCM decoder | audio capability, demo |
 //! | [`imu`] | sensor fusion, magnetometer compensation and calibration | IMU capability |
-//! | [`light`] | data decoding and the lux formula of the light sensor | light capability |
+//! | [`light`] | data decoding, lux formula and proximity scale of the light sensor | light and proximity capabilities |
 //! | [`lines`] | a fixed-size history of text lines | log history |
 //! | [`network`] | wire protocol, typed messages, peer table | network capability |
 //! | [`touch`] | decoding of the touch controller's report | touch capability |

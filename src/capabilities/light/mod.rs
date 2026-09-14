@@ -1,16 +1,17 @@
-//! Proximity and ambient light.
+//! Ambient light.
 //!
-//! The LTR-553 on the front of the board measures how bright the surroundings
-//! are and whether something is close to the screen, ten times a second. A
-//! CPU1 task reads it over the shared I2C bus and publishes the newest
-//! [`Sample`]; the application takes it with [`Light::latest`].
+//! The LTR-553 behind the front glass measures how bright the surroundings
+//! are, ten times a second. A CPU1 task reads it over the shared I2C bus and
+//! publishes the newest [`Sample`]; the application takes it with
+//! [`Light::latest`]. The same chip measures proximity; that comes out as
+//! the separate [`proximity`](super::proximity) capability, fed by the same
+//! task.
 //!
 //! ```ignore
 //! if let Some(light) = light.as_mut()
 //!     && let Some(sample) = light.latest()
 //! {
 //!     let dark = sample.lux < 10.0;
-//!     let covered = sample.proximity > 50;
 //! }
 //! ```
 //!
@@ -27,7 +28,7 @@ use crate::platform::registers::Registers;
 
 pub(crate) use runtime::spawn;
 
-/// One measurement of light and proximity.
+/// One ambient light measurement.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     /// Ambient light in lux. The sensor sits behind the tinted front glass,
@@ -36,21 +37,6 @@ pub struct Sample {
     /// hundred, a torch pointed at the board thousands. Light that is almost
     /// entirely infrared reads as 0.
     pub lux: f32,
-    /// How close something is to the front, in percent of the range: 0 with
-    /// nothing within about 20 cm, 50 at about 10 cm, 100 at the glass. The
-    /// scale is even in distance, so a threshold is easy to pick.
-    pub proximity: u8,
-    /// The sensor's own count behind `proximity`: how much of its infrared
-    /// light comes back, 0 to [`Sample::RAW_PROXIMITY_MAX`]. It rises with
-    /// the square of the closeness, so most of its range lies in the last
-    /// few centimetres; useful to see what the sensor really measures.
-    pub raw_proximity: u16,
-}
-
-impl Sample {
-    /// The largest raw proximity count: something touches the glass, or the
-    /// measurement saturated.
-    pub const RAW_PROXIMITY_MAX: u16 = hack_and_hike_core::light::PROXIMITY_MAX;
 }
 
 /// The state shared by the handle (CPU0) and the light task (CPU1).
@@ -111,7 +97,8 @@ pub(crate) fn endpoints() -> Endpoints {
 }
 
 /// Whether an LTR-553 answers on the bus, checked once during bring-up
-/// before the bus moves to CPU1. Logs the outcome either way.
+/// before the bus moves to CPU1. Logs the outcome either way. The chip
+/// serves both this capability and the proximity one.
 pub(crate) fn probe<I2C: embedded_hal::i2c::I2c>(i2c: &mut I2C) -> bool
 where
     I2C::Error: core::fmt::Debug,

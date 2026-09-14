@@ -25,7 +25,8 @@ the board.
 | Speaker | `Speaker` | Play 16 kHz stereo audio |
 | Network | `Network` | Send your own message types to nearby boards (ESP-NOW) |
 | Camera | `Camera` | RGB565 frames, 320x240 |
-| Light | `Light` | Ambient light in lux and how close something is to the front |
+| Light | `Light` | Ambient light in lux |
+| Proximity | `Proximity` | How close something is to the front, in percent |
 | Log | `LogHistory` | Everything your code logged, for showing on screen |
 
 ## Contents
@@ -127,8 +128,11 @@ modules are files in `crates/core/tests/`.
   front glass. It reports the ambient light in lux, lower than a light meter
   would show because of the glass, so use it relatively: near 0 in a dark
   room, tens to a few hundred in a lit one, thousands with a torch pointed at
-  the board. Proximity is a percentage of the range, even in distance: 0
-  with nothing within about 20 cm of the front, 100 at the glass.
+  the board.
+- **The proximity sensor** is the same chip: it shines an infrared LED and
+  measures what comes back. The result is a percentage of the range, even in
+  distance: 0 with nothing within about 20 cm of the front, 50 at about
+  10 cm, 100 at the glass.
 - **Audio** is signed 16-bit stereo at 16 kHz, interleaved left, right, left,
   right, ...
 - **Every board in the room** talks on the same radio channel. Messages carry
@@ -477,14 +481,26 @@ if let Some(light) = light.as_mut()
     && let Some(sample) = light.latest()
 {
     let dark = sample.lux < 10.0;
-    let covered = sample.proximity > 50;
 }
 ```
 
-`proximity` is a percentage of the range, even in distance: 0 with nothing
-within about 20 cm, 50 at about 10 cm, 100 at the glass. The sensor's own
-count is in `raw_proximity`; it rises with the square of the closeness. The
-lux value is an estimate from the sensor's formula behind the front glass.
+The lux value is an estimate from the sensor's formula behind the front
+glass; use it relatively.
+
+**Proximity.** `proximity` is an `Option` as well; it is `Some` exactly when
+`light` is, because one chip does both. `latest()` works the same way.
+
+```rust
+if let Some(proximity) = proximity.as_mut()
+    && let Some(sample) = proximity.latest()
+{
+    let covered = sample.percent > 50;
+}
+```
+
+`percent` is even in distance: 0 with nothing within about 20 cm, 50 at
+about 10 cm, 100 at the glass. The sensor's own count is in `raw`; it rises
+with the square of the closeness, which is why `percent` exists.
 
 **Backlight.** `Brightness::new` is for numbers in the code;
 `Brightness::try_from(percent)` checks a number computed at run time.
@@ -508,7 +524,7 @@ log::info!("button pressed at {}", point.x);
 | --- | --- | --- |
 | `imu_color` | display, IMU | The smallest possible application (above) |
 | `template` | display, touch | The file to copy: a spot follows your finger |
-| `light_meter` | display, light | Lux and proximity as numbers and a bar; dark colours in the dark |
+| `light_meter` | display, light, proximity | Lux and proximity as numbers and a bar; dark colours in the dark |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `demo` | everything | A screen per capability with navigation |
 
@@ -592,8 +608,8 @@ are internal to the library; everything else is private to its module.
 | Clap counter: count claps with the microphone peak | display, microphone |
 | Photo booth: freeze a camera frame on a tap | display, touch, camera |
 | Night light: brightness follows how the board is held | backlight, IMU |
-| Pocket mode: dim the screen when it is covered or the room is dark | light, backlight |
-| Theremin: pitch follows how close your hand is | light, speaker |
+| Pocket mode: dim the screen when it is covered or the room is dark | proximity, light, backlight |
+| Theremin: pitch follows how close your hand is | proximity, speaker |
 
 ## Project folders
 

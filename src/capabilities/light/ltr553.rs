@@ -50,7 +50,7 @@ const PS_PULSES: u8 = 8;
 /// starts. Measured on the CoreS3 with `PS_PULSES` pulses; if the range
 /// seems off, read the raw count at 20 cm in the `light_meter` app and put
 /// it here.
-pub(super) const PROXIMITY_FAR_COUNT: u16 = 16;
+pub(super) const PROXIMITY_FAR_COUNT: u16 = 50;
 /// The raw count with something at the glass: the sensor's maximum.
 pub(super) const PROXIMITY_NEAR_COUNT: u16 = hack_and_hike_core::light::PROXIMITY_MAX;
 

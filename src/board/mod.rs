@@ -7,7 +7,8 @@
 //!
 //! Bring-up is fail-fast: a chip that does not answer on I2C panics with a
 //! message naming it, because the board is unusable without it. The camera
-//! and the light sensor are the exceptions and simply come back as `None`.
+//! and the light and proximity sensor are the exceptions and simply come
+//! back as `None`.
 //!
 //! The order of the steps matters:
 //!
@@ -17,8 +18,8 @@
 //!    touch controller and camera are unpowered or held in reset until then.
 //! 4. The camera, which needs the shared I2C pins at a slower speed.
 //! 5. The display over SPI.
-//! 6. The audio codecs and a look for the light sensor, then the whole
-//!    system I2C bus moves to CPU1.
+//! 6. The audio codecs and a look for the light and proximity sensor, then
+//!    the whole system I2C bus moves to CPU1.
 //! 7. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks.
 
 mod cpu1;
@@ -35,6 +36,7 @@ use crate::{
         imu::{self, Imu},
         light::{self, Light},
         network::{self, Network},
+        proximity::{self, Proximity},
         touch::{self, Touch},
     },
     platform::{i2c, io_expander, power},
@@ -101,9 +103,11 @@ pub struct Board {
     pub network: Network,
     /// The camera; `None` when it did not answer during bring-up.
     pub camera: Option<Camera>,
-    /// Proximity and ambient light sensor; `None` when it did not answer
-    /// during bring-up.
+    /// Ambient light; `None` when the sensor did not answer during bring-up.
     pub light: Option<Light>,
+    /// How close something is to the front; `None` when the sensor did not
+    /// answer during bring-up. The same chip as `light`.
+    pub proximity: Option<Proximity>,
     /// History of everything written through the `log` macros.
     pub log: LogHistory,
 }
@@ -192,13 +196,25 @@ impl Board {
         // The final system I2C driver moves to CPU1 once the codecs are set up.
         let mut system_i2c = i2c::init(i2c_resources);
         audio::init_codecs(&mut system_i2c, delay).expect("audio codecs did not answer");
-        // The light sensor is optional, like the camera: its task is only
-        // spawned when the chip answered.
-        let (light, light_runtime) = if light::probe(&mut system_i2c) {
-            let light::Endpoints { handle, runtime } = light::endpoints();
-            (Some(handle), Some(runtime))
+        // The light and proximity sensor is optional, like the camera: one
+        // chip serves both handles, and its task is only spawned when the
+        // chip answered.
+        let (light, proximity, light_runtimes) = if light::probe(&mut system_i2c) {
+            let light::Endpoints {
+                handle: light,
+                runtime: light_runtime,
+            } = light::endpoints();
+            let proximity::Endpoints {
+                handle: proximity,
+                runtime: proximity_runtime,
+            } = proximity::endpoints();
+            (
+                Some(light),
+                Some(proximity),
+                Some((light_runtime, proximity_runtime)),
+            )
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         // Every CPU1 capability comes as a pair: the handle for the
@@ -250,7 +266,7 @@ impl Board {
                 imu: imu_runtime,
                 network: network_runtime,
                 touch: touch_runtime,
-                light: light_runtime,
+                light: light_runtimes,
             },
         );
 
@@ -264,6 +280,7 @@ impl Board {
             network,
             camera,
             light,
+            proximity,
             log,
         }
     }

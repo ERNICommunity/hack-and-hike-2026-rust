@@ -18,4 +18,5 @@ pub mod display;
 pub mod imu;
 pub mod light;
 pub mod network;
+pub mod proximity;
 pub mod touch;
