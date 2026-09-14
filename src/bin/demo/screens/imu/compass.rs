@@ -24,6 +24,11 @@ const COMPASS_GLYPH_WIDTH: f32 = 42.0;
 const COMPASS_GLYPH_HEIGHT: f32 = 78.0;
 /// Space between the letters of "NE", "SW", ...
 const COMPASS_GLYPH_GAP: f32 = 18.0;
+/// The vertical focal length the letter sizes above were designed for, in
+/// pixels. The letters are scaled by this over the camera's focal length, so
+/// changing the field of view zooms the world but keeps the letters readable
+/// at the same size.
+const GLYPH_REFERENCE_FOCAL_PX: f32 = 94.0;
 /// Thickness of the letter strokes on screen, in pixels.
 const COMPASS_STROKE_WIDTH: u32 = 3;
 /// `1 / √2`: the x and z of a diagonal direction.
@@ -93,6 +98,8 @@ pub(super) fn draw_world_compass_labels(
     // Roll happens after perspective projection, so this ratio is independent
     // of roll and costs only one division per frame.
     let glyph_horizontal_focal_scale = camera.focal_y / camera.focal_x;
+    // Keep the on-screen letter size independent of the field of view.
+    let glyph_zoom_scale = GLYPH_REFERENCE_FOCAL_PX / camera.focal_y;
 
     for (label, unit_x, unit_z) in WORLD_COMPASS_LABELS {
         let anchor = [
@@ -119,8 +126,9 @@ pub(super) fn draw_world_compass_labels(
         // as it approaches the edge of the viewport. The focal correction keeps
         // the centered glyph width identical to the preferred baseline.
         let depth_scale = (anchor_camera[2] / centered_depth).clamp(0.2, 1.0);
-        let horizontal_scale = depth_scale * depth_scale * glyph_horizontal_focal_scale;
-        let vertical_scale = depth_scale;
+        let horizontal_scale =
+            depth_scale * depth_scale * glyph_horizontal_focal_scale * glyph_zoom_scale;
+        let vertical_scale = depth_scale * glyph_zoom_scale;
 
         // Tangent points screen-right whenever this compass direction is in the
         // center of view. Off-axis labels still inherit real perspective/skew;

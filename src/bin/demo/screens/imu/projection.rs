@@ -14,9 +14,15 @@ pub(super) const TAN_SCALE: i32 = 1024;
 /// dividing by a depth near zero would throw them far off screen.
 pub(super) const PERSPECTIVE_NEAR_Z: f32 = 0.45;
 
-// tan(50deg) gives a 100deg horizontal FOV at any viewport width.
-/// Tangent of half the horizontal field of view.
-const HORIZONTAL_HALF_FOV_TAN: f32 = 1.1917536;
+/// How much of the world the view shows from left to right, in degrees.
+///
+/// A flat perspective projection places a point at `tan(angle)` from the
+/// centre, so near the edges of a wide view everything moves and stretches
+/// faster than in the middle, like a wide-angle lens: at 100° about 2.4 times
+/// faster at the edge, at 70° about 1.5 times, at 50° 1.2 times. A narrower
+/// view looks calmer but shows fewer compass letters at once (they are 45°
+/// apart).
+const HORIZONTAL_FOV_DEG: f32 = 70.0;
 /// Horizon distance used when the horizon is undefined (looking straight up
 /// or down), far enough from any pixel that the grid is not faded.
 const HORIZON_AT_INFINITY_DISTANCE_PX: f32 = 64.0;
@@ -55,10 +61,11 @@ pub(super) struct PerspectiveCamera {
     pub(super) center_x: i32,
     /// Row of the viewport centre; `center_x` is its column.
     pub(super) center_y: i32,
-    /// Pixels per unit of `x / z` and `y / z`: the zoom of the projection.
+    /// Pixels per unit of `x / z`: the horizontal zoom of the projection, set
+    /// by `HORIZONTAL_FOV_DEG`.
     pub(super) focal_x: f32,
-    /// Vertical pixels per unit of `y / z`: half the viewport height, which makes
-    /// the vertical field of view 90°. `focal_x` is set for a 100° horizontal one.
+    /// Pixels per unit of `y / z`: the vertical zoom, equal to `focal_x` so
+    /// that squares stay square.
     pub(super) focal_y: f32,
     // Compatibility geometry for the existing horizon rasterizer and compass
     // size normalization. These are derived from gravity, not Euler pose.
@@ -152,7 +159,7 @@ pub(super) fn perspective_camera(
     let world_y_camera = screen_to_camera(world_y_screen);
     let world_z_camera = screen_to_camera(world_z_screen);
     let gravity_camera = screen_to_camera(gravity_screen);
-    let (focal_x, focal_y) = perspective_focals(center_x, center_y);
+    let (focal_x, focal_y) = perspective_focals(center_x);
 
     // Derive the old horizon rasterizer's slope/intercept coefficients directly
     // from gravity. The focal_x/focal_y term keeps the horizon exact under the
@@ -381,12 +388,14 @@ fn outcode(x: i32, y: i32, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u8
     code
 }
 
-/// Focal lengths for a viewport with centre `(center_x, center_y)`: a 100°
-/// horizontal field of view.
-fn perspective_focals(center_x: i32, center_y: i32) -> (f32, f32) {
-    let focal_x = center_x.max(1) as f32 / HORIZONTAL_HALF_FOV_TAN;
-    let focal_y = center_y.max(1) as f32;
-    (focal_x, focal_y)
+/// Focal lengths for a viewport whose centre column is `center_x`, giving
+/// the horizontal field of view `HORIZONTAL_FOV_DEG`. Both are equal, so the
+/// projection does not stretch one axis; the vertical field of view follows
+/// from the viewport's height.
+fn perspective_focals(center_x: i32) -> (f32, f32) {
+    let half_fov = (HORIZONTAL_FOV_DEG / 2.0).to_radians();
+    let focal = center_x.max(1) as f32 / libm::tanf(half_fov);
+    (focal, focal)
 }
 
 /// Round to the nearest pixel.
