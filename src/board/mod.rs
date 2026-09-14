@@ -12,7 +12,7 @@
 mod cpu1;
 
 use esp_hal::{clock::CpuClock, delay::Delay, timer::timg::TimerGroup};
-use log::{LevelFilter, info};
+use log::{LevelFilter, info, warn};
 
 use crate::{
     capabilities::{
@@ -30,6 +30,25 @@ use crate::{
         memory,
     },
 };
+
+/// The first I2C transaction after a reset gets a few attempts: a chip may
+/// still be settling from the reset or the power-up of its rail.
+const FIRST_CONTACT_ATTEMPTS: u32 = 5;
+const FIRST_CONTACT_RETRY_MS: u32 = 10;
+
+fn retry<T, E: core::fmt::Debug>(
+    delay: Delay,
+    mut attempt: impl FnMut() -> Result<T, E>,
+) -> Result<T, E> {
+    let mut result = attempt();
+    for _ in 1..FIRST_CONTACT_ATTEMPTS {
+        let Err(error) = &result else { break };
+        warn!("I2C chip did not answer ({error:?}); retrying");
+        delay.delay_millis(FIRST_CONTACT_RETRY_MS);
+        result = attempt();
+    }
+    result
+}
 
 /// Internal RAM that the second-stage bootloader no longer needs once the
 /// application runs (the esp-generate default for the ESP32-S3).
@@ -87,9 +106,11 @@ impl Board {
 
         // Power rails and reset lines are driven over a short-lived I2C owner;
         // dropping it frees the pins for the camera's slower bus.
+        i2c::recover_bus(&mut i2c_resources, delay);
         {
             let mut i2c = i2c::init(i2c_resources.reborrow());
-            power::enable_lcd_backlight(&mut i2c).expect("AXP2101 power chip did not answer");
+            retry(delay, || power::enable_lcd_backlight(&mut i2c))
+                .expect("AXP2101 power chip did not answer");
             io_expander::reset_display_and_touch(&mut i2c, delay)
                 .expect("AW9523 IO expander did not answer");
         }

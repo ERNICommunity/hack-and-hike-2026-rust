@@ -1,15 +1,19 @@
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-use esp_hal::Async;
 use esp_hal::{
-    Blocking,
+    Async, Blocking,
+    delay::Delay,
+    gpio::{DriveMode, Flex, OutputConfig, Pull},
     i2c::master::{Config as I2cConfig, I2c},
     peripherals::{GPIO11, GPIO12, I2C0},
     time::Rate,
 };
+use log::warn;
 use static_cell::StaticCell;
 
 const SYSTEM_I2C_FREQUENCY_KHZ: u32 = 400;
 const CAMERA_SCCB_FREQUENCY_KHZ: u32 = 100;
+/// Half a clock period while recovering the bus by hand: 100 kHz.
+const RECOVERY_HALF_PERIOD_US: u32 = 5;
 
 /// Physical resources for the board's runtime system-I2C service.
 ///
@@ -32,6 +36,56 @@ impl Resources<'static> {
             sda: self.sda.reborrow(),
             scl: self.scl.reborrow(),
         }
+    }
+}
+
+/// Free the bus if a chip is still holding it from before the last reset.
+///
+/// CPU1 reads the touch controller and the IMU all the time, so a reset (for
+/// example by the flasher) often lands in the middle of a read. The chip then
+/// keeps SDA low, waiting for clocks that never come, and every transaction
+/// after the reset fails with a missing acknowledge. Clocking SCL by hand
+/// lets the chip finish its byte, and a STOP condition returns it to idle.
+/// Call this before the first I2C driver is created.
+pub(crate) fn recover_bus(resources: &mut Resources<'static>, delay: Delay) {
+    let open_drain = OutputConfig::default()
+        .with_drive_mode(DriveMode::OpenDrain)
+        .with_pull(Pull::Up);
+    let mut scl = Flex::new(resources.scl.reborrow());
+    let mut sda = Flex::new(resources.sda.reborrow());
+    for pin in [&mut scl, &mut sda] {
+        pin.set_high();
+        pin.apply_output_config(&open_drain);
+        pin.set_input_enable(true);
+        pin.set_output_enable(true);
+    }
+    delay.delay_micros(RECOVERY_HALF_PERIOD_US);
+    if sda.is_high() {
+        return;
+    }
+
+    // At most nine clocks: the rest of one byte plus its acknowledge bit.
+    for _ in 0..9 {
+        scl.set_low();
+        delay.delay_micros(RECOVERY_HALF_PERIOD_US);
+        scl.set_high();
+        delay.delay_micros(RECOVERY_HALF_PERIOD_US);
+        if sda.is_high() {
+            break;
+        }
+    }
+    // STOP: SDA rises while SCL is high.
+    sda.set_low();
+    delay.delay_micros(RECOVERY_HALF_PERIOD_US);
+    scl.set_high();
+    delay.delay_micros(RECOVERY_HALF_PERIOD_US);
+    sda.set_high();
+    delay.delay_micros(RECOVERY_HALF_PERIOD_US);
+
+    if sda.is_high() {
+        warn!("I2C bus was held by a chip after the reset; released it");
+    } else {
+        warn!("I2C bus is still held low after recovery; power-cycle the board");
     }
 }
 
