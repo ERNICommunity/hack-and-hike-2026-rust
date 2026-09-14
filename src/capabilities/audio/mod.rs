@@ -40,8 +40,10 @@ pub const FRAMES_PER_BLOCK: usize = 512;
 pub const SAMPLES_PER_BLOCK: usize = FRAMES_PER_BLOCK * CHANNELS;
 
 /// Microphone blocks the application may fall behind by before the oldest
-/// unread block is dropped.
-const MIC_QUEUE_BLOCKS: usize = 4;
+/// unread block is dropped. Eight blocks is about 256 ms, enough to bridge a
+/// loop iteration that stalls on a slow capability (the camera's frame wait
+/// is the worst case). Each block is 2 KiB.
+const MIC_QUEUE_BLOCKS: usize = 8;
 /// Speaker frames buffered ahead of playback. One DMA descriptor refill takes
 /// up to 1023 frames, so the queue holds at least that much to keep a refill
 /// from draining it before the application tops it up.
