@@ -54,32 +54,51 @@ const BAD_FRAME_LOG_INTERVAL: u32 = 32;
 const _: () = assert!(STREAM_CHUNK_BYTES <= esp_hal::dma::CHUNK_SIZE);
 const _: () = assert!(STREAM_BUFFER_BYTES.is_multiple_of(STREAM_CHUNK_BYTES));
 
+/// A DMA transfer that is streaming camera bytes into the ring buffer. It
+/// owns the driver and the buffer until it is stopped.
 type InFlight = CameraTransfer<'static, DmaRxStreamBuf>;
 
 /// The peripherals and pins wired to the camera sensor, consumed once by
 /// [`init`].
 pub(crate) struct Resources {
+    /// The camera interface peripheral that samples the parallel bus.
     pub(crate) lcd_cam: LCD_CAM<'static>,
+    /// The DMA channel that moves captured bytes into memory without the CPU.
     pub(crate) dma: DMA_CH2<'static>,
+    /// Pixel clock (PCLK): the sensor presents one data byte per clock edge.
     pub(crate) pclk: GPIO45<'static>,
+    /// Frame sync (VSYNC): marks the boundary between two frames.
     pub(crate) vsync: GPIO46<'static>,
+    /// Line valid (HREF): high while a row's pixel bytes are on the bus.
     pub(crate) href: GPIO38<'static>,
+    /// Data bit 0 (least significant) of the parallel bus.
     pub(crate) d0: GPIO39<'static>,
+    /// Data bit 1 of the parallel bus.
     pub(crate) d1: GPIO40<'static>,
+    /// Data bit 2 of the parallel bus.
     pub(crate) d2: GPIO41<'static>,
+    /// Data bit 3 of the parallel bus.
     pub(crate) d3: GPIO42<'static>,
+    /// Data bit 4 of the parallel bus.
     pub(crate) d4: GPIO15<'static>,
+    /// Data bit 5 of the parallel bus.
     pub(crate) d5: GPIO16<'static>,
+    /// Data bit 6 of the parallel bus.
     pub(crate) d6: GPIO48<'static>,
+    /// Data bit 7 (most significant) of the parallel bus.
     pub(crate) d7: GPIO47<'static>,
 }
 
 /// The camera driver and its ring buffer, either idle or streaming.
 enum Stream {
+    /// No transfer running: after `init`, after `pause` and while restarting.
     Stopped {
+        /// The configured camera driver, ready to start a transfer.
         driver: CameraDriver<'static>,
+        /// The DMA ring buffer, reused by the next transfer.
         buffer: DmaRxStreamBuf,
     },
+    /// A transfer is streaming; bytes accumulate in the ring until read.
     Running(InFlight),
 }
 
@@ -131,6 +150,7 @@ impl core::fmt::Display for CaptureError {
 /// [`Frame::finish`]. Call [`Camera::pause`] when the preview is hidden, so
 /// the next frame starts cleanly.
 pub struct Camera {
+    /// The camera driver and ring buffer, in whichever state they are.
     // `None` only while a method moves the stream between states.
     stream: Option<Stream>,
     /// The complete frame being shown, in PSRAM.
@@ -148,6 +168,8 @@ pub struct Camera {
 
 /// One frozen camera frame being shown while the following frame is captured.
 pub struct Frame<'a> {
+    /// The camera whose display buffer is shown and whose capture buffer
+    /// keeps filling.
     camera: &'a mut Camera,
 }
 

@@ -88,6 +88,8 @@ impl log::Log for Logger {
     fn flush(&self) {}
 }
 
+/// The one logger instance. `log::set_logger` needs a `&'static` reference,
+/// so it is a static rather than a local value.
 static LOGGER: Logger = Logger;
 
 /// Install the logger, dropping records below `level`.

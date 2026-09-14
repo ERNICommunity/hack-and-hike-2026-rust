@@ -29,8 +29,12 @@ use super::{Config, Resources, Runtime};
 type SharedState = Mutex<CriticalSectionRawMutex, RefCell<NetworkState>>;
 
 // The radio objects must outlive the tasks, which run forever.
+/// The peer table, shared by reference between the two radio tasks.
 static STATE: StaticCell<SharedState> = StaticCell::new();
+/// The Wi-Fi driver. The ESP-NOW objects borrow from it, so it has to live
+/// for the rest of the program.
 static WIFI_CONTROLLER: StaticCell<WifiController<'static>> = StaticCell::new();
+/// Registers and removes ESP-NOW peers; both radio tasks use it.
 static MANAGER: StaticCell<EspNowManager<'static>> = StaticCell::new();
 
 /// Everything the send and receive tasks share. Cheap to copy: references and

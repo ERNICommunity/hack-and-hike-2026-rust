@@ -11,22 +11,44 @@ mod calibration;
 
 pub use calibration::Calibration;
 
+/// Raw 13-bit X or Y value (after the shift in [`compensate`]) that the
+/// sensor reports when the axis overflowed.
 const OVERFLOW_XY: i16 = -4096;
+/// Raw 15-bit Z value (after the shift in [`compensate`]) that the sensor
+/// reports when the axis overflowed.
 const OVERFLOW_Z: i16 = -16384;
 
 /// Factory trim values read from the sensor once at start-up.
 #[derive(Clone, Copy, Debug)]
 pub struct Trim {
+    /// X offset trim, register 0x5D. Added to the scaled X reading.
     dig_x1: i8,
+    /// Y offset trim, register 0x5E. Added to the scaled Y reading.
     dig_y1: i8,
+    /// X sensitivity trim, register 0x64.
     dig_x2: i8,
+    /// Y sensitivity trim, register 0x65.
     dig_y2: i8,
+    /// Z sensitivity trim that scales with the Hall resistance, registers
+    /// 0x6A..0x6B.
     dig_z1: u16,
+    /// Z sensitivity trim, registers 0x68..0x69. Zero means the trim data is
+    /// invalid, because Z compensation divides by it.
     dig_z2: i16,
+    /// Z trim that corrects for the Hall resistance's distance from
+    /// `dig_xyz1`, registers 0x6E..0x6F.
     dig_z3: i16,
+    /// Z offset trim, registers 0x62..0x63. Subtracted from the raw Z
+    /// reading.
     dig_z4: i16,
+    /// Linear coefficient of the Hall resistance correction for X and Y,
+    /// register 0x71.
     dig_xy1: u8,
+    /// Quadratic coefficient of the Hall resistance correction for X and Y,
+    /// register 0x70.
     dig_xy2: i8,
+    /// Reference Hall resistance the readings are compared with, registers
+    /// 0x6C..0x6D (15 bits; the top bit is masked off). Zero means invalid trim.
     dig_xyz1: u16,
 }
 
@@ -89,6 +111,9 @@ pub fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
     })
 }
 
+/// Bosch's floating-point compensation of one X or Y reading, in
+/// microtesla. `dig_1` and `dig_2` are that axis's offset and sensitivity
+/// trims; `rhall` is the Hall resistance from the same data frame.
 fn compensate_xy(raw: i16, rhall: u16, dig_1: i8, dig_2: i8, trim: Trim) -> f32 {
     let x0 = f32::from(trim.dig_xyz1) * 16384.0 / f32::from(rhall);
     let ratio = x0 - 16384.0;
@@ -99,6 +124,8 @@ fn compensate_xy(raw: i16, rhall: u16, dig_1: i8, dig_2: i8, trim: Trim) -> f32 
     ((x4 / 8192.0) + f32::from(dig_1) * 8.0) / 16.0
 }
 
+/// Bosch's floating-point compensation of the Z reading, in microtesla.
+/// `None` when the trim values would make the divisor (nearly) zero.
 fn compensate_z(raw: i16, rhall: u16, trim: Trim) -> Option<f32> {
     let z0 = f32::from(raw) - f32::from(trim.dig_z4);
     let z1 = f32::from(rhall) - f32::from(trim.dig_xyz1);

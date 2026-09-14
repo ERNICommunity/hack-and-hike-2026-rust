@@ -3,8 +3,15 @@
 //! Sound clips are stored in flash in this format because it is a quarter
 //! of the size of 16-bit PCM and decodes with a few integer operations.
 
+/// How far the step index moves after each 4-bit code, indexed by the code.
+/// Codes with a small magnitude (0 to 3) make the next step smaller, large ones
+/// (4 to 7) make it bigger. The sign bit (8) does not matter, so the second half
+/// repeats the first.
 const INDEX_TABLE: [i8; 16] = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
 
+/// The 89 step sizes of IMA ADPCM, each about 10 % larger than the one
+/// before. A code says how many fractions of the current step to add to or
+/// subtract from the previous sample.
 const STEP_TABLE: [i32; 89] = [
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
     73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449,
@@ -17,7 +24,10 @@ const STEP_TABLE: [i32; 89] = [
 /// nibble of each byte first.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Decoder {
+    /// The last decoded sample; the next code moves it up or down. Stays within
+    /// the `i16` range.
     predictor: i32,
+    /// Index into `STEP_TABLE` of the step used for the next code, 0 to 88.
     step_index: usize,
 }
 

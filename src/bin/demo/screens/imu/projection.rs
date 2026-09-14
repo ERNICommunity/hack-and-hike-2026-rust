@@ -53,26 +53,54 @@ struct WorldBasis {
 pub(super) struct PerspectiveCamera {
     /// Viewport centre, in pixels from the viewport's top-left corner.
     pub(super) center_x: i32,
+    /// Row of the viewport centre; `center_x` is its column.
     pub(super) center_y: i32,
     /// Pixels per unit of `x / z` and `y / z`: the zoom of the projection.
     pub(super) focal_x: f32,
+    /// Vertical pixels per unit of `y / z`: half the viewport height, which makes
+    /// the vertical field of view 90°. `focal_x` is set for a 100° horizontal one.
     pub(super) focal_y: f32,
     // Compatibility geometry for the existing horizon rasterizer and compass
     // size normalization. These are derived from gravity, not Euler pose.
+    /// Sine of the camera's pitch, derived from gravity. The compass uses it with
+    /// `cos_pitch` to find how deep a label straight ahead lies, and sizes every
+    /// label relative to that depth.
     pub(super) sin_pitch: f32,
+    /// Cosine of the camera's pitch; see `sin_pitch`.
     pub(super) cos_pitch: f32,
+    /// Sine of the horizon's tilt on screen. With `cos_roll` and `pitch_offset` it
+    /// gives the horizon's row in every column when the ground is filled.
     pub(super) sin_roll: f32,
+    /// Cosine of the horizon's tilt on screen. Its sign tells on which side of the
+    /// horizon the ground is; near zero the horizon is almost vertical and the fill
+    /// switches to a side-of-line test.
     pub(super) cos_roll: f32,
+    /// Signed distance in pixels from the viewport centre to the horizon line: the
+    /// horizon crosses the centre column at `center_y + pitch_offset / cos_roll`.
+    /// Looking straight up or down it is set far off screen, so the view is all
+    /// sky or all ground.
     pub(super) pitch_offset: i32,
     // Columns of the world->camera rotation. Computing them once per frame keeps
     // every grid/glyph point to nine multiplies + six adds and no trig.
+    /// The world's x axis in camera coordinates: the first column of the rotation
+    /// `world_to_camera` applies.
     world_x_camera: [f32; 3],
+    /// The world's y axis (up, against gravity) in camera coordinates: the second
+    /// column of the rotation.
     world_y_camera: [f32; 3],
+    /// The world's z axis (away from north) in camera coordinates: the third
+    /// column of the rotation.
     world_z_camera: [f32; 3],
     // Unit-normalized screen-space horizon equation in absolute local pixels:
     // a*x + b*y + c = 0. Its absolute value is pixel distance from the horizon.
+    /// Coefficient `a` of the horizon equation, times `TAN_SCALE`: how much the
+    /// distance from the horizon changes per pixel to the right.
     pub(super) horizon_a_q10: i32,
+    /// Coefficient `b` of the horizon equation, times `TAN_SCALE`: how much the
+    /// distance from the horizon changes per pixel down.
     pub(super) horizon_b_q10: i32,
+    /// Constant `c` of the horizon equation, times `TAN_SCALE`: the signed
+    /// distance of the viewport's top-left pixel from the horizon.
     pub(super) horizon_c_q10: i32,
 }
 

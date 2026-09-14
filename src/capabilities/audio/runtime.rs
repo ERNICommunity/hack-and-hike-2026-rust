@@ -31,6 +31,7 @@ const RX_DRAIN_BYTES: usize = 1024;
 const TX_DMA_BUFFER_BYTES: usize = 4 * esp_hal::dma::CHUNK_SIZE;
 /// Bytes handed to the TX DMA per step: 16 ms of stereo 16-bit audio.
 const TX_FILL_BYTES: usize = 1_024;
+/// Samples handed to the TX DMA per step: [`TX_FILL_BYTES`] in 16-bit samples.
 const TX_FILL_SAMPLES: usize = TX_FILL_BYTES / BYTES_PER_SAMPLE;
 const _: () = assert!(RX_DRAIN_BYTES.is_multiple_of(BYTES_PER_FRAME));
 

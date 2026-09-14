@@ -57,7 +57,10 @@ const DCS_PAGE_ADDRESS_SET: u8 = 0x2B;
 /// data until the next command.
 const DCS_MEMORY_WRITE: u8 = 0x2C;
 
+/// The blocking SPI driver with DMA, the same type the controller setup used.
 type DisplaySpiDma = SpiDma<'static, Blocking>;
+/// A DMA write in progress. It owns the SPI driver and the buffer being sent
+/// and gives both back when it is done.
 type PixelTransfer = SpiDmaTransfer<'static, Blocking, DmaTxBuf>;
 
 /// The SPI driver and the two pixel buffers, in one of two states.
@@ -68,13 +71,18 @@ type PixelTransfer = SpiDmaTransfer<'static, Blocking, DmaTxBuf>;
 enum Pipeline {
     /// Nothing on the bus; both buffers are available.
     Idle {
+        /// The SPI driver, ready for the next command or batch.
         spi: DisplaySpiDma,
+        /// The buffer [`Transport::prepare`] hands out for the next batch.
         free: DmaTxBuf,
+        /// The other buffer; it becomes `free` once the next batch is sent.
         spare: DmaTxBuf,
     },
     /// A batch is being sent; `free` can be filled in the meantime.
     InFlight {
+        /// The running DMA write, holding the SPI driver and the buffer on the wire.
         transfer: PixelTransfer,
+        /// The buffer not on the wire, to be filled with the next batch.
         free: DmaTxBuf,
     },
 }

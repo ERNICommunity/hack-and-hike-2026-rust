@@ -18,6 +18,8 @@ use crate::{layout, screens::Screen, styles};
 
 // The layout file becomes Rust at compile time: a `...App` struct with a
 // `build` function and one `WidgetId` per named node.
+/// The widgets generated from `settings.kdl`: the labels and the slots for
+/// the value label and the slider.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/settings/settings.kdl");
@@ -31,12 +33,17 @@ const _: () = assert!(generated::SettingsApp::HEIGHT == layout::CONTENT_SIZE.hei
 
 /// The settings screen and its state.
 pub(crate) struct SettingsScreen {
+    /// The handle that sets the LCD backlight level.
     backlight: Backlight,
     /// The brightness last requested.
     brightness: Brightness,
+    /// The widget tree built from `settings.kdl`, plus the value label added in
+    /// code.
     gui: &'static mut gui::Context<NODES>,
     /// The "BRIGHTNESS %" readout.
     value_label: WidgetId,
+    /// Turns touches into a brightness percentage and draws itself; drawn over
+    /// the GUI, not part of it.
     slider: Slider,
     /// Whether the screen needs a redraw.
     dirty: bool,

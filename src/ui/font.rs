@@ -54,6 +54,8 @@ impl Font for TopAnchored {
 /// `embedded-gui`'s pixel callback. Its size is unlimited, so nothing is
 /// clipped here; `embedded-gui` clips afterwards.
 struct Glyph<'a> {
+    /// Called with the `(x, y)` of each lit pixel, relative to the glyph's
+    /// top-left corner.
     draw_pixel: &'a mut dyn FnMut(i32, i32),
 }
 

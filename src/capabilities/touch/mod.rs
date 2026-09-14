@@ -51,16 +51,21 @@ impl TouchEvent {
     }
 }
 
+/// The queue shared by the handle (CPU0) and the touch polling task (CPU1).
 struct Service {
+    /// Touch events waiting for the application, oldest first.
     events: Channel<CriticalSectionRawMutex, TouchEvent, QUEUE_LENGTH>,
 }
 
+/// The one touch queue. A plain `static` works across cores because the
+/// channel synchronizes itself.
 static SERVICE: Service = Service {
     events: Channel::new(),
 };
 
 /// Application handle for the touch panel; see the [module docs](self).
 pub struct Touch {
+    /// Points at the queue shared with the CPU1 touch polling task.
     service: &'static Service,
 }
 
@@ -77,6 +82,7 @@ impl Touch {
 /// CPU1 side of the queue.
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
+    /// Points at the queue shared with the application's handle on CPU0.
     service: &'static Service,
 }
 

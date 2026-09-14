@@ -18,26 +18,50 @@ use fit::{Candidate, MIN_FIT_SAMPLES, Model, NormalEquations, Validation};
 /// field before hard-iron removal. Keep the learning window broad, but reject
 /// near-zero and overflow-like samples.
 const LEARNING_FIELD_MIN_UT: f32 = 5.0;
+/// Upper end of the learning window, in uT; see `LEARNING_FIELD_MIN_UT`.
 const LEARNING_FIELD_MAX_UT: f32 = 4000.0;
 /// Corrected fields are normalized to 50 uT; this window leaves room for noise
 /// and transient disturbances.
 const EARTH_FIELD_MIN_UT: f32 = 25.0;
+/// Upper end of the Earth-field window, in uT; see
+/// `EARTH_FIELD_MIN_UT`.
 const EARTH_FIELD_MAX_UT: f32 = 80.0;
 
+/// Smallest extent, in uT, the samples must span on every axis before a
+/// fit is attempted.
 const TARGET_SPAN_UT: f32 = 35.0;
+/// Samples seen before the first fit origin may be chosen.
 const ORIGIN_WARMUP_SAMPLES: u32 = 36;
+/// Extent, in uT, the samples must span on every axis before the first
+/// fit origin is chosen, so the midpoint of the extrema is a usable guess of
+/// the hard-iron offset.
 const ORIGIN_MIN_SPAN_UT: f32 = 20.0;
 
+/// Direction bins around the origin: 6 cube faces times 4 quadrants (see
+/// `fit::direction_bin`). One bit per bin in the `u32` bit masks.
 const DIRECTION_BIN_COUNT: usize = 24;
+/// Distinct direction bins that must hold samples before a fit is
+/// attempted.
 const MIN_DIRECTION_BINS: u32 = 12;
+/// Cube faces that must hold samples before a fit is attempted: all six,
+/// so each axis has been seen pointing both ways.
 const MIN_DIRECTION_FACES: u32 = 6;
+/// Samples per direction bin that enter the fit. Further samples in a full
+/// bin are skipped, so holding the board in one direction does not outweigh
+/// the others.
 const MAX_SAMPLES_PER_DIRECTION_BIN: u8 = 32;
+/// Samples added to the fit between two fit attempts.
 const REFIT_INTERVAL_SAMPLES: u16 = 16;
+/// Distinct direction bins that must have received new samples since the
+/// last attempt before the fit is tried again.
 const MIN_REFIT_DIRECTION_BINS: u32 = 4;
 
 // Progress reporting: the three phases add up to 99 %, 100 % means accepted.
+/// Share of the progress for choosing the fit origin.
 const ORIGIN_PHASE_PERCENT: f32 = 20.0;
+/// Share of the progress for covering enough directions.
 const COVERAGE_PHASE_PERCENT: f32 = 65.0;
+/// Share of the progress for validating a candidate on fresh samples.
 const VALIDATION_PHASE_PERCENT: f32 = 14.0;
 
 /// Hard- and soft-iron calibration of the magnetometer, learned at run time.
@@ -49,18 +73,41 @@ const VALIDATION_PHASE_PERCENT: f32 = 14.0;
 /// fields. [`Calibration::progress_percent`] tells the user how far along it
 /// is.
 pub struct Calibration {
+    /// Least-squares sums of the samples in the current fit epoch. Reset when
+    /// a fit or candidate is rejected.
     equations: NormalEquations,
+    /// Smallest learnable raw field seen on each axis, in uT. Kept across fit
+    /// epochs.
     min: [f32; 3],
+    /// Largest learnable raw field seen on each axis, in uT. Kept across fit
+    /// epochs.
     max: [f32; 3],
+    /// Learnable samples seen in total, including those not added to the fit.
+    /// Saturates at `u32::MAX`.
     samples: u32,
+    /// Point the fit samples are taken relative to. `None` during warm-up;
+    /// set to the midpoint of the extrema after warm-up and at every fresh
+    /// epoch.
     fit_origin_ut: Option<[f32; 3]>,
+    /// Samples added to `equations` in this epoch.
     fit_samples: u32,
+    /// Samples added to `equations` since the last fit attempt.
     samples_since_fit: u16,
+    /// Bit mask of the direction bins that received samples since the last
+    /// fit attempt; bit `n` is bin `n`.
     refit_direction_bins: u32,
+    /// Bit mask of the direction bins seen in this epoch; bit `n` is bin
+    /// `n`.
     direction_bins: u32,
+    /// Bit mask of the six cube faces seen in this epoch.
     direction_faces: u8,
+    /// Samples added to the fit from each direction bin, capped at
+    /// `MAX_SAMPLES_PER_DIRECTION_BIN`.
     direction_bin_samples: [u8; DIRECTION_BIN_COUNT],
+    /// A fitted model being validated. No new fit is attempted while it is
+    /// set.
     candidate: Option<Candidate>,
+    /// The accepted model. Once set, learning stops for good.
     model: Option<Model>,
 }
 
@@ -167,6 +214,8 @@ impl Calibration {
         }
     }
 
+    /// Fit a model to this epoch's samples. A plausible fit becomes the
+    /// candidate; otherwise the epoch starts over.
     fn try_fit(&mut self, fit_origin: [f32; 3]) {
         match fit::fit_model(&self.equations, fit_origin, self.min, self.max) {
             Some(model) => {
@@ -221,6 +270,8 @@ impl Calibration {
         percent(ORIGIN_PHASE_PERCENT + COVERAGE_PHASE_PERCENT * coverage)
     }
 
+    /// Whether this epoch has enough samples, span, direction bins and faces
+    /// for a fit attempt.
     fn has_minimum_coverage(&self) -> bool {
         self.fit_origin_ut.is_some()
             && self.fit_samples >= MIN_FIT_SAMPLES

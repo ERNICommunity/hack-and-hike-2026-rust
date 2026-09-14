@@ -33,44 +33,89 @@ impl Gains {
 
 /// Accelerometer magnitudes accepted as "mostly gravity" for leveling.
 const ACCEL_PLAUSIBLE_MIN_G: f32 = 0.75;
+/// Upper end of that range, in g.
 const ACCEL_PLAUSIBLE_MAX_G: f32 = 1.25;
 
 // Gyro-bias learning happens only while the device is clearly still.
+/// Lowest accelerometer magnitude, in g, that counts as still.
 const STATIONARY_ACCEL_MIN_G: f32 = 0.90;
+/// Highest accelerometer magnitude, in g, that counts as still.
 const STATIONARY_ACCEL_MAX_G: f32 = 1.10;
+/// Every gyroscope axis must read below this, in degrees per second, to
+/// count as still.
 const STATIONARY_GYRO_MAX_DPS: f32 = 3.0;
+/// Fraction of the way the bias moves towards the measured rate with each
+/// still sample, until the estimate has settled.
 const BIAS_LEARN_RATE_INITIAL: f32 = 0.02;
+/// The same fraction once settled: ten times slower, so noise averages
+/// out.
 const BIAS_LEARN_RATE_SETTLED: f32 = 0.002;
+/// Consecutive still samples after which the bias counts as settled (one
+/// second at 100 Hz).
 const BIAS_SETTLED_AFTER_SAMPLES: u16 = 100;
 
 // Magnetic correction is bounded so a delayed, noisy 30 Hz magnetometer cannot
 // steer the short-term attitude. Fast motion reduces its authority smoothly.
+/// Largest heading correction per sample, in degrees, in normal operation.
 const MAX_MAG_CORRECTION_NORMAL_DEG: f32 = 0.12;
+/// Largest heading correction per sample, in degrees, while recovering
+/// from a confirmed large error.
 const MAX_MAG_CORRECTION_RECOVERY_DEG: f32 = 0.75;
+/// Multiplies `Gains::magnetic_gain` while recovering from a confirmed
+/// large error.
 const RECOVERY_GAIN_BOOST: f32 = 4.0;
+/// Heading errors up to this many degrees are ignored, so noise does not
+/// make north wander.
 const MAG_DEADBAND_DEG: f32 = 1.5;
+/// Weight of the newest measured north direction in the low-pass filter
+/// while the device turns slowly.
 const MAG_DIRECTION_FILTER_ALPHA_SLOW: f32 = 0.18;
+/// Weight of the newest measured north direction while the device turns at
+/// `MAG_DIRECTION_FILTER_FAST_RATE_DPS` or faster.
 const MAG_DIRECTION_FILTER_ALPHA_FAST: f32 = 0.75;
+/// Rate, in degrees per second, at which the filter weight reaches
+/// `MAG_DIRECTION_FILTER_ALPHA_FAST`; below it the weight is interpolated.
 const MAG_DIRECTION_FILTER_FAST_RATE_DPS: f32 = 240.0;
+/// Up to this rate, in degrees per second, the magnetometer corrects
+/// heading with full weight.
 const MAG_FULL_AUTHORITY_RATE_DPS: f32 = 20.0;
+/// At and above this rate, in degrees per second, the magnetometer's
+/// weight is down to `MAG_MIN_MOTION_WEIGHT`.
 const MAG_LOW_AUTHORITY_RATE_DPS: f32 = 360.0;
+/// Smallest weight of the magnetic correction during fast motion.
 const MAG_MIN_MOTION_WEIGHT: f32 = 0.08;
+/// Consistent heading errors needed before north is locked to the
+/// magnetometer for the first time.
 const MAG_INITIAL_LOCK_SAMPLES: u8 = 5;
+/// No first lock is made while turning faster than this, in degrees per
+/// second.
 const MAG_INITIAL_LOCK_MAX_RATE_DPS: f32 = 120.0;
+/// A heading error of at least this many degrees is a large innovation
+/// (a measurement far from the prediction); it must repeat before it steers
+/// north.
 const MAG_LARGE_INNOVATION_DEG: f32 = 30.0;
+/// Consistent observations that confirm a large innovation.
 const MAG_LARGE_CONFIRM_SAMPLES: u8 = 5;
+/// Successive heading errors within this many degrees of each other count
+/// as consistent.
 const MAX_MAG_ERROR_JITTER_DEG: f32 = 8.0;
+/// Weight of each new consistent observation in the smoothed error.
 const CANDIDATE_SMOOTHING: f32 = 0.25;
 /// Below this horizontal field strength north is not observable.
 const MIN_MAG_HORIZONTAL_FIELD_UT: f32 = 8.0;
 
+/// Multiply by this to turn degrees into radians.
 const DEG_TO_RAD: f32 = PI / 180.0;
 
 /// Learns the gyroscope's zero-rate offset while the device is still.
 #[derive(Clone, Copy)]
 pub struct GyroBias {
+    /// Current bias estimate per body axis, in degrees per second.
     bias_dps: [f32; 3],
+    /// Consecutive still samples; any movement resets it to zero.
     stationary_samples: u16,
+    /// Set once `BIAS_SETTLED_AFTER_SAMPLES` still samples in a row were seen;
+    /// switches to the slower learning rate and never clears.
     settled: bool,
 }
 
@@ -119,7 +164,10 @@ impl GyroBias {
 /// trusted, so one bad magnetometer frame cannot move north.
 #[derive(Clone, Copy, Default)]
 struct SmoothedCandidate {
+    /// Smoothed error of the current run, in degrees; `None` when no run is
+    /// in progress.
     error_deg: Option<f32>,
+    /// Consistent observations in the current run.
     samples: u8,
 }
 
@@ -144,6 +192,7 @@ impl SmoothedCandidate {
         self.samples
     }
 
+    /// Forget the current run.
     fn clear(&mut self) {
         *self = Self::default();
     }
@@ -157,18 +206,31 @@ impl SmoothedCandidate {
 /// calibrated magnetometer pulls it towards magnetic north.
 #[derive(Clone, Copy)]
 pub struct Fusion {
+    /// Correction strengths, fixed at construction.
     gains: Gains,
     // Inertially fixed world vectors expressed in the rotating screen frame.
+    /// Unit vector of world gravity (down).
     gravity_screen: [f32; 3],
+    /// Unit vector of magnetic north, kept perpendicular to gravity. An
+    /// arbitrary horizontal direction until the magnetometer locks it.
     north_screen: [f32; 3],
     /// Last well-defined heading; kept while camera-forward points straight
     /// up or down, where heading is undefined.
     yaw_deg: f32,
+    /// Gyroscope rate of the previous sample in the screen frame, for
+    /// trapezoidal integration. `None` at start and after a lost sample.
     previous_gyro_screen_dps: Option<[f32; 3]>,
+    /// Whether north is locked to the magnetometer; cleared by
+    /// `invalidate_absolute_heading`.
     magnetic_locked: bool,
+    /// Output of the low-pass filter on the measured north direction.
     filtered_magnetic_north: Option<[f32; 3]>,
+    /// Collects consistent heading errors before the first lock.
     initial_lock: SmoothedCandidate,
+    /// Collects consistent large heading errors before they may steer north.
     large_innovation: SmoothedCandidate,
+    /// Set by the first `update`, which only takes gravity from the
+    /// accelerometer.
     initialized: bool,
 }
 
@@ -293,6 +355,8 @@ impl Fusion {
         self.orientation()
     }
 
+    /// The current basis as an [`Orientation`]. Also stores the heading in
+    /// `yaw_deg` when it is defined.
     fn orientation(&mut self) -> Orientation {
         let (roll_deg, pitch_deg) =
             roll_pitch_from_gravity(frames::body_from_screen(self.gravity_screen));
@@ -323,6 +387,8 @@ impl Fusion {
         filtered
     }
 
+    /// Turn north towards a measured north direction. The step is limited by
+    /// locking, confirmation of large errors, the deadband and the rotation rate.
     fn fuse_magnetic_north(&mut self, measured_north: [f32; 3], rate_dps: f32) {
         let error_deg = signed_angle_deg(self.north_screen, measured_north, self.gravity_screen);
 
@@ -371,6 +437,7 @@ impl Fusion {
         self.rotate_north(step_deg);
     }
 
+    /// Rotate north around gravity by `degrees`, keeping it horizontal.
     fn rotate_north(&mut self, degrees: f32) {
         let rotated =
             rotate_around_axis(self.north_screen, self.gravity_screen, degrees * DEG_TO_RAD);
@@ -386,6 +453,7 @@ fn magnetic_motion_weight(rate_dps: f32) -> f32 {
     1.0 - t * (1.0 - MAG_MIN_MOTION_WEIGHT)
 }
 
+/// The same angle in degrees, brought into -180 to 180.
 fn wrap_degrees(value: f32) -> f32 {
     let wrapped = value % 360.0;
     if wrapped > 180.0 {
@@ -402,12 +470,17 @@ fn horizontal_unit(value: [f32; 3], gravity: [f32; 3]) -> Option<[f32; 3]> {
     normalize(vec3::sub(value, vec3::scale(gravity, dot(value, gravity))))
 }
 
+/// A horizontal unit vector to start north from before the magnetometer
+/// has locked: screen x flattened, or screen y when x points along gravity.
 fn initial_horizontal_reference(gravity: [f32; 3]) -> [f32; 3] {
     horizontal_unit([1.0, 0.0, 0.0], gravity)
         .or_else(|| horizontal_unit([0.0, 1.0, 0.0], gravity))
         .unwrap_or([0.0, 0.0, 1.0])
 }
 
+/// Advance an inertially fixed unit vector by one gyroscope step of
+/// `dt_seconds`, using `v_dot = v x omega`, and renormalize it. Rates in degrees
+/// per second.
 fn integrate_inertial_vector(vector: [f32; 3], gyro_dps: [f32; 3], dt_seconds: f32) -> [f32; 3] {
     let omega = vec3::scale(gyro_dps, DEG_TO_RAD);
     normalize(vec3::add(
@@ -428,6 +501,7 @@ fn rotate_between(from: [f32; 3], to: [f32; 3], value: [f32; 3]) -> [f32; 3] {
     rotate_around_axis_sin_cos(value, axis, sine, cosine)
 }
 
+/// Rotate `value` by `angle` radians around the unit vector `axis`.
 fn rotate_around_axis(value: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
     rotate_around_axis_sin_cos(value, axis, libm::sinf(angle), libm::cosf(angle))
 }
@@ -459,6 +533,9 @@ fn magnetic_north(field: [f32; 3], gravity: [f32; 3]) -> Option<[f32; 3]> {
     (vec3::norm(horizontal) >= MIN_MAG_HORIZONTAL_FIELD_UT).then(|| normalize(horizontal))?
 }
 
+/// Heading in degrees, -180 to 180: the angle from screen x (the camera
+/// direction) to north, both flattened onto the horizontal plane. `None` when
+/// screen x points straight up or down.
 fn heading_from_north(north: [f32; 3], gravity: [f32; 3]) -> Option<f32> {
     let forward = horizontal_unit([1.0, 0.0, 0.0], gravity)?;
     let north = horizontal_unit(north, gravity)?;
@@ -467,6 +544,8 @@ fn heading_from_north(north: [f32; 3], gravity: [f32; 3]) -> Option<f32> {
     Some(wrap_degrees(libm::atan2f(sine, cosine).to_degrees()))
 }
 
+/// Angle in degrees, -180 to 180, from `from` to `to`, measured around
+/// `axis` with the right-hand rule.
 fn signed_angle_deg(from: [f32; 3], to: [f32; 3], axis: [f32; 3]) -> f32 {
     let sine = dot(axis, cross(from, to));
     let cosine = dot(from, to);

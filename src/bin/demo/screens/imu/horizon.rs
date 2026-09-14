@@ -27,10 +27,17 @@ const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 
 // Crosshair in the middle of the view: a gap for the centre dot, a short
 // vertical tick and two reference bars above and below.
+/// Length in pixels of each horizontal arm, left and right of the centre.
 const CROSSHAIR_ARM_LENGTH: u32 = 26;
+/// Pixels between the centre and the inner end of each arm.
 const CROSSHAIR_GAP: i32 = 10;
+/// Height in pixels of the vertical tick through the centre.
 const CROSSHAIR_TICK_HEIGHT: u32 = 11;
+/// The bar above the centre: `(vertical offset, width)` in pixels, centred
+/// horizontally. A negative offset is above the centre.
 const CROSSHAIR_UPPER_BAR: (i32, u32) = (-23, 40);
+/// The bar below the centre: `(vertical offset, width)` in pixels, centred
+/// horizontally.
 const CROSSHAIR_LOWER_BAR: (i32, u32) = (22, 24);
 
 // Keep an 8-unit regular grid near the viewer, then progressively thin lines
@@ -39,8 +46,11 @@ const CROSSHAIR_LOWER_BAR: (i32, u32) = (22, 24);
 // is effectively the mathematical horizon at the display's resolution.
 /// Grid spacing up to `GRID_NEAR_EXTENT`; doubles after each extent below.
 const GRID_NEAR_SPACING: f32 = 8.0;
+/// Up to this distance the lines are 8 world units apart, beyond it 16.
 const GRID_NEAR_EXTENT: f32 = 96.0;
+/// Up to this distance the lines are 16 world units apart, beyond it 32.
 const GRID_MID_EXTENT: f32 = 192.0;
+/// Up to this distance the lines are 32 world units apart, beyond it 64.
 const GRID_FAR_EXTENT: f32 = 384.0;
 /// How far the grid reaches in every direction, in world units.
 const GRID_EXTENT: f32 = 1024.0;
@@ -51,6 +61,8 @@ const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 /// Index of the last entry of the fade tables: pixels this far from the
 /// horizon or farther get the full line colour.
 const GRID_FADE_LAST: usize = 56;
+/// Sky grid colour for each pixel distance from the horizon, index 0 to
+/// `GRID_FADE_LAST`: almost the sky colour at the horizon, darker further away.
 const SKY_GRID_FADE: [Rgb565; 57] = [
     Rgb565::new(0, 40, 26),
     Rgb565::new(0, 40, 26),
@@ -110,6 +122,9 @@ const SKY_GRID_FADE: [Rgb565; 57] = [
     Rgb565::new(0, 16, 16),
     Rgb565::new(0, 13, 15),
 ];
+/// Ground grid colour for each pixel distance from the horizon, index 0 to
+/// `GRID_FADE_LAST`: almost the ground colour at the horizon, lighter further
+/// away.
 const GROUND_GRID_FADE: [Rgb565; 57] = [
     Rgb565::new(11, 23, 11),
     Rgb565::new(11, 23, 11),

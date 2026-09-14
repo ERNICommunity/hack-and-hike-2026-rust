@@ -102,6 +102,8 @@ pub struct Snapshot {
     pub local_id: DeviceId,
     /// The channel all boards use.
     pub channel: RadioChannel,
+    /// The peer table's slots; `None` is an empty slot. Read through
+    /// [`Snapshot::peers`].
     peers: [Option<Peer>; MAX_PEERS],
     /// Frames sent successfully: beacons and messages.
     pub tx_packets: u32,
@@ -139,9 +141,11 @@ impl Snapshot {
 /// One row of the peer table, as the radio keeps it.
 #[derive(Clone, Copy)]
 struct PeerState {
+    /// The peer's id, from its frames.
     device_id: DeviceId,
     /// Where to send unicast frames for this peer.
     mac: MacAddress,
+    /// Signal strength of the last frame heard from the peer, in dBm.
     rssi_dbm: i8,
     /// When the peer was last heard, on our clock.
     last_seen_ms: u64,
@@ -204,8 +208,11 @@ pub struct NetworkState {
 /// peer table when a snapshot is taken.
 #[derive(Clone, Copy)]
 enum RadioStatus {
+    /// Neither `mark_ready` nor `mark_fault` has been called yet.
     Starting,
+    /// The radio came up.
     Ready,
+    /// The radio failed to come up.
     Fault,
 }
 
@@ -406,14 +413,19 @@ impl NetworkState {
     }
 }
 
+/// When a peer booted, on our clock, in milliseconds: now minus its
+/// reported uptime. Negative when it booted before we did.
 fn started_at(now_ms: u64, uptime_ms: u32) -> i64 {
     now_ms as i64 - i64::from(uptime_ms)
 }
 
+/// Milliseconds as `u32`: negative becomes 0, too large becomes
+/// `u32::MAX`.
 fn saturate_signed(ms: i64) -> u32 {
     u32::try_from(ms.max(0)).unwrap_or(u32::MAX)
 }
 
+/// Milliseconds as `u32`, capped at `u32::MAX`.
 fn saturate(ms: u64) -> u32 {
     u32::try_from(ms).unwrap_or(u32::MAX)
 }

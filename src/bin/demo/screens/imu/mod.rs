@@ -31,6 +31,7 @@ use crate::{layout, screens::Screen};
 
 // The layout file becomes Rust at compile time: a `...App` struct with a
 // `build` function and one `WidgetId` per named node.
+/// The widgets generated from `imu.kdl`: the header and the 3-D view slots.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/imu/imu.kdl");
@@ -61,10 +62,13 @@ const VALUE_Y: i32 = 22;
 
 /// The IMU screen and the sample it shows.
 pub(crate) struct ImuScreen {
+    /// The IMU handle; `latest` returns the newest fused sample.
     imu: Imu,
     /// The newest sample; `None` until the first one arrives.
     sample: Option<Sample>,
+    /// When `update` last polled the IMU, to poll at most every `UPDATE_PERIOD`.
     last_update: Instant,
+    /// The widget tree built from `imu.kdl`, drawn under the header and the view.
     gui: &'static mut gui::Context<NODES>,
     /// The numeric header at the top.
     header: Rectangle,

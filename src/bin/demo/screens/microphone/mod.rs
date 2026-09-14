@@ -21,6 +21,8 @@ use crate::{layout, screens::Screen};
 
 // The layout file becomes Rust at compile time: a `...App` struct with a
 // `build` function and one `WidgetId` per named node.
+/// The widgets generated from `microphone.kdl`: the labels and the two
+/// waveform slots.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/microphone/microphone.kdl");
@@ -41,6 +43,8 @@ pub(super) const MAX_AMPLITUDE_PIXELS: i32 = 42;
 const PEAK_FLOOR: u16 = 1024;
 
 // One PCM block is 2 KiB: keep it in static memory instead of on the stack.
+/// The memory behind `MicrophoneScreen::samples`. `take` hands it out once
+/// and panics on a second call, so only one screen can own it.
 static SAMPLES: ConstStaticCell<[i16; audio::SAMPLES_PER_BLOCK]> =
     ConstStaticCell::new([0; audio::SAMPLES_PER_BLOCK]);
 
@@ -55,6 +59,8 @@ pub(super) struct WaveformFrame {
 
 /// The microphone screen and the waveform it shows.
 pub(crate) struct MicrophoneScreen {
+    /// The microphone handle; `next_block` copies a queued block into
+    /// `samples`.
     microphone: Microphone,
     /// The newest block, in static memory.
     samples: &'static mut [i16; audio::SAMPLES_PER_BLOCK],
@@ -64,7 +70,10 @@ pub(crate) struct MicrophoneScreen {
     /// entering, because blocks dropped while another screen was visible do
     /// not count.
     dropped_blocks: Option<u32>,
+    /// When `update` last looked for blocks, to look at most every
+    /// `UPDATE_PERIOD`.
     last_update: Instant,
+    /// The widget tree built from `microphone.kdl`: the MIC L and MIC R labels.
     gui: &'static mut gui::Context<NODES>,
     /// Where the left waveform is drawn.
     left: Rectangle,

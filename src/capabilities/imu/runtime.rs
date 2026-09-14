@@ -145,11 +145,14 @@ async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
 
 /// Numbers the samples and hands them to the application side.
 struct Publisher {
+    /// Where samples go.
     runtime: Runtime,
+    /// Number of the last published sample; wraps around at `u32::MAX`.
     revision: u32,
 }
 
 impl Publisher {
+    /// A publisher that has not published anything yet.
     const fn new(runtime: Runtime) -> Self {
         Self {
             runtime,
@@ -157,6 +160,8 @@ impl Publisher {
         }
     }
 
+    /// Convert the measurements to the screen frame, derive the attitude and
+    /// publish everything as the next [`Sample`].
     fn publish(
         &mut self,
         status: Status,
@@ -183,15 +188,24 @@ impl Publisher {
 /// Fusion state for one sensor session, which lasts until the sensor is
 /// re-initialized.
 struct Session {
+    /// Sensor fusion that turns rates, gravity and the magnetic field into an
+    /// orientation.
     fusion: Fusion,
+    /// Learns the gyroscope's zero offset while the board lies still.
     gyro_bias: GyroBias,
+    /// The sensor timestamp of the previous sample, to measure the real time
+    /// step; `None` before the first sample.
     last_sensor_time: Option<u32>,
+    /// Failed reads since the last successful one.
     consecutive_read_errors: u8,
+    /// Samples processed in this session, used to thin out trace logging.
     samples: u32,
+    /// Magnetometer status last logged, to log only changes.
     mag_status: MagStatus,
 }
 
 impl Session {
+    /// A fresh session: no timestamp yet, no errors, bias learning from zero.
     const fn new(mag_status: MagStatus) -> Self {
         Self {
             fusion: Fusion::new(),
@@ -222,6 +236,10 @@ impl Session {
         (ticks as f32 * SENSOR_TIME_TICK_SECONDS, gap)
     }
 
+    /// Process one successful read: measure the time step, correct the gyro
+    /// bias, update the magnetometer and run fusion.
+    ///
+    /// Returns the physical measurements (body frame) and the new orientation.
     fn process(
         &mut self,
         sample: RawSample,

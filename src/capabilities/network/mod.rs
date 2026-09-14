@@ -110,6 +110,8 @@ struct Service {
     rx_queue_full: AtomicU32,
 }
 
+/// The one set of network queues and counters. A plain `static` works across
+/// cores because every field synchronizes itself.
 static SERVICE: Service = Service {
     latest: Signal::new(),
     outgoing: Channel::new(),
@@ -120,6 +122,7 @@ static SERVICE: Service = Service {
 
 /// Application handle for ESP-NOW messaging; see the [module docs](self).
 pub struct Network {
+    /// Points at the queues shared with the CPU1 radio tasks.
     service: &'static Service,
     /// The newest snapshot seen so far; refreshed whenever it is read.
     snapshot: Cell<Option<Snapshot>>,
@@ -189,6 +192,7 @@ impl Network {
 /// CPU1 side of the queues.
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
+    /// Points at the queues shared with the application's handle on CPU0.
     service: &'static Service,
 }
 

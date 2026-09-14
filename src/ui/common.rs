@@ -71,6 +71,7 @@ pub fn centered_text(
 /// Writes consecutive lines of [`BODY_FONT`] text downwards from a start
 /// point, like a very small text console.
 pub struct Lines<'a> {
+    /// The canvas the lines are drawn on, borrowed until the `Lines` is dropped.
     canvas: &'a mut Canvas,
     /// Where the next line's top-left corner goes.
     next: Point,

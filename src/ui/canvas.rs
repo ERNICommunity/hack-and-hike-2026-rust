@@ -64,6 +64,7 @@ pub struct Canvas {
     pixels: &'static mut [Rgb565],
     /// What the panel shows, valid only when `panel_known` is true.
     shown: &'static mut [Rgb565],
+    /// Width and height in pixels; fixed when the canvas is created.
     size: Size,
     /// Whether `shown` matches the panel. False before the first `show` and
     /// after `invalidate`, when something else may have drawn on the panel.
@@ -294,7 +295,9 @@ impl DrawTarget for Canvas {
 /// comparisons.
 #[derive(Clone, Copy)]
 struct Bounds {
+    /// Top-left corner, inclusive.
     min: Point,
+    /// Bottom-right corner, inclusive: a single point has `min == max`.
     max: Point,
 }
 
@@ -312,15 +315,18 @@ impl Bounds {
         bounds
     }
 
+    /// Whether no point has been included yet.
     fn is_empty(&self) -> bool {
         self.min.x > self.max.x
     }
 
+    /// Grow the bounds to contain `point`.
     fn include_point(&mut self, point: Point) {
         self.min = self.min.component_min(point);
         self.max = self.max.component_max(point);
     }
 
+    /// Grow the bounds to contain all of `area`. An empty `area` changes nothing.
     fn include(&mut self, area: Rectangle) {
         if let Some(bottom_right) = area.bottom_right() {
             self.include_point(area.top_left);
@@ -328,6 +334,7 @@ impl Bounds {
         }
     }
 
+    /// The bounds as a rectangle, or `None` when they contain nothing.
     fn rectangle(&self) -> Option<Rectangle> {
         (!self.is_empty()).then(|| Rectangle::with_corners(self.min, self.max))
     }
@@ -338,8 +345,14 @@ impl Bounds {
 /// `pixels` and `shown` start at the window's top-left pixel; rows are
 /// `canvas_width` apart. Every row sent is also copied into `shown`.
 struct Rows<'a> {
+    /// The application's pixels, from the window's top-left pixel to the end of
+    /// the canvas.
     pixels: &'a [Rgb565],
+    /// The copy of what the panel shows, aligned with `pixels`; updated as each
+    /// row is sent.
     shown: &'a mut [Rgb565],
+    /// Pixels per canvas row: how far to step in `pixels` to reach the next row.
+    /// The window itself may be narrower.
     canvas_width: usize,
 }
 

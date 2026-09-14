@@ -63,9 +63,13 @@ const MARKER_HEIGHT: u32 = 12;
 /// derives `Serialize` and `Deserialize`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Color {
+    /// The left band, with the lowest tone (800 Hz).
     Red,
+    /// The second band from the left (1000 Hz).
     Green,
+    /// The third band from the left (1200 Hz).
     Blue,
+    /// The right band, with the highest tone (1400 Hz).
     Yellow,
 }
 
@@ -136,6 +140,7 @@ impl Color {
 /// what they mean is up to us.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct ColorPing {
+    /// The band that was tapped on the sending board.
     color: Color,
 }
 
@@ -159,11 +164,18 @@ struct Shown {
 
 /// The whole application: the handles it uses and its state.
 struct ColorPingApp {
+    /// The LCD; the canvas is copied onto it after each redraw.
     display: Display,
+    /// Delivers the presses, moves and releases on the screen.
     touch: Touch,
+    /// Broadcasts this board's taps and delivers other boards' pings.
     network: Network,
+    /// Plays the tone of a colour heard from another board.
     speaker: Speaker,
+    /// The screen-sized picture in memory. Everything is drawn here first; showing
+    /// it sends only the pixels that differ from the panel.
     canvas: Canvas,
+    /// The tone of the last colour heard, generated a chunk per loop iteration.
     tone: TonePlayer,
     /// The band under the finger, while one is pressed.
     touched: Option<Color>,

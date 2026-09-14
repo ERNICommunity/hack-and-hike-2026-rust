@@ -22,71 +22,152 @@ use crate::platform::i2c::SystemI2cBus;
 
 use hack_and_hike_core::imu::bmm150::Trim;
 
+/// I2C address of the BMI270 on the board (0x69: its SDO pin is tied high).
 const BMI270_ADDR: u8 = 0x69;
+/// The ID a BMI270 reports in `REG_CHIP_ID`; anything else is a different chip.
 const BMI270_CHIP_ID: u8 = 0x24;
 
+/// Chip identification register, read once to check the part is a BMI270.
 const REG_CHIP_ID: u8 = 0x00;
+/// Status flags; bit 2 (`AUX_BUSY`) is set while a forwarded magnetometer
+/// register access is still running.
 const REG_STATUS: u8 = 0x03;
+/// First data register (DATA_0). The 23-byte burst read starts here:
+/// 8 magnetometer bytes, 6 accelerometer, 6 gyroscope, 3 timestamp.
+/// In manual auxiliary mode it also holds the byte a forwarded read returned.
 const REG_AUX_X_LSB: u8 = 0x04;
+/// Internal status; its low nibble reports whether the uploaded
+/// configuration blob was accepted (`CONFIG_LOAD_OK`).
 const REG_INTERNAL_STATUS: u8 = 0x21;
+/// Accelerometer output data rate and filter settings.
 const REG_ACC_CONF: u8 = 0x40;
+/// Accelerometer measurement range.
 const REG_ACC_RANGE: u8 = 0x41;
+/// Gyroscope output data rate and filter settings.
 const REG_GYR_CONF: u8 = 0x42;
+/// Gyroscope measurement range.
 const REG_GYR_RANGE: u8 = 0x43;
+/// Rate at which the BMI270 reads the auxiliary magnetometer by itself.
 const REG_AUX_CONF: u8 = 0x44;
+/// I2C address of the device on the auxiliary bus, stored shifted left by
+/// one bit.
 const REG_AUX_DEV_ID: u8 = 0x4B;
+/// Auxiliary interface mode: manual (register access forwarded on request)
+/// or automatic (periodic data reads), plus the read burst length.
 const REG_AUX_IF_CONF: u8 = 0x4C;
+/// Magnetometer register to read through the auxiliary interface. Writing
+/// it starts a manual read; in automatic mode it is the first register
+/// of every periodic read.
 const REG_AUX_RD_ADDR: u8 = 0x4D;
+/// Magnetometer register to write through the auxiliary interface. Writing
+/// it starts the write of the byte in `REG_AUX_WR_DATA`.
 const REG_AUX_WR_ADDR: u8 = 0x4E;
+/// Byte to write to the magnetometer register named in `REG_AUX_WR_ADDR`.
 const REG_AUX_WR_DATA: u8 = 0x4F;
+/// Configuration upload control: 0 while uploading the blob, 1 to make the
+/// chip load and check it.
 const REG_INIT_CTRL: u8 = 0x59;
+/// Upload position of the next configuration chunk. This and the following
+/// register together hold a word address (low nibble, then high byte).
 const REG_INIT_ADDR_0: u8 = 0x5B;
+/// Configuration data register: bytes written here land in the chip's
+/// configuration memory at the position set through `REG_INIT_ADDR_0`.
 const REG_INIT_DATA: u8 = 0x5E;
+/// Auxiliary interface pad trim, used here to select the pull-up resistors
+/// on the auxiliary bus lines.
 const REG_AUX_IF_TRIM: u8 = 0x68;
+/// Interface configuration; bit 5 (0x20) enables the auxiliary interface.
 const REG_IF_CONF: u8 = 0x6B;
+/// Power configuration. Writing 0 turns advanced power saving off, which
+/// the configuration upload and auxiliary access need.
 const REG_PWR_CONF: u8 = 0x7C;
+/// Enables the individual sensors: auxiliary, gyroscope, accelerometer and
+/// temperature (bits 0 to 3).
 const REG_PWR_CTRL: u8 = 0x7D;
+/// Command register; accepts one-shot commands such as `CMD_SOFT_RESET`.
 const REG_CMD: u8 = 0x7E;
 
 // BMM150 registers reached through the BMI270 auxiliary interface.
+/// The BMM150's I2C address on the auxiliary bus, unshifted.
 const BMM150_ADDRESS: u8 = 0x10;
+/// The ID a BMM150 reports in `BMM150_REG_CHIP_ID`.
 const BMM150_CHIP_ID: u8 = 0x32;
+/// BMM150 chip identification register. It only answers once the chip is
+/// powered through `BMM150_REG_POWER_CONTROL`.
 const BMM150_REG_CHIP_ID: u8 = 0x40;
+/// First BMM150 data register: X, Y, Z and the Hall resistance follow
+/// in 8 bytes, which is the frame the BMI270 copies in automatic mode.
 const BMM150_REG_DATA_X_LSB: u8 = 0x42;
+/// BMM150 power control: power bit and soft-reset bits.
 const BMM150_REG_POWER_CONTROL: u8 = 0x4B;
+/// BMM150 operation mode (normal, forced, sleep) and output data rate.
 const BMM150_REG_OP_MODE: u8 = 0x4C;
+/// Number of repetitions per X/Y measurement; more repetitions average away
+/// noise at the cost of current.
 const BMM150_REG_REP_XY: u8 = 0x51;
+/// Number of repetitions per Z measurement.
 const BMM150_REG_REP_Z: u8 = 0x52;
+/// First factory trim register (`dig_x1`, `dig_y1`), read in 2 bytes.
 const BMM150_DIG_X1: u8 = 0x5D;
+/// Second trim block (`dig_z4`, `dig_x2`, `dig_y2`), read in 4 bytes.
 const BMM150_DIG_Z4_LSB: u8 = 0x62;
+/// Third trim block (`dig_z2` through `dig_xy1`), read in 10 bytes.
 const BMM150_DIG_Z2_LSB: u8 = 0x68;
+/// Power control value: soft reset plus power on, which leaves the BMM150
+/// in sleep mode ready to be configured.
 const BMM150_SOFT_RESET_AND_POWER: u8 = 0x83;
+/// Operation mode value: normal mode with a 30 Hz output data rate.
 const BMM150_NORMAL_30HZ: u8 = 0x38;
+/// X/Y repetitions: how many measurements the BMM150 averages into one
+/// X/Y sample. More repetitions lower the noise and raise the current.
 const BMM150_REP_XY_REGULAR: u8 = 0x04;
+/// Z repetitions, as for `BMM150_REP_XY_REGULAR`.
 const BMM150_REP_Z_REGULAR: u8 = 0x07;
 
+/// Soft reset command for `REG_CMD`: the chip restarts as after power-up,
+/// so the configuration blob must be uploaded again.
 const CMD_SOFT_RESET: u8 = 0xB6;
+/// Low-nibble value of `REG_INTERNAL_STATUS` once the configuration blob
+/// was accepted.
 const CONFIG_LOAD_OK: u8 = 0x01;
+/// Bit in `REG_STATUS` that is set while a forwarded auxiliary access runs.
 const AUX_BUSY: u8 = 1 << 2;
 
 // Acceleration stays at 100 Hz. Gyro runs at 400 Hz, performance filtering,
 // normal bandwidth: lower group delay and much higher bandwidth during fast yaw
 // without increasing host I2C traffic. Range remains +/-2000 dps.
+/// `REG_ACC_CONF` value: 100 Hz, performance filter mode.
 const ACC_CONF_100HZ: u8 = 0xA8;
+/// `REG_GYR_CONF` value: 400 Hz, performance filter mode, normal bandwidth.
 const GYR_CONF_400HZ: u8 = 0xAA;
+/// `REG_ACC_RANGE` value: ±4 g full scale.
 const ACC_RANGE_4G: u8 = 0x01;
+/// `REG_GYR_RANGE` value: ±2000 degrees per second full scale.
 const GYR_RANGE_2000DPS: u8 = 0x00;
+/// `REG_PWR_CTRL` value: accelerometer and gyroscope on, auxiliary
+/// interface off.
 const PWR_CTRL_ACC_GYR: u8 = 0x06;
+/// `REG_PWR_CTRL` value: auxiliary interface, gyroscope, accelerometer and
+/// temperature sensor on.
 const PWR_CTRL_ACC_GYR_AUX: u8 = 0x0F;
 
 // Poll the 30 Hz BMM150 at 100 Hz inside BMI270. This does not add host I2C
 // traffic, but halves worst-case AUX pickup latency compared with 50 Hz.
+/// `REG_AUX_CONF` value: read the magnetometer 100 times per second.
 const AUX_CONF_100HZ: u8 = 0x48;
+/// `REG_AUX_IF_CONF` value: automatic mode, reading 8 bytes per cycle, so
+/// the magnetometer frame appears in the data registers without host help.
 const AUX_IF_DATA_MODE_8_BYTES: u8 = 0x4F;
+/// `REG_AUX_IF_CONF` value: manual mode, where each register access is
+/// forwarded when the host asks for it.
 const AUX_IF_MANUAL_MODE: u8 = 0x80;
+/// `REG_AUX_IF_TRIM` value selecting the 2 kΩ pull-ups on the auxiliary bus.
 const AUX_IF_TRIM_2K_PULLUP: u8 = 0x03;
 
+/// Accelerometer scale: g per raw count at ±4 g (a signed 16-bit reading
+/// covers the full range).
 const ACC_G_PER_LSB: f32 = 4.0 / 32768.0;
+/// Gyroscope scale: degrees per second per raw count at ±2000 °/s.
 const GYR_DPS_PER_LSB: f32 = 2000.0 / 32768.0;
 /// Settle time after enabling the accelerometer and gyroscope.
 const SENSOR_STARTUP: Duration = Duration::from_millis(50);
@@ -141,6 +222,8 @@ pub(super) struct RawSample {
 
 /// The BMI270 on the shared system bus.
 pub(super) struct Bmi270 {
+    /// Shared I2C bus; each register access locks it only for its own
+    /// transaction, so other drivers can interleave.
     bus: SystemI2cBus,
 }
 

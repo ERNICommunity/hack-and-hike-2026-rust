@@ -15,12 +15,22 @@ use super::registers::Registers;
 /// I2C address of the AW9523.
 const AW9523_ADDR: u8 = 0x58;
 
+/// Output latch of port 0: the level each output pin drives, one bit per pin.
 const PORT0_OUTPUT_REGISTER: u8 = 0x02;
+/// Output latch of port 1: the level each output pin drives, one bit per pin.
 const PORT1_OUTPUT_REGISTER: u8 = 0x03;
+/// Direction of the port 0 pins: a 0 bit makes that pin an output, a 1 bit an input.
 const PORT0_DIRECTION_REGISTER: u8 = 0x04;
+/// Direction of the port 1 pins: a 0 bit makes that pin an output, a 1 bit an input.
 const PORT1_DIRECTION_REGISTER: u8 = 0x05;
+/// Global control register. Among other things it chooses whether port 0
+/// outputs are push-pull or open-drain (see [`PORT0_PUSH_PULL`]).
 const GLOBAL_CONTROL_REGISTER: u8 = 0x11;
+/// Mode of the port 0 pins: a 1 bit makes that pin a plain GPIO, a 0 bit an
+/// LED current driver (the chip can also dim LEDs directly).
 const PORT0_MODE_REGISTER: u8 = 0x12;
+/// Mode of the port 1 pins: a 1 bit makes that pin a plain GPIO, a 0 bit an
+/// LED current driver.
 const PORT1_MODE_REGISTER: u8 = 0x13;
 
 // Reset lines, all active low: 0 holds the chip in reset.
@@ -33,22 +43,42 @@ const CAMERA_RESET: u8 = 1 << 0;
 /// LCD controller reset, port 1 bit 1.
 const LCD_RESET: u8 = 1 << 1;
 
+/// How long the LCD and touch reset lines are held low, in milliseconds.
 const LCD_TOUCH_RESET_PULSE_MS: u32 = 20;
+/// Wait after releasing the LCD and touch resets, in milliseconds, so both
+/// chips have finished their own start-up before the drivers talk to them.
 const LCD_TOUCH_RESET_SETTLE_MS: u32 = 300;
+/// How long the camera reset line is held low, in milliseconds.
 const CAMERA_RESET_PULSE_MS: u32 = 20;
+/// Wait after releasing the camera reset, in milliseconds, so the sensor sees a
+/// running clock before the first SCCB (camera I2C) transfer.
 const CAMERA_CLOCK_SETTLE_MS: u32 = 20;
+/// Wait after switching on the amplifier's 1.8 V rail, in milliseconds, before
+/// touching its reset line.
 const AMPLIFIER_RAIL_SETTLE_MS: u32 = 10;
+/// How long the amplifier reset line is held low, in milliseconds.
 const AMPLIFIER_RESET_PULSE_MS: u32 = 10;
+/// Wait after releasing the amplifier reset, in milliseconds, before its
+/// registers are accessed over I2C.
 const AMPLIFIER_SETTLE_MS: u32 = 50;
 
 // M5Stack's CoreS3 AW9523 bootstrap values. P0_2 normally appears high in the
 // reference value (0x07); it is held low here until the AW88298 rail has been
 // enabled and the speaker reset sequence is executed.
+/// Port 0 output levels at boot: bits 0 and 1 high (touch out of reset), bit 2
+/// (speaker reset) low.
 const PORT0_BOOT_OUTPUTS: u8 = 0b0000_0011;
+/// Port 1 output levels at boot: bits 0-3 and 7 high, which keeps the LCD and
+/// camera out of reset.
 const PORT1_BOOT_OUTPUTS: u8 = 0b1000_1111;
+/// Port 0 directions at boot: bits 3 and 4 are inputs, all other pins outputs.
 const PORT0_DIRECTIONS: u8 = 0b0001_1000;
+/// Port 1 directions at boot: bits 2 and 3 are inputs, all other pins outputs.
 const PORT1_DIRECTIONS: u8 = 0b0000_1100;
+/// Global control value that drives port 0 push-pull (actively high and low)
+/// instead of open-drain.
 const PORT0_PUSH_PULL: u8 = 0b0001_0000;
+/// Mode value that puts every pin of a port in GPIO mode.
 const GPIO_MODE_ALL: u8 = 0xFF;
 
 /// The AW9523's registers on `i2c`.

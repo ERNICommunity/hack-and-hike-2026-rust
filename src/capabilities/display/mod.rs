@@ -55,6 +55,8 @@ pub const BYTES_PER_PIXEL: usize = 2;
 
 // The scanline scratch buffer lives in static RAM rather than on the main
 // stack; `Display` keeps the only reference to it.
+/// One row of pixels, [`WIDTH`] long. The `StaticCell` hands out its
+/// `&'static mut` exactly once, in [`init`].
 static LINE_BUFFER: StaticCell<[Rgb565; WIDTH]> = StaticCell::new();
 
 /// The peripherals and pins wired to the LCD, consumed once by [`init`].
@@ -78,6 +80,7 @@ pub(crate) struct Resources {
 /// There is exactly one, from [`Board::init`](crate::Board::init). Borrow a
 /// [`Surface`] from it to draw.
 pub struct Display {
+    /// The SPI DMA pipeline that sends commands and pixels to the panel.
     transport: transport::Transport,
     /// Scratch row for [`Surface::render_scanlines`], kept in static RAM
     /// rather than on the caller's stack.
@@ -91,7 +94,9 @@ pub struct Display {
 /// [`Display`] mutably, so only one exists at a time; it gives the display
 /// back when it goes out of scope.
 pub struct Surface<'a> {
+    /// The display, borrowed mutably so no other surface can draw meanwhile.
     display: &'a mut Display,
+    /// The rectangle this surface covers, in panel coordinates.
     area: Rectangle,
 }
 
@@ -205,7 +210,11 @@ impl Surface<'_> {
 
 /// Adapts a per-row closure to the byte-oriented transport.
 struct ComputedRows<'a, F> {
+    /// The application's closure, called with the row index and a row of pixels
+    /// to fill.
     render_row: F,
+    /// Scratch row the closure fills, [`Surface::width`] pixels long; converted to
+    /// bytes right after.
     pixels: &'a mut [Rgb565],
 }
 

@@ -18,6 +18,8 @@ pub type Line = ArrayString<LINE_BYTES>;
 
 /// The last [`LINES`] lines pushed, oldest first.
 pub struct LineHistory {
+    /// Storage of the ring. Once full, the slot at `next` holds the oldest
+    /// line.
     lines: [Line; LINES],
     /// Where the next line goes.
     next: usize,

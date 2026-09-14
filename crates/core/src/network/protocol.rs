@@ -34,22 +34,41 @@ pub const PROTOCOL_VERSION: u8 = 3;
 /// The first bytes of every frame: marks it as ours among other ESP-NOW
 /// traffic.
 const MAGIC: [u8; 4] = *b"HNHN";
+/// Where [`MAGIC`] sits in the frame.
 const MAGIC_FIELD: Range<usize> = 0..4;
+/// Byte holding [`PROTOCOL_VERSION`].
 const VERSION_OFFSET: usize = 4;
+/// Byte holding the frame type: beacon or application.
 const FRAME_TYPE_OFFSET: usize = 5;
+/// Byte holding the application flags; zero in beacons.
 const FLAGS_OFFSET: usize = 6;
+/// The sender's [`DeviceId`], in both frame types.
 const SENDER_FIELD: Range<usize> = 8..14;
+/// Beacon sequence number, little-endian `u32`.
 const BEACON_SEQUENCE_FIELD: Range<usize> = 14..18;
+/// Beacon sender uptime in milliseconds, little-endian `u32`.
 const BEACON_UPTIME_FIELD: Range<usize> = 18..22;
+/// Recipient [`DeviceId`] of an application frame; all zero for a
+/// broadcast.
 const RECIPIENT_FIELD: Range<usize> = 14..20;
+/// Message kind of an application frame, little-endian `u32`.
 const MESSAGE_KIND_FIELD: Range<usize> = 20..24;
+/// Payload length in bytes of an application frame, little-endian
+/// `u16`.
 const PAYLOAD_LEN_FIELD: Range<usize> = 24..26;
+/// Size of the application frame header; the payload starts here.
 const APPLICATION_HEADER_BYTES: usize = 26;
 
+/// Frame type byte of a beacon.
 const FRAME_TYPE_BEACON: u8 = 1;
+/// Frame type byte of an application message.
 const FRAME_TYPE_APPLICATION: u8 = 2;
+/// Flag set when an application frame is addressed to one board; clear
+/// for a broadcast.
 const FLAG_RECIPIENT: u8 = 1 << 0;
 
+// Checked at compile time: the header plus the largest payload fill one
+// radio frame exactly.
 const _: () = assert!(APPLICATION_HEADER_BYTES + MAX_PAYLOAD == MAX_RADIO_PACKET_BYTES);
 
 /// Stable identity of a device, derived from its factory MAC address.
@@ -91,6 +110,7 @@ impl fmt::Display for MacAddress {
     }
 }
 
+/// Write six bytes in the usual MAC address form, `AA:BB:CC:DD:EE:FF`.
 fn write_mac(f: &mut fmt::Formatter<'_>, bytes: &[u8; 6]) -> fmt::Result {
     write!(
         f,
@@ -191,10 +211,14 @@ pub fn decode_frame(bytes: &[u8]) -> Option<DecodedFrame<'_>> {
     }
 }
 
+/// A [`DeviceId`] from a six-byte slice; `None` for another length or all
+/// zeros.
 fn device_id(bytes: &[u8]) -> Option<DeviceId> {
     DeviceId::try_from(<[u8; 6]>::try_from(bytes).ok()?).ok()
 }
 
+/// Decode a frame whose header says beacon: checks the length and the
+/// sender.
 fn decode_beacon(bytes: &[u8]) -> Option<BeaconPacket> {
     if bytes.len() != BEACON_PACKET_BYTES {
         return None;
@@ -207,6 +231,9 @@ fn decode_beacon(bytes: &[u8]) -> Option<BeaconPacket> {
     })
 }
 
+/// Decode a frame whose header says application message. Rejects unknown
+/// flags, a recipient field that disagrees with the flag, and a length that
+/// disagrees with the payload length field.
 fn decode_application(bytes: &[u8]) -> Option<ApplicationPacket<'_>> {
     if bytes.len() < APPLICATION_HEADER_BYTES || bytes.len() > MAX_RADIO_PACKET_BYTES {
         return None;

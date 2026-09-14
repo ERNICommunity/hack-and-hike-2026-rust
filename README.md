@@ -70,6 +70,16 @@ command away and opens in your browser:
 cargo doc --open
 ```
 
+That shows the public API, what an application calls. Every private struct,
+field and function has a doc comment too, explaining how the firmware works
+inside; include them with:
+
+```bash
+cargo doc --document-private-items --open
+```
+
+In the editor, hover over any name to read the same comments.
+
 ## Run the tests
 
 The hardware-independent logic (the IMU math, the network protocol and peer

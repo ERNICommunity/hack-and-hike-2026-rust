@@ -23,6 +23,7 @@ use crate::{layout, screens::Screen};
 
 // The layout file becomes Rust at compile time: a `...App` struct with a
 // `build` function and one `WidgetId` per named node.
+/// The widgets generated from `network.kdl`: the title and the two text slots.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/network/network.kdl");
@@ -60,8 +61,11 @@ impl Message for DemoMessage {
 /// What this screen has sent and received, shown in the summary.
 #[derive(Clone, Copy, Default)]
 struct Counters {
+    /// Pings this board queued for broadcast.
     pings_sent: u32,
+    /// Pings from other boards; each one is answered with a pong.
     pings_received: u32,
+    /// Answers other boards sent to this board's pings.
     pongs_received: u32,
     /// Pings or pongs that could not be queued.
     send_errors: u32,
@@ -73,14 +77,19 @@ struct Counters {
 
 /// The network screen: it pings, answers pings and lists peers.
 pub(crate) struct NetworkScreen {
+    /// The ESP-NOW handle: sends, receives and reports the peer table.
     network: Network,
+    /// What was sent and received since boot.
     counters: Counters,
     /// Sequence number of the next ping.
     next_sequence: u32,
     /// The peer table last shown.
     snapshot: Option<network::Snapshot>,
+    /// When `update` last ran, to run at most every `UPDATE_PERIOD`.
     last_update: Instant,
+    /// When the last ping went out, to send one every `PING_PERIOD`.
     last_ping: Instant,
+    /// The widget tree built from `network.kdl`, drawn under the text.
     gui: &'static mut gui::Context<NODES>,
     /// Where the status lines go.
     summary: Rectangle,

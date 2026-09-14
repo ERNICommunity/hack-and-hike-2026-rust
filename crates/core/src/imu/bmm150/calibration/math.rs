@@ -1,8 +1,16 @@
 //! Fixed-size linear algebra used only by BMM150 calibration.
 
+/// Unknowns of the ellipsoid fit: six quadratic terms (x², y², z², xy, xz,
+/// yz) and three linear terms (x, y, z).
 pub const PARAMS: usize = 9;
+/// A pivot smaller than this fraction of the largest matrix entry counts as
+/// zero, so a nearly singular system is rejected instead of amplifying noise.
 const SOLVER_RELATIVE_PIVOT_EPSILON: f32 = 1.0e-6;
+/// Most Jacobi rotations [`symmetric_eigen_3`] performs before it gives
+/// up iterating.
 const JACOBI_ROTATIONS: usize = 18;
+/// Off-diagonal magnitude below which the matrix counts as diagonal and the
+/// Jacobi iteration stops early.
 const JACOBI_CONVERGED_OFF_DIAGONAL: f32 = 1.0e-7;
 
 /// Solve `matrix * x = rhs` by Gauss-Jordan elimination with partial pivoting.
@@ -67,6 +75,8 @@ pub fn solve_linear<const N: usize>(
 
 /// Eigen-decomposition of a real symmetric 3x3 matrix.
 pub struct Eigen3 {
+    /// Eigenvalues, in no particular order. `values[i]` belongs to column `i`
+    /// of `vectors`.
     pub values: [f32; 3],
     /// Eigenvectors are the columns of this matrix.
     pub vectors: [[f32; 3]; 3],

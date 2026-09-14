@@ -25,6 +25,7 @@
 
 #![no_std]
 #![no_main]
+#![warn(clippy::missing_docs_in_private_items)]
 
 mod layout;
 mod navigation;
@@ -52,12 +53,19 @@ const LOOP_PERIOD: Duration = Duration::from_millis(2);
 /// Every screen, one field each. A struct rather than an array, because the
 /// screens are different types.
 struct Screens {
+    /// ESP-NOW pings and pongs, and the peers in range.
     network: NetworkScreen,
+    /// Roll, pitch and yaw, with a 3-D horizon and compass.
     imu: ImuScreen,
+    /// The live waveform of both microphone channels.
     microphone: MicrophoneScreen,
+    /// The melody and chime player; it keeps playing on other screens.
     speaker: SpeakerScreen,
+    /// The live camera preview.
     camera: CameraScreen,
+    /// The display brightness slider.
     settings: SettingsScreen,
+    /// The newest lines of the device log.
     log: LogScreen,
 }
 

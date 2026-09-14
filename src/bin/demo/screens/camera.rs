@@ -86,6 +86,8 @@ impl Screen for CameraScreen {
 /// The middle of each camera row, as wide as the content area. While the LCD
 /// DMA is busy, the camera keeps capturing the next frame.
 struct CenteredCrop<'a, 'f> {
+    /// The frame being sent. Borrowed mutably so the camera can be pumped between
+    /// rows and keep capturing.
     frame: &'a mut Frame<'f>,
 }
 

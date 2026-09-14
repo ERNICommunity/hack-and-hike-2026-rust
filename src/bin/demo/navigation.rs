@@ -18,12 +18,19 @@ use crate::layout::NAV_WIDTH;
 /// Names one screen of the demo, and its button on the rail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ViewId {
+    /// The ESP-NOW screen: pings, pongs and the peers in range.
     Network,
+    /// The attitude screen: angles, horizon and compass.
     Imu,
+    /// The live microphone waveforms.
     Microphone,
+    /// The melody and chime player.
     Speaker,
+    /// The live camera preview.
     Camera,
+    /// The display brightness slider.
     Settings,
+    /// The newest lines of the device log.
     Log,
 }
 
@@ -63,34 +70,42 @@ type Icon = [u16; ICON_SIZE];
 const BUTTON_HEIGHT: usize = display::HEIGHT / ViewId::ALL.len();
 /// Where the icon starts inside its button, to centre it.
 const ICON_X: usize = (NAV_WIDTH as usize - ICON_SIZE) / 2;
+/// Where the icon starts vertically inside its button, to centre it.
 const ICON_Y: usize = (BUTTON_HEIGHT - ICON_SIZE) / 2;
 const _: () = assert!(BUTTON_HEIGHT > ICON_SIZE);
 
 // The icons, top row first.
+/// The rail button of the network (ESP-NOW) screen.
 const NETWORK_ICON: Icon = [
     0x0000, 0x0000, 0x0180, 0x03C0, 0x0660, 0x0C30, 0x1818, 0x0180, 0x0180, 0x1818, 0x0C30, 0x0660,
     0x03C0, 0x0180, 0x0000, 0x0000,
 ];
+/// The rail button of the IMU screen.
 const IMU_ICON: Icon = [
     0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x7FFE, 0x0180, 0x0180, 0x0180, 0x0180, 0x07E0, 0x0DB0,
     0x198C, 0x0180, 0x0180, 0x0000,
 ];
+/// The rail button of the microphone screen.
 const MICROPHONE_ICON: Icon = [
     0x03C0, 0x0660, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0C30, 0x0660, 0x03C0, 0x0180, 0x1FF8,
     0x0180, 0x0180, 0x07E0, 0x0000,
 ];
+/// The rail button of the speaker screen.
 const SPEAKER_ICON: Icon = [
     0x0000, 0x0300, 0x0700, 0x0F18, 0x7F0C, 0x7F06, 0x7F06, 0x7F06, 0x7F06, 0x7F06, 0x7F0C, 0x0F18,
     0x0700, 0x0300, 0x0000, 0x0000,
 ];
+/// The rail button of the camera screen.
 const CAMERA_ICON: Icon = [
     0x0000, 0x0000, 0x0F00, 0x1980, 0x7FFE, 0x4002, 0x43C2, 0x4662, 0x4C32, 0x4C32, 0x4662, 0x43C2,
     0x4002, 0x7FFE, 0x0000, 0x0000,
 ];
+/// The rail button of the settings screen.
 const SETTINGS_ICON: Icon = [
     0x0000, 0x0180, 0x0DB0, 0x1FF8, 0x319C, 0x6186, 0x6786, 0x6606, 0x6606, 0x6786, 0x6186, 0x319C,
     0x1FF8, 0x0DB0, 0x0180, 0x0000,
 ];
+/// The rail button of the log screen.
 const LOG_ICON: Icon = [
     0x0000, 0x0000, 0x3FFC, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004, 0x2FF4, 0x2004,
     0x3FFC, 0x0000, 0x0000, 0x0000,
@@ -110,6 +125,7 @@ enum Gesture {
 /// Owns the touch handle and turns raw touches into screen selections and
 /// content touches.
 pub(crate) struct Navigation {
+    /// The touch controller; `poll` drains the events it has queued.
     touch: Touch,
     /// The touch in progress; `None` while no finger is down.
     gesture: Option<Gesture>,

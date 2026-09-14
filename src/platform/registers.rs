@@ -11,7 +11,9 @@
 
 /// One I2C chip with 8-bit registers, borrowed for a few transfers.
 pub(crate) struct Registers<'a, I2C> {
+    /// The bus, borrowed exclusively while this value lives.
     i2c: &'a mut I2C,
+    /// 7-bit I2C address of the chip.
     address: u8,
 }
 
@@ -55,7 +57,9 @@ impl<'a, I2C: embedded_hal::i2c::I2c> Registers<'a, I2C> {
 
 /// The async twin of [`Registers`], for CPU1 tasks on the shared bus.
 pub(crate) struct AsyncRegisters<'a, I2C> {
+    /// The bus, borrowed exclusively while this value lives.
     i2c: &'a mut I2C,
+    /// 7-bit I2C address of the chip.
     address: u8,
 }
 

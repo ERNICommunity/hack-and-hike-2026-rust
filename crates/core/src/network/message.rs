@@ -131,7 +131,9 @@ impl OutgoingMessage {
 pub struct IncomingMessage {
     /// The board that sent the message; reply with `Network::send_to`.
     pub sender: DeviceId,
+    /// Which message type the payload holds; compared with [`Message::KIND`].
     kind: u32,
+    /// The `postcard` encoding of the message.
     payload: Payload,
 }
 

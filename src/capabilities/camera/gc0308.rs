@@ -25,13 +25,18 @@ const OUTPUT_FORMAT: u8 = 0x24;
 const RGB565_BE: u8 = 0xa6;
 /// Mirror and flip bits (page 0).
 const ORIENTATION: u8 = 0x14;
+/// Bit in `ORIENTATION` that mirrors the image left to right.
 const ORIENTATION_HORIZONTAL_MIRROR_MASK: u8 = 0x01;
+/// Bit in `ORIENTATION` that flips the image upside down.
 const ORIENTATION_VERTICAL_FLIP_MASK: u8 = 0x02;
+/// Both orientation bits, the part of `ORIENTATION` this driver changes.
 const ORIENTATION_MASK: u8 = ORIENTATION_HORIZONTAL_MIRROR_MASK | ORIENTATION_VERTICAL_FLIP_MASK;
 
 // Espressif's GC0308 baseline register program, followed by the QVGA
 // subsampling changes below. The sensor has no XCLK pin on CoreS3 Lite; its
 // onboard clock source is used while LCD_CAM operates in slave mode.
+/// The register program as `(register, value)` pairs, written in order.
+/// Includes `PAGE_SELECT` writes that switch between the two pages.
 const DEFAULT_REGS: &[(u8, u8)] = &[
     (0xfe, 0x00),
     (0xec, 0x20),

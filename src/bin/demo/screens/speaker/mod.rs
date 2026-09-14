@@ -24,6 +24,8 @@ use melody::MelodySynth;
 
 // The layout file becomes Rust at compile time: a `...App` struct with a
 // `build` function and one `WidgetId` per named node.
+/// The widgets generated from `speaker.kdl`: labels, buttons and the slots
+/// for the readouts and sliders.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/speaker/speaker.kdl");
@@ -113,13 +115,20 @@ impl TryFrom<i32> for PitchSemitones {
 
 /// The speaker screen, its two sound sources and its controls.
 pub(crate) struct SpeakerScreen {
+    /// The speaker handle; `update` keeps its queue filled.
     speaker: Speaker,
+    /// Generates the looping melody, one sample at a time.
     melody: MelodySynth,
+    /// Decodes the chime from flash while it plays.
     chime: FlashChime,
     /// Whether the melody is on.
     playing: bool,
+    /// The melody tempo, changed by `tempo_slider`.
     tempo: TempoBpm,
+    /// The melody transposition, changed by `pitch_slider`.
     pitch: PitchSemitones,
+    /// The widget tree built from `speaker.kdl`, plus the readouts added in code.
+    /// It handles the button clicks.
     gui: &'static mut gui::Context<NODES>,
     /// PLAY / STOP.
     play_button: WidgetId,
@@ -131,7 +140,9 @@ pub(crate) struct SpeakerScreen {
     tempo_value: WidgetId,
     /// The pitch readout.
     pitch_value: WidgetId,
+    /// Sets `tempo` from touches, 60 to 180 BPM; drawn over the GUI.
     tempo_slider: Slider,
+    /// Sets `pitch` from touches, -12 to +12 semitones; drawn over the GUI.
     pitch_slider: Slider,
     /// Whether the screen needs a redraw.
     dirty: bool,

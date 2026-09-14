@@ -47,6 +47,8 @@ const MIC_QUEUE_BLOCKS: usize = 4;
 /// from draining it before the application tops it up.
 const SPEAKER_QUEUE_FRAMES: usize = 1_024;
 
+/// The speaker ring: room for [`SPEAKER_QUEUE_FRAMES`] frames, stored as
+/// interleaved samples.
 type SpeakerQueue = FrameRing<{ SPEAKER_QUEUE_FRAMES * CHANNELS }, CHANNELS>;
 
 /// The I2S peripheral and pins wired to the codecs, owned by CPU1.
@@ -111,6 +113,8 @@ struct Service {
     speaker: Mutex<CriticalSectionRawMutex, RefCell<SpeakerQueue>>,
 }
 
+/// The one set of audio queues. A plain `static` works across cores because
+/// every field synchronizes itself.
 static SERVICE: Service = Service {
     mic_blocks: Channel::new(),
     speaker: Mutex::new(RefCell::new(SpeakerQueue::new())),
@@ -133,6 +137,7 @@ static SERVICE: Service = Service {
 /// A block is 2 KiB; keep the buffer in a struct or a `static`, not on a
 /// small task stack.
 pub struct Microphone {
+    /// Points at the queues shared with the CPU1 audio tasks.
     service: &'static Service,
 }
 
@@ -162,6 +167,7 @@ impl Microphone {
 /// speaker.write(&chunk[..frames * audio::CHANNELS]);
 /// ```
 pub struct Speaker {
+    /// Points at the queues shared with the CPU1 audio tasks.
     service: &'static Service,
 }
 
@@ -190,6 +196,7 @@ impl Speaker {
 /// CPU1 side of the queues.
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
+    /// Points at the queues shared with the application's handles on CPU0.
     service: &'static Service,
 }
 

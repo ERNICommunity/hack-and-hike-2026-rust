@@ -18,7 +18,11 @@ use crate::{
 /// Stack of every task on CPU1 together: the executor polls them all on it.
 const STACK_SIZE: usize = 16 * 1024;
 
+/// Memory for [`STACK_SIZE`]. It must outlive the core that runs on it, so it
+/// lives in a `StaticCell` that hands out a `&'static mut` once.
 static STACK: StaticCell<Stack<STACK_SIZE>> = StaticCell::new();
+/// The async executor of CPU1. [`run`] never returns, so the executor is
+/// stored for the whole program lifetime.
 static EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
 
 /// Everything CPU1 owns: its hardware and the runtime side of each capability.

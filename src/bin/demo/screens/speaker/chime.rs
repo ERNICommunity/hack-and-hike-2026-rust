@@ -16,6 +16,8 @@ const _: () = assert!(DATA.len() * 2 == CHIME_SAMPLES);
 
 /// Plays the chime once per [`FlashChime::restart`].
 pub(super) struct FlashChime {
+    /// The ADPCM decoder state. Each sample is decoded relative to the previous
+    /// one, so a restart needs a fresh decoder.
     decoder: Decoder,
     /// Index of the next 4-bit code; two per byte, high nibble first.
     next_code: usize,

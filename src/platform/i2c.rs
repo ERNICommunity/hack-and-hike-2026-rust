@@ -115,6 +115,8 @@ type SystemI2cMutex = Mutex<NoopRawMutex, SystemI2c>;
 /// How CPU1 tasks share the bus: lock it for one transaction at a time.
 pub(crate) type SystemI2cBus = &'static SystemI2cMutex;
 
+/// Storage for the shared bus mutex. A `StaticCell` hands out one `&'static`
+/// reference at runtime, so the bus can be shared by tasks that live forever.
 static SYSTEM_I2C: StaticCell<SystemI2cMutex> = StaticCell::new();
 
 /// A blocking driver on `resources` at `frequency_khz`.

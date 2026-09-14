@@ -10,8 +10,13 @@ pub mod adpcm;
 /// Only whole frames are written and read, so the channels can never slip
 /// against each other.
 pub struct FrameRing<const SAMPLES: usize, const CHANNELS: usize> {
+    /// Backing storage. Queued samples start at `read_index` and wrap around
+    /// from the end of the array to its start.
     samples: [i16; SAMPLES],
+    /// Index of the oldest unread sample in `samples`.
     read_index: usize,
+    /// Samples (not frames) waiting to be read. Always a multiple of
+    /// `CHANNELS`.
     len: usize,
 }
 

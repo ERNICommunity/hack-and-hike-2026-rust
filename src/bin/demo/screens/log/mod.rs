@@ -19,6 +19,7 @@ use crate::{layout, screens::Screen};
 
 // The layout file becomes Rust at compile time: a `...App` struct with a
 // `build` function and one `WidgetId` per named node.
+/// The widgets generated from `log.kdl`: the title and the body slot.
 mod generated {
     use embedded_gui::prelude::*;
     embedded_gui::include_gui!("src/bin/demo/screens/log/log.kdl");
@@ -34,6 +35,7 @@ const _: () = assert!(generated::LogApp::HEIGHT == layout::CONTENT_SIZE.height);
 
 /// The log screen and its copy of the newest lines.
 pub(crate) struct LogScreen {
+    /// The shared log buffer; its revision changes whenever a line is logged.
     history: LogHistory,
     /// As many lines as fit the body, filled from the history.
     lines: &'static mut [Line],
@@ -41,9 +43,12 @@ pub(crate) struct LogScreen {
     shown: usize,
     /// The history revision `lines` was copied at.
     revision: Option<u32>,
+    /// The widget tree built from `log.kdl`, drawn under the lines.
     gui: &'static mut gui::Context<NODES>,
     /// Where the lines are drawn.
     body: Rectangle,
+    /// When the history was last checked, to check at most every
+    /// `REFRESH_PERIOD`.
     last_refresh: Instant,
     /// Whether the screen needs a redraw.
     dirty: bool,

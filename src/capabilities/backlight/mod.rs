@@ -59,16 +59,23 @@ impl TryFrom<u8> for Brightness {
     }
 }
 
+/// The state shared by the handle (CPU0) and the backlight task (CPU1).
 struct Service {
+    /// The newest brightness not yet applied. A `Signal` holds at most one value:
+    /// signalling again overwrites it, which is exactly "only the newest request
+    /// matters".
     request: Signal<CriticalSectionRawMutex, Brightness>,
 }
 
+/// The one shared backlight state. A plain `static` works across cores because
+/// the signal synchronizes itself.
 static SERVICE: Service = Service {
     request: Signal::new(),
 };
 
 /// Application handle for the LCD backlight; see the [module docs](self).
 pub struct Backlight {
+    /// Points at the signal shared with the CPU1 backlight task.
     service: &'static Service,
 }
 
@@ -83,6 +90,7 @@ impl Backlight {
 /// CPU1 side of the signal.
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
+    /// Points at the signal shared with the application's handle on CPU0.
     service: &'static Service,
 }
 

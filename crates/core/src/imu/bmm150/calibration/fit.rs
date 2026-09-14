@@ -11,11 +11,19 @@ const MIN_FIT_WEIGHT_FRACTION: f32 = 0.75;
 
 // Candidate validation is independent and direction-aware. At 30 Hz the
 // maximum gives the user about ten seconds to cover six directions.
+/// Fresh samples a candidate must see before it is judged.
 const VALIDATION_MIN_SAMPLES: u16 = 24;
+/// Distinct direction bins those samples must cover.
 const VALIDATION_MIN_BINS: u32 = 6;
+/// Samples after which a candidate that is still pending is rejected.
 const VALIDATION_MAX_SAMPLES: u16 = 300;
+/// Largest accepted root-mean-square relative error of the corrected
+/// field strength: 0.15 means 15 % away from `CALIBRATED_FIELD_RADIUS_UT`.
 const MAX_VALIDATION_RMS_RELATIVE_ERROR: f32 = 0.15;
+/// A sample whose corrected strength is more than 35 % away from
+/// `CALIBRATED_FIELD_RADIUS_UT` counts as bad.
 const MAX_VALIDATION_SINGLE_RELATIVE_ERROR: f32 = 0.35;
+/// Bad samples a candidate may have; one more rejects it at once.
 const MAX_VALIDATION_BAD_SAMPLES: u8 = 6;
 
 /// Corrected fields are normalized to this magnitude.
@@ -23,24 +31,43 @@ pub const CALIBRATED_FIELD_RADIUS_UT: f32 = 50.0;
 /// The fit works on fields divided by this scale so that quadratic and linear
 /// terms stay comparable in f32.
 const FIT_INPUT_SCALE_UT: f32 = 256.0;
+/// Moved to its center, the fitted quadric reads `x · Q x = 1 + c · Q c`
+/// and is divided by that right-hand side. Closer to zero than this, the fit is
+/// rejected instead.
 const QUADRIC_SCALE_EPSILON: f32 = 1.0e-6;
+/// Every eigenvalue of the fitted shape must be larger than this: an
+/// ellipsoid needs three positive ones.
 const SHAPE_EIGEN_EPSILON: f32 = 1.0e-6;
+/// Largest accepted ratio of the largest to the smallest shape eigenvalue.
+/// Eigenvalues scale with 1 / radius², so 400 lets one ellipsoid axis be at most
+/// 20 times as long as another.
 const MAX_SHAPE_EIGEN_RATIO: f32 = 400.0;
+/// Longest accepted ellipsoid semi-axis, in uT.
 const MAX_ELLIPSOID_RADIUS_UT: f32 = 300.0;
+/// Shortest accepted ellipsoid semi-axis, in uT.
 const MIN_ELLIPSOID_RADIUS_UT: f32 = 10.0;
+/// Largest accepted root-mean-square residual of the fit equation
+/// `parameters · feature = 1` over the samples. Unitless, because the fit works
+/// on scaled fields.
 const MAX_ALGEBRAIC_RMS: f32 = 0.15;
 /// The fitted center must lie inside the observed extrema plus this margin.
 const CENTER_MARGIN_FRACTION: f32 = 0.10;
+/// Fixed part of that margin, in uT, added to the fraction of the span.
 const CENTER_MARGIN_UT: f32 = 5.0;
 
 /// Hard-iron offset and soft-iron correction matrix.
 #[derive(Clone, Copy)]
 pub struct Model {
+    /// Hard-iron offset: the ellipsoid center, in raw uT.
     pub center_ut: [f32; 3],
+    /// Soft-iron matrix, as rows. Applied after the offset is removed, it maps
+    /// the ellipsoid onto a sphere of radius `CALIBRATED_FIELD_RADIUS_UT`.
     correction: [[f32; 3]; 3],
 }
 
 impl Model {
+    /// Correct a raw field: remove the hard-iron offset, then undo the
+    /// soft-iron distortion. In and out in uT.
     pub fn apply(&self, field_ut: [f32; 3]) -> [f32; 3] {
         vec3::matrix_vector(self.correction, vec3::sub(field_ut, self.center_ut))
     }
@@ -49,14 +76,22 @@ impl Model {
 /// A fitted model being checked against fresh samples before it is trusted.
 #[derive(Clone, Copy)]
 pub struct Candidate {
+    /// The model under test.
     model: Model,
+    /// Validation samples seen so far.
     samples: u16,
+    /// Bit mask of the direction bins, around the model's center, that the
+    /// validation samples covered.
     direction_bins: u32,
+    /// Sum of the squared relative strength errors, for the root mean square.
     relative_error_squared_sum: f32,
+    /// Samples whose error exceeded `MAX_VALIDATION_SINGLE_RELATIVE_ERROR` or
+    /// was not a finite number.
     bad_samples: u8,
 }
 
 impl Candidate {
+    /// A candidate for `model` that has seen no validation samples yet.
     pub const fn new(model: Model) -> Self {
         Self {
             model,
@@ -75,12 +110,19 @@ impl Candidate {
     }
 }
 
+/// What one validation sample decided about a candidate.
 pub enum Validation {
+    /// More samples are needed; keep validating this updated candidate.
     Pending(Candidate),
+    /// The candidate passed; this model may be used.
     Accepted(Model),
+    /// The candidate failed; collect a fresh sample set.
     Rejected,
 }
 
+/// Check a candidate against one fresh raw field. It is judged once it has
+/// seen `VALIDATION_MIN_SAMPLES` samples in `VALIDATION_MIN_BINS` directions,
+/// and rejected early after too many bad samples or too long a wait.
 pub fn validate_candidate(mut candidate: Candidate, field_ut: [f32; 3]) -> Validation {
     // Diversity is measured around the fitted center, the best physical
     // reference available.
@@ -136,12 +178,18 @@ pub fn direction_bin(field_ut: [f32; 3], origin_ut: [f32; 3]) -> usize {
 
 /// Least-squares normal equations of the algebraic ellipsoid fit.
 pub struct NormalEquations {
+    /// Sum over the samples of `feature[i] * feature[j]`, the matrix of the
+    /// least-squares problem.
     matrix: [[f32; PARAMS]; PARAMS],
+    /// Sum over the samples of `feature[i]`: the right-hand side, because each
+    /// sample should satisfy `parameters · feature = 1`.
     rhs: [f32; PARAMS],
+    /// Number of samples added; every sample has weight 1.
     weight_sum: f32,
 }
 
 impl NormalEquations {
+    /// Sums of no samples.
     pub const fn new() -> Self {
         Self {
             matrix: [[0.0; PARAMS]; PARAMS],
@@ -150,6 +198,9 @@ impl NormalEquations {
         }
     }
 
+    /// Add one raw field to the sums. It is taken relative to `origin_ut` and
+    /// divided by `FIT_INPUT_SCALE_UT` first; its feature vector is x², y², z², 2xy,
+    /// 2xz, 2yz, x, y, z.
     pub fn accumulate(&mut self, field_ut: [f32; 3], origin_ut: [f32; 3]) {
         let [x, y, z] = vec3::scale(vec3::sub(field_ut, origin_ut), 1.0 / FIT_INPUT_SCALE_UT);
         let feature = [
@@ -276,6 +327,8 @@ pub fn fit_model(
     })
 }
 
+/// Whether the fitted center lies within the observed extrema, widened on
+/// each axis by `CENTER_MARGIN_FRACTION` of the span plus `CENTER_MARGIN_UT`.
 fn center_is_covered(center_ut: [f32; 3], min: [f32; 3], max: [f32; 3]) -> bool {
     (0..3).all(|axis| {
         let margin = CENTER_MARGIN_FRACTION * (max[axis] - min[axis]) + CENTER_MARGIN_UT;

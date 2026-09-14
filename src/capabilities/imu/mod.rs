@@ -148,12 +148,18 @@ pub struct Sample {
 /// Physical measurements of one sample before fusion, in the body frame.
 #[derive(Clone, Copy, Debug, Default)]
 struct Measurements {
+    /// Acceleration including gravity, in m/s²; `None` when not read.
     acceleration_m_s2: Option<[f32; 3]>,
+    /// Rotation rate in degrees per second; `None` when not read.
     angular_velocity_deg_s: Option<[f32; 3]>,
+    /// Uncalibrated magnetic field in µT; `None` while no magnetometer frame is
+    /// available.
     magnetic_field_ut: Option<[f32; 3]>,
 }
 
 impl Measurements {
+    /// The same measurements rotated from the sensor's body frame into the
+    /// screen frame described on [`Attitude`].
     fn in_screen_frame(self) -> Self {
         Self {
             acceleration_m_s2: self.acceleration_m_s2.map(screen_from_body),
@@ -163,10 +169,15 @@ impl Measurements {
     }
 }
 
+/// Shared state between the CPU1 acquisition task and the application.
 struct Service {
+    /// The newest sample. A `Signal` holds at most one value: publishing
+    /// replaces an unread sample, and taking it leaves the signal empty.
     latest: Signal<CriticalSectionRawMutex, Sample>,
 }
 
+/// The one service instance. It is a `static` so both ends can hold a
+/// `&'static` reference, which is what lets the handle cross to another CPU.
 static SERVICE: Service = Service {
     latest: Signal::new(),
 };
@@ -177,6 +188,7 @@ static SERVICE: Service = Service {
 /// so an application that polls slower than that always sees fresh data and
 /// can detect skipped samples through [`Sample::revision`].
 pub struct Imu {
+    /// The signal the CPU1 task publishes into.
     service: &'static Service,
 }
 
@@ -191,6 +203,7 @@ impl Imu {
 /// CPU1 side of the signal.
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
+    /// The signal this side publishes into.
     service: &'static Service,
 }
 

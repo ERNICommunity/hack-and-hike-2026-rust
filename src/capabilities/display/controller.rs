@@ -18,6 +18,7 @@ use mipidsi::options::{
 
 use crate::platform;
 
+/// The blocking SPI driver with DMA that both setup and the pixel path use.
 type DisplaySpiDma = SpiDma<'static, Blocking>;
 
 /// What the transport needs back after setup.
@@ -35,7 +36,9 @@ pub(super) struct Initialized {
 /// `embedded-hal-bus` has a similar `ExclusiveDevice`, but it cannot give the
 /// bus back, which the transport needs.
 struct OwnedSpiDevice<BUS, CS> {
+    /// The SPI bus, owned exclusively until [`OwnedSpiDevice::release`].
     bus: BUS,
+    /// Chip select pin: driven low around each transaction, high otherwise.
     cs: CS,
 }
 

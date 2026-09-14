@@ -17,6 +17,8 @@ const STALE_AFTER: Duration = Duration::from_secs(1);
 /// Recover quickly after good data returns, but require about one second of
 /// consecutive bad 30 Hz samples before declaring a disturbance.
 const GOOD_SAMPLES_TO_READY: u8 = 8;
+/// Implausible fields in a row before the status becomes
+/// [`MagStatus::Disturbed`]: about one second at 30 Hz.
 const BAD_SAMPLES_TO_DISTURBED: u8 = 30;
 
 /// Everything known about the magnetometer between two samples.

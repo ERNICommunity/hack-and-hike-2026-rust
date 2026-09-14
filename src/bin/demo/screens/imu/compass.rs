@@ -20,6 +20,7 @@ use super::projection::{
 const COMPASS_LABEL_RADIUS: f32 = 256.0;
 /// Size of one letter in world units before the per-label compensation.
 const COMPASS_GLYPH_WIDTH: f32 = 42.0;
+/// Height of one letter in world units before the per-label compensation.
 const COMPASS_GLYPH_HEIGHT: f32 = 78.0;
 /// Space between the letters of "NE", "SW", ...
 const COMPASS_GLYPH_GAP: f32 = 18.0;
@@ -32,6 +33,8 @@ const INV_SQRT_2: f32 = 0.70710677;
 // physical compass lettering is opposite to the current visual world frame.
 // Rotate only these landmarks by 180 degrees so N/S and E/W line up without
 // changing fusion, magnetic correction, or camera orientation.
+/// Each label with the x and z of its direction on the ground. The label
+/// stands at that unit vector times `COMPASS_LABEL_RADIUS`.
 const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
     ("N", 0.0, 1.0),
     ("NE", INV_SQRT_2, INV_SQRT_2),
@@ -44,17 +47,20 @@ const WORLD_COMPASS_LABELS: [(&str, f32, f32); 8] = [
 ];
 
 // Letters as line strokes `[x0, y0, x1, y1]` in a 4 x 7 box, y up.
+/// The strokes of the letter N.
 const GLYPH_N_STROKES: [[f32; 4]; 3] = [
     [0.0, 0.0, 0.0, 7.0],
     [0.0, 7.0, 4.0, 0.0],
     [4.0, 0.0, 4.0, 7.0],
 ];
+/// The strokes of the letter E.
 const GLYPH_E_STROKES: [[f32; 4]; 4] = [
     [0.0, 0.0, 0.0, 7.0],
     [0.0, 7.0, 4.0, 7.0],
     [0.0, 3.5, 3.5, 3.5],
     [0.0, 0.0, 4.0, 0.0],
 ];
+/// The strokes of the letter S.
 const GLYPH_S_STROKES: [[f32; 4]; 5] = [
     [4.0, 7.0, 0.0, 7.0],
     [0.0, 7.0, 0.0, 4.2],
@@ -62,6 +68,7 @@ const GLYPH_S_STROKES: [[f32; 4]; 5] = [
     [4.0, 2.8, 4.0, 0.0],
     [4.0, 0.0, 0.0, 0.0],
 ];
+/// The strokes of the letter W.
 const GLYPH_W_STROKES: [[f32; 4]; 4] = [
     [0.0, 7.0, 0.8, 0.0],
     [0.8, 0.0, 2.0, 3.2],
@@ -147,7 +154,12 @@ struct GlyphPlacement {
     tangent: [f32; 3],
     /// Distance of this glyph's left edge from `anchor` along `tangent`.
     offset: f32,
+    /// Factor for the width of this label's glyphs and gaps. It shrinks letters
+    /// that the projection would widen off-axis, and corrects for the different
+    /// horizontal and vertical focal lengths.
     horizontal_scale: f32,
+    /// Factor for the height of this label's glyphs. It shrinks letters that the
+    /// projection would stretch off-axis.
     vertical_scale: f32,
 }
 

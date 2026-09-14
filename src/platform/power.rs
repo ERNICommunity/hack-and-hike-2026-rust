@@ -19,27 +19,45 @@ const AXP2101_ADDR: u8 = 0x34;
 /// One enable bit per LDO rail.
 const OUTPUT_ENABLE_REGISTER: u8 = 0x90;
 
+/// Output voltage of ALDO1, the speaker amplifier rail.
 const ALDO1_VOLTAGE_REGISTER: u8 = 0x92;
+/// Enable bit of ALDO1 in [`OUTPUT_ENABLE_REGISTER`].
 const ALDO1_ENABLE: u8 = 1 << 0;
+/// Output voltage of ALDO2, the microphone rail.
 const ALDO2_VOLTAGE_REGISTER: u8 = 0x93;
+/// Enable bit of ALDO2 in [`OUTPUT_ENABLE_REGISTER`].
 const ALDO2_ENABLE: u8 = 1 << 1;
+/// Output voltage of ALDO3, one of the three camera rails.
 const ALDO3_VOLTAGE_REGISTER: u8 = 0x94;
+/// Enable bit of ALDO3 in [`OUTPUT_ENABLE_REGISTER`].
 const ALDO3_ENABLE: u8 = 1 << 2;
+/// Enable bit of BLDO1, a camera rail, in [`OUTPUT_ENABLE_REGISTER`]. Its
+/// voltage is left at the chip's default.
 const BLDO1_ENABLE: u8 = 1 << 4;
+/// Enable bit of BLDO2, a camera rail, in [`OUTPUT_ENABLE_REGISTER`]. Its
+/// voltage is left at the chip's default.
 const BLDO2_ENABLE: u8 = 1 << 5;
+/// All three camera rails, switched on together.
 const CAMERA_POWER_ENABLE: u8 = ALDO3_ENABLE | BLDO1_ENABLE | BLDO2_ENABLE;
+/// Output voltage of DLDO1, the LCD backlight rail.
 const DLDO1_VOLTAGE_REGISTER: u8 = 0x99;
+/// Enable bit of DLDO1 in [`OUTPUT_ENABLE_REGISTER`].
 const DLDO1_ENABLE: u8 = 1 << 7;
 
 // AXP2101 ALDO voltage encoding is Vout/100mV - 5 in this range.
+/// ALDO1 voltage code for 1.8 V.
 const SPEAKER_ALDO1_1V8_CODE: u8 = 18 - 5;
+/// ALDO2 voltage code for 3.3 V.
 const MICROPHONE_ALDO2_3V3_CODE: u8 = 33 - 5;
+/// ALDO3 voltage code for 3.3 V.
 const CAMERA_ALDO3_3V3_CODE: u8 = 33 - 5;
 
 // The CoreS3 backlight is powered from DLDO1. Runtime dimming stays inside
 // the documented 2.6-3.3 V operating range, which AXP2101 encodes as
 // 0x15..=0x1C: eight usable steps.
+/// DLDO1 voltage code for 2.6 V, the dimmest backlight setting.
 const LCD_BACKLIGHT_MIN_CODE: u8 = 0x15;
+/// DLDO1 voltage code for 3.3 V, the brightest backlight setting.
 const LCD_BACKLIGHT_MAX_CODE: u8 = 0x1C;
 
 /// The AXP2101's registers on `i2c`.
