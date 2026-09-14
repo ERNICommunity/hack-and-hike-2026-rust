@@ -106,15 +106,21 @@ fn better_gain(gain_index: usize, channels: Channels) -> Option<usize> {
 }
 
 /// The application's view of one reading: lux from the two channels at the
-/// gain they were measured with, and a saturated proximity reported as the
-/// maximum count.
+/// gain they were measured with, the raw proximity count with saturation
+/// reported as the maximum, and the count spread evenly over the distance.
 fn sample_from(reading: light::Reading) -> Sample {
+    let raw_proximity = if reading.proximity_saturated {
+        PROXIMITY_MAX
+    } else {
+        reading.proximity
+    };
     Sample {
         lux: light::lux(reading.channels, reading.gain, ltr553::ALS_INTEGRATION_MS),
-        proximity: if reading.proximity_saturated {
-            PROXIMITY_MAX
-        } else {
-            reading.proximity
-        },
+        proximity: light::closeness_percent(
+            raw_proximity,
+            ltr553::PROXIMITY_FAR_COUNT,
+            ltr553::PROXIMITY_NEAR_COUNT,
+        ),
+        raw_proximity,
     }
 }

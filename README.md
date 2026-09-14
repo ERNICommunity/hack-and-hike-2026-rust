@@ -127,8 +127,8 @@ modules are files in `crates/core/tests/`.
   front glass. It reports the ambient light in lux, lower than a light meter
   would show because of the glass, so use it relatively: near 0 in a dark
   room, tens to a few hundred in a lit one, thousands with a torch pointed at
-  the board. The proximity count is 0 with nothing within about 20 cm of the
-  front and rises as something approaches, to 2047 at the glass.
+  the board. Proximity is a percentage of the range, even in distance: 0
+  with nothing within about 20 cm of the front, 100 at the glass.
 - **Audio** is signed 16-bit stereo at 16 kHz, interleaved left, right, left,
   right, ...
 - **Every board in the room** talks on the same radio channel. Messages carry
@@ -477,13 +477,14 @@ if let Some(light) = light.as_mut()
     && let Some(sample) = light.latest()
 {
     let dark = sample.lux < 10.0;
-    let covered = sample.proximity > 200;
+    let covered = sample.proximity > 50;
 }
 ```
 
-The lux value is an estimate from the sensor's formula behind the front
-glass; the useful proximity threshold depends on what comes close, so try a
-few values.
+`proximity` is a percentage of the range, even in distance: 0 with nothing
+within about 20 cm, 50 at about 10 cm, 100 at the glass. The sensor's own
+count is in `raw_proximity`; it rises with the square of the closeness. The
+lux value is an estimate from the sensor's formula behind the front glass.
 
 **Backlight.** `Brightness::new` is for numbers in the code;
 `Brightness::try_from(percent)` checks a number computed at run time.

@@ -116,6 +116,32 @@ pub fn lux(channels: Channels, gain: u8, integration_ms: u16) -> f32 {
     (raw / f32::from(gain) / integration).max(0.0)
 }
 
+/// Closeness in percent from a raw proximity count, evenly spread over the
+/// distance: 0 at the edge of the range, 100 at the glass, 50 halfway.
+///
+/// The reflection the sensor sees falls off with the square of the
+/// distance, so the raw count barely moves while an object approaches and
+/// shoots up in the last centimetres. Inverting that law, the distance is
+/// proportional to `1 / sqrt(count)`. `far_count` is the count at the edge
+/// of the range and `near_count` the count at the glass; counts beyond
+/// either end are clamped.
+pub fn closeness_percent(count: u16, far_count: u16, near_count: u16) -> u8 {
+    if count <= far_count {
+        return 0;
+    }
+    if count >= near_count {
+        return 100;
+    }
+    // Distance as a fraction of the range, 1.0 at `far_count`, and its
+    // value at the glass, which is the offset the sensor cannot measure
+    // below.
+    let far = f32::from(far_count);
+    let distance = libm::sqrtf(far / f32::from(count));
+    let at_glass = libm::sqrtf(far / f32::from(near_count));
+    let closeness = (1.0 - distance) / (1.0 - at_glass);
+    libm::roundf(closeness.clamp(0.0, 1.0) * 100.0) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +209,35 @@ mod tests {
         ));
         // ratio 0.9: all infrared
         assert_eq!(lux(Channels { ch0: 100, ch1: 900 }, 1, 100), 0.0);
+    }
+
+    #[test]
+    fn closeness_is_clamped_at_both_ends() {
+        assert_eq!(closeness_percent(0, 16, 2047), 0);
+        assert_eq!(closeness_percent(16, 16, 2047), 0);
+        assert_eq!(closeness_percent(2047, 16, 2047), 100);
+        assert_eq!(closeness_percent(u16::MAX, 16, 2047), 100);
+    }
+
+    #[test]
+    fn closeness_is_linear_in_distance() {
+        // With the glass at (practically) zero distance, four times the far
+        // count is half the distance, twenty-five times is a fifth.
+        assert!((50..=51).contains(&closeness_percent(64, 16, u16::MAX)));
+        assert!((80..=81).contains(&closeness_percent(400, 16, u16::MAX)));
+        // With a real near count the scale is stretched so the glass is 100.
+        let quarter = closeness_percent(64, 16, 2047);
+        assert!((50..=56).contains(&quarter), "{quarter}");
+    }
+
+    #[test]
+    fn closeness_never_decreases_with_the_count() {
+        let mut previous = 0;
+        for count in 0..=2047 {
+            let closeness = closeness_percent(count, 16, 2047);
+            assert!(closeness >= previous, "count {count}");
+            previous = closeness;
+        }
     }
 
     #[test]

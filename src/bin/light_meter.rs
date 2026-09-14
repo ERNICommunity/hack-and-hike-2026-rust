@@ -1,5 +1,6 @@
 //! A light meter: the screen shows the ambient light in lux and how close
-//! something is to the front of the board, as numbers and as a bar. Cover the
+//! something is to the front of the board, as numbers and as a bar. The
+//! sensor's raw count is shown too, for calibrating the range. Cover the
 //! sensor with your hand, or switch the room light off: in the dark the
 //! screen turns dark too.
 
@@ -18,10 +19,7 @@ use embedded_graphics::{
 };
 use hack_and_hike::{
     Board,
-    capabilities::{
-        display::{SCREEN, SIZE},
-        light::Sample,
-    },
+    capabilities::display::{SCREEN, SIZE},
     ui::{Canvas, common, theme},
 };
 
@@ -31,7 +29,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 const DARK_LUX: f32 = 10.0;
 /// Left edge of the labels and the bar, in pixels.
 const MARGIN: i32 = 20;
-/// The proximity bar: full width means the largest possible count.
+/// The proximity bar: full width means something at the glass.
 const BAR: Rectangle = Rectangle::new(Point::new(MARGIN, 190), Size::new(280, 24));
 
 /// What the screen shows: the sample rounded to what the text can display,
@@ -40,8 +38,10 @@ const BAR: Rectangle = Rectangle::new(Point::new(MARGIN, 190), Size::new(280, 24
 struct Shown {
     /// Whole lux.
     lux: u32,
-    /// The proximity count, 0 to `Sample::PROXIMITY_MAX`.
-    proximity: u16,
+    /// Closeness in percent.
+    proximity: u8,
+    /// The sensor's raw count.
+    raw_proximity: u16,
 }
 
 #[esp_rtos::main]
@@ -73,6 +73,7 @@ async fn main(_spawner: Spawner) -> ! {
             let next = Shown {
                 lux: sample.lux as u32,
                 proximity: sample.proximity,
+                raw_proximity: sample.raw_proximity,
             };
             if shown != Some(next) {
                 shown = Some(next);
@@ -115,14 +116,23 @@ fn draw(canvas: &mut Canvas, shown: Shown) {
         text,
     );
     value.clear();
-    write!(value, "{}", shown.proximity).expect("the value fits its buffer");
+    write!(value, "{} %", shown.proximity).expect("the value fits its buffer");
     common::text(canvas, &value, Point::new(MARGIN, 150), &FONT_10X20, accent);
+    value.clear();
+    write!(value, "raw {}", shown.raw_proximity).expect("the value fits its buffer");
+    common::text(
+        canvas,
+        &value,
+        Point::new(MARGIN, 172),
+        common::BODY_FONT,
+        text,
+    );
 
     // The bar: an outline for the full range, filled as far as the count.
     let Ok(()) = BAR
         .into_styled(PrimitiveStyle::with_stroke(text, 1))
         .draw(canvas);
-    let filled = BAR.size.width * u32::from(shown.proximity) / u32::from(Sample::PROXIMITY_MAX);
+    let filled = BAR.size.width * u32::from(shown.proximity) / 100;
     let Ok(()) = Rectangle::new(BAR.top_left, Size::new(filled, BAR.size.height))
         .into_styled(PrimitiveStyle::with_fill(accent))
         .draw(canvas);

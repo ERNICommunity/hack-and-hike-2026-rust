@@ -10,7 +10,7 @@
 //!     && let Some(sample) = light.latest()
 //! {
 //!     let dark = sample.lux < 10.0;
-//!     let covered = sample.proximity > 200;
+//!     let covered = sample.proximity > 50;
 //! }
 //! ```
 //!
@@ -36,18 +36,21 @@ pub struct Sample {
     /// hundred, a torch pointed at the board thousands. Light that is almost
     /// entirely infrared reads as 0.
     pub lux: f32,
-    /// How much of the sensor's own infrared light comes back: 0 with
-    /// nothing within about 20 cm of the front, more the closer an object
-    /// is, up to [`Sample::PROXIMITY_MAX`] when something nearly touches
-    /// the glass. The useful threshold depends on the object; try a few
-    /// values.
-    pub proximity: u16,
+    /// How close something is to the front, in percent of the range: 0 with
+    /// nothing within about 20 cm, 50 at about 10 cm, 100 at the glass. The
+    /// scale is even in distance, so a threshold is easy to pick.
+    pub proximity: u8,
+    /// The sensor's own count behind `proximity`: how much of its infrared
+    /// light comes back, 0 to [`Sample::RAW_PROXIMITY_MAX`]. It rises with
+    /// the square of the closeness, so most of its range lies in the last
+    /// few centimetres; useful to see what the sensor really measures.
+    pub raw_proximity: u16,
 }
 
 impl Sample {
-    /// The largest proximity count: something touches the sensor, or the
+    /// The largest raw proximity count: something touches the glass, or the
     /// measurement saturated.
-    pub const PROXIMITY_MAX: u16 = hack_and_hike_core::light::PROXIMITY_MAX;
+    pub const RAW_PROXIMITY_MAX: u16 = hack_and_hike_core::light::PROXIMITY_MAX;
 }
 
 /// The state shared by the handle (CPU0) and the light task (CPU1).
