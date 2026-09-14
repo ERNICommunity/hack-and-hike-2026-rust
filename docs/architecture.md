@@ -333,7 +333,7 @@ stack is 16 KiB. The board also has megabytes of PSRAM, which the firmware
 uses for large long-lived buffers:
 
 - every `Canvas` and the per-screen GUI contexts,
-- the two camera frame buffers,
+- the three camera frame buffers,
 - the log history.
 
 `support::memory::storage` has the two helpers: `leaked_slice` for a buffer
@@ -350,16 +350,19 @@ Small fixed arrays are fine; Color Ping keeps a 128-frame audio chunk.
 ## The camera path
 
 The GC0308 sensor delivers QVGA RGB565 frames over an 8-bit parallel bus into
-a small internal DMA ring. Two PSRAM buffers decouple sensor timing from LCD
-timing: while one frame is shown, the next is drained from the ring during
-LCD DMA wait time.
+a small internal DMA ring. Three PSRAM buffers decouple sensor timing from
+LCD timing: while one frame is shown, the next is drained from the ring during
+LCD DMA wait time. Drawing a frame takes longer than the sensor needs to send
+one, so a frame often completes while the previous one is still on its way to
+the LCD; it waits in the ready buffer and capture continues, because the ring
+holds only a few milliseconds and the sensor never pauses.
 
 ```mermaid
 flowchart LR
     Sensor["GC0308"] --> Ring["DMA ring"]
     Ring -. "while the LCD is busy" .-> Capture["capture buffer"]
-    Capture --> Swap["swap"]
-    Swap --> Shown["display buffer"]
+    Capture -- "complete at VSYNC" --> Ready["ready buffer"]
+    Ready -- "swap in finish()" --> Shown["display buffer"]
     Shown --> LCD["LCD DMA"]
 ```
 

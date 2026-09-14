@@ -48,8 +48,6 @@ impl CameraScreen {
 impl Screen for CameraScreen {
     fn enter(&mut self) {
         self.background_dirty = true;
-        // DIAGNOSTIC (temporary): how much internal heap the radio left.
-        hack_and_hike::support::memory::report("camera screen entered");
     }
 
     fn leave(&mut self) {
@@ -65,6 +63,10 @@ impl Screen for CameraScreen {
         if let Some(camera) = &mut self.camera {
             camera.pump();
         }
+    }
+
+    fn may_idle(&self) -> bool {
+        self.camera.is_none()
     }
 
     fn present(&mut self, canvas: &mut Canvas, surface: &mut Surface<'_>) {

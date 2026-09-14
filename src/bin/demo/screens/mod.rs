@@ -36,6 +36,13 @@ pub(crate) trait Screen {
     /// Called on every loop iteration, visible or not.
     fn update(&mut self, _now: Instant) {}
 
+    /// Whether the loop may pause between iterations while this screen is
+    /// visible. The camera screen says no: the sensor streams into a buffer
+    /// of a few milliseconds, and a pause would let it overflow.
+    fn may_idle(&self) -> bool {
+        true
+    }
+
     /// A touch inside the content area while this screen is visible, in
     /// content coordinates.
     fn handle_touch(&mut self, _event: TouchEvent) {}

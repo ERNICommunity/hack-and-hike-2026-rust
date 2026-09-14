@@ -2,18 +2,26 @@
 //!
 //! The GC0308 sends 320x240 RGB565 over an 8-bit parallel bus. The
 //! `LCD_CAM` peripheral streams those bytes into a small DMA ring buffer.
-//! Two PSRAM frame buffers decouple the sensor's timing from the display's:
+//! Three PSRAM frame buffers decouple the sensor's timing from the display's:
 //! one complete frame is shown while CPU0 copies the next one out of the
 //! ring, during the milliseconds the display's own DMA transfer is busy. The
 //! sensor's VSYNC signal marks where one frame ends and the next begins.
 //!
 //! ```text
 //! sensor ──> DMA ring ──(while the LCD is busy)──> capture buffer
-//!                                                     │ swap on VSYNC
+//!                                                     │ complete at VSYNC
+//!                                                  ready buffer
+//!                                                     │ swap in `finish`
 //!                                  LCD <── display buffer
 //! ```
+//!
+//! The sensor never pauses, and drawing a frame takes longer than the sensor
+//! needs to send one. A frame therefore often completes while the previous
+//! one is still being drawn; it waits in the ready buffer, and capture goes
+//! on into the capture buffer, so the ring is always being drained. With
+//! only two buffers, the ring would back up behind the finished frame,
+//! overflow and stop the DMA.
 
-use embassy_time::{Duration, Instant};
 use esp_hal::{
     dma::DmaRxStreamBuf,
     lcd_cam::{
@@ -124,20 +132,12 @@ impl Stream {
     }
 }
 
-/// How far the frame going into `capture_buffer` has come.
-#[derive(Clone, Copy)]
-enum Progress {
-    /// Bytes copied so far; VSYNC not seen yet.
-    Filling(usize),
-    /// VSYNC seen after this many bytes. Valid only if it is a whole frame.
-    Complete(usize),
-}
-
 /// Why a frame could not be captured.
 enum CaptureError {
     /// The DMA transfer did not start.
     DmaStart,
-    /// The DMA transfer stopped before the sensor signalled VSYNC.
+    /// Nothing drained the DMA ring for too long: it overflowed and the
+    /// transfer stopped before the sensor signalled VSYNC.
     StreamEnded,
     /// VSYNC came after this many bytes instead of a whole frame.
     BadLength(usize),
@@ -147,7 +147,7 @@ impl core::fmt::Display for CaptureError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::DmaStart => write!(f, "DMA start failed"),
-            Self::StreamEnded => write!(f, "DMA stopped before VSYNC"),
+            Self::StreamEnded => write!(f, "the DMA ring overflowed before VSYNC"),
             Self::BadLength(bytes) => write!(f, "{bytes} of {FRAME_BYTES} bytes before VSYNC"),
         }
     }
@@ -164,26 +164,23 @@ pub struct Camera {
     stream: Option<Stream>,
     /// The complete frame being shown, in PSRAM.
     display_buffer: &'static mut [u8],
-    /// The next frame, filled from the DMA ring; swapped with
-    /// `display_buffer` when complete.
+    /// The frame being filled from the DMA ring, in PSRAM.
     capture_buffer: &'static mut [u8],
+    /// The newest complete frame not shown yet, in PSRAM. Capture goes on
+    /// into `capture_buffer` while this one waits, so the ring never backs
+    /// up behind a finished frame.
+    ready_buffer: &'static mut [u8],
+    /// Whether `ready_buffer` holds a frame newer than `display_buffer`.
+    ready: bool,
     /// Whether `display_buffer` holds a whole frame.
     display_ready: bool,
-    /// How far `capture_buffer` is filled.
-    progress: Progress,
+    /// Bytes of the frame in progress copied into `capture_buffer` so far.
+    filled: usize,
+    /// A frame that ended at VSYNC with this many bytes instead of a whole
+    /// frame; reported once the next good frame is delivered.
+    short_frame: Option<usize>,
     /// Frames dropped so far, for rate-limited logging.
     bad_frames: u32,
-    /// DIAGNOSTIC (temporary): when the ring was last drained.
-    last_pump: Option<Instant>,
-    /// DIAGNOSTIC (temporary): the longest time the ring went undrained
-    /// during the current frame, and which pump call site ended it.
-    worst_gap: (Duration, &'static str),
-    /// DIAGNOSTIC (temporary): whether the current frame ended because the
-    /// DMA stopped (ring full) rather than at a VSYNC.
-    dma_stopped: bool,
-    /// DIAGNOSTIC (temporary): the slowest single pump of the current frame
-    /// and how many bytes it copied.
-    worst_pump: (Duration, usize),
 }
 
 /// One frozen camera frame being shown while the following frame is captured.
@@ -205,13 +202,14 @@ impl Frame<'_> {
     /// waiting. Call this whenever the CPU would otherwise idle, for example
     /// while the display DMA is busy.
     pub fn pump(&mut self) {
-        self.camera.pump_capture("render");
+        self.camera.pump_capture();
     }
 
-    /// Wait for the rest of the next frame and make it the frame to show.
+    /// Make the next complete frame the frame to show.
     ///
-    /// Blocks until the sensor's next VSYNC, at most one frame period. A
-    /// capture fault is logged and the following `begin_frame` re-syncs.
+    /// Returns at once if a frame completed while this one was drawn, and
+    /// otherwise waits for the sensor's next VSYNC, at most one frame period.
+    /// A capture fault is logged and the following `begin_frame` re-syncs.
     pub fn finish(self) {
         if let Err(error) = self.camera.finish_capture() {
             self.camera.report_bad_frame(error);
@@ -231,7 +229,7 @@ impl ScanlineSource for Frame<'_> {
     }
 }
 
-/// Configure `LCD_CAM` for the sensor and allocate the two frame buffers.
+/// Configure `LCD_CAM` for the sensor and allocate the three frame buffers.
 /// Capturing starts with the first [`Camera::begin_frame`].
 pub(crate) fn init(resources: Resources) -> Camera {
     let Resources {
@@ -275,13 +273,12 @@ pub(crate) fn init(resources: Resources) -> Camera {
         stream: Some(Stream::Stopped { driver, buffer }),
         display_buffer: storage::leaked_slice(FRAME_BYTES, 0),
         capture_buffer: storage::leaked_slice(FRAME_BYTES, 0),
+        ready_buffer: storage::leaked_slice(FRAME_BYTES, 0),
+        ready: false,
         display_ready: false,
-        progress: Progress::Filling(0),
+        filled: 0,
+        short_frame: None,
         bad_frames: 0,
-        last_pump: None,
-        worst_gap: (Duration::from_ticks(0), "none"),
-        dma_stopped: false,
-        worst_pump: (Duration::from_ticks(0), 0),
     }
 }
 
@@ -291,7 +288,9 @@ impl Camera {
     pub fn pause(&mut self) {
         self.stop_stream();
         self.display_ready = false;
-        self.progress = Progress::Filling(0);
+        self.ready = false;
+        self.filled = 0;
+        self.short_frame = None;
     }
 
     /// Copy whatever the sensor has delivered of the next frame, without
@@ -304,7 +303,7 @@ impl Camera {
     /// once per iteration. Otherwise frames are dropped.
     pub fn pump(&mut self) {
         if self.display_ready {
-            self.pump_capture("update");
+            self.pump_capture();
         }
     }
 
@@ -373,113 +372,79 @@ impl Camera {
         }
     }
 
-    /// Copy every byte DMA has delivered into the capture buffer, up to the
-    /// next VSYNC. Never waits for more data. Starts the stream if it is
-    /// stopped, which blocks until the next VSYNC.
-    fn pump_capture(&mut self, site: &'static str) {
-        let now = Instant::now();
-        if let Some(last) = self.last_pump {
-            let gap = now - last;
-            if gap > self.worst_gap.0 {
-                self.worst_gap = (gap, site);
-            }
-        }
-        self.last_pump = Some(now);
-
-        let Progress::Filling(mut bytes) = self.progress else {
-            return;
-        };
-
-        if self.is_stopped() && (bytes != 0 || self.start_stream_aligned().is_err()) {
-            self.progress = Progress::Complete(bytes);
-            return;
-        }
+    /// Copy every byte DMA has delivered into the frame in progress and, past
+    /// its VSYNC, into the following frame. Never waits for more data; does
+    /// nothing while the stream is stopped.
+    fn pump_capture(&mut self) {
         let Some(Stream::Running(transfer)) = self.stream.as_mut() else {
-            unreachable!("stream is running after start_stream_aligned");
+            return;
         };
-
-        // DIAGNOSTIC (temporary): how long this pump takes and how much it
-        // copies; the copy into PSRAM is slow.
-        let copy_started = Instant::now();
-        let copy_total = bytes;
 
         loop {
             let (chunk, eof) = transfer.peek_until_eof();
             let available = chunk.len();
-            if available == 0 {
-                self.progress = if eof {
-                    Progress::Complete(bytes)
-                } else {
-                    Progress::Filling(bytes)
-                };
+            if available == 0 && !eof {
                 break;
             }
             // Copy one descriptor at a time and hand it straight back to the
             // DMA. The copy into PSRAM is slow, and returning a whole run of
-            // descriptors only after copying it all starves the DMA meanwhile.
+            // descriptors only after copying it all would starve the DMA
+            // meanwhile.
             let take = available.min(STREAM_CHUNK_BYTES);
-            let copy_len = take.min(FRAME_BYTES.saturating_sub(bytes));
-            self.capture_buffer[bytes..bytes + copy_len].copy_from_slice(&chunk[..copy_len]);
-            bytes = bytes.saturating_add(take);
+            let copy_len = take.min(FRAME_BYTES.saturating_sub(self.filled));
+            self.capture_buffer[self.filled..self.filled + copy_len]
+                .copy_from_slice(&chunk[..copy_len]);
+            self.filled = self.filled.saturating_add(take);
+            // Consuming zero bytes still returns an empty descriptor that
+            // carries only the VSYNC flag.
             transfer.consume(take);
             if eof && take == available {
-                self.progress = Progress::Complete(bytes);
-                break;
+                // The frame ended. A whole frame moves to the ready buffer;
+                // anything else is dropped. Either way capture continues.
+                if self.filled == FRAME_BYTES {
+                    core::mem::swap(&mut self.capture_buffer, &mut self.ready_buffer);
+                    self.ready = true;
+                } else {
+                    self.short_frame = Some(self.filled);
+                }
+                self.filled = 0;
             }
-        }
-
-        let copied = bytes - copy_total;
-        let took = copy_started.elapsed();
-        if took > self.worst_pump.0 {
-            self.worst_pump = (took, copied);
         }
 
         if transfer.is_done() {
-            // DMA ended without VSYNC: the frame cannot complete.
-            if let Progress::Filling(bytes) = self.progress {
-                self.progress = Progress::Complete(bytes);
-            }
-            self.dma_stopped = true;
+            // The ring overflowed and the DMA stopped; `finish_capture`
+            // reports it and `begin_frame` starts afresh.
             self.stop_stream();
         }
     }
 
-    /// Wait for the rest of the frame in progress, check its size and swap it
-    /// into the display buffer.
+    /// Wait until a whole frame is ready and make it the frame to show.
     fn finish_capture(&mut self) -> Result<(), CaptureError> {
-        while let Progress::Filling(_) = self.progress {
-            self.pump_capture("finish");
-            if self.is_stopped() {
-                break;
+        loop {
+            if self.ready {
+                self.ready = false;
+                core::mem::swap(&mut self.display_buffer, &mut self.ready_buffer);
+                self.display_ready = true;
+                if let Some(bytes) = self.short_frame.take() {
+                    self.report_bad_frame(CaptureError::BadLength(bytes));
+                }
+                return Ok(());
             }
+            if self.is_stopped() {
+                self.display_ready = false;
+                self.filled = 0;
+                return Err(CaptureError::StreamEnded);
+            }
+            self.pump_capture();
             core::hint::spin_loop();
         }
-
-        let result = match self.progress {
-            Progress::Complete(FRAME_BYTES) => {
-                core::mem::swap(&mut self.display_buffer, &mut self.capture_buffer);
-                self.display_ready = true;
-                Ok(())
-            }
-            Progress::Complete(bytes) | Progress::Filling(bytes) => {
-                self.display_ready = false;
-                Err(CaptureError::BadLength(bytes))
-            }
-        };
-        self.progress = Progress::Filling(0);
-        if result.is_ok() {
-            // DIAGNOSTIC: start the gap statistics afresh for the next frame.
-            self.worst_gap = (Duration::from_ticks(0), "none");
-            self.dma_stopped = false;
-            self.worst_pump = (Duration::from_ticks(0), 0);
-        }
-        result
     }
 
     /// Capture one whole frame while nothing is shown yet.
     fn prime(&mut self) -> Result<(), CaptureError> {
         self.display_ready = false;
-        self.progress = Progress::Filling(0);
+        self.ready = false;
+        self.filled = 0;
         self.start_stream_aligned()?;
         self.finish_capture()
     }
@@ -489,19 +454,8 @@ impl Camera {
         self.bad_frames = self.bad_frames.saturating_add(1);
         if self.bad_frames == 1 || self.bad_frames.is_multiple_of(BAD_FRAME_LOG_INTERVAL) {
             warn!(
-                "Camera frame dropped: {} ({} bad frames so far); worst pump gap {} us ended by \
-                 pump from {}; slowest pump {} us for {} bytes; {}",
-                error,
-                self.bad_frames,
-                self.worst_gap.0.as_micros(),
-                self.worst_gap.1,
-                self.worst_pump.0.as_micros(),
-                self.worst_pump.1,
-                if self.dma_stopped {
-                    "DMA stopped (ring full)"
-                } else {
-                    "ended at VSYNC"
-                }
+                "Camera frame dropped: {} ({} bad frames so far)",
+                error, self.bad_frames
             );
         }
     }
