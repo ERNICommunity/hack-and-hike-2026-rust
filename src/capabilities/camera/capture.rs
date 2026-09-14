@@ -181,6 +181,9 @@ pub struct Camera {
     /// DIAGNOSTIC (temporary): whether the current frame ended because the
     /// DMA stopped (ring full) rather than at a VSYNC.
     dma_stopped: bool,
+    /// DIAGNOSTIC (temporary): the slowest single pump of the current frame
+    /// and how many bytes it copied.
+    worst_pump: (Duration, usize),
 }
 
 /// One frozen camera frame being shown while the following frame is captured.
@@ -278,6 +281,7 @@ pub(crate) fn init(resources: Resources) -> Camera {
         last_pump: None,
         worst_gap: (Duration::from_ticks(0), "none"),
         dma_stopped: false,
+        worst_pump: (Duration::from_ticks(0), 0),
     }
 }
 
@@ -394,23 +398,40 @@ impl Camera {
             unreachable!("stream is running after start_stream_aligned");
         };
 
+        // DIAGNOSTIC (temporary): how long this pump takes and how much it
+        // copies; the copy into PSRAM is slow.
+        let copy_started = Instant::now();
+        let copy_total = bytes;
+
         loop {
             let (chunk, eof) = transfer.peek_until_eof();
             let available = chunk.len();
-            let copy_len = available.min(FRAME_BYTES.saturating_sub(bytes));
-            self.capture_buffer[bytes..bytes + copy_len].copy_from_slice(&chunk[..copy_len]);
-            bytes = bytes.saturating_add(available);
-            if available != 0 {
-                transfer.consume(available);
+            if available == 0 {
+                self.progress = if eof {
+                    Progress::Complete(bytes)
+                } else {
+                    Progress::Filling(bytes)
+                };
+                break;
             }
-            if eof {
+            // Copy one descriptor at a time and hand it straight back to the
+            // DMA. The copy into PSRAM is slow, and returning a whole run of
+            // descriptors only after copying it all starves the DMA meanwhile.
+            let take = available.min(STREAM_CHUNK_BYTES);
+            let copy_len = take.min(FRAME_BYTES.saturating_sub(bytes));
+            self.capture_buffer[bytes..bytes + copy_len].copy_from_slice(&chunk[..copy_len]);
+            bytes = bytes.saturating_add(take);
+            transfer.consume(take);
+            if eof && take == available {
                 self.progress = Progress::Complete(bytes);
                 break;
             }
-            if available == 0 {
-                self.progress = Progress::Filling(bytes);
-                break;
-            }
+        }
+
+        let copied = bytes - copy_total;
+        let took = copy_started.elapsed();
+        if took > self.worst_pump.0 {
+            self.worst_pump = (took, copied);
         }
 
         if transfer.is_done() {
@@ -450,6 +471,7 @@ impl Camera {
             // DIAGNOSTIC: start the gap statistics afresh for the next frame.
             self.worst_gap = (Duration::from_ticks(0), "none");
             self.dma_stopped = false;
+            self.worst_pump = (Duration::from_ticks(0), 0);
         }
         result
     }
@@ -468,11 +490,13 @@ impl Camera {
         if self.bad_frames == 1 || self.bad_frames.is_multiple_of(BAD_FRAME_LOG_INTERVAL) {
             warn!(
                 "Camera frame dropped: {} ({} bad frames so far); worst pump gap {} us ended by \
-                 pump from {}; {}",
+                 pump from {}; slowest pump {} us for {} bytes; {}",
                 error,
                 self.bad_frames,
                 self.worst_gap.0.as_micros(),
                 self.worst_gap.1,
+                self.worst_pump.0.as_micros(),
+                self.worst_pump.1,
                 if self.dma_stopped {
                     "DMA stopped (ring full)"
                 } else {
