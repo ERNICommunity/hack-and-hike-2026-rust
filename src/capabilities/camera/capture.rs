@@ -42,15 +42,20 @@ const FRAME_BYTES: usize = WIDTH * HEIGHT * BYTES_PER_PIXEL;
 
 /// One DMA descriptor of the ring: five rows.
 ///
-/// The ring lives in internal RAM, which is scarce, so it holds only a third
-/// of a frame: 80 rows, a few milliseconds of sensor output. The sensor never
+/// The ring lives in internal RAM, which is scarce, so it holds only a sixth
+/// of a frame: 40 rows, a few milliseconds of sensor output. The sensor never
 /// stops, so someone must drain the ring at least that often: the renderer
 /// does it while each LCD DMA batch is in flight, and [`Camera::pump`] does
 /// it between frames. When the ring fills, the DMA stops and the frame is
 /// dropped.
+///
+/// Do not enlarge it casually: every static byte of internal RAM comes out
+/// of the main stack of CPU0, which is what is left of DRAM after the
+/// statics. Doubling the ring left about 20 KiB of stack and the demo
+/// overflowed it while building its screens.
 const STREAM_CHUNK_BYTES: usize = SCANLINE_BYTES * 5;
 /// The whole DMA ring.
-const STREAM_BUFFER_BYTES: usize = STREAM_CHUNK_BYTES * 16;
+const STREAM_BUFFER_BYTES: usize = STREAM_CHUNK_BYTES * 8;
 /// Log only the first bad frame and then every 32nd, not all of them.
 const BAD_FRAME_LOG_INTERVAL: u32 = 32;
 
