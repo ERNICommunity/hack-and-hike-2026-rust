@@ -129,7 +129,7 @@ impl Slowest {
         }
         self.last_report = now;
         if let Some((name, elapsed)) = self.phase.take()
-            && elapsed > Duration::from_millis(2)
+            && elapsed > Duration::from_millis(3)
         {
             log::warn!("slow phase: {} took {} us", name, elapsed.as_micros());
         }
@@ -201,8 +201,12 @@ async fn main(_spawner: Spawner) -> ! {
         }
         slowest.report(now);
 
-        let started = Instant::now();
-        Timer::after(LOOP_PERIOD).await;
-        slowest.record("sleep", started.elapsed());
+        // DIAGNOSTIC (temporary): no sleep while the camera is live, as the
+        // original camera application did.
+        if active != ViewId::Camera {
+            let started = Instant::now();
+            Timer::after(LOOP_PERIOD).await;
+            slowest.record("sleep", started.elapsed());
+        }
     }
 }

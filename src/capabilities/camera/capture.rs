@@ -13,6 +13,7 @@
 //!                                  LCD <── display buffer
 //! ```
 
+use embassy_time::{Duration, Instant};
 use esp_hal::{
     dma::DmaRxStreamBuf,
     lcd_cam::{
@@ -172,6 +173,14 @@ pub struct Camera {
     progress: Progress,
     /// Frames dropped so far, for rate-limited logging.
     bad_frames: u32,
+    /// DIAGNOSTIC (temporary): when the ring was last drained.
+    last_pump: Option<Instant>,
+    /// DIAGNOSTIC (temporary): the longest time the ring went undrained
+    /// during the current frame, and which pump call site ended it.
+    worst_gap: (Duration, &'static str),
+    /// DIAGNOSTIC (temporary): whether the current frame ended because the
+    /// DMA stopped (ring full) rather than at a VSYNC.
+    dma_stopped: bool,
 }
 
 /// One frozen camera frame being shown while the following frame is captured.
@@ -193,7 +202,7 @@ impl Frame<'_> {
     /// waiting. Call this whenever the CPU would otherwise idle, for example
     /// while the display DMA is busy.
     pub fn pump(&mut self) {
-        self.camera.pump_capture();
+        self.camera.pump_capture("render");
     }
 
     /// Wait for the rest of the next frame and make it the frame to show.
@@ -266,6 +275,9 @@ pub(crate) fn init(resources: Resources) -> Camera {
         display_ready: false,
         progress: Progress::Filling(0),
         bad_frames: 0,
+        last_pump: None,
+        worst_gap: (Duration::from_ticks(0), "none"),
+        dma_stopped: false,
     }
 }
 
@@ -288,7 +300,7 @@ impl Camera {
     /// once per iteration. Otherwise frames are dropped.
     pub fn pump(&mut self) {
         if self.display_ready {
-            self.pump_capture();
+            self.pump_capture("update");
         }
     }
 
@@ -360,7 +372,16 @@ impl Camera {
     /// Copy every byte DMA has delivered into the capture buffer, up to the
     /// next VSYNC. Never waits for more data. Starts the stream if it is
     /// stopped, which blocks until the next VSYNC.
-    fn pump_capture(&mut self) {
+    fn pump_capture(&mut self, site: &'static str) {
+        let now = Instant::now();
+        if let Some(last) = self.last_pump {
+            let gap = now - last;
+            if gap > self.worst_gap.0 {
+                self.worst_gap = (gap, site);
+            }
+        }
+        self.last_pump = Some(now);
+
         let Progress::Filling(mut bytes) = self.progress else {
             return;
         };
@@ -397,6 +418,7 @@ impl Camera {
             if let Progress::Filling(bytes) = self.progress {
                 self.progress = Progress::Complete(bytes);
             }
+            self.dma_stopped = true;
             self.stop_stream();
         }
     }
@@ -405,7 +427,7 @@ impl Camera {
     /// into the display buffer.
     fn finish_capture(&mut self) -> Result<(), CaptureError> {
         while let Progress::Filling(_) = self.progress {
-            self.pump_capture();
+            self.pump_capture("finish");
             if self.is_stopped() {
                 break;
             }
@@ -424,6 +446,11 @@ impl Camera {
             }
         };
         self.progress = Progress::Filling(0);
+        if result.is_ok() {
+            // DIAGNOSTIC: start the gap statistics afresh for the next frame.
+            self.worst_gap = (Duration::from_ticks(0), "none");
+            self.dma_stopped = false;
+        }
         result
     }
 
@@ -440,8 +467,17 @@ impl Camera {
         self.bad_frames = self.bad_frames.saturating_add(1);
         if self.bad_frames == 1 || self.bad_frames.is_multiple_of(BAD_FRAME_LOG_INTERVAL) {
             warn!(
-                "Camera frame dropped: {} ({} bad frames so far)",
-                error, self.bad_frames
+                "Camera frame dropped: {} ({} bad frames so far); worst pump gap {} us ended by \
+                 pump from {}; {}",
+                error,
+                self.bad_frames,
+                self.worst_gap.0.as_micros(),
+                self.worst_gap.1,
+                if self.dma_stopped {
+                    "DMA stopped (ring full)"
+                } else {
+                    "ended at VSYNC"
+                }
             );
         }
     }
