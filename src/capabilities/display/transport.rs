@@ -25,10 +25,10 @@ use super::{BYTES_PER_PIXEL, Resources, ScanlineSource, WIDTH, controller};
 /// accept everything at.
 const COMMAND_SPI_MHZ: u32 = 40;
 /// Clock for pixel data, the ceiling on drawing speed: a full frame is
-/// 153,600 bytes, 31 ms at 40 MHz and 15 ms at 80 MHz, the ESP32-S3's
-/// maximum. 80 MHz is beyond the panel's specification; try it only with a
-/// board at hand and go back to 40 MHz if the picture shows noise.
-const PIXEL_SPI_MHZ: u32 = 80;
+/// 153,600 bytes, 31 ms at 40 MHz. The ESP32-S3 could do 80 MHz, but the
+/// CoreS3 Lite panel shows heavy noise at that rate (tried 2026-09-14), so
+/// 40 MHz is the limit on this board.
+const PIXEL_SPI_MHZ: u32 = 40;
 /// Scanlines per DMA batch. Seven full-width rows are 4,480 bytes, which keeps
 /// a batch close to one 4 KiB GDMA descriptor while cutting per-transfer
 /// overhead for full-frame producers such as the camera.
