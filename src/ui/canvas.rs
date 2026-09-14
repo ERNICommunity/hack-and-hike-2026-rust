@@ -94,6 +94,7 @@ impl Canvas {
             "the surface must be the size of the canvas"
         );
         if let Some(changed) = self.changed.take() {
+            let changed = even_columns(changed, self.size);
             surface.subsurface(changed).render_from(&mut Window {
                 canvas: self,
                 area: changed,
@@ -128,6 +129,19 @@ impl Canvas {
         self.drawn = union(self.drawn, area);
         self.changed = union(self.changed, area);
     }
+}
+
+/// Widen `area` so that it starts on an even column and spans an even number
+/// of columns, staying inside a canvas of `size`. Every row then transfers
+/// as whole 32-bit words, which the SPI DMA handles exactly.
+fn even_columns(area: Rectangle, size: Size) -> Rectangle {
+    let left = area.top_left.x & !1;
+    let right = (area.top_left.x + area.size.width as i32 + 1) & !1;
+    let right = right.min(size.width as i32);
+    Rectangle::new(
+        Point::new(left, area.top_left.y),
+        Size::new((right - left) as u32, area.size.height),
+    )
 }
 
 /// The smallest rectangle containing both.
