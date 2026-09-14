@@ -7,7 +7,7 @@
 //!
 //! Bring-up is fail-fast: a chip that does not answer on I2C panics with a
 //! message naming it, because the board is unusable without it. The camera
-//! is the one exception and simply comes back as `None`.
+//! and the light sensor are the exceptions and simply come back as `None`.
 //!
 //! The order of the steps matters:
 //!
@@ -17,8 +17,9 @@
 //!    touch controller and camera are unpowered or held in reset until then.
 //! 4. The camera, which needs the shared I2C pins at a slower speed.
 //! 5. The display over SPI.
-//! 6. The audio codecs, then the whole system I2C bus moves to CPU1.
-//! 7. CPU1 starts the IMU, touch, audio, radio and backlight tasks.
+//! 6. The audio codecs and a look for the light sensor, then the whole
+//!    system I2C bus moves to CPU1.
+//! 7. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks.
 
 mod cpu1;
 
@@ -32,6 +33,7 @@ use crate::{
         camera::{self, Camera},
         display::{self, Display},
         imu::{self, Imu},
+        light::{self, Light},
         network::{self, Network},
         touch::{self, Touch},
     },
@@ -99,6 +101,9 @@ pub struct Board {
     pub network: Network,
     /// The camera; `None` when it did not answer during bring-up.
     pub camera: Option<Camera>,
+    /// Proximity and ambient light sensor; `None` when it did not answer
+    /// during bring-up.
+    pub light: Option<Light>,
     /// History of everything written through the `log` macros.
     pub log: LogHistory,
 }
@@ -187,6 +192,14 @@ impl Board {
         // The final system I2C driver moves to CPU1 once the codecs are set up.
         let mut system_i2c = i2c::init(i2c_resources);
         audio::init_codecs(&mut system_i2c, delay).expect("audio codecs did not answer");
+        // The light sensor is optional, like the camera: its task is only
+        // spawned when the chip answered.
+        let (light, light_runtime) = if light::probe(&mut system_i2c) {
+            let light::Endpoints { handle, runtime } = light::endpoints();
+            (Some(handle), Some(runtime))
+        } else {
+            (None, None)
+        };
 
         // Every CPU1 capability comes as a pair: the handle for the
         // application and the runtime side for its CPU1 task, sharing one set
@@ -237,6 +250,7 @@ impl Board {
                 imu: imu_runtime,
                 network: network_runtime,
                 touch: touch_runtime,
+                light: light_runtime,
             },
         );
 
@@ -249,6 +263,7 @@ impl Board {
             speaker,
             network,
             camera,
+            light,
             log,
         }
     }

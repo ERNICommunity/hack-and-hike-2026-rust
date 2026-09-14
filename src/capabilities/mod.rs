@@ -16,5 +16,6 @@ pub mod backlight;
 pub mod camera;
 pub mod display;
 pub mod imu;
+pub mod light;
 pub mod network;
 pub mod touch;

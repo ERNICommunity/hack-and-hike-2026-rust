@@ -25,6 +25,7 @@ the board.
 | Speaker | `Speaker` | Play 16 kHz stereo audio |
 | Network | `Network` | Send your own message types to nearby boards (ESP-NOW) |
 | Camera | `Camera` | RGB565 frames, 320x240 |
+| Light | `Light` | Ambient light in lux and how close something is to the front |
 | Log | `LogHistory` | Everything your code logged, for showing on screen |
 
 ## Contents
@@ -83,7 +84,8 @@ In the editor, hover over any name to read the same comments.
 ## Run the tests
 
 The hardware-independent logic (the IMU math, the network protocol and peer
-table, the audio ring buffer, the log history) lives in the crate
+table, the audio ring buffer, the log history, the light sensor's lux
+formula) lives in the crate
 `crates/core` and has ordinary Rust tests that run on your computer:
 
 ```bash
@@ -121,6 +123,9 @@ modules are files in `crates/core/tests/`.
   pitch are 0. Roll is positive when the right side is lower; pitch is
   positive when the top edge is raised; the heading is where the top edge
   points, in degrees clockwise from magnetic north.
+- **The light sensor** faces the same way as the screen. It reports the
+  ambient light in lux and a proximity count: 0 with nothing in front of the
+  board, a few hundred with a hand a few centimetres away.
 - **Audio** is signed 16-bit stereo at 16 kHz, interleaved left, right, left,
   right, ...
 - **Every board in the room** talks on the same radio channel. Messages carry
@@ -461,6 +466,21 @@ and the next `begin_frame()`, though, nothing drains it: call `camera.pump()`
 once per loop iteration and do not sleep between frames while the camera is
 live. Otherwise frames are dropped and a warning is logged.
 
+**Light.** `light` is an `Option` too. `latest()` gives the newest sample,
+ten per second, or `None` when nothing new arrived since the last call.
+
+```rust
+if let Some(light) = light.as_mut()
+    && let Some(sample) = light.latest()
+{
+    let dark = sample.lux < 10.0;
+    let covered = sample.proximity > 200;
+}
+```
+
+The lux value is an estimate from the sensor's formula; the useful proximity
+threshold depends on what comes close, so try a few values.
+
 **Backlight.** `Brightness::new` is for numbers in the code;
 `Brightness::try_from(percent)` checks a number computed at run time.
 
@@ -566,6 +586,8 @@ are internal to the library; everything else is private to its module.
 | Clap counter: count claps with the microphone peak | display, microphone |
 | Photo booth: freeze a camera frame on a tap | display, touch, camera |
 | Night light: brightness follows how the board is held | backlight, IMU |
+| Pocket mode: dim the screen when it is covered or the room is dark | light, backlight |
+| Theremin: pitch follows how close your hand is | light, speaker |
 
 ## Project folders
 

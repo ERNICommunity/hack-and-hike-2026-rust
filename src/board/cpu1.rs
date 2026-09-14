@@ -11,7 +11,7 @@ use esp_hal::{
 use static_cell::StaticCell;
 
 use crate::{
-    capabilities::{audio, backlight, imu, network, touch},
+    capabilities::{audio, backlight, imu, light, network, touch},
     platform::i2c,
 };
 
@@ -44,6 +44,8 @@ pub(super) struct Cpu1 {
     pub(super) touch: touch::Runtime,
     /// Signal shared with the backlight handle.
     pub(super) backlight: backlight::Runtime,
+    /// Signal shared with the light handle; `None` when no sensor answered.
+    pub(super) light: Option<light::Runtime>,
 }
 
 /// Start the second core with its own async executor and the capability
@@ -73,6 +75,9 @@ fn run(cpu1: Cpu1) {
         backlight::spawn(&spawner, system_bus, cpu1.backlight);
         imu::spawn(&spawner, system_bus, cpu1.imu);
         touch::spawn(&spawner, system_bus, cpu1.touch);
+        if let Some(light) = cpu1.light {
+            light::spawn(&spawner, system_bus, light);
+        }
         audio::spawn(&spawner, cpu1.audio_resources, cpu1.audio);
     });
 }

@@ -23,7 +23,8 @@
 //!   [`Microphone`](capabilities::audio::Microphone),
 //!   [`Speaker`](capabilities::audio::Speaker),
 //!   [`Network`](capabilities::network::Network),
-//!   [`Camera`](capabilities::camera::Camera) and
+//!   [`Camera`](capabilities::camera::Camera),
+//!   [`Light`](capabilities::light::Light) and
 //!   [`Backlight`](capabilities::backlight::Backlight).
 //! - [`ui`]: a [`Canvas`](ui::Canvas) to draw on, the colour palette, text
 //!   helpers and a slider.

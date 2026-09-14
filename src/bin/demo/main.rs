@@ -107,6 +107,8 @@ async fn main(_spawner: Spawner) -> ! {
         camera,
         backlight,
         log,
+        // The demo has no screen for the light sensor yet.
+        light: _,
     } = Board::init();
 
     let mut screens = Screens {

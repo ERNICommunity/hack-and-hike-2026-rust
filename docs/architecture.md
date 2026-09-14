@@ -59,6 +59,7 @@ sequenceDiagram
     Board->>I2C: power the camera, program the sensor (100 kHz)
     Board->>Board: initialize the display over SPI DMA
     Board->>I2C: configure microphone and speaker codecs
+    Board->>I2C: look for the light sensor
     Board->>CPU1: start the executor with I2C, I2S and the radio
     Board-->>Main: Board { display, touch, imu, ... }
 ```
@@ -68,8 +69,8 @@ needs a slower bus during its setup. All of that stays inside `src/board/`
 and `camera::bring_up`.
 
 Bring-up fails fast: a chip that does not answer panics with a message naming
-it, because the board is unusable without it. The camera is the exception and
-comes back as `None`.
+it, because the board is unusable without it. The camera and the light sensor
+are the exceptions and come back as `None`.
 
 ## CPU0 and CPU1
 
@@ -81,6 +82,7 @@ The ESP32-S3 has two cores.
 
 - IMU acquisition and sensor fusion at 100 Hz,
 - touch polling,
+- proximity and ambient light readings at 10 Hz,
 - microphone capture and speaker playback (I2S DMA),
 - ESP-NOW beacons, sending and receiving,
 - backlight changes over I2C.
@@ -94,12 +96,14 @@ flowchart LR
     subgraph CPU1
         IMU["IMU"]
         Touch["Touch"]
+        Light["Light"]
         Audio["Audio"]
         Network["Network"]
         Backlight["Backlight"]
     end
     IMU --> App
     Touch --> App
+    Light --> App
     Audio <--> App
     Network <--> App
     App --> Backlight
@@ -135,7 +139,7 @@ Data crosses the cores in one of two ways:
 
 | Pattern | Used by | Application sees |
 | --- | --- | --- |
-| Latest value (`Signal`) | IMU samples, network snapshots; in the other direction, backlight requests | `latest()` returns `Some` only once per new value; `set` replaces a request not yet applied |
+| Latest value (`Signal`) | IMU samples, light samples, network snapshots; in the other direction, backlight requests | `latest()` returns `Some` only once per new value; `set` replaces a request not yet applied |
 | Bounded queue (`Channel`) | touch events, network messages, microphone blocks | `next_*()` returns events in order. When a queue is full, the microphone drops its oldest block; touch and network drop the newest event and count it |
 
 The speaker is the reverse direction: the application writes into a
@@ -408,6 +412,7 @@ Code that needs no hardware lives in `crates/core`:
 | `imu` | vector helpers, sensor fusion, magnetometer compensation and calibration |
 | `network` | wire protocol, typed messages, peer table |
 | `audio` | the speaker's `FrameRing`, the IMA ADPCM decoder |
+| `light` | decoding of the light sensor's data and the lux formula |
 | `lines` | the log history |
 | `touch` | decoding of the touch controller's report |
 

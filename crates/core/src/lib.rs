@@ -13,6 +13,7 @@
 //! | --- | --- | --- |
 //! | [`audio`] | the speaker's ring buffer, an ADPCM decoder | audio capability, demo |
 //! | [`imu`] | sensor fusion, magnetometer compensation and calibration | IMU capability |
+//! | [`light`] | data decoding and the lux formula of the light sensor | light capability |
 //! | [`lines`] | a fixed-size history of text lines | log history |
 //! | [`network`] | wire protocol, typed messages, peer table | network capability |
 //! | [`touch`] | decoding of the touch controller's report | touch capability |
@@ -27,6 +28,7 @@
 
 pub mod audio;
 pub mod imu;
+pub mod light;
 pub mod lines;
 pub mod network;
 pub mod touch;
