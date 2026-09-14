@@ -106,7 +106,9 @@ flowchart LR
 ```
 
 The camera is the one capability that runs on CPU0: its frames are drained
-while the display DMA is busy, which only works from the drawing loop.
+while the display DMA is busy, which only works from the drawing loop. The
+sensor streams continuously into a buffer of a few milliseconds, so the loop
+also calls `camera.pump()` on every iteration to keep it from overflowing.
 
 You never talk to CPU1 directly. Every handle method returns immediately; it
 reads from or writes to a queue or a "latest value" slot shared between the
@@ -363,8 +365,10 @@ flowchart LR
 
 `camera.begin_frame()` gives you the finished frame; drawing it with
 `surface.render_from(&mut frame)` pumps the next capture; `frame.finish()`
-waits for the sensor's VSYNC and swaps. A camera application should reuse this
-path rather than copying frames.
+waits for the sensor's VSYNC and swaps. Between `finish` and the next
+`begin_frame` nothing drains the ring, so call `camera.pump()` wherever the
+loop does other work. A camera application should reuse this path rather than
+copying frames.
 
 ## The network protocol
 

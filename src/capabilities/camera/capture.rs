@@ -42,12 +42,15 @@ const FRAME_BYTES: usize = WIDTH * HEIGHT * BYTES_PER_PIXEL;
 
 /// One DMA descriptor of the ring: five rows.
 ///
-/// The ring lives in internal RAM, which is scarce, so it is small: 40 rows.
-/// That is enough because the renderer drains it while each LCD DMA batch is
-/// in flight; most of a frame never sits in the ring for long.
+/// The ring lives in internal RAM, which is scarce, so it holds only a third
+/// of a frame: 80 rows, a few milliseconds of sensor output. The sensor never
+/// stops, so someone must drain the ring at least that often: the renderer
+/// does it while each LCD DMA batch is in flight, and [`Camera::pump`] does
+/// it between frames. When the ring fills, the DMA stops and the frame is
+/// dropped.
 const STREAM_CHUNK_BYTES: usize = SCANLINE_BYTES * 5;
 /// The whole DMA ring.
-const STREAM_BUFFER_BYTES: usize = STREAM_CHUNK_BYTES * 8;
+const STREAM_BUFFER_BYTES: usize = STREAM_CHUNK_BYTES * 16;
 /// Log only the first bad frame and then every 32nd, not all of them.
 const BAD_FRAME_LOG_INTERVAL: u32 = 32;
 
@@ -185,7 +188,7 @@ impl Frame<'_> {
     /// waiting. Call this whenever the CPU would otherwise idle, for example
     /// while the display DMA is busy.
     pub fn pump(&mut self) {
-        self.camera.pump();
+        self.camera.pump_capture();
     }
 
     /// Wait for the rest of the next frame and make it the frame to show.
@@ -270,6 +273,20 @@ impl Camera {
         self.progress = Progress::Filling(0);
     }
 
+    /// Copy whatever the sensor has delivered of the next frame, without
+    /// waiting. Does nothing while the camera is paused.
+    ///
+    /// The sensor streams continuously into a small buffer that holds only a
+    /// few milliseconds of data. Drawing a [`Frame`] drains it, but between
+    /// `finish` and the next `begin_frame` nothing does, so a loop that sleeps
+    /// or does other work between frames should call this often, for example
+    /// once per iteration. Otherwise frames are dropped.
+    pub fn pump(&mut self) {
+        if self.display_ready {
+            self.pump_capture();
+        }
+    }
+
     /// Start showing the current frame.
     ///
     /// The first call after boot or `pause` blocks for up to two frame periods
@@ -336,8 +353,9 @@ impl Camera {
     }
 
     /// Copy every byte DMA has delivered into the capture buffer, up to the
-    /// next VSYNC. Never waits for more data.
-    fn pump(&mut self) {
+    /// next VSYNC. Never waits for more data. Starts the stream if it is
+    /// stopped, which blocks until the next VSYNC.
+    fn pump_capture(&mut self) {
         let Progress::Filling(mut bytes) = self.progress else {
             return;
         };
@@ -382,7 +400,7 @@ impl Camera {
     /// into the display buffer.
     fn finish_capture(&mut self) -> Result<(), CaptureError> {
         while let Progress::Filling(_) = self.progress {
-            self.pump();
+            self.pump_capture();
             if self.is_stopped() {
                 break;
             }

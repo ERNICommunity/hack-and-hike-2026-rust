@@ -437,6 +437,11 @@ if let Some(camera) = camera.as_mut()
 }
 ```
 
+The sensor never stops streaming, and its buffer holds only a few
+milliseconds. If your loop sleeps or does other work between two frames, call
+`camera.pump()` there, once per iteration is enough; otherwise frames are
+dropped and a warning is logged.
+
 **Backlight.** `Brightness::new` is for numbers in the code;
 `Brightness::try_from(percent)` checks a number computed at run time.
 

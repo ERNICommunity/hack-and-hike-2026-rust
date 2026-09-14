@@ -4,6 +4,7 @@
 //! canvas: while a frame is being sent, the camera captures the next one.
 //! Without a camera the screen says so.
 
+use embassy_time::Instant;
 use embedded_graphics::prelude::Dimensions as _;
 use hack_and_hike::{
     capabilities::{
@@ -52,6 +53,15 @@ impl Screen for CameraScreen {
     fn leave(&mut self) {
         if let Some(camera) = &mut self.camera {
             camera.pause();
+        }
+    }
+
+    /// Keep the sensor's small buffer drained between frames. The loop sleeps
+    /// and updates the other screens between two `present` calls, which is
+    /// longer than the buffer lasts.
+    fn update(&mut self, _now: Instant) {
+        if let Some(camera) = &mut self.camera {
+            camera.pump();
         }
     }
 
