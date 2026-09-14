@@ -28,7 +28,7 @@ const COMMAND_SPI_MHZ: u32 = 40;
 /// 153,600 bytes, 31 ms at 40 MHz and 15 ms at 80 MHz, the ESP32-S3's
 /// maximum. 80 MHz is beyond the panel's specification; try it only with a
 /// board at hand and go back to 40 MHz if the picture shows noise.
-const PIXEL_SPI_MHZ: u32 = 40;
+const PIXEL_SPI_MHZ: u32 = 80;
 /// Scanlines per DMA batch. Seven full-width rows are 4,480 bytes, which keeps
 /// a batch close to one 4 KiB GDMA descriptor while cutting per-transfer
 /// overhead for full-frame producers such as the camera.
