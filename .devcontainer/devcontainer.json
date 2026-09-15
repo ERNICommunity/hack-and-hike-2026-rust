@@ -9,10 +9,15 @@
         "dockerfile": "Dockerfile"
     },
     "runArgs": [
-        // Podman only: map the container user to the host user.
-        "--userns=keep-id",
         // Lets the container reach services on the host's localhost.
         "--net=host"
+        // Podman also needs "--userns=keep-id", so that files you create in the
+        // container belong to you on the host. Docker does not accept that
+        // option, and this file cannot depend on the container runtime, so
+        // Podman users set it once in ~/.config/containers/containers.conf:
+        //   [containers]
+        //   userns = "keep-id"
+        // See "Open the project" in README.md.
     ],
     "customizations": {
         "vscode": {
