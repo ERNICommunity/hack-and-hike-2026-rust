@@ -6,6 +6,13 @@ describe("serial device search", () => {
     expect(parseDeviceSearch("303a:1001")).toEqual({ vendorId: 0x303a, productId: 0x1001 });
   });
 
+  it("accepts a 0x prefix on each ID, like the server", () => {
+    expect(parseDeviceSearch("0x303a:0x1001")).toEqual({ vendorId: 0x303a, productId: 0x1001 });
+    expect(parseDeviceSearch("303A:0x1001")).toEqual({ vendorId: 0x303a, productId: 0x1001 });
+    expect(() => parseDeviceSearch("0x0x303a:*")).toThrow(/Invalid serial search string/);
+    expect(() => parseDeviceSearch("0x:*")).toThrow(/Invalid serial search string/);
+  });
+
   it("parses vendor wildcards", () => {
     expect(parseDeviceSearch("10c4:*")).toEqual({ vendorId: 0x10c4 });
   });

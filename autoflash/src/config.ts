@@ -1,9 +1,12 @@
 /**
- * The one value most users need to change.
+ * The device filter: which serial devices Autoflash uses.
  *
- * Format: "vvvv:pppp" (hex USB vendor and product IDs).
- * Use "vvvv:*" to match every product from one vendor, or "*" to use every
- * previously-authorized serial port.
+ * The Rust server sends it in `/runtime-config.js`. This default is used only
+ * when the server sends no filter, for example with the Vite dev server.
+ *
+ * Format: "vvvv:pppp", the USB vendor ID (VID) and product ID (PID) in
+ * hexadecimal. "vvvv:*" matches every product of one vendor. "*" matches
+ * every authorized serial port.
  *
  * Common examples:
  *   Espressif native USB   303a:*
@@ -13,17 +16,23 @@
 export const SERIAL_PORT_SEARCH =
   window.__ESP_AUTOFLASH_CONFIG__?.serialPortSearch?.trim() || "303a:*";
 
+/** The baud rate of the serial log. */
 export const MONITOR_BAUD_RATE = 115_200;
+/** The baud rate while flashing. */
 export const FLASH_BAUD_RATE = 460_800;
+/** The flash address of the firmware file. A merged image belongs at 0x0. */
 export const FLASH_ADDRESS = 0x0;
 
-/** Polling is used because FileSystemObserver is not yet consistently shipped. */
+/**
+ * How often the page checks the size and modification time of the firmware
+ * file. The page polls, because not all browsers have `FileSystemObserver` yet.
+ */
 export const FILE_POLL_INTERVAL_MS = 400;
+/** How long the file must stay the same after a change before the page flashes it. */
 export const FILE_STABLE_FOR_MS = 700;
-export const MONITOR_RESTART_DELAY_MS = 350;
 
-/** A panic backtrace has ended when the serial output has been quiet this long. */
+/** A panic backtrace ends when no serial output arrives for this long. */
 export const BACKTRACE_QUIET_MS = 300;
 
-/** Prevent an unattended tab from growing without bound. */
+/** The largest size of each log, so that a tab that nobody watches does not use more and more memory. */
 export const MAX_LOG_CHARACTERS = 350_000;

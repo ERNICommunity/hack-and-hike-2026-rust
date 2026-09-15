@@ -1,7 +1,16 @@
+/**
+ * Stores the handle of the firmware file in IndexedDB, the database of the
+ * browser. A handle is a reference to the file, not its content. So the page
+ * can use the same file again after a reload.
+ */
+
 const DATABASE_NAME = "esp-autoflash";
+/** The object store that holds file handles. */
 const STORE_NAME = "handles";
+/** The key of the firmware file handle in the store. */
 const FIRMWARE_KEY = "firmware";
 
+/** Open the database, and create the store the first time. */
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, 1);
@@ -13,6 +22,7 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
+/** Save `handle` as the firmware file, in place of an earlier one. */
 export async function saveFirmwareHandle(handle: FileSystemFileHandle): Promise<void> {
   const database = await openDatabase();
   try {
@@ -27,6 +37,10 @@ export async function saveFirmwareHandle(handle: FileSystemFileHandle): Promise<
   }
 }
 
+/**
+ * The saved firmware file handle, or `undefined` when there is none. The
+ * browser can ask for read permission again before the page can use it.
+ */
 export async function loadFirmwareHandle(): Promise<FileSystemFileHandle | undefined> {
   const database = await openDatabase();
   try {

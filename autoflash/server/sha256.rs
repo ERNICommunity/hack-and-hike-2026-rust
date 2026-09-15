@@ -1,12 +1,17 @@
-//! SHA-256 (FIPS 180-4), used to match an ELF file to the firmware image
-//! built from it. The server has no crate dependencies, so it is written out.
+//! SHA-256, the hash function of the FIPS 180-4 standard.
+//!
+//! The server uses it to find the ELF file that a firmware image was built
+//! from. The server uses no other crates, so this file implements the
+//! algorithm itself.
 
 use std::io::{self, Read};
 
+/// The hash state before the first block (FIPS 180-4, section 5.3.3).
 const INITIAL_STATE: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
+/// One constant for each of the 64 rounds (FIPS 180-4, section 4.2.2).
 const ROUND_CONSTANTS: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -18,7 +23,7 @@ const ROUND_CONSTANTS: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-/// The SHA-256 digest of everything `reader` yields.
+/// The SHA-256 hash of all bytes that `reader` returns.
 pub fn digest_reader(mut reader: impl Read) -> io::Result<[u8; 32]> {
     let mut state = INITIAL_STATE;
     let mut block = [0_u8; 64];
@@ -38,7 +43,9 @@ pub fn digest_reader(mut reader: impl Read) -> io::Result<[u8; 32]> {
         }
     }
 
-    // Padding: a one bit, zeros, then the message length in bits.
+    // Padding: one 1 bit, then 0 bits, then the message length in bits as
+    // the last 8 bytes. When the length does not fit after the 1 bit, it goes
+    // into one more block.
     block[filled] = 0x80;
     block[filled + 1..].fill(0);
     if filled >= 56 {
@@ -55,6 +62,7 @@ pub fn digest_reader(mut reader: impl Read) -> io::Result<[u8; 32]> {
     Ok(digest)
 }
 
+/// Mix one 64-byte block into `state` (FIPS 180-4, section 6.2.2).
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut schedule = [0_u32; 64];
     for (word, bytes) in schedule.iter_mut().zip(block.chunks_exact(4)) {
@@ -112,15 +120,19 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         assert_eq!(
-            hex(&digest_reader(&b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"[..]).unwrap()),
+            hex(
+                &digest_reader(&b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"[..])
+                    .unwrap()
+            ),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
     }
 
     #[test]
     fn handles_every_padding_boundary() {
-        // 55, 56 and 64 bytes straddle the one-block / two-block padding cases;
-        // a reader that returns one byte at a time exercises partial blocks.
+        // With 55 bytes, the padding fits into the last block. With 56 or
+        // more bytes in the last block, it needs one more block. A reader that
+        // returns one byte at a time tests blocks that fill in several reads.
         struct OneByte<'a>(&'a [u8]);
         impl Read for OneByte<'_> {
             fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {

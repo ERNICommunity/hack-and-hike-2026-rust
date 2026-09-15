@@ -24,6 +24,12 @@ type ConnectionState = "searching" | "needs-permission" | "connected" | "flashin
 type FileState = "empty" | "permission" | "watching" | "settling" | "queued" | "paused";
 type LogLevel = "info" | "success" | "error";
 
+/**
+ * Private fields and methods of the esptool-js `Transport` that
+ * `EventDrivenTransport` uses. Its type declarations do not include them.
+ * The `SLIP_*` values are the special bytes of SLIP (Serial Line Internet
+ * Protocol), the framing that the ESP bootloader protocol uses.
+ */
 type TransportInternals = {
   buffer: Uint8Array;
   reader?: ReadableStreamDefaultReader<Uint8Array>;
@@ -35,44 +41,77 @@ type TransportInternals = {
   SLIP_ESC_ESC: number;
 };
 
+/**
+ * One device tab. The session stays when the device disconnects, so that the
+ * device can use the same tab again when it comes back.
+ */
 type DeviceSession = {
+  /** The Web Serial port object. After a reconnect, this can be a new object. */
   port: SerialPort;
+  /** The number in the tab name "Device N". */
   number: number;
+  /** The USB ID as `vvvv:pppp`. */
   portId: string;
+  /** Whether the device is online. False after a disconnect, until a port is attached to this session again. */
   connected: boolean;
   state: ConnectionState;
+  /** The status text above the log. */
   status: string;
+  /** The serial log of the device. */
   log: string;
+  /** Whether the serial log was opened before. Then "Clear on reconnect" applies. */
   monitorOpened: boolean;
+  /** When the device disconnected (`Date.now()`). A new port uses the tab that disconnected last. */
   disconnectedAt?: number;
+  /** The reader of the serial log stream, while the log is open. */
   monitorReader?: ReadableStreamDefaultReader<Uint8Array>;
+  /** Set while the serial log is opening, so that a second call waits for it. */
   monitorStart?: Promise<void>;
+  /** The loop that reads the serial log. Set while it runs. */
   monitorLoop?: Promise<void>;
+  /** True when the page itself stops the serial log, so that the stop is not an error. */
   stopRequested: boolean;
-  /** Hash of the ELF file behind the firmware this page last flashed to the device. */
+  /**
+   * The hash of the ELF file of the firmware on the device, as far as the
+   * page knows. It is set after a successful flash. When the first flash of
+   * this device fails, it is the hash of the file that was selected before.
+   * When it is not set, the hash of the selected file is used.
+   */
   elfSha256?: string;
+  /** Finds backtraces in the serial log. */
   backtraces: BacktraceCollector;
+  /** Ends a pending backtrace after `BACKTRACE_QUIET_MS` without output. */
   backtraceTimer?: number;
 };
 
 /**
- * esptool-js 0.6.1 polls its receive buffer with a 1 ms setTimeout. Chromium
- * throttles that timer in background tabs, which can make a valid stub reply
- * look like a serial timeout. This transport wakes reads when Web Serial
- * delivers bytes instead, while keeping esptool-js's SLIP parsing behavior.
+ * A Transport that wakes waiting reads as soon as Web Serial delivers bytes.
+ *
+ * esptool-js 0.6.1 checks its receive buffer in a loop with a 1 ms
+ * `setTimeout`. Chromium slows down timers in background tabs. Then a correct
+ * reply from the flasher stub can look like a serial timeout. (The stub is a
+ * small flasher program that esptool-js loads into the RAM of the chip.)
+ * This class keeps the SLIP packet parsing of esptool-js.
  */
 class EventDrivenTransport extends Transport {
+  /** Functions that wake the waiting reads when new bytes arrive. */
   private readonly dataWaiters = new Set<() => void>();
 
+  /** This object, typed with the private fields of `Transport`. */
   private get internals(): TransportInternals {
     return this as unknown as TransportInternals;
   }
 
+  /** Wake all waiting reads. */
   private signalData(): void {
     for (const wake of this.dataWaiters) wake();
     this.dataWaiters.clear();
   }
 
+  /**
+   * Wait until the receive buffer has bytes, or until `timeout` milliseconds
+   * have passed. Resolves to `true` when bytes are available.
+   */
   private waitForData(timeout: number): Promise<boolean> {
     if (this.internals.buffer.length > 0) return Promise.resolve(true);
 
@@ -89,11 +128,14 @@ class EventDrivenTransport extends Transport {
       const timeoutId = window.setTimeout(() => finish(false), timeout);
       this.dataWaiters.add(wake);
 
-      // Avoid missing bytes delivered between the initial check and waiter setup.
+      // Check the buffer again after the waiter is registered. This is only a
+      // safety check: the Promise callback runs right after the first check,
+      // so no bytes can arrive in between.
       if (this.internals.buffer.length > 0) wake();
     });
   }
 
+  /** Read from the serial port into the receive buffer, and wake waiting reads. */
   override async readLoop(): Promise<void> {
     const state = this.internals;
 
@@ -108,13 +150,13 @@ class EventDrivenTransport extends Transport {
           this.signalData();
         }
       } catch (error) {
+        // Web Serial reports these line errors as DOMExceptions too, so check
+        // the name first: the port still works after them.
+        const recoverable = ["BufferOverrunError", "FramingError", "BreakError", "ParityError"];
+        if (error instanceof Error && recoverable.includes(error.name)) continue;
         if (error instanceof DOMException) {
           state.onDeviceLostCallback?.();
           break;
-        }
-        if (error instanceof Error) {
-          const recoverable = ["BufferOverrunError", "FramingError", "BreakError", "ParityError"];
-          if (recoverable.includes(error.name)) continue;
         }
         break;
       } finally {
@@ -123,10 +165,17 @@ class EventDrivenTransport extends Transport {
       }
     }
 
-    // Release a pending read immediately if the stream ends.
+    // When the stream ends, wake a waiting read at once, so that it fails now
+    // and not only after its timeout.
     this.signalData();
   }
 
+  /**
+   * Return the next SLIP packet, without its frame bytes and escapes. Throws
+   * when no bytes arrive within `timeout` milliseconds, or when the bytes are
+   * not a valid packet. The code follows `Transport.read` of esptool-js
+   * 0.6.1, but waits with `waitForData`.
+   */
   override async read(timeout: number): Promise<Uint8Array> {
     const state = this.internals;
     let partialPacket: Uint8Array | null = null;
@@ -180,8 +229,11 @@ class EventDrivenTransport extends Transport {
 }
 
 const deviceSearch = parseDeviceSearch(SERIAL_PORT_SEARCH);
+/** The last progress line that esptool-js logs in `writeFlash`, for the last block. */
 const FINAL_FLASH_WRITE_LINE = /^Writing at 0x[0-9a-f]+\.\.\. \(100%\)$/i;
+/** The time between two attempts to connect to an offline device. */
 const RECONNECT_RETRY_DELAY_MS = 250;
+/** The delay of a connect attempt after a USB connect event: none. */
 const RECONNECT_EVENT_DELAY_MS = 0;
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
@@ -357,35 +409,53 @@ const ui = {
   downloadLogButton: element<HTMLButtonElement>("download-log-button"),
 };
 
+/** All device sessions, by their current port object. */
 const devices = new Map<SerialPort, DeviceSession>();
+/** The attach operation that runs for a port, so that a second attach waits for it. */
 const attachingPorts = new Map<SerialPort, Promise<void>>();
+/** Offline sessions that a new port is taking over right now. */
 const reconnectingSessions = new Set<DeviceSession>();
+/** Ports from USB connect events that the next reconnect sweep handles. */
 const pendingConnectedPorts = new Set<SerialPort>();
+/** Ports that the user removed. The page does not connect to them again automatically. */
 const removedPorts = new WeakSet<SerialPort>();
 let nextDeviceNumber = 1;
 let activeDevice: DeviceSession | undefined;
+/** True when the Autoflash tab is selected, not a device tab. */
 let applicationTabActive = true;
 let applicationLog = "";
 let searchingForDevices = true;
 let unsupportedBrowser = false;
 let firmwareHandle: FileSystemFileHandle | undefined;
-/** Hash of the ELF file behind the selected firmware, for devices this page has not flashed. */
+/**
+ * The ELF hash of the selected firmware file, for devices without their own
+ * `elfSha256`. It is updated when a file is selected and when a flash starts.
+ */
 let firmwareElfSha256: string | undefined;
+/** A handle from IndexedDB that still needs read permission. */
 let restoredHandle: FileSystemFileHandle | undefined;
+/** The last seen state of the firmware file (see `signatureOf`). */
 let observedFileSignature: string | undefined;
+/** The file state that must stay the same for `FILE_STABLE_FOR_MS` before a flash. */
 let settlingSignature: string | undefined;
+/** When `settlingSignature` was first seen (`Date.now()`). */
 let settlingSince = 0;
 let watcherTimer: number | undefined;
+/** True while `runFlashQueue` runs. */
 let flashing = false;
+/** True when a flash is requested and has not started yet. */
 let queuedFlash = false;
 let queuedFlashReason: "change" | "manual" = "change";
 let fileState: FileState = "empty";
 let reconnectTimer: number | undefined;
+/** When `reconnectTimer` fires (`performance.now()`). */
 let reconnectTimerDueAt: number | undefined;
+/** The reconnect sweep that runs now, if any. */
 let reconnectSweep: Promise<void> | undefined;
 
 const sleep = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 
+/** A short text for an error. A `NotFoundError` means that the user closed a dialog without a selection. */
 function errorMessage(error: unknown): string {
   if (error instanceof DOMException && error.name === "NotFoundError") return "Selection cancelled.";
   if (error instanceof Error) return error.message;
@@ -398,6 +468,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1_048_576).toFixed(2)} MB`;
 }
 
+/** The modification time and size of a file. A change in either means that the file changed. */
 function signatureOf(file: File): string {
   return `${file.lastModified}:${file.size}`;
 }
@@ -411,31 +482,42 @@ function clockTime(): string {
   }).format(new Date());
 }
 
+/** Keep only the last `MAX_LOG_CHARACTERS` characters of a log. */
 function trimLog(value: string): string {
   return value.length > MAX_LOG_CHARACTERS
     ? `… log trimmed …\n${value.slice(-MAX_LOG_CHARACTERS)}`
     : value;
 }
 
+/** Show the log of the active tab and its status text. */
 function renderTerminalOutput(): void {
-  if (applicationTabActive || !activeDevice) {
-    ui.terminalOutput.textContent = applicationLog;
+  const showApplicationLog = applicationTabActive || !activeDevice;
+  const text = showApplicationLog ? applicationLog : activeDevice!.log;
+  if (showApplicationLog) {
     ui.terminalStatus.textContent = "Autoflash activity";
     ui.terminalBody.setAttribute("aria-labelledby", "terminal-tab-autoflash");
   } else {
-    ui.terminalOutput.textContent = activeDevice.log;
-    ui.terminalStatus.textContent = activeDevice.status;
-    ui.terminalBody.setAttribute("aria-labelledby", `terminal-tab-${activeDevice.number}`);
+    ui.terminalStatus.textContent = activeDevice!.status;
+    ui.terminalBody.setAttribute("aria-labelledby", `terminal-tab-${activeDevice!.number}`);
   }
+  // Do not replace unchanged text. Replacing it would clear the text that the
+  // user has selected in the log.
+  if (ui.terminalOutput.textContent === text) return;
+  ui.terminalOutput.textContent = text;
   if (ui.autoscrollToggle.checked) ui.terminalBody.scrollTop = ui.terminalBody.scrollHeight;
 }
 
+/** Add text to the log of a device. */
 function appendOutput(session: DeviceSession, value: string): void {
   session.log = trimLog(`${session.log}${value}`);
   if (!applicationTabActive && activeDevice === session) renderTerminalOutput();
 }
 
-/** Serial output from the device; a panic backtrace in it is decoded when it ends. */
+/**
+ * Handle serial output from the device. A panic backtrace in it is decoded
+ * when it ends: at the next line that is not an address, or after
+ * `BACKTRACE_QUIET_MS` without output.
+ */
 function receiveSerialOutput(session: DeviceSession, value: string): void {
   const { display, completed } = session.backtraces.push(value);
   if (display) appendOutput(session, display);
@@ -450,6 +532,20 @@ function receiveSerialOutput(session: DeviceSession, value: string): void {
   }
 }
 
+/**
+ * Call this when the serial stream of a device stops. Shows the text that
+ * the backtrace collector still holds back, and decodes a backtrace at the
+ * end of the stream. The next stream starts with an empty collector.
+ */
+function endSerialOutput(session: DeviceSession): void {
+  window.clearTimeout(session.backtraceTimer);
+  session.backtraceTimer = undefined;
+  const { display, completed } = session.backtraces.end();
+  if (display) appendOutput(session, display);
+  for (const addresses of completed) void appendDecodedBacktrace(session, addresses);
+}
+
+/** Decode a backtrace with the server and add the result, or the reason for the failure, to the device log. */
 async function appendDecodedBacktrace(session: DeviceSession, addresses: string[]): Promise<void> {
   const elfSha256 = session.elfSha256 ?? firmwareElfSha256;
   let text: string;
@@ -459,13 +555,15 @@ async function appendDecodedBacktrace(session: DeviceSession, addresses: string[
     }
     text = formatBacktrace(await decodeBacktrace(elfSha256, addresses));
   } catch (error) {
-    // The collector hid the raw addresses from the log; show them when they cannot be decoded.
+    // The collector removed the raw addresses from the log. Show them when
+    // they cannot be decoded.
     text = `Backtrace not decoded: ${errorMessage(error)}\n${addresses.join("\n")}\n`;
   }
   const separator = session.log.length > 0 && !session.log.endsWith("\n") ? "\n" : "";
   appendOutput(session, `${separator}\n${text}`);
 }
 
+/** Add text to the Autoflash log. */
 function appendAutoflashOutput(value: string): void {
   applicationLog = trimLog(`${applicationLog}${value}`);
   if (applicationTabActive || !activeDevice) renderTerminalOutput();
@@ -475,6 +573,7 @@ function deviceLogContext(session: DeviceSession): string {
   return `${deviceLabel(session)} (${session.portId})`;
 }
 
+/** Add output of esptool-js to the Autoflash log, each line with the device name in front. */
 function appendToolOutput(session: DeviceSession, value: string): void {
   const prefix = `[${deviceLogContext(session)}] `;
   const tagged = value.split("\n").map((line) => line ? `${prefix}${line}` : "").join("\n");
@@ -486,6 +585,7 @@ function systemLine(message: string, level: LogLevel): string {
   return `[${clockTime()}] ${marker} ${message}\n`;
 }
 
+/** Add a message with the time to the Autoflash log. With `session`, the message names that device. */
 function appendSystem(message: string, level: LogLevel = "info", session?: DeviceSession): void {
   const context = session ? `${deviceLogContext(session)} · ` : "";
   const separator = applicationLog.length > 0 && !applicationLog.endsWith("\n") ? "\n" : "";
@@ -504,6 +604,11 @@ function offlineDevices(): DeviceSession[] {
   return allDeviceSessions().filter((session) => !session.connected);
 }
 
+/**
+ * Start a reconnect sweep after `delay` milliseconds, when a device is
+ * offline or a connect event is waiting. Only one sweep timer exists; the
+ * earlier one wins.
+ */
 function scheduleReconnectSweep(delay = RECONNECT_RETRY_DELAY_MS): void {
   if (!("serial" in navigator) || unsupportedBrowser) return;
   if (offlineDevices().length === 0 && pendingConnectedPorts.size === 0) return;
@@ -511,9 +616,9 @@ function scheduleReconnectSweep(delay = RECONNECT_RETRY_DELAY_MS): void {
   const normalizedDelay = Math.max(0, delay);
   const dueAt = performance.now() + normalizedDelay;
   if (reconnectTimer !== undefined) {
-    // A real USB connect event must be able to preempt a slower background retry.
-    // Otherwise a device plugged in just after a retry was scheduled can sit
-    // offline until that old timer expires.
+    // A USB connect event must be able to replace a later background retry.
+    // Otherwise a device that is plugged in just after a retry was scheduled
+    // stays offline until the old timer fires.
     if (reconnectTimerDueAt !== undefined && reconnectTimerDueAt <= dueAt) return;
     window.clearTimeout(reconnectTimer);
   }
@@ -526,6 +631,12 @@ function scheduleReconnectSweep(delay = RECONNECT_RETRY_DELAY_MS): void {
   }, normalizedDelay);
 }
 
+/**
+ * The reconnect sweep: try to attach every authorized port that matches the
+ * device filter. Ports that are already live return early in `attachPort`.
+ * Only one sweep runs at a time. During a flash, it only schedules a later
+ * sweep.
+ */
 async function reconnectOfflineDevices(): Promise<void> {
   if (!("serial" in navigator)) return;
   if (reconnectSweep) return reconnectSweep;
@@ -543,19 +654,22 @@ async function reconnectOfflineDevices(): Promise<void> {
         if (!candidates.includes(candidate)) candidates.push(candidate);
       }
     } catch {
-      // A later retry can recover if enumeration fails transiently.
+      // When the port list is not available for a moment, a later retry
+      // tries again.
     }
 
-    // Process candidates sequentially. With two identical VID:PID devices this
-    // prevents one reconnect sweep from racing two wrappers into the same offline slot.
+    // Attach the candidates one after the other, not at the same time. With
+    // two identical devices (same VID:PID), parallel attempts could give the
+    // same offline tab to two port objects.
     for (const candidate of candidates) {
       if (removedPorts.has(candidate)) continue;
       if (!portMatchesSearch(candidate.getInfo(), deviceSearch)) continue;
       try {
         await attachPort(candidate, "Found", false);
       } catch {
-        // USB serial drivers can need a short settling period after enumeration.
-        // Keep the logical session offline and retry without spamming the log.
+        // After a device appears on USB, its serial driver can need a short
+        // time before the port opens. Keep the session offline and try again
+        // later, without a message in the log for each attempt.
       }
     }
   })();
@@ -724,6 +838,11 @@ function updateProgress(percent: number | undefined, message: string): void {
   ui.progressBlock.classList.toggle("active", percent !== undefined);
 }
 
+/**
+ * Open the serial port of a device and start the loop that reads its log.
+ * Does nothing when the log is already open, or during a flash unless
+ * `allowDuringFlash` is true.
+ */
 async function startMonitor(session: DeviceSession, allowDuringFlash = false): Promise<void> {
   if (!session.connected || (flashing && !allowDuringFlash) || session.monitorLoop) return;
   if (session.monitorStart) return session.monitorStart;
@@ -733,9 +852,10 @@ async function startMonitor(session: DeviceSession, allowDuringFlash = false): P
       await session.port.open({ baudRate: MONITOR_BAUD_RATE, bufferSize: 65_536 });
     }
 
-    // A remove/disconnect can happen while port.open() is in flight. A brand-new
-    // session is allowed to open before it is committed to the devices map, but an
-    // already-registered different session always owns that exact SerialPort object.
+    // The device can be removed or disconnected while `port.open()` runs. A new
+    // session opens its port before it is added to `devices`, so a missing
+    // entry is fine. But when another session is registered for this port
+    // object, that session owns the port.
     const registeredOwner = devices.get(session.port);
     if (!session.connected || (registeredOwner && registeredOwner !== session)) {
       if (session.port.readable) await session.port.close();
@@ -780,11 +900,13 @@ async function startMonitor(session: DeviceSession, allowDuringFlash = false): P
       } finally {
         reader.releaseLock();
         if (session.monitorReader === reader) session.monitorReader = undefined;
+        endSerialOutput(session);
       }
 
-      // Chromium does not always deliver a disconnect event through the same
-      // SerialPort wrapper that was originally opened. Treat an unexpected EOF as
-      // a disconnect as well so this logical device slot can be reused later.
+      // Chromium does not always send the disconnect event to the same
+      // SerialPort object that the page opened. So an unexpected end of the
+      // stream also counts as a disconnect. Then a new port object can use
+      // this tab later.
       if (streamEnded && !session.stopRequested && session.connected) {
         markSessionDisconnected(session, "Device disconnected", "Serial stream ended; waiting for reconnect.");
       }
@@ -801,6 +923,10 @@ async function startMonitor(session: DeviceSession, allowDuringFlash = false): P
   }
 }
 
+/**
+ * Stop the loop that reads the serial log, and wait until it has ended. With
+ * `closePort`, also close the serial port.
+ */
 async function stopMonitor(session: DeviceSession, closePort = true): Promise<void> {
   session.stopRequested = true;
   const starting = session.monitorStart;
@@ -808,7 +934,7 @@ async function stopMonitor(session: DeviceSession, closePort = true): Promise<vo
     try {
       await starting;
     } catch {
-      // Cleanup below still needs to run if opening the monitor failed.
+      // The cleanup below must run also when opening the log failed.
     }
   }
   const reader = session.monitorReader;
@@ -816,7 +942,7 @@ async function stopMonitor(session: DeviceSession, closePort = true): Promise<vo
     try {
       await reader.cancel();
     } catch {
-      // A physical disconnect can invalidate the reader before cancellation.
+      // When the device was unplugged, the reader can already be invalid.
     }
   }
   if (session.monitorLoop) await session.monitorLoop;
@@ -830,6 +956,10 @@ async function stopMonitor(session: DeviceSession, closePort = true): Promise<vo
 }
 
 
+/**
+ * Mark a device as offline and schedule a reconnect sweep. `message` goes to
+ * the Autoflash log, but only when the device was connected before.
+ */
 function markSessionDisconnected(
   session: DeviceSession,
   status: string,
@@ -846,6 +976,10 @@ function markSessionDisconnected(
   scheduleReconnectSweep(retryDelay);
 }
 
+/**
+ * Mark connected sessions with this USB ID as offline when their port object
+ * is closed. Called before a new port object with the same ID is attached.
+ */
 function reconcileClosedWrappers(portId: string): void {
   if (flashing) return;
 
@@ -853,8 +987,9 @@ function reconcileClosedWrappers(portId: string): void {
     if (!session.connected || session.portId !== portId) continue;
     if (session.port.readable || session.port.writable) continue;
 
-    // The logical session still says connected, but Chromium has already detached
-    // its old wrapper. Mark it offline now so the new wrapper can reuse this tab.
+    // The session is still marked as connected, but Chromium has already closed
+    // its old port object. Mark it offline now, so that the new port object can
+    // use this tab.
     session.stopRequested = true;
     markSessionDisconnected(
       session,
@@ -864,6 +999,10 @@ function reconcileClosedWrappers(portId: string): void {
   }
 }
 
+/**
+ * Choose the offline session with this USB ID that disconnected last, and
+ * reserve it in `reconnectingSessions`. Returns `undefined` when there is none.
+ */
 function claimReusableOfflineSession(portId: string): DeviceSession | undefined {
   const candidate = allDeviceSessions()
     .filter((session) => !session.connected)
@@ -875,6 +1014,7 @@ function claimReusableOfflineSession(portId: string): DeviceSession | undefined 
   return candidate;
 }
 
+/** Give an offline session a new port object, and open its serial log. */
 async function reuseOfflineSession(
   session: DeviceSession,
   port: SerialPort,
@@ -883,8 +1023,9 @@ async function reuseOfflineSession(
 ): Promise<void> {
   const previousPort = session.port;
 
-  // Finish cleanup on the old wrapper before rebinding the logical device slot.
-  // The physical port is already gone, so do not attempt to close that old wrapper.
+  // Finish the cleanup of the old port object before the session gets the new
+  // one. The device was already disconnected, so do not try to close the old
+  // port object.
   await stopMonitor(session, false);
   if (devices.get(previousPort) !== session) {
     throw new Error(`${deviceLabel(session)} changed while reconnecting.`);
@@ -911,9 +1052,15 @@ async function reuseOfflineSession(
   refreshDeviceSummary();
 }
 
+/**
+ * Connect a port to a device session: the session of the same port object,
+ * an offline session with the same USB ID, or a new session. With `activate`,
+ * select its tab.
+ */
 async function attachPort(port: SerialPort, source: "Authorized" | "Found", activate: boolean): Promise<void> {
-  // The authorization path, reconnect sweep, and Web Serial connect event can all
-  // report the same SerialPort. Make every attachment path single-flight first.
+  // "Authorize device", the reconnect sweep and the Web Serial connect event
+  // can all report the same SerialPort. So only one attach runs for each port;
+  // a second call waits for the first one.
   const pending = attachingPorts.get(port);
   if (pending) {
     await pending;
@@ -927,9 +1074,10 @@ async function attachPort(port: SerialPort, source: "Authorized" | "Found", acti
     if (activate) selectDevice(existing);
 
     if (!existing.connected) {
-      // Chromium often reuses the exact same SerialPort object after unplug/replug.
-      // The old monitor loop can still be unwinding at this point; using the same
-      // rebind path as a new wrapper guarantees cleanup finishes before reopen.
+      // After unplug and plug in, Chromium often uses the same SerialPort
+      // object again. The old read loop can still be ending at this point. The
+      // path for a new port object waits for that cleanup before it opens the
+      // port again, so use it here too.
       reconnectingSessions.add(existing);
       const attach = reuseOfflineSession(existing, port, source, activate);
       attachingPorts.set(port, attach);
@@ -942,10 +1090,10 @@ async function attachPort(port: SerialPort, source: "Authorized" | "Found", acti
       return;
     }
 
-    if (existing.monitorLoop || existing.monitorStart || port.readable) {
-      refreshDeviceSummary();
-      return;
-    }
+    // The port is already live, so nothing changes. While another device is
+    // offline, the reconnect sweep comes here for every connected port, four
+    // times a second. So this path must not redraw the tabs or the log.
+    if (existing.monitorLoop || existing.monitorStart || port.readable) return;
 
     try {
       await startMonitor(existing);
@@ -957,8 +1105,8 @@ async function attachPort(port: SerialPort, source: "Authorized" | "Found", acti
     return;
   }
 
-  // A port that is already open but is not keyed in our session map cannot safely
-  // be claimed. It may be another wrapper for a connection that is already live.
+  // Do not take a port that is already open but is not in `devices`. It can be
+  // another port object for a connection that is already live.
   if (port.readable || port.writable) {
     throw new Error("Serial port is already open; duplicate device was not added.");
   }
@@ -994,10 +1142,10 @@ async function attachPort(port: SerialPort, source: "Authorized" | "Found", acti
     nextDeviceNumber += 1;
 
     try {
-      // Opening the port is the definitive duplicate/busy check. If another JS
-      // wrapper refers to an already-open physical port, this fails and no tab is kept.
-      // Verification must never succeed merely because normal monitor startup is
-      // suppressed during a flash.
+      // Opening the port is the reliable check for a duplicate or busy port.
+      // When another port object already has this device open, the open fails
+      // and the page keeps no tab. `allowDuringFlash` is true, so that the
+      // check really opens the port also during a flash.
       await startMonitor(session, true);
     } catch (error) {
       session.connected = false;
@@ -1005,7 +1153,7 @@ async function attachPort(port: SerialPort, source: "Authorized" | "Found", acti
       try {
         await stopMonitor(session, true);
       } catch {
-        // Preserve the original open/reader error.
+        // Throw the original error from opening or reading, not this one.
       }
       throw error;
     }
@@ -1027,6 +1175,10 @@ async function attachPort(port: SerialPort, source: "Authorized" | "Found", acti
   }
 }
 
+/**
+ * With `interactive`, show the browser dialog and attach the selected port.
+ * Without it, attach all authorized ports that match the device filter.
+ */
 async function connectPorts(interactive: boolean): Promise<void> {
   if (!("serial" in navigator)) throw new Error("Web Serial is not supported by this browser.");
 
@@ -1062,8 +1214,11 @@ async function resetDevice(session: DeviceSession, announce = true): Promise<voi
   if (!session.port.readable) await startMonitor(session);
   if (announce) appendSystem("Resetting device via RTS…", "info", session);
 
-  // RTS drives EN low on standard Espressif auto-reset circuits. Holding DTR
-  // inactive keeps GPIO0 high so the chip returns to the application, not ROM download mode.
+  // RTS (request to send) and DTR (data terminal ready) are control signals
+  // of the serial port. On the usual Espressif auto-reset circuit, RTS pulls
+  // the EN (enable) pin low, which resets the chip. DTR stays inactive, so
+  // GPIO0 stays high. Then the chip starts the application, not the download
+  // mode of its ROM bootloader.
   await session.port.setSignals({ dataTerminalReady: false, requestToSend: true });
   await sleep(120);
   await session.port.setSignals({ dataTerminalReady: false, requestToSend: false });
@@ -1088,9 +1243,9 @@ async function removeDevice(session: DeviceSession): Promise<void> {
   const label = deviceLabel(session);
   const portId = session.portId;
 
-  // Keep browser authorization intact, but do not let automatic connect events
-  // re-add this port during the current page session. The user can explicitly
-  // authorize it again at any time.
+  // Keep the browser authorization. But until the page reloads, automatic
+  // connects do not add this port again. The user can click "Authorize
+  // device" to add it again at any time.
   removedPorts.add(session.port);
   session.connected = false;
   session.stopRequested = true;
@@ -1189,6 +1344,7 @@ async function pollFirmware(): Promise<void> {
   }
 }
 
+/** Request a flash. During a flash, the request waits until the current flash has ended. */
 function queueFlash(reason: "change" | "manual"): void {
   queuedFlash = true;
   queuedFlashReason = reason;
@@ -1199,6 +1355,10 @@ function queueFlash(reason: "change" | "manual"): void {
   void runFlashQueue();
 }
 
+/**
+ * Flash while a flash is queued. After the last flash, attach devices again
+ * and reopen their serial logs.
+ */
 async function runFlashQueue(): Promise<void> {
   if (flashing) return;
   flashing = true;
@@ -1209,26 +1369,32 @@ async function runFlashQueue(): Promise<void> {
     while (queuedFlash) {
       activeReason = queuedFlashReason;
       queuedFlash = false;
-      await flashLatestFirmware(activeReason);
-    }
-  } catch (error) {
-    appendSystem(`Flash failed: ${errorMessage(error)}`, "error");
-    if (activeReason === "change" && document.hidden && ui.watchToggle.checked) {
-      queuedFlash = true;
-      queuedFlashReason = "change";
-      setFileState("queued");
-      updateProgress(undefined, "Retry queued — activate this tab to flash");
-      appendSystem("The tab became inactive during automatic flashing. It will retry automatically when active.");
-    } else {
-      queuedFlash = false;
-      updateProgress(undefined, "Flash failed — inspect the Autoflash log");
+      try {
+        await flashLatestFirmware(activeReason);
+      } catch (error) {
+        appendSystem(`Flash failed: ${errorMessage(error)}`, "error");
+        // When a flash was queued during the failed flash (for example for a
+        // newer file), run it next. Do not stop the queue.
+        if (queuedFlash) continue;
+        if (activeReason === "change" && document.hidden && ui.watchToggle.checked) {
+          queuedFlash = true;
+          queuedFlashReason = "change";
+          setFileState("queued");
+          updateProgress(undefined, "Retry queued — activate this tab to flash");
+          appendSystem("The tab became inactive during automatic flashing. It will retry automatically when active.");
+        } else {
+          updateProgress(undefined, "Flash failed — inspect the Autoflash log");
+        }
+        break;
+      }
     }
   } finally {
     flashing = false;
     refreshDeviceSummary();
 
-    // Reconcile USB devices that re-enumerated while flashing before restoring
-    // monitors. This also retries transient port-open failures without new tabs.
+    // Before the serial logs open again, handle devices that disappeared from
+    // USB and came back during the flash. This also retries ports that failed
+    // to open for a moment, without new tabs.
     await reconnectOfflineDevices();
 
     for (const session of connectedDevices()) {
@@ -1244,6 +1410,10 @@ async function runFlashQueue(): Promise<void> {
   }
 }
 
+/**
+ * Read the firmware file and flash it to all connected devices at the same
+ * time. Throws when a device fails.
+ */
 async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
   if (!firmwareHandle) throw new Error("Choose a firmware file first.");
   const targets = connectedDevices();
@@ -1253,6 +1423,11 @@ async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
   if (file.size === 0) throw new Error("The selected firmware file is empty.");
   const image = new Uint8Array(await file.arrayBuffer());
   const elfSha256 = elfSha256Of(image);
+  // As far as the page knows, a device that it has not flashed runs the file
+  // that was selected before. Every device keeps the hash of the firmware it
+  // runs now: a device whose flash fails, and a device that is offline during
+  // this flash and so does not get the new firmware.
+  for (const session of allDeviceSessions()) session.elfSha256 ??= firmwareElfSha256;
   firmwareElfSha256 = elfSha256;
   ui.fileMeta.textContent = `${formatBytes(file.size)} · loaded ${new Date().toLocaleTimeString()}`;
   updateProgress(0, `${reason === "change" ? "Change stable" : "Manual flash"} · loading ${file.name}`);
@@ -1315,6 +1490,10 @@ async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
   appendSystem(`${targets.length === 1 ? "Device" : "All devices"} reset; live serial output resumed.`, "success");
 }
 
+/**
+ * Flash one device with esptool-js, then reopen its serial log and reset it.
+ * `reportProgress` receives the progress in percent and a status text.
+ */
 async function flashDevice(
   session: DeviceSession,
   image: Uint8Array,
@@ -1378,9 +1557,13 @@ async function flashDevice(
     ]);
 
     if (completion === "final-write-line") {
-      // The requested handoff intentionally stops waiting for writeFlash as soon
-      // as esptool-js prints its final 100% write line. Closing the transport below
-      // ends any remaining flasher work while preventing an unhandled rejection.
+      // This is wanted: the page stops waiting for `writeFlash` as soon as
+      // esptool-js logs its "Writing at 0x... (100%)" line. esptool-js 0.6.1
+      // logs this line before it sends the last block. So the last block, its
+      // reply and the end-of-flash command can still be in progress.
+      // `transport.disconnect()` below closes the port, which ends this work on
+      // the page side. `writeTask` then rejects; the `catch` prevents an
+      // unhandled promise rejection.
       void writeTask.catch(() => undefined);
       reportProgress(100, `${deviceLabel(session)} · 100% reached — restoring serial monitor`);
       appendSystem("100% write line received. Reopening the serial monitor now…", "success", session);
@@ -1393,7 +1576,7 @@ async function flashDevice(
       try {
         await transport.disconnect();
       } catch {
-        // The error from the actual flash operation is more useful than a cleanup error.
+        // Ignore this cleanup error. The error from the flash itself is more useful.
       }
     }
   }
@@ -1405,6 +1588,10 @@ async function flashDevice(
   appendSystem("Device reset; live serial output resumed.", "success", session);
 }
 
+/**
+ * Use the firmware file from IndexedDB again after a reload. When the browser
+ * needs new permission, show a "Resume" button.
+ */
 async function restoreFirmware(): Promise<void> {
   try {
     const handle = await loadFirmwareHandle();
@@ -1523,7 +1710,8 @@ document.addEventListener("visibilitychange", () => {
 
   scheduleReconnectSweep(RECONNECT_EVENT_DELAY_MS);
 
-  // Poll now in case the browser suspended the interval entirely while hidden.
+  // Check the file now. The browser can stop the interval timer completely
+  // while the tab is hidden.
   void pollFirmware().finally(() => {
     if (queuedFlash && queuedFlashReason === "change" && ui.watchToggle.checked && !flashing) {
       setFileState("watching");
@@ -1540,17 +1728,19 @@ if ("serial" in navigator) {
     if (!connectedPort || removedPorts.has(connectedPort)) return;
     if (!portMatchesSearch(connectedPort.getInfo(), deviceSearch)) return;
 
-    // Native-USB ESP devices can re-enumerate while a flash/reset is still in
-    // progress. Do not commit a new wrapper while monitor startup is suppressed;
-    // reconcile it with the previous logical slot once the flash batch finishes.
+    // An ESP device with native USB can disappear from USB and come back
+    // during a flash or reset. During a flash, serial logs do not open, so do
+    // not attach the new port object now. After the flash, the reconnect sweep
+    // gives it the tab of the device.
     if (flashing) {
       pendingConnectedPorts.add(connectedPort);
       return;
     }
 
-    // Let the reconnect sweep serialize cleanup/reopen with any old wrapper.
-    // The USB event gets an immediate attempt; transient driver-enumeration
-    // failures fall back to the short retry interval above.
+    // The reconnect sweep attaches ports one after the other, so the cleanup
+    // of an old port object ends before the new one opens. The USB event gets
+    // an attempt at once. When the driver is not ready yet, the sweep tries
+    // again after `RECONNECT_RETRY_DELAY_MS`.
     pendingConnectedPorts.add(connectedPort);
     scheduleReconnectSweep(RECONNECT_EVENT_DELAY_MS);
   });
@@ -1565,6 +1755,10 @@ if ("serial" in navigator) {
   });
 }
 
+/**
+ * Check the browser, then connect to the authorized devices and restore the
+ * firmware file at the same time.
+ */
 async function initialize(): Promise<void> {
   appendSystem(`Ready. Target is ${SERIAL_PORT_SEARCH}; firmware address is 0x${FLASH_ADDRESS.toString(16)}.`);
   if (!("serial" in navigator) || !window.showOpenFilePicker || !window.isSecureContext) {

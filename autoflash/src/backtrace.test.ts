@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { BacktraceCollector, elfSha256Of, formatBacktrace } from "./backtrace";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { BacktraceCollector, decodeBacktrace, elfSha256Of, formatBacktrace } from "./backtrace";
 
 const DIGEST = "283ce0e9c50be8a9f6529ca5288cfa32a2ed98dfdabbcf68cd32d5ef91b24269";
 
-/** A merged image: bootloader at 0x0, application image with a descriptor at `appOffset`. */
+/**
+ * A test image: a bootloader at 0x0 and an application image with a
+ * descriptor at `appOffset`. With `appOffset` 0, it is an application-only
+ * image. Without `digest`, the hash in the descriptor is all zeros.
+ */
 function mergedImage(appOffset: number, digest: string | undefined): Uint8Array {
   const image = new Uint8Array(appOffset + 0x1000).fill(0xff);
   const view = new DataView(image.buffer);
@@ -66,10 +70,19 @@ describe("backtrace collector", () => {
     expect(collector.push("ground\n")).toEqual({ display: "\nBackground\n", completed: [] });
   });
 
-  it("ignores addresses outside a backtrace", () => {
+  it("hands over held text and an unfinished backtrace when the stream ends", () => {
+    const collector = new BacktraceCollector();
+    expect(collector.push("Backtrace:\n\n0x4209d358\n0x4205")).toEqual({ display: "", completed: [] });
+    expect(collector.end()).toEqual({ display: "0x4205", completed: [["0x4209d358"]] });
+    expect(collector.push("Back")).toEqual({ display: "", completed: [] });
+    expect(collector.end()).toEqual({ display: "Back", completed: [] });
+    expect(collector.push("ready\n")).toEqual({ display: "ready\n", completed: [] });
+  });
+
+  it("ignores addresses outside a backtrace and keeps a header without addresses", () => {
     const collector = new BacktraceCollector();
     expect(collector.push("0x40000000\nregister dump\nBacktrace:\n\nsomething else\n")).toEqual({
-      display: "0x40000000\nregister dump\nsomething else\n",
+      display: "0x40000000\nregister dump\nBacktrace:\n\nsomething else\n",
       completed: [],
     });
     expect(collector.finish()).toBeUndefined();
@@ -99,5 +112,31 @@ describe("backtrace formatting", () => {
         "            at src/bin/panic_backtrace.rs:78\n" +
         "0x00000012  (no debug information)\n",
     );
+  });
+});
+
+describe("decode request", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function answer(body: string, status: number, contentType: string): void {
+    vi.stubGlobal("fetch", async () => new Response(body, { status, headers: { "Content-Type": contentType } }));
+  }
+
+  it("returns the decoded frames", async () => {
+    answer('{"elf":"/t/app","frames":[{"address":"0x42000000","locations":[]}]}', 200, "application/json; charset=utf-8");
+    await expect(decodeBacktrace(DIGEST, ["0x42000000"])).resolves.toEqual({
+      elf: "/t/app",
+      frames: [{ address: "0x42000000", locations: [] }],
+    });
+  });
+
+  it("passes on the server's error", async () => {
+    answer('{"error":"no ELF file matching"}', 404, "application/json; charset=utf-8");
+    await expect(decodeBacktrace(DIGEST, ["0x42000000"])).rejects.toThrow("no ELF file matching");
+  });
+
+  it("explains that a server answering with the application page cannot decode", async () => {
+    answer("<!doctype html>", 200, "text/html");
+    await expect(decodeBacktrace(DIGEST, ["0x42000000"])).rejects.toThrow("does not decode backtraces");
   });
 });
