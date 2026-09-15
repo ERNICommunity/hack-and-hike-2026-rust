@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Turn the backtrace of a panic into function names, files and lines.
+# Show the function, file and line of each address in a panic backtrace.
 #
-# The panic handler prints the stack as bare addresses: the firmware on the
-# board carries no debug information. The ELF file that `cargo dist` builds
-# next to firmware.bin does, and addr2line looks each address up in it.
+# The panic handler prints the backtrace as bare addresses. The firmware on the
+# board has no debug information, but the ELF file of the build has it. `cargo
+# dist` leaves that ELF file in the Cargo target directory. addr2line looks up
+# each address in it. This script works only for the ESP32-S3.
 #
 # Usage: ./scripts/backtrace.sh <app> [log file]
 #
-# Paste the panic output from the serial log and press Ctrl+D, or pass a file
-# that holds it. Decode with the build you flashed: rebuilding the application
-# moves the addresses, and the lines printed would be wrong.
+# Paste the panic output from the serial log and press Ctrl+D. Or give a file
+# that contains it. Use the build that is on the board: a new build moves the
+# addresses, and the output is then wrong.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -29,8 +30,8 @@ if [ ! -f "$elf" ]; then
     exit 1
 fi
 
-# The Xtensa binutils come with the ESP toolchain, which only interactive
-# shells have on their PATH.
+# addr2line is part of the ESP toolchain. Often only interactive shells have
+# it on their PATH, so load export-esp.sh when it is missing.
 addr2line=xtensa-esp32s3-elf-addr2line
 if ! command -v "$addr2line" > /dev/null && [ -f "$HOME/export-esp.sh" ]; then
     # shellcheck source=/dev/null
@@ -41,8 +42,8 @@ if [ $# -eq 1 ] && [ -t 0 ]; then
     echo "Paste the panic output, then press Ctrl+D:" >&2
 fi
 
-# Code runs from 0x40000000 to 0x43ffffff (internal RAM and flash); other
-# numbers in the log are data, not return addresses.
+# On the ESP32-S3, code is between 0x40000000 and 0x43ffffff (ROM, internal
+# RAM and flash). Other numbers in the log are data, not code addresses.
 mapfile -t addresses < <(grep -oE '0x4[0-3][0-9a-fA-F]{6}\b' "$input" || true)
 if [ ${#addresses[@]} -eq 0 ]; then
     echo "No code addresses found in the input." >&2

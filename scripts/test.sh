@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Run the host tests of crates/core.
+# Run the tests of crates/core on your computer.
 #
-# The repository's Cargo configuration targets the ESP32-S3, so a plain
-# `cargo test` would try to build tests for the microcontroller. This runs
-# the tests for your computer's target with the host toolchain instead.
+# The Cargo configuration of the repository builds for the ESP32-S3. So a
+# plain `cargo test` tries to build the tests for the microcontroller. This
+# script builds them for your computer instead. It uses the Rust version from
+# `rust-version` in Cargo.toml, not the esp toolchain. Extra arguments go to
+# `cargo test`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 rust_version="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
