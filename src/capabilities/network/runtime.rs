@@ -1,4 +1,14 @@
-//! CPU1 ESP-NOW driver: beacons, sending, receiving and the peer table.
+//! The CPU1 ESP-NOW tasks: beacons, sending, receiving and the peer table.
+//!
+//! Two tasks share the radio. The transmit task sends application messages
+//! and a beacon every beacon period, and removes silent peers. The receive
+//! task decodes received frames, updates the peer table and gives
+//! application messages to the application. After each sent message, beacon
+//! or received frame, the task publishes a new snapshot.
+//!
+//! A MAC address is the hardware address of a radio. ESP-NOW sends frames to
+//! MAC addresses. The application uses [`DeviceId`]s instead. The peer table
+//! connects the two.
 
 use core::cell::RefCell;
 
@@ -25,39 +35,48 @@ use hack_and_hike_core::network::{
 
 use super::{Config, Resources, Runtime};
 
-/// The peer table, shared by the send and receive tasks on CPU1.
+/// The peer table and counters, shared by the transmit and receive tasks on
+/// CPU1. The mutex uses a critical section, and the `RefCell` gives mutable
+/// access inside the lock.
 type SharedState = Mutex<CriticalSectionRawMutex, RefCell<NetworkState>>;
 
-// The radio objects must outlive the tasks, which run forever.
-/// The peer table, shared by reference between the two radio tasks.
+// The tasks run forever, so the objects they use must live forever too. A
+// `StaticCell` gives a `&'static` reference to a value created at run time.
+/// The peer table. Both radio tasks use it through a reference.
 static STATE: StaticCell<SharedState> = StaticCell::new();
-/// The Wi-Fi driver. The ESP-NOW objects borrow from it, so it has to live
-/// for the rest of the program.
+/// The Wi-Fi driver. The ESP-NOW objects borrow from it, so it must live
+/// until the program ends.
 static WIFI_CONTROLLER: StaticCell<WifiController<'static>> = StaticCell::new();
-/// Registers and removes ESP-NOW peers; both radio tasks use it.
+/// Adds and removes peers in ESP-NOW's own peer list. Both radio tasks use
+/// it.
 static MANAGER: StaticCell<EspNowManager<'static>> = StaticCell::new();
 
-/// Everything the send and receive tasks share. Cheap to copy: references and
-/// small values only.
+/// Everything that the transmit and receive tasks share. It contains only
+/// references and small values, so a copy is cheap.
 #[derive(Clone, Copy)]
 struct Radio {
     /// The peer table and counters.
     state: &'static SharedState,
     /// The queues to and from the application.
     runtime: Runtime,
-    /// This board's identity, from its factory MAC address.
+    /// This board's ID, from its factory MAC address.
     local_id: DeviceId,
     /// Channel, beacon period and peer timeout.
     config: Config,
 }
 
 impl Radio {
-    /// Run `f` with the peer table locked.
+    /// Run `f` while the peer table is locked.
+    ///
+    /// The lock is a critical section, which blocks interrupts. So keep `f`
+    /// short. Do not call `with_state` again inside `f`, because the
+    /// `RefCell` then panics.
     fn with_state<R>(self, f: impl FnOnce(&mut NetworkState) -> R) -> R {
         self.state.lock(|state| f(&mut state.borrow_mut()))
     }
 
-    /// Publish a fresh snapshot of the peer table to the application.
+    /// Publish a new snapshot of the peer table and counters to the
+    /// application.
     fn publish(self, now: Instant) {
         let counters = self.runtime.queue_counters();
         let snapshot = self.with_state(|state| state.snapshot(now.as_millis(), counters));
@@ -65,17 +84,27 @@ impl Radio {
     }
 }
 
-/// This board's identity: its factory MAC address, which is unique.
+/// This board's ID: its factory MAC address, which is unique.
+///
+/// # Panics
+///
+/// When the factory MAC address is not six bytes, or is all zero.
 fn physical_device_id() -> DeviceId {
     let mac = efuse::base_mac_address();
     let bytes = <[u8; 6]>::try_from(mac.as_bytes()).expect("a MAC address is six bytes");
     DeviceId::try_from(bytes).expect("the factory MAC address is not all zero")
 }
 
-/// Initialize ESP-NOW and spawn the CPU1 send and receive tasks.
+/// Set up ESP-NOW and start the CPU1 transmit and receive tasks.
 ///
-/// A radio that fails to initialize is reported as [`super::Status::Fault`]
-/// instead of panicking, so the rest of the board keeps working.
+/// When the radio setup fails, the function logs the error, publishes a
+/// snapshot with [`super::Status::Fault`] and returns. It starts no tasks.
+/// The rest of the board keeps working.
+///
+/// # Panics
+///
+/// When it is called a second time, when a task is already running, or when
+/// the factory MAC address is not valid (see [`physical_device_id`]).
 pub(crate) fn spawn(spawner: &Spawner, resources: Resources, config: Config, runtime: Runtime) {
     let local_id = physical_device_id();
     let state = STATE.init(Mutex::new(RefCell::new(NetworkState::new(
@@ -128,7 +157,9 @@ pub(crate) fn spawn(spawner: &Spawner, resources: Resources, config: Config, run
     );
 }
 
-/// Send queued application messages as they arrive and a beacon on every tick.
+/// Send each application message from the send queue when it arrives. On
+/// every beacon tick, send a beacon and remove peers that were silent for too
+/// long. After each step, publish a new snapshot.
 #[embassy_executor::task]
 async fn transmit_task(
     manager: &'static EspNowManager<'static>,
@@ -139,10 +170,15 @@ async fn transmit_task(
     let mut frame = [0u8; protocol::MAX_RADIO_PACKET_BYTES];
 
     loop {
-        let now = Instant::now();
         match select(radio.runtime.next_outgoing(), beacons.next()).await {
             Either::First(message) => send_message(&mut sender, radio, &message, &mut frame).await,
             Either::Second(()) => {
+                // Read the clock after the wait, not before. The wait can take
+                // a whole beacon period. A time from before the wait would put
+                // an old uptime into the beacon. Peers would also seem to be
+                // heard more recently than they were, so they would stay too
+                // long.
+                let now = Instant::now();
                 let beacon = radio.with_state(|state| state.next_beacon(now.as_millis()));
                 let result = sender
                     .send_async(&BROADCAST_ADDRESS, &beacon.encode())
@@ -159,8 +195,13 @@ async fn transmit_task(
     }
 }
 
-/// Encode one application message and send it: as a broadcast, or to the
-/// MAC address the peer table knows for the recipient. Counts the result.
+/// Encode one application message and send it.
+///
+/// A message without a recipient goes to all boards (broadcast). A message
+/// for one peer goes to the MAC address that the peer table has for it. The
+/// result is counted as a successful or failed send. The send fails when the
+/// peer is no longer in the peer table, when encoding fails, or when the
+/// radio fails.
 async fn send_message(
     sender: &mut EspNowSender<'static>,
     radio: Radio,
@@ -199,7 +240,9 @@ fn record_send(state: &mut NetworkState, ok: bool) {
     }
 }
 
-/// Remove a peer from ESP-NOW's own peer list, which has limited room.
+/// Remove a peer from ESP-NOW's own peer list. That list has limited room,
+/// so peers that left the peer table must leave it too. An error is only
+/// logged.
 fn forget_radio_peer(manager: &EspNowManager<'static>, mac: MacAddress) {
     if manager.peer_exists(&mac.0)
         && let Err(err) = manager.remove_peer(&mac.0)
@@ -208,8 +251,13 @@ fn forget_radio_peer(manager: &EspNowManager<'static>, mac: MacAddress) {
     }
 }
 
-/// Decode received frames, maintain the peer table and hand application
-/// messages to CPU0.
+/// Decode received frames, update the peer table and give application
+/// messages to the application on CPU0.
+///
+/// A frame counts as invalid when it cannot be decoded, or when it is an
+/// application message for another board. Frames from this board itself are
+/// ignored. The sender of a broadcast frame is added to ESP-NOW's own peer
+/// list, so that [`send_message`] can later send to it directly.
 #[embassy_executor::task]
 async fn receive_task(
     manager: &'static EspNowManager<'static>,
@@ -222,6 +270,8 @@ async fn receive_task(
         let broadcast = received.info.dst_address == BROADCAST_ADDRESS;
 
         let mac = MacAddress(received.info.src_address);
+        // RSSI (received signal strength indicator), in dBm. A value that
+        // does not fit into an `i8` becomes the weakest value, `i8::MIN`.
         let rssi_dbm = i8::try_from(received.info.rx_control.rssi).unwrap_or(i8::MIN);
         let (heard, application) = match protocol::decode_frame(received.data()) {
             Some(protocol::DecodedFrame::Beacon(beacon)) => (
@@ -234,6 +284,9 @@ async fn receive_task(
                 None,
             ),
             Some(protocol::DecodedFrame::Application(packet)) => {
+                // A message for all boards must arrive as a broadcast frame. A
+                // message for one board must name this board and must arrive
+                // as a direct frame.
                 let addressed_to_us = match packet.recipient {
                     None => broadcast,
                     Some(recipient) => recipient == radio.local_id && !broadcast,

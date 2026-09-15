@@ -1,10 +1,11 @@
 //! The camera.
 //!
-//! The GC0308 sensor is programmed once during bring-up over the shared I2C
-//! bus; afterwards frames stream through the ESP32-S3's `LCD_CAM` peripheral
-//! and DMA on CPU0. Frames are 320x240 RGB565 with the most significant byte
-//! first, the same format the display takes, so rows go straight to the
-//! panel without conversion.
+//! [`Board::init`](crate::Board::init) sets up the GC0308 sensor once, over
+//! the shared I2C bus. After that, frames arrive through the `LCD_CAM`
+//! peripheral of the ESP32-S3 and DMA (direct memory access), on CPU0.
+//! Frames are 320x240 pixels in RGB565 (16-bit colour), most significant
+//! byte first. The display uses the same format, so rows go to the screen
+//! without conversion.
 //!
 //! ```ignore
 //! if let Some(camera) = camera.as_mut()
@@ -15,15 +16,20 @@
 //! }
 //! ```
 //!
-//! `begin_frame` returns the newest complete frame at once. Drawing it drains
-//! the sensor's DMA ring while the display's DMA is busy, and `finish` swaps
-//! in the frame that completed meanwhile, or waits for the next one. The ring
-//! holds only a few milliseconds and the sensor never pauses, so a loop that
-//! does other work between frames calls [`Camera::pump`] there and does not
-//! sleep. The `capture` module explains the buffers behind this.
+//! The first `begin_frame` after start-up or after [`Camera::pause`] waits
+//! for a complete frame. Later calls return the newest complete frame at
+//! once. While the display sends a frame, the camera copies the next frame
+//! from its small DMA ring buffer. `finish` then switches to the frame that
+//! was completed in the meantime, or waits for the next one.
 //!
-//! The camera is the one part of the board that may be missing: bring-up
-//! returns `None` instead of panicking when no sensor answers.
+//! The ring buffer holds only a few milliseconds of data, and the sensor
+//! never pauses. So a loop that does other work between frames must call
+//! [`Camera::pump`] there, and it should not sleep. The private `capture`
+//! module explains the buffers.
+//!
+//! The camera is optional, like the light and proximity sensor.
+//! `Board::init` returns `None` for it when no sensor answers, and does not
+//! panic.
 
 mod capture;
 mod gc0308;
@@ -36,24 +42,31 @@ use crate::board::{i2c, io_expander, power};
 pub(crate) use capture::Resources;
 pub use capture::{Camera, Frame, HEIGHT, WIDTH};
 
-/// Settle time between enabling the camera power rails and pulsing reset.
+/// Milliseconds to wait after the camera power rails turn on, before the
+/// reset pulse. The voltages need this time to become stable.
 const RAIL_SETTLE_MS: u32 = 10;
 
-/// Why the camera could not be brought up.
+/// Why the camera start-up (bring-up) failed.
 #[derive(Debug)]
 enum BringUpError<E> {
-    /// The PMIC, IO expander or sensor did not answer on I2C.
+    /// An I2C transfer failed: to the power chip (PMIC, power management IC),
+    /// the IO expander or the sensor. Usually the chip did not answer.
     Bus(E),
-    /// A sensor answered, but it is not a GC0308.
+    /// A sensor answered, but its product ID (PID) is not the GC0308 ID.
     UnexpectedPid(u8),
 }
 
-/// Power the sensor, program it and start the capture pipeline.
+/// Power the sensor, program its registers and set up the capture pipeline.
 ///
-/// The sensor's control bus is the board's system I2C bus at 100 kHz instead
-/// of 400 kHz, so this borrows the bus resources twice (power at full speed,
-/// then the sensor at the slower speed) and releases them again for the
-/// runtime bus.
+/// Return `None` and log a warning when an I2C transfer fails or the sensor
+/// is not a GC0308. Capturing starts later, with the first
+/// [`Camera::begin_frame`].
+///
+/// The sensor's control bus uses the same pins as the board's system I2C
+/// bus, but at 100 kHz instead of 400 kHz. So this function borrows the bus
+/// resources twice: first at 400 kHz for the power chip and the IO expander,
+/// then at 100 kHz for the sensor. After that, the resources are free again
+/// for the runtime bus.
 pub(crate) fn bring_up(
     bus: &mut i2c::Resources<'static>,
     delay: Delay,

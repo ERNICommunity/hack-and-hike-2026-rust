@@ -1,15 +1,18 @@
-//! CPU1 task polling the LTR-553 over the shared system bus, for both the
-//! light and the proximity capability.
+//! CPU1 task that polls the LTR-553 over the shared system I2C bus, for both
+//! the light and the proximity capability.
 //!
-//! The sensor measures on its own every 100 ms; the task reads the result at
-//! the same rate, so every poll sees a fresh measurement, and publishes the
-//! light part to the light handle and the proximity part to the proximity
-//! handle.
+//! The LTR-553 contains an ambient light sensor (ALS) and a proximity sensor
+//! (PS). It measures by itself every 100 ms. The task reads the result at
+//! about the same rate, so most reads get a new measurement. The task
+//! publishes the light part to the light handle and the proximity part to
+//! the proximity handle.
 //!
-//! The light sensor's gain is adjusted automatically: raised when the counts
-//! are small, lowered before they saturate, so a dark room and daylight both
-//! resolve. The counts are converted with the gain the sensor reports along
-//! with them, so a change is never applied to the wrong measurement.
+//! The task changes the gain of the light sensor by itself. It raises the
+//! gain when the counts are small, and lowers it before the counts saturate
+//! (reach their maximum). So the sensor gives useful values both in a dark
+//! room and in daylight. The sensor reports the gain of each measurement
+//! together with the counts. The task converts the counts with this reported
+//! gain, so a gain change never uses the wrong factor for a measurement.
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
@@ -23,23 +26,36 @@ use crate::{
 
 use super::{Runtime, Sample, ltr553};
 
-/// Time between two reads, matching the sensor's measurement rate.
+/// Wait between two reads. It is the same as the sensor's measurement rate.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Raise the gain when the larger channel count is below this.
 const GAIN_UP_BELOW: u16 = 500;
-/// Lower the gain when the larger channel count is above this: close to the
-/// 65535 the counts saturate at.
+/// Lower the gain when the larger channel count is above this. It is close
+/// to 65535, the largest count.
 const GAIN_DOWN_ABOVE: u16 = 60000;
-/// The gain to start with: 8x, in the middle of the range.
+/// Index into `ALS_GAIN_CODES` of the gain to start with: 8x, in the middle
+/// of the range.
 const INITIAL_GAIN_INDEX: usize = 3;
-/// Readings after a gain change that may still show the previous gain. A
-/// mismatch beyond that means the sensor lost its configuration (a brown-out
-/// resets it to standby at 1x) and is set up again.
+/// Number of readings with a different gain that the task accepts after a
+/// gain change. These readings may still have the previous gain. When more
+/// readings show a different gain, the sensor has probably lost its
+/// configuration, and the task configures it again. (For example, a
+/// brown-out, a short drop of the supply voltage, resets it to standby at
+/// 1x.)
 const SETTLE_READINGS: u8 = 2;
 /// Time between attempts to configure a sensor that does not answer.
 const CONFIGURE_RETRY: Duration = Duration::from_secs(1);
+/// Readings in a row with invalid light data after which the task configures
+/// the sensor again: one second. After a gain change the data is invalid for
+/// only one or two readings. Much longer means that the sensor has probably
+/// lost its configuration, and then its proximity data is not fresh either.
+const MAX_INVALID_READINGS: u8 = 10;
 
-/// Start polling the sensor on CPU1, feeding both handles.
+/// Start polling the sensor on CPU1. The task publishes to both handles.
+///
+/// # Panics
+///
+/// When the task is already running.
 pub(crate) fn spawn(
     spawner: &Spawner,
     bus: SystemI2cBus,
@@ -49,9 +65,11 @@ pub(crate) fn spawn(
     spawner.spawn(poll_task(bus, light, proximity).expect("light task already spawned"));
 }
 
-/// Configure the sensor, then read and publish a sample every 100 ms. A
-/// failed read is skipped; the first failure is logged, later ones are not,
-/// so a sensor that stops answering does not flood the log.
+/// Configure the sensor, then read and publish a sample every 100 ms.
+///
+/// A failed read is skipped. Only the first failure in a series is logged.
+/// So a sensor that stops answering does not fill the log. After a
+/// successful read, the next failure is logged again.
 #[embassy_executor::task]
 async fn poll_task(bus: SystemI2cBus, light: Runtime, proximity: proximity::Runtime) {
     let mut gain_index = INITIAL_GAIN_INDEX;
@@ -59,8 +77,10 @@ async fn poll_task(bus: SystemI2cBus, light: Runtime, proximity: proximity::Runt
 
     let mut read_failed = false;
     let mut reset_logged = false;
-    // Readings still allowed to carry the previous gain after a change.
+    // How many more readings may still show the previous gain after a change.
     let mut settling = SETTLE_READINGS;
+    // Readings in a row without valid light data.
+    let mut invalid_readings: u8 = 0;
     loop {
         Timer::after(POLL_INTERVAL).await;
 
@@ -80,19 +100,36 @@ async fn poll_task(bus: SystemI2cBus, light: Runtime, proximity: proximity::Runt
                     warn!("LTR-553 light sensor read failed: {:?}", error);
                 }
                 read_failed = true;
-                None
+                continue;
             }
         };
-        let Some(reading) = reading else {
+
+        proximity.publish(proximity_sample(reading));
+        // The light data is invalid for a short time after a gain change.
+        // The proximity sample above is published anyway, because the gain
+        // change does not affect it.
+        let Some(measurement) = reading.light else {
+            invalid_readings = invalid_readings.saturating_add(1);
+            if invalid_readings >= MAX_INVALID_READINGS {
+                // Logged once, like the gain mismatch below, so a sensor that
+                // never recovers does not fill the log.
+                if !reset_logged {
+                    warn!("LTR-553 light data stays invalid: configuring it again");
+                    reset_logged = true;
+                }
+                configure_until_it_works(bus, gain_index).await;
+                invalid_readings = 0;
+                settling = SETTLE_READINGS;
+            }
             continue;
         };
+        invalid_readings = 0;
+        light.publish(light_sample(measurement));
 
-        light.publish(light_sample(reading));
-        proximity.publish(proximity_sample(reading));
-
-        // Judge the gain only on a measurement taken at the gain we asked
-        // for; the first readings after a change may still be at the old one.
-        let Some(reported) = gain_index_of(reading.gain) else {
+        // Choose a new gain only from a measurement at the requested gain.
+        // The first readings after a change may still have the old gain.
+        // A reported gain that is not in the table is ignored.
+        let Some(reported) = gain_index_of(measurement.gain) else {
             continue;
         };
         if reported != gain_index {
@@ -103,7 +140,7 @@ async fn poll_task(bus: SystemI2cBus, light: Runtime, proximity: proximity::Runt
             if !reset_logged {
                 warn!(
                     "LTR-553 reports gain {}x instead of the requested {}x: configuring it again",
-                    reading.gain,
+                    measurement.gain,
                     ltr553::ALS_GAIN_FACTORS[gain_index]
                 );
                 reset_logged = true;
@@ -112,7 +149,7 @@ async fn poll_task(bus: SystemI2cBus, light: Runtime, proximity: proximity::Runt
             settling = SETTLE_READINGS;
             continue;
         }
-        if let Some(next) = better_gain(gain_index, reading.channels) {
+        if let Some(next) = better_gain(gain_index, measurement.channels) {
             gain_index = next;
             settling = SETTLE_READINGS;
             let set = {
@@ -130,8 +167,9 @@ async fn poll_task(bus: SystemI2cBus, light: Runtime, proximity: proximity::Runt
     }
 }
 
-/// Configure the sensor, retrying every second until it answers. The probe
-/// during bring-up saw the chip, so a failure here is transient.
+/// Configure the sensor. When that fails, try again every second until it
+/// works. The check during bring-up found the chip, so a failure here is
+/// probably temporary. Only the first failure is logged.
 async fn configure_until_it_works(bus: SystemI2cBus, gain_index: usize) {
     let mut logged = false;
     loop {
@@ -156,15 +194,20 @@ async fn configure_until_it_works(bus: SystemI2cBus, gain_index: usize) {
     }
 }
 
-/// The index into `ALS_GAIN_CODES` of a gain factor the sensor reports.
+/// The index of a gain factor that the sensor reports. The index is the
+/// same for `ALS_GAIN_FACTORS` and `ALS_GAIN_CODES`. `None` for a factor
+/// that is not in the table.
 fn gain_index_of(factor: u8) -> Option<usize> {
     ltr553::ALS_GAIN_FACTORS.iter().position(|&f| f == factor)
 }
 
-/// The next gain index to use, if the counts call for a change: one step up
-/// when both channels are small, one step down when either is close to
-/// saturating. The thresholds are far enough apart that a change never
-/// triggers the opposite one.
+/// The next gain index, when the counts need a gain change. One step down
+/// when either channel is close to saturating. One step up when both
+/// channels are small. `None` when the gain is right, or when it is already
+/// at the end of the table.
+///
+/// The thresholds are far apart. So after one change, the new counts never
+/// ask for the opposite change.
 fn better_gain(gain_index: usize, channels: Channels) -> Option<usize> {
     let largest = channels.ch0.max(channels.ch1);
     if largest > GAIN_DOWN_ABOVE && gain_index > 0 {
@@ -176,16 +219,21 @@ fn better_gain(gain_index: usize, channels: Channels) -> Option<usize> {
     }
 }
 
-/// The light part of one reading: lux from the two channels at the gain
-/// they were measured with.
-fn light_sample(reading: light::Reading) -> Sample {
+/// Convert one light measurement to lux. The conversion uses both channels
+/// and the gain of this measurement.
+fn light_sample(measurement: light::Light) -> Sample {
     Sample {
-        lux: light::lux(reading.channels, reading.gain, ltr553::ALS_INTEGRATION_MS),
+        lux: light::lux(
+            measurement.channels,
+            measurement.gain,
+            ltr553::ALS_INTEGRATION_MS,
+        ),
     }
 }
 
-/// The proximity part of one reading: the raw count, with saturation
-/// reported as the maximum, and the count spread evenly over the distance.
+/// The proximity part of one reading. `raw` is the count, or the maximum
+/// count when the measurement is saturated. `percent` is the closeness,
+/// spread evenly over the distance.
 fn proximity_sample(reading: light::Reading) -> proximity::Sample {
     let raw = if reading.proximity_saturated {
         PROXIMITY_MAX

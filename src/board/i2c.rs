@@ -1,9 +1,12 @@
 //! The board's shared I2C bus.
 //!
-//! One pair of pins (SDA on GPIO12, SCL on GPIO11) connects the power chip,
-//! the IO expander, the audio codecs, the IMU, the touch controller, the
-//! light and proximity sensor and the camera sensor. During bring-up CPU0 creates short-lived drivers on it;
-//! afterwards one async driver lives on CPU1, shared by the capability tasks
+//! I2C is a two-wire bus: SDA carries the data and SCL the clock. One pair of
+//! pins (SDA on GPIO12, SCL on GPIO11) connects the power chip, the IO
+//! expander, the audio codecs, the IMU, the touch controller, the light and
+//! proximity sensor and the camera sensor.
+//!
+//! During bring-up, CPU0 creates short-lived drivers on these pins. After
+//! that, one async driver lives on CPU1. The capability tasks share it
 //! through a mutex.
 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
@@ -20,16 +23,17 @@ use static_cell::StaticCell;
 
 /// Bus speed for every chip except the camera sensor.
 const SYSTEM_I2C_FREQUENCY_KHZ: u32 = 400;
-/// Bus speed while the camera sensor is programmed (its SCCB interface is
-/// slower than the other chips).
+/// Bus speed while the camera sensor is programmed. Its SCCB interface (the
+/// camera's version of I2C) is slower than the other chips.
 const CAMERA_SCCB_FREQUENCY_KHZ: u32 = 100;
-/// Half a clock period while recovering the bus by hand: 100 kHz.
+/// Half a clock period while the bus is recovered by hand. 5 µs high and
+/// 5 µs low give 100 kHz.
 const RECOVERY_HALF_PERIOD_US: u32 = 5;
 
 /// The I2C controller and its two pins.
 ///
-/// CPU0 reborrows these during bring-up for temporary drivers; the final
-/// driver takes them for good and moves to CPU1.
+/// During bring-up, CPU0 reborrows them for temporary drivers. The final
+/// driver takes ownership of them and moves to CPU1.
 pub(crate) struct Resources<'d> {
     /// The I2C controller.
     pub(crate) i2c0: I2C0<'d>,
@@ -40,9 +44,11 @@ pub(crate) struct Resources<'d> {
 }
 
 impl Resources<'static> {
-    /// Borrow all three singleton resources without giving up their final
-    /// `'static` ownership. Dropping a temporary driver releases the I2C/GPIO
-    /// peripheral connections so another startup owner can use them safely.
+    /// Borrow all three resources for a temporary driver, and keep the
+    /// `'static` ownership here.
+    ///
+    /// When the temporary driver is dropped, it releases the controller and
+    /// the pins. Then the next driver can use them safely.
     pub(crate) fn reborrow(&mut self) -> Resources<'_> {
         Resources {
             i2c0: self.i2c0.reborrow(),
@@ -52,14 +58,16 @@ impl Resources<'static> {
     }
 }
 
-/// Free the bus if a chip is still holding it from before the last reset.
+/// Free the bus if a chip still holds it from before the last reset.
 ///
-/// CPU1 reads the touch controller and the IMU all the time, so a reset (for
-/// example by the flasher) often lands in the middle of a read. The chip then
-/// keeps SDA low, waiting for clocks that never come, and every transaction
-/// after the reset fails with a missing acknowledge. Clocking SCL by hand
-/// lets the chip finish its byte, and a STOP condition returns it to idle.
-/// Call this before the first I2C driver is created.
+/// CPU1 reads the touch controller and the IMU all the time. So a reset (for
+/// example by the flasher) often happens in the middle of a read. The chip
+/// then keeps SDA low and waits for clock pulses that never come. Every
+/// transaction after the reset fails, because the chip does not acknowledge.
+///
+/// This function drives SCL by hand, so the chip can finish its byte. Then a
+/// STOP condition returns every chip to idle. Call this before the first I2C
+/// driver is created.
 pub(crate) fn recover_bus(resources: &mut Resources<'static>, delay: Delay) {
     let open_drain = OutputConfig::default()
         .with_drive_mode(DriveMode::OpenDrain)
@@ -77,7 +85,8 @@ pub(crate) fn recover_bus(resources: &mut Resources<'static>, delay: Delay) {
         return;
     }
 
-    // At most nine clocks: the rest of one byte plus its acknowledge bit.
+    // At most nine clock pulses: the rest of one byte plus its acknowledge
+    // bit. Stop early when the chip releases SDA.
     for _ in 0..9 {
         scl.set_low();
         delay.delay_micros(RECOVERY_HALF_PERIOD_US);
@@ -87,7 +96,9 @@ pub(crate) fn recover_bus(resources: &mut Resources<'static>, delay: Delay) {
             break;
         }
     }
-    // STOP: SDA rises while SCL is high.
+    // SCL is high here. SDA falling while SCL is high is a START condition,
+    // and SDA rising while SCL is high is a STOP condition. START followed by
+    // STOP ends any transfer that a chip still expects.
     sda.set_low();
     delay.delay_micros(RECOVERY_HALF_PERIOD_US);
     scl.set_high();
@@ -102,24 +113,32 @@ pub(crate) fn recover_bus(resources: &mut Resources<'static>, delay: Delay) {
     }
 }
 
-/// CPU0 startup form that is ultimately moved to CPU1.
+/// The system bus driver in blocking mode. CPU0 uses it during bring-up and
+/// then moves it to CPU1.
 pub(crate) type SystemI2cBlocking = I2c<'static, Blocking>;
 
-/// CPU1 runtime form. ESP-HAL async drivers are core-affine because their
-/// interrupt handler is installed on the core that calls `into_async()`.
+/// The system bus driver in async mode, on CPU1. An esp-hal async driver
+/// must stay on one core: `into_async()` installs its interrupt handler on
+/// the core that calls it.
 type SystemI2c = I2c<'static, Async>;
 
-/// The runtime bus is only used by tasks on the CPU1 executor, so a mutex
-/// without interrupt or cross-core protection is enough.
+/// The mutex around the async driver. Only tasks on the CPU1 executor use
+/// it, so a mutex without protection against interrupts or the other core is
+/// enough. (An executor is the part of the async runtime that runs tasks.)
 type SystemI2cMutex = Mutex<NoopRawMutex, SystemI2c>;
 /// How CPU1 tasks share the bus: lock it for one transaction at a time.
 pub(crate) type SystemI2cBus = &'static SystemI2cMutex;
 
-/// Storage for the shared bus mutex. A `StaticCell` hands out one `&'static`
-/// reference at runtime, so the bus can be shared by tasks that live forever.
+/// Storage for the shared bus mutex. A `StaticCell` gives out one `&'static`
+/// reference at run time. Tasks that run forever can share that reference.
 static SYSTEM_I2C: StaticCell<SystemI2cMutex> = StaticCell::new();
 
-/// A blocking driver on `resources` at `frequency_khz`.
+/// Create a blocking driver on `resources` at `frequency_khz`.
+///
+/// # Panics
+///
+/// When esp-hal rejects the configuration. This does not happen with the
+/// fixed frequencies in this module.
 fn init_with_frequency<'d>(resources: Resources<'d>, frequency_khz: u32) -> I2c<'d, Blocking> {
     let Resources { i2c0, sda, scl } = resources;
 
@@ -132,30 +151,34 @@ fn init_with_frequency<'d>(resources: Resources<'d>, frequency_khz: u32) -> I2c<
     .with_scl(scl)
 }
 
-/// Configure the CoreS3-Lite internal system bus at 400 kHz in blocking mode.
+/// Create a blocking driver for the system bus at 400 kHz.
 ///
-/// This is generic over the resource lifetime so bootstrap can construct and
-/// drop short-lived hardware-I2C owners before the final `'static` driver is
-/// moved to CPU1.
+/// The lifetime `'d` can be short. So bring-up can create and drop temporary
+/// drivers before it creates the final `'static` driver for CPU1.
 pub(crate) fn init<'d>(resources: Resources<'d>) -> I2c<'d, Blocking> {
     init_with_frequency(resources, SYSTEM_I2C_FREQUENCY_KHZ)
 }
 
-/// Create the startup-only GC0308 control bus at 100 kHz.
+/// Create a blocking driver at 100 kHz for programming the GC0308 camera
+/// sensor during bring-up.
 ///
-/// M5Stack's CoreS3 camera code releases its shared internal I2C owner and lets
-/// the camera create a fresh SCCB/I2C owner on GPIO12/GPIO11. Recreating the
-/// ESP32-S3 hardware driver here mirrors that ownership boundary while keeping
-/// the persistent runtime bus completely separate.
+/// M5Stack's CoreS3 camera code does the same: it releases the shared I2C
+/// driver, and the camera creates its own SCCB driver on GPIO12 and GPIO11.
+/// This driver is separate from the system bus driver that CPU1 uses later.
 pub(crate) fn init_camera_sccb<'d>(resources: Resources<'d>) -> I2c<'d, Blocking> {
     init_with_frequency(resources, CAMERA_SCCB_FREQUENCY_KHZ)
 }
 
-/// Convert the already-configured system bus to async mode on CPU1 and publish
-/// it to tasks running on that same executor.
+/// Convert the system bus driver to async mode and store it for the tasks
+/// on the CPU1 executor.
 ///
-/// This function must be called on CPU1. `I2c<Async>` is intentionally !Send:
-/// ESP-HAL installs the driver's interrupt handler on the calling core.
+/// Call this on CPU1. esp-hal installs the interrupt handler of the driver on
+/// the calling core. For this reason `I2c<Async>` is not `Send`: it cannot
+/// move to another core.
+///
+/// # Panics
+///
+/// When it is called a second time.
 pub(crate) fn into_async(i2c: SystemI2cBlocking) -> SystemI2cBus {
     let i2c = i2c.into_async();
     SYSTEM_I2C.init(Mutex::new(i2c))

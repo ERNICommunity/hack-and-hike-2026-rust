@@ -7,11 +7,11 @@ pub mod adpcm;
 
 /// A ring buffer of interleaved audio frames, `CHANNELS` samples each.
 ///
-/// Only whole frames are written and read, so the channels can never slip
-/// against each other.
+/// Only whole frames are written and read. So a sample of one channel can
+/// never end up in the place of another channel.
 pub struct FrameRing<const SAMPLES: usize, const CHANNELS: usize> {
-    /// Backing storage. Queued samples start at `read_index` and wrap around
-    /// from the end of the array to its start.
+    /// Storage of the ring. The queued samples start at `read_index`. When
+    /// they reach the end of the array, they continue at its start.
     samples: [i16; SAMPLES],
     /// Index of the oldest unread sample in `samples`.
     read_index: usize,
@@ -31,7 +31,9 @@ impl<const SAMPLES: usize, const CHANNELS: usize> FrameRing<SAMPLES, CHANNELS> {
     ///
     /// # Panics
     ///
-    /// At compile time when `SAMPLES` is not a multiple of `CHANNELS`.
+    /// When `CHANNELS` is zero or `SAMPLES` is not a multiple of `CHANNELS`.
+    /// In a const context, such as a `static`, the error appears at compile
+    /// time. Otherwise it is a panic at run time.
     pub const fn new() -> Self {
         assert!(CHANNELS > 0 && SAMPLES.is_multiple_of(CHANNELS));
         Self {
@@ -57,7 +59,11 @@ impl<const SAMPLES: usize, const CHANNELS: usize> FrameRing<SAMPLES, CHANNELS> {
     }
 
     /// Append complete frames from `samples`. Returns how many frames were
-    /// accepted; an incomplete trailing frame is ignored.
+    /// accepted.
+    ///
+    /// An incomplete frame at the end of `samples` is ignored. When the ring
+    /// has no room for all frames, the frames that do not fit are not
+    /// written.
     pub fn write(&mut self, samples: &[i16]) -> usize {
         let frames = (samples.len() / CHANNELS).min(self.free_frames());
         let count = frames * CHANNELS;
@@ -70,7 +76,8 @@ impl<const SAMPLES: usize, const CHANNELS: usize> FrameRing<SAMPLES, CHANNELS> {
         frames
     }
 
-    /// Remove complete frames into `out`. Returns how many frames were read.
+    /// Move complete frames into `out`, as many as fit and are queued.
+    /// Returns how many frames were read.
     pub fn read(&mut self, out: &mut [i16]) -> usize {
         let frames = (out.len() / CHANNELS).min(self.frames());
         let count = frames * CHANNELS;

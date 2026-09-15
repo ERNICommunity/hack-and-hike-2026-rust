@@ -39,7 +39,8 @@ pub fn max_abs(v: [f32; 3]) -> f32 {
     v[0].abs().max(v[1].abs()).max(v[2].abs())
 }
 
-/// Unit vector in the direction of `v`, or `None` for a (near) zero vector.
+/// Unit vector in the direction of `v`, or `None` when `v` is shorter than
+/// 0.001.
 pub fn normalize(v: [f32; 3]) -> Option<[f32; 3]> {
     const MIN_NORM_SQUARED: f32 = 1.0e-6;
     let norm_squared = dot(v, v);

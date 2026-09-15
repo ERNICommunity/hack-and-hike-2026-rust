@@ -1,11 +1,14 @@
 //! BMM150 magnetometer data decoding and Bosch factory compensation.
 //!
-//! The firmware's BMI270 driver owns the register-level transport to this
-//! sensor and hands the raw data frame and trim bytes to this module. Runtime
-//! hard/soft-iron calibration lives in the `calibration` submodule.
+//! The firmware's BMI270 driver reads and writes the registers of this
+//! sensor. It passes the raw data frame and the trim bytes to this module.
+//! Trim values are correction values that the factory stores in each chip.
 //!
-//! The compensation equations are derived from Bosch Sensortec's BSD-3-Clause
-//! BMM150 `SensorAPI` v2.0.0.
+//! The `calibration` submodule learns the hard-iron and soft-iron distortion
+//! at run time (see [`Calibration`]).
+//!
+//! The compensation equations come from Bosch Sensortec's BMM150 `SensorAPI`
+//! v2.0.0 (BSD-3-Clause license).
 
 mod calibration;
 
@@ -18,43 +21,48 @@ const OVERFLOW_XY: i16 = -4096;
 /// reports when the axis overflowed.
 const OVERFLOW_Z: i16 = -16384;
 
-/// Factory trim values read from the sensor once at start-up.
+/// Factory trim values, read from the sensor once at start-up.
+///
+/// Multi-byte values are little-endian: the low byte is in the first
+/// register.
 #[derive(Clone, Copy, Debug)]
 pub struct Trim {
-    /// X offset trim, register 0x5D. Added to the scaled X reading.
+    /// X offset trim, register `0x5D`. Added to the scaled X reading.
     dig_x1: i8,
-    /// Y offset trim, register 0x5E. Added to the scaled Y reading.
+    /// Y offset trim, register `0x5E`. Added to the scaled Y reading.
     dig_y1: i8,
-    /// X sensitivity trim, register 0x64.
+    /// X sensitivity trim, register `0x64`.
     dig_x2: i8,
-    /// Y sensitivity trim, register 0x65.
+    /// Y sensitivity trim, register `0x65`.
     dig_y2: i8,
-    /// Z sensitivity trim that scales with the Hall resistance, registers
-    /// 0x6A..0x6B.
+    /// Z sensitivity trim that is multiplied by the Hall resistance,
+    /// registers `0x6A` and `0x6B`.
     dig_z1: u16,
-    /// Z sensitivity trim, registers 0x68..0x69. Zero means the trim data is
-    /// invalid, because Z compensation divides by it.
+    /// Z sensitivity trim, registers `0x68` and `0x69`. Zero means the trim
+    /// data is invalid. Bosch's compensation checks this, because the Z
+    /// divisor contains it.
     dig_z2: i16,
-    /// Z trim that corrects for the Hall resistance's distance from
-    /// `dig_xyz1`, registers 0x6E..0x6F.
+    /// Z trim for the difference between the Hall resistance and
+    /// `dig_xyz1`, registers `0x6E` and `0x6F`.
     dig_z3: i16,
-    /// Z offset trim, registers 0x62..0x63. Subtracted from the raw Z
+    /// Z offset trim, registers `0x62` and `0x63`. Subtracted from the raw Z
     /// reading.
     dig_z4: i16,
     /// Linear coefficient of the Hall resistance correction for X and Y,
-    /// register 0x71.
+    /// register `0x71`.
     dig_xy1: u8,
     /// Quadratic coefficient of the Hall resistance correction for X and Y,
-    /// register 0x70.
+    /// register `0x70`.
     dig_xy2: i8,
-    /// Reference Hall resistance the readings are compared with, registers
-    /// 0x6C..0x6D (15 bits; the top bit is masked off). Zero means invalid trim.
+    /// Reference Hall resistance that the measured Hall resistance is
+    /// compared with, registers `0x6C` and `0x6D`. It has 15 bits: the top
+    /// bit of `0x6D` is removed. Zero means the trim data is invalid.
     dig_xyz1: u16,
 }
 
 impl Trim {
-    /// Construct factory trim from the three register blocks Bosch documents:
-    /// 0x5D..0x5E, 0x62..0x65, and 0x68..0x71.
+    /// Build the trim values from the three register blocks that Bosch
+    /// documents: `0x5D` to `0x5E`, `0x62` to `0x65`, and `0x68` to `0x71`.
     pub fn from_registers(x1_y1: [u8; 2], z4_x2_y2: [u8; 4], z2_to_xy1: [u8; 10]) -> Self {
         Self {
             dig_x1: i8::from_ne_bytes([x1_y1[0]]),
@@ -75,14 +83,18 @@ impl Trim {
 /// One compensated magnetometer reading.
 #[derive(Clone, Copy, Debug)]
 pub struct Sample {
-    /// Compensated field in the magnetometer's own axes.
+    /// Compensated field in uT (microtesla), in the magnetometer's own axes.
     pub field_ut: [f32; 3],
     /// Whether the sensor flagged this frame as a fresh measurement.
     pub data_ready: bool,
 }
 
-/// Decode and apply Bosch factory compensation to the BMM150's 8-byte data
-/// frame (X, Y, Z and RHALL). Returns `None` for overflow or invalid trim data.
+/// Decode the BMM150's 8-byte data frame and apply Bosch's factory
+/// compensation.
+///
+/// The frame holds X, Y, Z and RHALL (the resistance of the Hall sensor),
+/// low byte first. Returns `None` when an axis overflowed, when RHALL is
+/// zero, or when the trim data is invalid.
 pub fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
     let raw_x = i16::from_le_bytes([data[0], data[1]]) >> 3;
     let raw_y = i16::from_le_bytes([data[2], data[3]]) >> 3;
@@ -111,9 +123,9 @@ pub fn compensate(data: [u8; 8], trim: Trim) -> Option<Sample> {
     })
 }
 
-/// Bosch's floating-point compensation of one X or Y reading, in
-/// microtesla. `dig_1` and `dig_2` are that axis's offset and sensitivity
-/// trims; `rhall` is the Hall resistance from the same data frame.
+/// Bosch's floating-point compensation of one X or Y reading, in uT.
+/// `dig_1` and `dig_2` are the offset and sensitivity trims of that axis.
+/// `rhall` is the Hall resistance from the same data frame.
 fn compensate_xy(raw: i16, rhall: u16, dig_1: i8, dig_2: i8, trim: Trim) -> f32 {
     let x0 = f32::from(trim.dig_xyz1) * 16384.0 / f32::from(rhall);
     let ratio = x0 - 16384.0;
@@ -124,8 +136,8 @@ fn compensate_xy(raw: i16, rhall: u16, dig_1: i8, dig_2: i8, trim: Trim) -> f32 
     ((x4 / 8192.0) + f32::from(dig_1) * 8.0) / 16.0
 }
 
-/// Bosch's floating-point compensation of the Z reading, in microtesla.
-/// `None` when the trim values would make the divisor (nearly) zero.
+/// Bosch's floating-point compensation of the Z reading, in uT.
+/// `None` when the trim values and `rhall` make the divisor (almost) zero.
 fn compensate_z(raw: i16, rhall: u16, trim: Trim) -> Option<f32> {
     let z0 = f32::from(raw) - f32::from(trim.dig_z4);
     let z1 = f32::from(rhall) - f32::from(trim.dig_xyz1);

@@ -1,35 +1,46 @@
 //! The M5Stack CoreS3 Lite board: its physical facts and its bring-up.
 //!
-//! This module owns what is specific to the PCB rather than to a chip: the
-//! shared I2C bus, the power rails of the AXP2101 power chip, the reset lines
-//! behind the AW9523 IO expander, the PSRAM chip and the display geometry.
-//! Register setup of a device stays with the capability that uses it: LCD
+//! This module contains what belongs to the circuit board and not to one
+//! chip:
+//!
+//! - the shared I2C bus (the two-wire bus to most chips on the board),
+//! - the power rails of the AXP2101 power chip,
+//! - the reset lines on the AW9523 IO expander (a chip that adds extra pins),
+//! - PSRAM, the external RAM chip,
+//! - the display size and orientation,
+//! - the pins and DMA channels that each capability gets.
+//!
+//! The register setup of a chip stays in the capability that uses it: LCD
 //! controller setup in `display`, codec setup in `audio`, sensor setup in
-//! `imu`. Applications see only [`Board`] and [`psram`], both re-exported at
-//! the crate root.
+//! `imu` and `light`. Applications see only [`Board`] and [`psram`]. The
+//! crate root re-exports both.
 //!
-//! [`Board::init`] powers the CoreS3 Lite hardware in the required order,
-//! starts the CPU1 capability runtimes and returns one handle per capability.
-//! The application takes ownership of the handles it needs and drops the
-//! rest; the CPU1 runtimes keep running either way.
+//! [`Board::init`] starts the CoreS3 Lite hardware in the required order. It
+//! starts the capability tasks on CPU1 and returns one handle for each
+//! capability. The application keeps the handles it needs and drops the
+//! rest. The CPU1 tasks keep running in both cases.
 //!
-//! Bring-up is fail-fast for the chips the board cannot work without: the
-//! power chip, the IO expander and the audio codecs must answer on I2C, or
-//! `init` panics with a message naming the chip. The camera and the light
-//! and proximity sensor are optional and come back as `None`. The IMU and
-//! the touch controller are first contacted from CPU1, where a failure is
-//! logged and retried rather than fatal.
+//! Bring-up (the start-up of the hardware) stops at once when a required chip
+//! is missing. The power chip, the IO expander and the audio codecs must
+//! answer on I2C. If one does not, `init` panics with a message that names
+//! the chip. The camera and the light and proximity sensor are optional.
+//! When they do not answer, their fields are `None`. The IMU and the touch
+//! controller are first contacted from CPU1. There, a failure does not stop
+//! the board: the IMU logs it and sets itself up again, and touch skips the
+//! failed read and polls again.
 //!
 //! The order of the steps matters:
 //!
-//! 1. Heaps and the logger, so everything after can allocate and log.
-//! 2. PSRAM and the log history, the RTOS timer.
-//! 3. I2C bus recovery, then the power chip and the IO expander: the display,
-//!    touch controller and camera are unpowered or held in reset until then.
-//! 4. The camera, which needs the shared I2C pins at a slower speed.
+//! 1. Heaps and the logger, so all later steps can allocate and log.
+//! 2. PSRAM and the log history, then the RTOS timer.
+//! 3. I2C bus recovery. Then the power chip turns on the backlight rail, and
+//!    the IO expander resets the display and the touch controller. These two
+//!    chips do not work before this step.
+//! 4. The camera: its power rails, its reset, and its setup over the shared
+//!    I2C pins at a slower speed.
 //! 5. The display over SPI.
-//! 6. The audio codecs and a look for the light and proximity sensor, then
-//!    the whole system I2C bus moves to CPU1.
+//! 6. The audio codecs and a check for the light and proximity sensor. Then
+//!    the system I2C bus moves to CPU1.
 //! 7. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks.
 
 mod cpu1;
@@ -62,12 +73,13 @@ pub(crate) const DISPLAY_WIDTH: usize = 320;
 /// Height of the LCD and of the touch panel's coordinate space.
 pub(crate) const DISPLAY_HEIGHT: usize = 240;
 
-/// The panel is mounted upside down relative to its controller's native
-/// orientation. Both the LCD setup and the touch coordinates follow this, so
-/// what is drawn and what is touched share one coordinate system.
+/// Whether the panel is mounted upside down, compared with the native
+/// orientation of its controllers. The LCD setup and the touch coordinates
+/// both use this value. So a drawn point and a touched point use the same
+/// coordinates.
 pub(crate) const DISPLAY_ROTATED_180: bool = true;
 
-/// Convert a point from the touch controller's native panel coordinates into
+/// Convert a point from the native coordinates of the touch controller into
 /// display coordinates.
 pub(crate) const fn logical_display_point(x: u16, y: u16) -> (u16, u16) {
     if DISPLAY_ROTATED_180 {
@@ -77,14 +89,16 @@ pub(crate) const fn logical_display_point(x: u16, y: u16) -> (u16, u16) {
     }
 }
 
-/// Attempts for the first I2C transaction after a reset: a chip may still be
-/// settling from the reset or from the power-up of its rail.
+/// Number of attempts for the first I2C transaction after a reset. The chip
+/// may still be starting after the reset or after its power came on.
 const FIRST_CONTACT_ATTEMPTS: u32 = 5;
-/// Pause between two of those attempts.
+/// Pause between two of those attempts, in milliseconds.
 const FIRST_CONTACT_RETRY_MS: u32 = 10;
 
-/// Run `attempt` until it succeeds, at most [`FIRST_CONTACT_ATTEMPTS`] times,
-/// logging every failure. Returns the last result.
+/// Run `attempt` until it succeeds, at most [`FIRST_CONTACT_ATTEMPTS`] times.
+///
+/// Logs each failure that is followed by another attempt. Returns the result
+/// of the last attempt, so the caller handles the final error.
 fn retry<T, E: core::fmt::Debug>(
     delay: Delay,
     mut attempt: impl FnMut() -> Result<T, E>,
@@ -99,61 +113,69 @@ fn retry<T, E: core::fmt::Debug>(
     result
 }
 
-/// Internal RAM that the second-stage bootloader no longer needs once the
-/// application runs (the esp-generate default for the ESP32-S3).
+/// Size of a heap in the internal RAM that the second-stage bootloader used.
+/// The bootloader has finished when the application runs, so this RAM is
+/// free. The value is the esp-generate default for the ESP32-S3.
 const RECLAIMED_HEAP_BYTES: usize = 73744;
-/// Additional internal heap carved from DRAM. PSRAM is a separate heap; see
-/// [`psram`].
+/// Size of a second heap in internal RAM, taken from DRAM (the data RAM of
+/// the application). PSRAM is a separate heap; see [`psram`].
 const INTERNAL_HEAP_BYTES: usize = 72 * 1024;
 
-/// One handle per capability of the CoreS3 Lite.
+/// One handle for each capability of the CoreS3 Lite.
 ///
-/// Destructure it and keep what your application needs; the `..` drops the
-/// rest:
+/// Use a pattern to keep the handles your application needs. The `..` drops
+/// the rest:
 ///
 /// ```ignore
 /// let Board { mut display, mut imu, .. } = Board::init();
 /// ```
 ///
-/// Each handle exists exactly once, so whoever owns it is the only code that
-/// can use that piece of hardware.
+/// Each handle exists only once. So the code that owns a handle is the only
+/// code that can use that part of the hardware. Dropping a handle does not
+/// stop the hardware: the tasks on CPU1 keep running.
 pub struct Board {
-    /// The 320x240 LCD.
+    /// The 320x240 pixel LCD screen.
     pub display: Display,
-    /// The LCD backlight brightness.
+    /// The brightness of the screen's backlight.
     pub backlight: Backlight,
-    /// The touch panel on top of the LCD.
+    /// The touch panel on top of the screen.
     pub touch: Touch,
-    /// Accelerometer, gyroscope and magnetometer, fused into an attitude.
+    /// The IMU (inertial measurement unit): accelerometer, gyroscope and
+    /// magnetometer, combined into roll, pitch and compass heading.
     pub imu: Imu,
-    /// The two microphones, as 16 kHz stereo blocks.
+    /// The two microphones, as blocks of 16 kHz stereo samples.
     pub microphone: Microphone,
-    /// The loudspeaker, fed with 16 kHz stereo samples.
+    /// The loudspeaker. It plays 16 kHz stereo samples.
     pub speaker: Speaker,
-    /// ESP-NOW messaging with nearby boards.
+    /// Messages to and from nearby boards over ESP-NOW, a direct radio
+    /// protocol from Espressif, the maker of the chip.
     pub network: Network,
-    /// The camera; `None` when it did not answer during bring-up.
+    /// The camera. `None` when the camera did not answer in `Board::init`.
     pub camera: Option<Camera>,
-    /// Ambient light; `None` when the sensor did not answer during bring-up.
+    /// The ambient light sensor. `None` when the sensor did not answer in
+    /// `Board::init`.
     pub light: Option<Light>,
-    /// How close something is to the front; `None` when the sensor did not
-    /// answer during bring-up. The same chip as `light`.
+    /// The proximity sensor: how close something is to the front of the
+    /// board. It is the same chip as `light`, so `light` and `proximity` are
+    /// both `Some` or both `None`.
     pub proximity: Option<Proximity>,
-    /// History of everything written through the `log` macros.
+    /// The newest lines written with the `log` macros.
     pub log: LogHistory,
 }
 
 impl Board {
-    /// Bring up the whole board. Call this once, first thing in `main`.
+    /// Start the whole board. Call this once, as the first thing in `main`.
     ///
-    /// Takes about half a second, most of it waiting for chips to come out of
-    /// reset.
+    /// It takes about half a second. Most of that time is spent waiting for
+    /// chips to finish their reset. At the end, it starts the capability
+    /// tasks on CPU1, the second CPU core.
     ///
     /// # Panics
     ///
-    /// When called twice, or when the power chip, the IO expander or the
-    /// audio codecs do not answer. The message names the chip; a
-    /// power-cycle (unplug USB) is the first thing to try.
+    /// - When it is called a second time.
+    /// - When the power chip (AXP2101), the IO expander (AW9523) or the audio
+    ///   codecs do not answer on the I2C bus. The panic message names the
+    ///   chip. First, switch the board off and on again (unplug USB).
     pub fn init() -> Self {
         esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: RECLAIMED_HEAP_BYTES);
         esp_alloc::heap_allocator!(size: INTERNAL_HEAP_BYTES);
@@ -178,12 +200,13 @@ impl Board {
             scl: peripherals.GPIO11,
         };
 
-        // A reset in the middle of a CPU1 read can leave a chip holding the
-        // bus; free it before the first transaction.
+        // A reset in the middle of a CPU1 read can leave a chip that holds
+        // the bus. Free the bus before the first transaction.
         i2c::recover_bus(&mut i2c_resources, delay);
 
-        // Power rails and reset lines are driven over a short-lived I2C owner;
-        // dropping it frees the pins for the camera's slower bus.
+        // A short-lived I2C driver sets the power rails and the reset lines.
+        // The driver is dropped at the end of this block. That frees the pins,
+        // so the camera can create its own slower driver on them.
         {
             let mut i2c = i2c::init(i2c_resources.reborrow());
             retry(delay, || power::enable_lcd_backlight(&mut i2c))
@@ -224,12 +247,13 @@ impl Board {
             delay,
         );
 
-        // The final system I2C driver moves to CPU1 once the codecs are set up.
+        // This is the final system I2C driver. It moves to CPU1 after the
+        // codec setup and the sensor check.
         let mut system_i2c = i2c::init(i2c_resources);
         audio::init_codecs(&mut system_i2c, delay).expect("audio codecs did not answer");
-        // The light and proximity sensor is optional, like the camera: one
-        // chip serves both handles, and its task is only spawned when the
-        // chip answered.
+        // The light and proximity sensor is optional, like the camera. One
+        // chip serves both handles. Its task starts only when the chip
+        // answered.
         let (light, proximity, light_runtimes) = if light::probe(&mut system_i2c) {
             let light::Endpoints {
                 handle: light,
@@ -249,8 +273,8 @@ impl Board {
         };
 
         // Every CPU1 capability comes as a pair: the handle for the
-        // application and the runtime side for its CPU1 task, sharing one set
-        // of queues.
+        // application, and the runtime for its CPU1 task. Both use the same
+        // queues or signals.
 
         let audio::Endpoints {
             microphone,

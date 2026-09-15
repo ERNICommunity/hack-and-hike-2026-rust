@@ -1,10 +1,11 @@
 //! Decoding of the LTR-553 proximity and ambient light sensor's data.
 //!
 //! The sensor reports two light counts and one proximity count. Channel 0 of
-//! the light sensor sees visible and infrared light, channel 1 mostly
-//! infrared. Their ratio tells what kind of light it is (sunlight carries
-//! more infrared than an LED lamp), and the datasheet gives one linear
-//! formula per range of that ratio to turn the counts into lux.
+//! the ambient light sensor (ALS) sees visible and infrared light. Channel 1
+//! sees mostly infrared light. Their ratio tells what kind of light it is:
+//! sunlight has more infrared than an LED lamp. The datasheet gives one
+//! linear formula for each range of that ratio. The formula turns the counts
+//! into lux.
 
 /// The two raw counts of one ambient light measurement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,15 +16,25 @@ pub struct Channels {
     pub ch1: u16,
 }
 
-/// One decoded data block of the sensor.
+/// One ambient light measurement: the counts and the gain they were taken
+/// with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Reading {
+pub struct Light {
     /// The ambient light counts.
     pub channels: Channels,
     /// The gain the counts were measured with, as a factor: 1, 2, 4, 8, 48
     /// or 96. The sensor reports it with the data, so a gain change is
     /// never applied to counts taken at the old gain.
     pub gain: u8,
+}
+
+/// One decoded data block of the sensor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reading {
+    /// The ambient light measurement; `None` while the sensor marks it
+    /// invalid or reports a reserved gain. The proximity data does not
+    /// depend on it.
+    pub light: Option<Light>,
     /// Reflected light from the sensor's own infrared LED, 0 to
     /// [`PROXIMITY_MAX`]: 0 with nothing in front of the sensor, more the
     /// closer an object comes.
@@ -39,7 +50,8 @@ pub const PROXIMITY_MAX: u16 = 0x07FF;
 pub const DATA_BLOCK_LEN: usize = 7;
 
 /// The gain factor for a gain code, as written to `ALS_CONTR` bits 4:2 and
-/// read back from `ALS_PS_STATUS` bits 6:4. Codes 4 and 5 are reserved.
+/// read back from `ALS_PS_STATUS` bits 6:4. Codes 4 and 5 are reserved and
+/// give `None`.
 pub fn gain_factor(code: u8) -> Option<u8> {
     match code {
         0 => Some(1),
@@ -52,17 +64,22 @@ pub fn gain_factor(code: u8) -> Option<u8> {
     }
 }
 
-/// Decode the seven registers starting at `ALS_DATA_CH1_0` (`0x88`): channel
-/// 1 low and high, channel 0 low and high, the status register, proximity
-/// low and high. `None` when the status says the light data is invalid, which
-/// the sensor signals while it is still integrating after a mode or gain
-/// change, or reports a reserved gain.
-pub fn decode(block: [u8; DATA_BLOCK_LEN]) -> Option<Reading> {
-    /// ALS_PS_STATUS bit 7: 1 = the ALS data is invalid.
+/// Decode the seven registers starting at `ALS_DATA_CH1_0` (`0x88`).
+///
+/// The registers are: channel 1 low and high byte, channel 0 low and high
+/// byte, the status register, proximity low and high byte.
+///
+/// [`Reading::light`] is `None` in two cases:
+/// - The status says the light data is invalid. The sensor does this while
+///   it is still measuring after a mode or gain change.
+/// - The status reports a reserved gain code.
+pub fn decode(block: [u8; DATA_BLOCK_LEN]) -> Reading {
+    /// `ALS_PS_STATUS` bit 7: 1 means the ALS data is invalid.
     const ALS_DATA_INVALID: u8 = 0x80;
-    /// ALS_PS_STATUS bits 6:4: the gain the data was measured with.
+    /// `ALS_PS_STATUS` bits 6:4: the gain code of the data.
     const ALS_GAIN_SHIFT: u8 = 4;
-    /// PS_DATA_1 bit 7: the proximity measurement saturated.
+    /// `PS_DATA_1` bit 7: the proximity measurement is saturated (at its
+    /// maximum).
     const PROXIMITY_SATURATED: u8 = 0x80;
 
     let [
@@ -74,28 +91,39 @@ pub fn decode(block: [u8; DATA_BLOCK_LEN]) -> Option<Reading> {
         ps_low,
         ps_high,
     ] = block;
-    if status & ALS_DATA_INVALID != 0 {
-        return None;
-    }
-    let gain = gain_factor((status >> ALS_GAIN_SHIFT) & 0x07)?;
-    Some(Reading {
-        channels: Channels {
-            ch0: u16::from_le_bytes([ch0_low, ch0_high]),
-            ch1: u16::from_le_bytes([ch1_low, ch1_high]),
-        },
-        gain,
+    let light = if status & ALS_DATA_INVALID != 0 {
+        None
+    } else {
+        gain_factor((status >> ALS_GAIN_SHIFT) & 0x07).map(|gain| Light {
+            channels: Channels {
+                ch0: u16::from_le_bytes([ch0_low, ch0_high]),
+                ch1: u16::from_le_bytes([ch1_low, ch1_high]),
+            },
+            gain,
+        })
+    };
+    Reading {
+        light,
         proximity: u16::from_le_bytes([ps_low, ps_high]) & PROXIMITY_MAX,
         proximity_saturated: ps_high & PROXIMITY_SATURATED != 0,
-    })
+    }
 }
 
-/// Illuminance in lux from the raw counts, for the sensor's `gain` factor
-/// (1, 2, 4, 8, 48 or 96) and integration time in milliseconds (50 to 400).
-/// Both must be nonzero; a zero would divide by zero.
+/// Illuminance in lux from the raw counts.
 ///
-/// The formula is appendix A of the LTR-553ALS-WA datasheet. Light that is
-/// almost entirely infrared (a ratio of 0.85 or more) counts as 0 lux, as the
-/// datasheet prescribes: the sensor cannot judge it.
+/// `gain` is the sensor's gain factor (1, 2, 4, 8, 48 or 96).
+/// `integration_ms` is the integration time (measurement time) in
+/// milliseconds, 50 to 400. Both must be nonzero, because the formula
+/// divides by them.
+///
+/// The formula is from appendix A of the LTR-553ALS-WA datasheet. Light that
+/// is almost only infrared (a ratio `ch1 / (ch0 + ch1)` of 0.85 or more)
+/// gives 0 lux. The datasheet says so, because the sensor cannot measure
+/// such light correctly.
+///
+/// # Panics
+///
+/// In debug builds, when `gain` or `integration_ms` is zero.
 pub fn lux(channels: Channels, gain: u8, integration_ms: u16) -> f32 {
     debug_assert!(
         gain != 0 && integration_ms != 0,
@@ -121,15 +149,17 @@ pub fn lux(channels: Channels, gain: u8, integration_ms: u16) -> f32 {
     (raw / f32::from(gain) / integration).max(0.0)
 }
 
-/// Closeness in percent from a raw proximity count, evenly spread over the
-/// distance: 0 at the edge of the range, 100 at the glass, 50 halfway.
+/// Closeness in percent from a raw proximity count. The percentage is linear
+/// in the distance: 0 at the edge of the range, 100 at the glass, 50 halfway.
 ///
-/// The reflection the sensor sees falls off with the square of the
-/// distance, so the raw count barely moves while an object approaches and
-/// shoots up in the last centimetres. Inverting that law, the distance is
-/// proportional to `1 / sqrt(count)`. `far_count` is the count at the edge
-/// of the range and `near_count` the count at the glass; counts beyond
-/// either end are clamped.
+/// The reflected light gets weaker with the square of the distance. So the
+/// raw count changes very little while an object is far away, and very much
+/// in the last centimetres. From that law, the distance is proportional to
+/// `1 / sqrt(count)`.
+///
+/// `far_count` is the count at the edge of the range. `near_count` is the
+/// count at the glass. A count at or below `far_count` gives 0, a count at
+/// or above `near_count` gives 100.
 pub fn closeness_percent(count: u16, far_count: u16, near_count: u16) -> u8 {
     if count <= far_count {
         return 0;
@@ -137,9 +167,9 @@ pub fn closeness_percent(count: u16, far_count: u16, near_count: u16) -> u8 {
     if count >= near_count {
         return 100;
     }
-    // Distance as a fraction of the range, 1.0 at `far_count`, and its
-    // value at the glass, which is the offset the sensor cannot measure
-    // below.
+    // `distance` is the distance as a fraction of the range: 1.0 at
+    // `far_count`. `at_glass` is that fraction at the glass. The sensor
+    // cannot measure closer than the glass, so this is the smallest distance.
     let far = f32::from(far_count);
     let distance = libm::sqrtf(far / f32::from(count));
     let at_glass = libm::sqrtf(far / f32::from(near_count));
@@ -151,21 +181,24 @@ pub fn closeness_percent(count: u16, far_count: u16, near_count: u16) -> u8 {
 mod tests {
     use super::*;
 
-    /// Whether two lux values agree to a tenth of a percent.
+    /// Whether two lux values agree to a tenth of a percent of `b`, or to
+    /// 0.001 when `b` is smaller than 1.
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() <= 0.001 * b.abs().max(1.0)
     }
 
     #[test]
     fn decodes_channels_and_proximity() {
-        let reading = decode([0x34, 0x12, 0x78, 0x56, 0x60, 0xFF, 0x07]).unwrap();
-        assert_eq!(reading.gain, 48);
+        let reading = decode([0x34, 0x12, 0x78, 0x56, 0x60, 0xFF, 0x07]);
         assert_eq!(
-            reading.channels,
-            Channels {
-                ch0: 0x5678,
-                ch1: 0x1234
-            }
+            reading.light,
+            Some(Light {
+                channels: Channels {
+                    ch0: 0x5678,
+                    ch1: 0x1234
+                },
+                gain: 48,
+            })
         );
         assert_eq!(reading.proximity, PROXIMITY_MAX);
         assert!(!reading.proximity_saturated);
@@ -173,21 +206,23 @@ mod tests {
 
     #[test]
     fn saturation_flag_is_not_part_of_the_count() {
-        let reading = decode([0, 0, 0, 0, 0x00, 0x01, 0x80]).unwrap();
+        let reading = decode([0, 0, 0, 0, 0x00, 0x01, 0x80]);
         assert_eq!(reading.proximity, 1);
         assert!(reading.proximity_saturated);
     }
 
     #[test]
-    fn invalid_light_data_is_rejected() {
-        assert_eq!(decode([1, 0, 1, 0, 0x80, 0, 0]), None);
+    fn invalid_light_data_keeps_the_proximity() {
+        let reading = decode([1, 0, 1, 0, 0x80, 0x34, 0x02]);
+        assert_eq!(reading.light, None);
+        assert_eq!(reading.proximity, 0x234);
     }
 
     #[test]
     fn reserved_gain_codes_are_rejected() {
-        assert_eq!(decode([1, 0, 1, 0, 0x40, 0, 0]), None);
-        assert_eq!(decode([1, 0, 1, 0, 0x50, 0, 0]), None);
-        assert_eq!(decode([1, 0, 1, 0, 0x70, 0, 0]).unwrap().gain, 96);
+        assert_eq!(decode([1, 0, 1, 0, 0x40, 0, 0]).light, None);
+        assert_eq!(decode([1, 0, 1, 0, 0x50, 0, 0]).light, None);
+        assert_eq!(decode([1, 0, 1, 0, 0x70, 0, 0]).light.unwrap().gain, 96);
     }
 
     #[test]
@@ -226,11 +261,13 @@ mod tests {
 
     #[test]
     fn closeness_is_linear_in_distance() {
-        // With the glass at (practically) zero distance, four times the far
-        // count is half the distance, twenty-five times is a fifth.
+        // With the glass at almost zero distance: four times the far count
+        // is half the distance, and twenty-five times the far count is a
+        // fifth of the distance.
         assert!((50..=51).contains(&closeness_percent(64, 16, u16::MAX)));
         assert!((80..=81).contains(&closeness_percent(400, 16, u16::MAX)));
-        // With a real near count the scale is stretched so the glass is 100.
+        // With a realistic near count, the scale is stretched so that the
+        // glass is at 100.
         let quarter = closeness_percent(64, 16, 2047);
         assert!((50..=56).contains(&quarter), "{quarter}");
     }

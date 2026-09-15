@@ -1,8 +1,8 @@
-//! CPU1 runtime.
+//! Start-up of CPU1, the second CPU core.
 //!
-//! The second core runs the timing-sensitive capability tasks: sensors, touch,
-//! audio, radio and backlight control. Applications never touch CPU1 directly;
-//! they talk to it through the capability handles.
+//! CPU1 runs the timing-sensitive capability tasks: sensors, touch, audio,
+//! radio and backlight control. Applications never use CPU1 directly. They
+//! use the capability handles, which exchange data with the CPU1 tasks.
 
 use esp_hal::{
     peripherals::{CPU_CTRL, FROM_CPU_INTR1},
@@ -15,22 +15,26 @@ use crate::{
     capabilities::{audio, backlight, imu, light, network, proximity, touch},
 };
 
-/// Stack of every task on CPU1 together: the executor polls them all on it.
+/// Size of the one CPU1 stack. All CPU1 tasks share it, because one executor
+/// runs them all on this stack.
 const STACK_SIZE: usize = 16 * 1024;
 
-/// Memory for [`STACK_SIZE`]. It must outlive the core that runs on it, so it
-/// lives in a `StaticCell` that hands out a `&'static mut` once.
+/// Memory for the CPU1 stack. CPU1 uses it until the device stops, so it
+/// must be `'static`. A `StaticCell` gives out one `&'static mut` reference
+/// to it.
 static STACK: StaticCell<Stack<STACK_SIZE>> = StaticCell::new();
-/// The async executor of CPU1. [`run`] never returns, so the executor is
-/// stored for the whole program lifetime.
+/// The async executor of CPU1: the part of the async runtime that runs the
+/// tasks. `Executor::run` needs a `&'static mut` reference and never returns,
+/// so the executor is stored in a `StaticCell`.
 static EXECUTOR: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
 
 /// Everything CPU1 owns: its hardware and the runtime side of each capability.
 pub(super) struct Cpu1 {
-    /// The shared I2C bus of the power chip, IO expander, IMU, touch
-    /// controller and light sensor, still in blocking mode.
+    /// The shared system I2C bus, still in blocking mode. On CPU1, the
+    /// backlight, IMU, touch and light tasks use it.
     pub(super) system_i2c: i2c::SystemI2cBlocking,
-    /// I2S and its pins, for microphone and speaker.
+    /// The I2S controller, its DMA channel and its pins, for the microphones
+    /// and the speaker. (I2S is the bus for audio samples.)
     pub(super) audio_resources: audio::Resources,
     /// The Wi-Fi radio, for ESP-NOW.
     pub(super) network_resources: network::Resources,
@@ -44,19 +48,23 @@ pub(super) struct Cpu1 {
     pub(super) touch: touch::Runtime,
     /// Signal shared with the backlight handle.
     pub(super) backlight: backlight::Runtime,
-    /// Signals shared with the light and the proximity handle, both fed by
-    /// the one LTR-553 task; `None` when no sensor answered.
+    /// Signals shared with the light and the proximity handles. One LTR-553
+    /// task publishes to both. `None` when no sensor answered.
     pub(super) light: Option<(light::Runtime, proximity::Runtime)>,
 }
 
 /// Start the second core with its own async executor and the capability
-/// tasks. Returns immediately; CPU1 runs from here on.
+/// tasks. Returns at once; CPU1 continues on its own.
+///
+/// # Panics
+///
+/// When it is called a second time.
 pub(super) fn start(cpu_ctrl: CPU_CTRL<'static>, interrupt: FROM_CPU_INTR1<'static>, cpu1: Cpu1) {
     let stack = STACK.init(Stack::new());
     esp_rtos::start_second_core(cpu_ctrl, interrupt, stack, move || run(cpu1));
 }
 
-/// The entry point of CPU1: spawn every capability task, then poll them
+/// The entry point of CPU1: spawn every capability task, then run them
 /// forever.
 fn run(cpu1: Cpu1) {
     let executor = EXECUTOR.init(esp_rtos::embassy::Executor::new());
@@ -69,8 +77,8 @@ fn run(cpu1: Cpu1) {
             cpu1.network,
         );
 
-        // The async I2C driver must be created on the core that services its
-        // interrupt, so the blocking driver is converted here rather than on CPU0.
+        // The async I2C driver must be created on the core that handles its
+        // interrupt. So the blocking driver is converted here, not on CPU0.
         let system_bus = i2c::into_async(cpu1.system_i2c);
 
         backlight::spawn(&spawner, system_bus, cpu1.backlight);

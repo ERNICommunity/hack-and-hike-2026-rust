@@ -26,12 +26,14 @@ pub mod vec3;
 pub struct Orientation {
     /// Roll in degrees, in the sensor's body frame.
     ///
-    /// Euler angles are for display only. They have singularities near the
-    /// poles and must not be used to reconstruct a 3-D pose.
+    /// Euler angles (roll, pitch, yaw) are for display only. Near a pitch of
+    /// ±90 degrees, roll is not well-defined and can jump. Do not use them
+    /// to rebuild a 3-D orientation; use `gravity_screen` and `north_screen`.
     pub roll_deg: f32,
     /// Pitch in degrees, in the sensor's body frame; see `roll_deg`.
     pub pitch_deg: f32,
-    /// Magnetic heading; no declination correction is applied.
+    /// Magnetic heading in degrees, -180 to 180. No declination correction
+    /// (the difference between magnetic and true north) is applied.
     pub yaw_deg: f32,
     /// World gravity (down) expressed in the screen frame.
     pub gravity_screen: [f32; 3],

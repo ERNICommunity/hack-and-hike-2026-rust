@@ -1,7 +1,9 @@
 //! ESP-NOW wire protocol, typed messages and the peer table.
 //!
-//! Nothing here touches the radio; the firmware's network capability drives
-//! these types from its CPU1 tasks.
+//! ESP-NOW is Espressif's protocol for short Wi-Fi messages between nearby
+//! boards, without a router. Nothing here uses the radio. The firmware's
+//! network capability uses these types in its tasks on CPU1 (the second CPU
+//! core).
 
 pub mod message;
 pub mod protocol;

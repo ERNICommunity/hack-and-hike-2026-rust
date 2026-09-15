@@ -10,6 +10,7 @@ use hack_and_hike_core::network::{
     state::{Heard, MAX_PEERS, NetworkState, QueueCounters, RadioChannel, Status},
 };
 
+/// A device id from six bytes that are not all zero.
 fn id(bytes: [u8; 6]) -> DeviceId {
     DeviceId::try_from(bytes).unwrap()
 }
@@ -68,7 +69,7 @@ fn messages_of_another_application_are_not_decoded() {
 #[test]
 fn malformed_payloads_are_rejected() {
     let sender = id([1, 1, 1, 1, 1, 1]);
-    // A truncated varint.
+    // A varint (a variable-length integer) whose last byte is missing.
     let truncated = IncomingMessage::from_bytes(sender, DemoMessage::KIND, &[0, 0x80]).unwrap();
     assert_eq!(
         truncated.decode::<DemoMessage>(),
@@ -84,7 +85,8 @@ fn malformed_payloads_are_rejected() {
 
 #[test]
 fn oversized_messages_are_refused_when_queued() {
-    // 256 bytes; serde derives array support up to 32 elements, hence 8 x 32.
+    // 256 bytes. `serde` supports arrays of at most 32 elements, so the
+    // bytes are 8 arrays of 32.
     #[derive(Serialize, Deserialize)]
     struct Huge {
         bytes: [[u8; 32]; 8],
@@ -132,8 +134,10 @@ fn message_from(device_id: DeviceId, mac: MacAddress) -> Heard {
     }
 }
 
+/// Peer timeout of the tests, in milliseconds: the firmware's default.
 const PEER_TIMEOUT_MS: u64 = 500;
 
+/// A network state whose radio has started, on channel 6.
 fn ready_state() -> NetworkState {
     let mut state = NetworkState::new(
         id([1, 2, 3, 4, 5, 6]),
@@ -144,7 +148,9 @@ fn ready_state() -> NetworkState {
     state
 }
 
+/// The id of the peer in the tests.
 const PEER: [u8; 6] = [6, 5, 4, 3, 2, 1];
+/// The radio address of that peer.
 const PEER_MAC: MacAddress = MacAddress([10, 11, 12, 13, 14, 15]);
 
 #[test]

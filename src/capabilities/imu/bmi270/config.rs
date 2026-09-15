@@ -1,4 +1,9 @@
-//! BMI270 maximum-FIFO feature configuration blob.
+//! The BMI270 configuration blob ("maximum FIFO" variant).
+//!
+//! The blob is firmware for the BMI270's internal processor. Bosch offers
+//! several variants, and this one has the name "maximum FIFO". The FIFO
+//! (first in, first out) is the chip's data buffer. This driver does not use
+//! the FIFO. It reads the data registers directly.
 //!
 //! From Bosch Sensortec BMI270_SensorAPI v2.86.1, `bmi270_maximum_fifo.c`.
 //!
@@ -27,8 +32,9 @@
 //! ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 //! POSSIBILITY OF SUCH DAMAGE.
 
-/// Firmware configuration the BMI270 needs after every power-up or reset.
-/// Uploaded by `Bmi270::upload_config`; the chip measures nothing until it
+/// The configuration that the BMI270 needs after every power-up or reset.
+///
+/// `Bmi270::upload_config` uploads it. The chip measures nothing before it
 /// has loaded this blob.
 pub(super) const MAXIMUM_FIFO_CONFIG: &[u8] = &[
     0xc8, 0x2e, 0x00, 0x2e, 0x80, 0x2e, 0x1a, 0x00, 0xc8, 0x2e, 0x00, 0x2e, 0xc8, 0x2e, 0x00, 0x2e,

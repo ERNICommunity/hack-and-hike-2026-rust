@@ -1,10 +1,16 @@
-//! CPU1 task reading the IMU and running the sensor fusion.
+//! The CPU1 task that reads the IMU and runs the sensor fusion.
 //!
-//! Every 10 ms: read one sample (acceleration, rotation, the magnetometer
-//! frame and the sensor's own timestamp) in a single I2C transaction, correct
-//! the gyroscope bias, update the magnetometer calibration and fuse
-//! everything into an orientation. A sensor that stops answering is
-//! re-initialized; the calibration learned so far survives that.
+//! Every 10 ms, the task does these steps:
+//!
+//! 1. Read one sample in a single I2C transaction. The sample has the
+//!    acceleration, the rotation speed, the magnetometer frame and the
+//!    BMI270's own timestamp.
+//! 2. Remove the gyroscope offset (bias).
+//! 3. Update the magnetometer calibration.
+//! 4. Combine all measurements into one orientation (sensor fusion).
+//!
+//! When ten reads in a row fail, the task sets up the sensor again. The
+//! magnetometer calibration learned so far stays.
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Ticker, Timer};
@@ -24,48 +30,68 @@ use super::{
     magnetic::{MagneticReport, MagneticState},
 };
 
-/// Samples read per second; fusion runs once per sample.
+/// Samples read per second. The fusion runs once for each sample.
 const SAMPLE_HZ: u32 = 100;
-/// Time between two reads.
+/// Time between two reads: 10 ms.
 const SAMPLE_PERIOD: Duration = Duration::from_hz(SAMPLE_HZ as u64);
-/// The BMI270's timestamp is a free-running 24-bit counter at 25.6 kHz.
+/// Rate of the BMI270's timestamp. The timestamp is a 24-bit counter that
+/// counts up 25,600 times per second and never stops.
 const SENSOR_TIME_HZ: u32 = 25_600;
-/// Seconds per timestamp tick.
+/// Seconds per timestamp tick (about 39 µs).
 const SENSOR_TIME_TICK_SECONDS: f32 = 1.0 / SENSOR_TIME_HZ as f32;
-/// The counter wraps at 24 bits.
+/// The counter has 24 bits. After its highest value, it starts again at 0.
 const SENSOR_TIME_MASK: u32 = 0x00FF_FFFF;
-/// Timestamp ticks between two samples when none is lost.
+/// Timestamp ticks between two samples when no sample is lost: 256.
 const NOMINAL_SAMPLE_TICKS: u32 = SENSOR_TIME_HZ / SAMPLE_HZ;
-/// A longer gap between samples means some were lost; the integration then
-/// uses one nominal step instead of the measured interval.
+/// Largest normal time between two samples: five sample periods (50 ms).
+///
+/// A longer time, or no time at all, means a gap: samples were lost. For a
+/// gap, the integration uses one normal step instead of the measured time.
 const MAX_SAMPLE_GAP_TICKS: u32 = NOMINAL_SAMPLE_TICKS * 5;
-/// 1 g in m/s², to publish acceleration in SI units.
+/// 1 g in m/s². The sample gives acceleration in m/s², not in g.
 const STANDARD_GRAVITY_M_S2: f32 = 9.80665;
 
-/// Wait after a failed initialization before trying again.
+/// Wait after a failed setup before the next try.
 const INIT_RETRY: Duration = Duration::from_secs(1);
-/// Wait before re-initializing a sensor that stopped answering.
+/// Wait after too many failed reads before the sensor is set up again.
 const REINIT_DELAY: Duration = Duration::from_millis(250);
-/// Failed reads in a row before the sensor is re-initialized.
+/// Failed reads in a row before the sensor is set up again.
 const MAX_CONSECUTIVE_READ_ERRORS: u8 = 10;
-/// Near full scale the gyroscope clips, so integration cannot be trusted.
+/// Gyroscope limit in degrees per second (dps). The range ends at 2000 dps.
+/// Near this end, the gyroscope cannot show faster rotation. So the
+/// integrated angle is not reliable.
 const GYRO_NEAR_SATURATION_DPS: f32 = 1950.0;
-/// Trace every 20th sample: five lines per second.
+/// Write a trace line for every 20th sample: five lines per second.
 const TRACE_EVERY_SAMPLES: u32 = 20;
+/// Shortest time between two warnings about an interrupted integration.
+///
+/// A fast turn of the board can saturate the gyroscope for many samples in a
+/// row. A warning for each sample would slow the loop down. That would cause
+/// new sample gaps.
+const INTERRUPTION_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Start IMU acquisition on CPU1.
+/// Start the IMU task on CPU1.
+///
+/// # Panics
+///
+/// When the IMU task is already running.
 pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
     spawner.spawn(capture_task(bus, runtime).expect("IMU task already spawned"));
 }
 
-/// Initialize the sensors, then read and fuse samples forever. The outer loop
-/// re-initializes after a failure; the inner loop runs once per sample.
+/// Set up the sensors, then read and fuse samples forever.
+///
+/// The outer loop sets up the sensors, and again after a failure. The inner
+/// loop runs once per sample. When the BMM150 magnetometer fails to start,
+/// the task continues with the accelerometer and the gyroscope only.
 #[embassy_executor::task]
 async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
     let sensor = Bmi270::new(bus);
     let mut publisher = Publisher::new(runtime);
-    // Calibration describes the physical sensor and enclosure, not one
-    // session, so it survives sensor re-initialization.
+    // The calibration describes the sensor and the board around it, not one
+    // session. So it stays when the sensor is set up again. The last
+    // orientation also stays, so that `Fault` and `Degraded` samples can
+    // repeat it.
     let mut magnetic = MagneticState::new(Instant::now());
     let mut orientation = Orientation::default();
 
@@ -103,6 +129,8 @@ async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
         let mut ticker = Ticker::every(SAMPLE_PERIOD);
         loop {
             ticker.next().await;
+            // Read the clock after the wait, so that `now` is the time of
+            // this sample.
             let now = Instant::now();
             magnetic.maintain(&sensor, now).await;
 
@@ -143,16 +171,18 @@ async fn capture_task(bus: SystemI2cBus, runtime: Runtime) {
     }
 }
 
-/// Numbers the samples and hands them to the application side.
+/// Gives each sample a number and sends it to the application.
 struct Publisher {
-    /// Where samples go.
+    /// Where the samples go.
     runtime: Runtime,
-    /// Number of the last published sample; wraps around at `u32::MAX`.
+    /// Number of the last published sample. After `u32::MAX`, it starts again
+    /// at 0.
     revision: u32,
 }
 
 impl Publisher {
-    /// A publisher that has not published anything yet.
+    /// A publisher that has not published anything yet. The first sample
+    /// gets revision 1.
     const fn new(runtime: Runtime) -> Self {
         Self {
             runtime,
@@ -160,8 +190,8 @@ impl Publisher {
         }
     }
 
-    /// Convert the measurements to the screen frame, derive the attitude and
-    /// publish everything as the next [`Sample`].
+    /// Convert the measurements to the screen frame, calculate the attitude
+    /// and publish everything as the next [`Sample`].
     fn publish(
         &mut self,
         status: Status,
@@ -185,27 +215,36 @@ impl Publisher {
     }
 }
 
-/// Fusion state for one sensor session, which lasts until the sensor is
-/// re-initialized.
+/// The fusion state for one session. A session starts when the sensor is set
+/// up and ends when it must be set up again.
 struct Session {
-    /// Sensor fusion that turns rates, gravity and the magnetic field into an
-    /// orientation.
+    /// The sensor fusion. It combines rotation speed, gravity and the
+    /// magnetic field into one orientation.
     fusion: Fusion,
     /// Learns the gyroscope's zero offset while the board lies still.
     gyro_bias: GyroBias,
-    /// The sensor timestamp of the previous sample, to measure the real time
-    /// step; `None` before the first sample.
+    /// The sensor timestamp of the previous sample. It gives the real time
+    /// between two samples. `None` before the first sample.
     last_sensor_time: Option<u32>,
-    /// Failed reads since the last successful one.
+    /// Failed reads since the last successful read.
     consecutive_read_errors: u8,
-    /// Samples processed in this session, used to thin out trace logging.
+    /// Samples processed in this session. With this count, the task writes
+    /// one trace line per `TRACE_EVERY_SAMPLES` samples.
     samples: u32,
-    /// Magnetometer status last logged, to log only changes.
+    /// The magnetometer status that was logged last. Only changes are
+    /// logged.
     mag_status: MagStatus,
+    /// When the last warning about an interrupted integration was logged.
+    /// `None` before the first warning.
+    interruption_logged_at: Option<Instant>,
+    /// Interruptions since the last warning that got no warning of their own.
+    interruptions_not_logged: u32,
 }
 
 impl Session {
-    /// A fresh session: no timestamp yet, no errors, bias learning from zero.
+    /// A new session: no timestamp yet, no errors, and the gyroscope offset
+    /// is learned again from zero. `mag_status` is the current magnetometer
+    /// status, so that only later changes are logged.
     const fn new(mag_status: MagStatus) -> Self {
         Self {
             fusion: Fusion::new(),
@@ -214,11 +253,18 @@ impl Session {
             consecutive_read_errors: 0,
             samples: 0,
             mag_status,
+            interruption_logged_at: None,
+            interruptions_not_logged: 0,
         }
     }
 
-    /// Seconds since the previous sample by the sensor's own clock, and
-    /// whether samples were lost in between.
+    /// The time step for the integration, in seconds, and whether there was
+    /// a gap.
+    ///
+    /// The step is the time since the previous sample, measured with the
+    /// sensor's own clock. For the first sample, and after a gap, the step is
+    /// one normal sample period. A gap means that the timestamp did not
+    /// change, or that more than `MAX_SAMPLE_GAP_TICKS` ticks passed.
     fn integration_step(&mut self, sensor_time: u32) -> (f32, bool) {
         let delta_ticks = self
             .last_sensor_time
@@ -236,10 +282,15 @@ impl Session {
         (ticks as f32 * SENSOR_TIME_TICK_SECONDS, gap)
     }
 
-    /// Process one successful read: measure the time step, correct the gyro
-    /// bias, update the magnetometer and run fusion.
+    /// Process one successful read: measure the time step, remove the
+    /// gyroscope offset, update the magnetometer state and run the fusion.
+    ///
+    /// After a sample gap or a saturated gyroscope, the fusion forgets the
+    /// heading from the magnetometer and finds it again. After a gap, it
+    /// also forgets the previous rotation speed.
     ///
     /// Returns the physical measurements (body frame) and the new orientation.
+    /// The measured rotation speed is the value before the offset is removed.
     fn process(
         &mut self,
         sample: RawSample,
@@ -252,9 +303,7 @@ impl Session {
         let (dt_seconds, gap) = self.integration_step(sample.sensor_time);
         let saturated = vec3::max_abs(sample.gyro_dps) >= GYRO_NEAR_SATURATION_DPS;
         if gap || saturated {
-            warn!(
-                "IMU integration interrupted (sample gap: {gap}, gyro saturated: {saturated}); heading will be re-acquired"
-            );
+            self.log_interruption(gap, saturated, now);
             self.fusion.invalidate_absolute_heading();
         }
         if gap {
@@ -295,8 +344,29 @@ impl Session {
         (measurements, orientation)
     }
 
-    /// Count a failed read. Returns true once the sensor should be
-    /// re-initialized.
+    /// Log a warning about an interrupted integration.
+    ///
+    /// There is at most one warning per `INTERRUPTION_LOG_INTERVAL`. The
+    /// interruptions in between are only counted. The next warning shows
+    /// this count.
+    fn log_interruption(&mut self, gap: bool, saturated: bool, now: Instant) {
+        let due = self
+            .interruption_logged_at
+            .is_none_or(|logged_at| now - logged_at >= INTERRUPTION_LOG_INTERVAL);
+        if !due {
+            self.interruptions_not_logged = self.interruptions_not_logged.saturating_add(1);
+            return;
+        }
+        warn!(
+            "IMU integration interrupted (sample gap: {gap}, gyro saturated: {saturated}; {} earlier interruptions not logged); heading will be re-acquired",
+            self.interruptions_not_logged
+        );
+        self.interruption_logged_at = Some(now);
+        self.interruptions_not_logged = 0;
+    }
+
+    /// Count a failed read. Returns `true` when `MAX_CONSECUTIVE_READ_ERRORS`
+    /// reads in a row failed, so the sensor must be set up again.
     fn record_read_error(&mut self) -> bool {
         self.consecutive_read_errors = self.consecutive_read_errors.saturating_add(1);
         self.consecutive_read_errors >= MAX_CONSECUTIVE_READ_ERRORS

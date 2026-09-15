@@ -1,14 +1,16 @@
 //! A fixed-size history of text lines, newest last.
 //!
 //! The firmware keeps the last lines of its log here, so the demo can show
-//! them on screen. Nothing is allocated: the history is one fixed array of
-//! fixed-capacity strings, used as a ring.
+//! them on screen. Nothing is allocated on the heap: the history is one
+//! fixed array of fixed-capacity strings, used as a ring buffer.
 
 use arrayvec::ArrayString;
 
-/// Lines kept before the oldest is forgotten.
+/// Number of lines the history keeps. When it is full, a new line replaces
+/// the oldest one.
 pub const LINES: usize = 64;
-/// Longest line kept; longer lines are cut and end in `...`.
+/// Longest line the history keeps, in bytes. A longer line is cut and ends
+/// in `...`.
 pub const LINE_BYTES: usize = 120;
 /// Appended to a line that was cut.
 const CUT_MARK: &str = "...";
@@ -18,14 +20,15 @@ pub type Line = ArrayString<LINE_BYTES>;
 
 /// The last [`LINES`] lines pushed, oldest first.
 pub struct LineHistory {
-    /// Storage of the ring. Once full, the slot at `next` holds the oldest
-    /// line.
+    /// Storage of the ring. When the ring is full, the slot at `next` holds
+    /// the oldest line.
     lines: [Line; LINES],
-    /// Where the next line goes.
+    /// Index of the slot for the next line.
     next: usize,
-    /// Lines pushed so far, saturating at `LINES`.
+    /// Lines kept: the lines pushed so far, but at most `LINES`.
     count: usize,
-    /// Increments with every push; lets readers skip unchanged history.
+    /// Increases by one with every push and wraps around at `u32::MAX`.
+    /// Readers compare it to skip a history that did not change.
     revision: u32,
 }
 
@@ -62,8 +65,8 @@ impl LineHistory {
         self.count == 0
     }
 
-    /// Remember `text`, without its trailing newline, cutting it to
-    /// [`LINE_BYTES`] if necessary.
+    /// Remember `text`, without the `\r` and `\n` characters at its end.
+    /// A text longer than [`LINE_BYTES`] is cut and ends in `...`.
     pub fn push(&mut self, text: &str) {
         let text = text.trim_end_matches(['\r', '\n']);
         let line = &mut self.lines[self.next];
@@ -95,7 +98,9 @@ impl LineHistory {
     }
 }
 
-/// The largest index up to `index` that lies on a character boundary.
+/// The largest byte index, at most `index`, that lies on a UTF-8 character
+/// boundary of `text`. An `index` past the end is first reduced to
+/// `text.len()`.
 fn floor_char_boundary(text: &str, index: usize) -> usize {
     let mut index = index.min(text.len());
     while !text.is_char_boundary(index) {

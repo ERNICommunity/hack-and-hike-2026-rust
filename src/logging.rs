@@ -1,15 +1,22 @@
 //! Logging to the serial port, with a history that applications can show.
 //!
-//! Use the `log` macros anywhere, on either core:
+//! Use the `log` macros anywhere, on either CPU core:
 //!
 //! ```ignore
 //! log::info!("button pressed at {}", point.x);
 //! log::warn!("send failed: {error}");
 //! ```
 //!
-//! Every record goes to the USB serial port, and its first [`LINE_BYTES`]
-//! bytes are kept in a [`LineHistory`] in PSRAM that the [`LogHistory`]
-//! handle reads. Records at `debug` and `trace` level are filtered out.
+//! Every record goes to the USB serial port. A record longer than 512 bytes
+//! is cut there.
+//!
+//! The newest [`LINES`] records are also kept in PSRAM, so an application can
+//! show them on the screen with the [`LogHistory`] handle. There, a record
+//! longer than [`LINE_BYTES`] bytes is cut and ends in `...`. The first
+//! messages of [`Board::init`](crate::Board::init) come before the history
+//! exists, so they are only on the serial port.
+//!
+//! Records at `debug` and `trace` level are not logged at all.
 
 use core::{cell::RefCell, fmt::Write as _};
 
@@ -27,17 +34,21 @@ pub use hack_and_hike_core::lines::{LINE_BYTES, LINES, Line};
 /// Longest record printed in full on the serial port.
 const RECORD_BYTES: usize = 512;
 
-/// The history, shared by every core that logs. The logger exists before
-/// PSRAM does, so the history is attached later and is `None` until then.
+/// The history, shared by both CPU cores. The logger starts before PSRAM
+/// is ready. So the history is added later, and it is `None` until then.
 static HISTORY: Mutex<RefCell<Option<&'static mut LineHistory>>> = Mutex::new(RefCell::new(None));
 
-/// Run `f` on the history inside a critical section; `None` before the
-/// history exists.
+/// Run `f` on the history inside a critical section. A critical section
+/// stops the other core and interrupts from using the history at the same
+/// time. Returns `None` before the history exists.
 fn with_history<R>(f: impl FnOnce(&mut LineHistory) -> R) -> Option<R> {
     critical_section::with(|cs| HISTORY.borrow(cs).borrow_mut().as_deref_mut().map(f))
 }
 
 /// Application handle for the log history.
+///
+/// The history holds the newest [`LINES`] log lines. Each line is at most
+/// [`LINE_BYTES`] bytes long.
 ///
 /// ```ignore
 /// let mut lines = [Line::new(); 16];
@@ -52,13 +63,14 @@ pub struct LogHistory {
 }
 
 impl LogHistory {
-    /// Increments with every logged record; compare it to skip redraws.
+    /// A number that increases by one with every logged record. Compare it
+    /// with the value you saw last, and skip the redraw when it is the same.
     pub fn revision(&self) -> u32 {
         with_history(|history| history.revision()).unwrap_or(0)
     }
 
-    /// Copy the newest lines into `out`, oldest first, as many as fit.
-    /// Returns how many were copied.
+    /// Copy the newest lines into `out`, as many as fit, oldest first.
+    /// Return the number of lines copied.
     pub fn newest(&self, out: &mut [Line]) -> usize {
         with_history(|history| history.newest(out)).unwrap_or(0)
     }
@@ -77,10 +89,10 @@ impl log::Log for Logger {
             return;
         }
 
-        // A record longer than the buffer is cut; `write!` then reports an
-        // error that is deliberately ignored.
+        // For a record longer than the buffer, `Cut` keeps the start and
+        // returns an error. The error only stops `write!`, so we ignore it.
         let mut line = ArrayString::<RECORD_BYTES>::new();
-        let _ = write!(line, "[{}] {}", record.level(), record.args());
+        let _ = write!(Cut(&mut line), "[{}] {}", record.level(), record.args());
 
         esp_println::println!("{line}");
         with_history(|history| history.push(&line));
@@ -89,18 +101,48 @@ impl log::Log for Logger {
     fn flush(&self) {}
 }
 
+/// A writer that cuts long records.
+///
+/// `write!` sends the text in pieces. When a piece does not fit completely,
+/// `ArrayString` alone would drop the whole piece. `Cut` keeps the part that
+/// fits, ends on a whole UTF-8 character, and then returns an error.
+struct Cut<'a>(&'a mut ArrayString<RECORD_BYTES>);
+
+impl core::fmt::Write for Cut<'_> {
+    fn write_str(&mut self, piece: &str) -> core::fmt::Result {
+        if self.0.try_push_str(piece).is_ok() {
+            return Ok(());
+        }
+        let mut keep = self.0.remaining_capacity();
+        while !piece.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        self.0.push_str(&piece[..keep]);
+        Err(core::fmt::Error)
+    }
+}
+
 /// The one logger instance. `log::set_logger` needs a `&'static` reference,
-/// so it is a static rather than a local value.
+/// so it is a static and not a local value.
 static LOGGER: Logger = Logger;
 
-/// Install the logger, dropping records below `level`.
+/// Install the logger. Records less important than `level` are dropped.
+///
+/// # Panics
+///
+/// When a logger is already installed.
 pub(crate) fn init(level: LevelFilter) {
     log::set_logger(&LOGGER)
         .map(|()| log::set_max_level(level))
         .expect("the logger is initialized once");
 }
 
-/// Start keeping a history of log records in PSRAM.
+/// Start keeping a history of log records in PSRAM, and return the handle
+/// for it.
+///
+/// # Panics
+///
+/// When PSRAM is not enabled yet, or has no room for the history.
 pub(crate) fn enable_history() -> LogHistory {
     let history = psram::leaked_value(LineHistory::new);
     critical_section::with(|cs| *HISTORY.borrow(cs).borrow_mut() = Some(history));
@@ -108,8 +150,11 @@ pub(crate) fn enable_history() -> LogHistory {
     LogHistory { _private: () }
 }
 
-/// Log how much internal heap and PSRAM is in use, with `label` to tell
-/// reports apart. Handy when chasing an allocation failure.
+/// Log how much of the internal heap and of PSRAM is in use now, and the
+/// highest use so far.
+///
+/// `label` is part of the log line, so you can tell reports apart. The
+/// report helps to find the cause of an allocation failure.
 pub fn report_memory(label: &str) {
     let internal = HEAP.stats();
     let external = psram::heap().stats();

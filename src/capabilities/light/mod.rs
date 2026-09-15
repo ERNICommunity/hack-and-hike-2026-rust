@@ -1,11 +1,16 @@
 //! Ambient light.
 //!
-//! The LTR-553 behind the front glass measures how bright the surroundings
-//! are, ten times a second. A CPU1 task reads it over the shared I2C bus and
-//! publishes the newest [`Sample`]; the application takes it with
-//! [`Light::latest`]. The same chip measures proximity; that comes out as
-//! the separate [`proximity`](super::proximity) capability, fed by the same
-//! task.
+//! The LTR-553 sensor behind the front glass measures how bright the
+//! surroundings are, ten times a second. A CPU1 task reads it over the shared
+//! I2C bus and publishes the newest [`Sample`]. The application takes it
+//! with [`Light::latest`]. The same chip also measures proximity. That is the
+//! separate [`proximity`](super::proximity) capability, and the same task
+//! serves it.
+//!
+//! The task changes the gain of the sensor by itself: higher in the dark,
+//! lower in bright light. After a change, the light data is not valid for a
+//! short time, so no light sample is published. The proximity samples
+//! continue.
 //!
 //! ```ignore
 //! if let Some(light) = light.as_mut()
@@ -16,7 +21,7 @@
 //! ```
 //!
 //! The sensor is optional, like the camera: `Board::init` returns `None`
-//! when none answers.
+//! when the sensor does not answer.
 
 mod ltr553;
 mod runtime;
@@ -31,11 +36,13 @@ pub(crate) use runtime::spawn;
 /// One ambient light measurement.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
-    /// Ambient light in lux. The sensor sits behind the tinted front glass,
-    /// so the values are lower than a light meter would show and are best
-    /// used relatively: a dark room reads near 0, a lit room tens to a few
-    /// hundred, a torch pointed at the board thousands. Light that is almost
-    /// entirely infrared reads as 0.
+    /// Ambient light in lux, 0 or more.
+    ///
+    /// The sensor is behind the tinted front glass, so the values are lower
+    /// than a light meter shows. Use them to compare, not as exact values. A
+    /// dark room reads near 0, a room with the lights on reads tens to a few
+    /// hundred, and a flashlight pointed at the board reads thousands. Light
+    /// that is almost only infrared reads as 0.
     pub lux: f32,
 }
 
@@ -46,8 +53,8 @@ struct Service {
     latest: Signal<CriticalSectionRawMutex, Sample>,
 }
 
-/// The one shared light state. A plain `static` works across cores because
-/// the signal synchronizes itself.
+/// The one shared light state. A plain `static` is safe to use from both
+/// cores, because the signal protects its value with a critical section.
 static SERVICE: Service = Service {
     latest: Signal::new(),
 };
@@ -60,13 +67,14 @@ pub struct Light {
 
 impl Light {
     /// The newest sample, or `None` when nothing new was published since the
-    /// previous call. Samples come ten times a second.
+    /// previous call. Never waits. Samples come about ten times a second,
+    /// with short pauses after a gain change.
     pub fn latest(&mut self) -> Option<Sample> {
         self.service.latest.try_take()
     }
 }
 
-/// CPU1 side of the signal.
+/// CPU1 side of the signal, used by the light task.
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
     /// Points at the signal shared with the application's handle on CPU0.
@@ -96,9 +104,12 @@ pub(crate) fn endpoints() -> Endpoints {
     }
 }
 
-/// Whether an LTR-553 answers on the bus, checked once during bring-up
-/// before the bus moves to CPU1. Logs the outcome either way. The chip
-/// serves both this capability and the proximity one.
+/// Check whether an LTR-553 answers on the bus with the expected part
+/// number.
+///
+/// Bring-up calls this once, before the bus moves to CPU1. It logs the
+/// result in both cases. The chip serves both this capability and the
+/// proximity capability.
 pub(crate) fn probe<I2C: embedded_hal::i2c::I2c>(i2c: &mut I2C) -> bool
 where
     I2C::Error: core::fmt::Debug,

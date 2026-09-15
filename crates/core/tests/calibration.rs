@@ -4,13 +4,15 @@ use hack_and_hike_core::imu::{bmm150::Calibration, vec3};
 
 /// Hard-iron offset of the synthetic enclosure.
 const CENTER_UT: [f32; 3] = [120.0, -80.0, 40.0];
-/// Soft-iron stretch along each axis.
+/// Soft-iron stretch factor along each axis.
 const SCALES: [f32; 3] = [1.0, 0.8, 1.25];
+/// Strength of the synthetic Earth field, in uT.
 const EARTH_FIELD_UT: f32 = 45.0;
-/// Corrected fields are normalized to this radius by the calibrator.
+/// The calibration scales corrected fields to this strength, in uT.
 const CALIBRATED_RADIUS_UT: f32 = 50.0;
 
-/// What the magnetometer would report with the Earth's field in `direction`.
+/// What the magnetometer reports inside the synthetic enclosure when the
+/// Earth's field points in the unit `direction`.
 fn raw_field(direction: [f32; 3]) -> [f32; 3] {
     let mut field = CENTER_UT;
     for axis in 0..3 {
@@ -19,8 +21,8 @@ fn raw_field(direction: [f32; 3]) -> [f32; 3] {
     field
 }
 
-/// Evenly spread unit vectors, in an order that sweeps around the sphere the
-/// way a person turning the device would.
+/// `count` evenly spread unit vectors. They follow a spiral from the top of
+/// the sphere to the bottom, similar to a person who turns the board.
 fn directions(count: usize) -> Vec<[f32; 3]> {
     let golden_angle = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
     (0..count)
@@ -60,6 +62,35 @@ fn learns_hard_and_soft_iron_from_good_coverage() {
             "corrected field {strength} uT is not close to {CALIBRATED_RADIUS_UT} uT"
         );
     }
+}
+
+#[test]
+fn recovers_from_a_single_disturbed_sample() {
+    let mut calibration = Calibration::new();
+    let directions = directions(600);
+
+    // A magnet passes by once. The sample is learnable, but far from the real
+    // center. It stretches the extrema, so their midpoint is wrong and the
+    // direction bins are unbalanced. The calibration can only succeed after
+    // the stalled epoch starts over.
+    for direction in &directions[..50] {
+        calibration.observe(raw_field(*direction));
+    }
+    calibration.observe([400.0, -80.0, 40.0]);
+
+    for _pass in 0..10 {
+        for direction in &directions {
+            calibration.observe(raw_field(*direction));
+        }
+        if calibration.is_ready() {
+            break;
+        }
+    }
+    assert!(
+        calibration.is_ready(),
+        "calibration did not recover, progress {}%",
+        calibration.progress_percent()
+    );
 }
 
 #[test]

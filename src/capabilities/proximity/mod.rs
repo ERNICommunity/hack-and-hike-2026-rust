@@ -1,10 +1,11 @@
 //! Proximity: how close something is to the front of the board.
 //!
-//! The LTR-553 behind the front glass shines an infrared LED and measures
-//! how much comes back, ten times a second. The same chip measures the
-//! ambient light; one CPU1 task in the [`light`](super::light) capability
-//! reads both and publishes the newest [`Sample`] here. The application
-//! takes it with [`Proximity::latest`].
+//! The LTR-553 sensor behind the front glass sends infrared light from an
+//! LED and measures how much of it comes back, ten times a second. The same
+//! chip measures the ambient light. One CPU1 task in the
+//! [`light`](super::light) capability reads both. It publishes the newest
+//! [`Sample`] here about every 100 ms, also while the light data is not
+//! valid. The application takes it with [`Proximity::latest`].
 //!
 //! ```ignore
 //! if let Some(proximity) = proximity.as_mut()
@@ -15,27 +16,30 @@
 //! ```
 //!
 //! The sensor is optional, like the camera: `Board::init` returns `None`
-//! when none answers.
+//! when the sensor does not answer.
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 
 /// One proximity measurement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sample {
-    /// How close something is, in percent of the range: 0 with nothing
-    /// within about 20 cm of the front, 50 at about 10 cm, 100 at the glass.
-    /// The scale is even in distance, so a threshold is easy to pick.
+    /// How close something is, in percent of the range, 0 to 100: 0 when
+    /// nothing is within about 20 cm of the front, 50 at about 10 cm, 100 at
+    /// the glass. The percentage changes evenly with the distance, so it is
+    /// easy to choose a threshold.
     pub percent: u8,
-    /// The sensor's own count behind `percent`: how much of its infrared
-    /// light comes back, 0 to [`Sample::RAW_MAX`]. It rises with the square
-    /// of the closeness, so most of its range lies in the last few
-    /// centimetres; useful to see what the sensor really measures.
+    /// The raw count from the sensor that `percent` is based on: how much of
+    /// the infrared light comes back, 0 to [`Sample::RAW_MAX`].
+    ///
+    /// The count grows with 1 / distance², so most of its range is in the
+    /// last few centimetres. It shows what the sensor really measures.
     pub raw: u16,
 }
 
 impl Sample {
-    /// The largest raw count: something touches the glass, or the
-    /// measurement saturated.
+    /// The largest raw count, 2047. The sensor reports it when something
+    /// touches the glass, and when the measurement is saturated (so much
+    /// light comes back that the sensor cannot measure more).
     pub const RAW_MAX: u16 = hack_and_hike_core::light::PROXIMITY_MAX;
 }
 
@@ -46,8 +50,9 @@ struct Service {
     latest: Signal<CriticalSectionRawMutex, Sample>,
 }
 
-/// The one shared proximity state. A plain `static` works across cores
-/// because the signal synchronizes itself.
+/// The one shared proximity state. A plain `static` is safe to use from
+/// both cores, because the signal protects its value with a critical
+/// section.
 static SERVICE: Service = Service {
     latest: Signal::new(),
 };
@@ -60,7 +65,7 @@ pub struct Proximity {
 
 impl Proximity {
     /// The newest sample, or `None` when nothing new was published since the
-    /// previous call. Samples come ten times a second.
+    /// previous call. Never waits. Samples come ten times a second.
     pub fn latest(&mut self) -> Option<Sample> {
         self.service.latest.try_take()
     }

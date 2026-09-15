@@ -1,21 +1,24 @@
-//! Pipelined SPI DMA transport for the ILI9342C panel controller.
+//! Sending pixels to the ILI9342C panel controller over SPI with DMA.
 //!
-//! One-time controller setup lives in [`super::controller`]; this module owns
-//! the steady state: programming a drawing window and streaming pixel bytes
-//! into it, without allocating.
+//! The one-time setup of the controller is in [`super::controller`]. This
+//! module does the work after the setup: it sets a drawing window and sends
+//! pixel bytes into it. It allocates no memory while it draws.
 //!
-//! # How a region is sent
+//! # How a rectangle is sent
 //!
-//! 1. [`Transport::render`] programs the controller's *window* (column and
-//!    page address) with three DCS commands. The controller then fills that
-//!    rectangle left to right, top to bottom, from whatever bytes follow.
-//! 2. Rows are sent in batches of [`BATCH_LINES`]. The source fills the free
-//!    DMA buffer, `send` waits for the previous batch to leave the bus and
-//!    starts the new one.
-//! 3. Two DMA buffers alternate (`free` and the one in flight), so the CPU
-//!    prepares the next batch while the previous one is still on the wire.
-//!    While it waits, the source's `while_transferring` hook runs; the camera
-//!    uses it to capture its next frame.
+//! 1. [`Transport::render`] sets the controller's *window* with DCS commands
+//!    (Display Command Set, the MIPI standard commands for displays). One
+//!    command sets the columns, one sets the rows ("pages"), and a third
+//!    command starts the memory write. The controller then fills that
+//!    rectangle with the bytes that follow: left to right, top to bottom.
+//! 2. Rows go out in batches of [`BATCH_LINES`]. The source fills the free
+//!    DMA buffer. Then `send` waits until the previous batch has left the
+//!    bus, and starts the new batch.
+//! 3. Two DMA buffers take turns: the free buffer and the buffer that is
+//!    being sent. So the CPU prepares the next batch while the previous batch
+//!    is still being sent. While `send` waits, the source's
+//!    `while_transferring` callback runs. The camera uses it to capture its
+//!    next frame.
 
 use embedded_graphics::primitives::Rectangle;
 use embedded_hal::spi::SpiBus as _;
@@ -30,74 +33,80 @@ use esp_hal::{
 
 use super::{BYTES_PER_PIXEL, Resources, ScanlineSource, WIDTH, controller};
 
-/// The SPI clock, and with it the ceiling on drawing speed: a full frame is
-/// 153,600 bytes, about 31 ms at 40 MHz.
+/// The SPI clock in MHz. It limits the drawing speed: a full frame is
+/// 153,600 bytes and takes about 31 ms at 40 MHz.
 ///
-/// The ESP32-S3 can clock SPI at 80 MHz, but on the CoreS3 Lite that leaves
-/// the panel dark when used for the setup commands, and fills the picture
-/// with noise when used for pixel data only (both tried on 2026-09-14). Keep
-/// 40 MHz; make redraws small instead (see `ui::Canvas`).
+/// The ESP32-S3 can run SPI at 80 MHz, but not on the CoreS3 Lite. With
+/// 80 MHz for the setup commands, the panel stays dark. With 80 MHz only for
+/// the pixel data, the picture shows noise. Both were tested on 2026-09-14.
+/// Keep 40 MHz, and redraw only small areas instead (see `ui::Canvas`).
 const SPI_MHZ: u32 = 40;
 
-/// Scanlines per DMA batch. Seven full-width rows are 4,480 bytes, which keeps
-/// a batch close to one 4 KiB GDMA descriptor while cutting per-transfer
-/// overhead for full-frame producers such as the camera.
+/// Rows (scanlines) per DMA batch. Seven full-width rows are 4,480 bytes.
+/// That is a little more than one DMA descriptor (`CHUNK_SIZE`, 4,092
+/// bytes). Fewer, larger batches have less overhead per transfer. This helps
+/// sources that send whole frames, such as the camera.
 const BATCH_LINES: usize = 7;
 /// Size of each of the two pixel DMA buffers.
 const BATCH_BYTES: usize = WIDTH * BYTES_PER_PIXEL * BATCH_LINES;
-/// Size of the DMA buffers `mipidsi` uses for the setup commands.
+/// Size of the DMA buffers that `mipidsi` uses for the setup commands.
 const CONTROL_DMA_BYTES: usize = 256;
 
-// MIPI DCS commands used after setup.
+// MIPI DCS commands that are used after the setup.
 /// Set the first and last column of the drawing window.
 const DCS_COLUMN_ADDRESS_SET: u8 = 0x2A;
 /// Set the first and last row ("page") of the drawing window.
 const DCS_PAGE_ADDRESS_SET: u8 = 0x2B;
-/// Start writing pixels into the window; every following data byte is pixel
-/// data until the next command.
+/// Start to write pixels into the window. All data bytes after it are pixel
+/// data, until the next command.
 const DCS_MEMORY_WRITE: u8 = 0x2C;
 
-/// The blocking SPI driver with DMA, the same type the controller setup used.
+/// The blocking SPI driver with DMA. The controller setup uses the same type.
 type DisplaySpiDma = SpiDma<'static, Blocking>;
-/// A DMA write in progress. It owns the SPI driver and the buffer being sent
-/// and gives both back when it is done.
+/// A DMA write in progress. It owns the SPI driver and the buffer that is
+/// being sent, and gives both back when it is done.
 type PixelTransfer = SpiDmaTransfer<'static, Blocking, DmaTxBuf>;
 
 /// The SPI driver and the two pixel buffers, in one of two states.
 ///
-/// Ownership moves between the states: while a batch is in flight, the SPI
-/// driver and one buffer live inside the transfer, and only the other buffer
-/// is free for the CPU to fill.
+/// The owner of the parts changes with the state. While a batch is being
+/// sent, the transfer owns the SPI driver and one buffer. Only the other
+/// buffer is free for the CPU to fill.
 enum Pipeline {
-    /// Nothing on the bus; both buffers are available.
+    /// Nothing is being sent. Both buffers are available.
     Idle {
         /// The SPI driver, ready for the next command or batch.
         spi: DisplaySpiDma,
-        /// The buffer [`Transport::prepare`] hands out for the next batch.
+        /// The buffer that [`Transport::prepare`] gives out for the next
+        /// batch.
         free: DmaTxBuf,
-        /// The other buffer; it becomes `free` once the next batch is sent.
+        /// The other buffer. It becomes `free` when the next batch is sent.
         spare: DmaTxBuf,
     },
-    /// A batch is being sent; `free` can be filled in the meantime.
+    /// A batch is being sent. The CPU can fill `free` at the same time.
     InFlight {
-        /// The running DMA write, holding the SPI driver and the buffer on the wire.
+        /// The running DMA write. It holds the SPI driver and the buffer that
+        /// is being sent.
         transfer: PixelTransfer,
-        /// The buffer not on the wire, to be filled with the next batch.
+        /// The buffer that is not being sent. The CPU fills it with the next
+        /// batch.
         free: DmaTxBuf,
     },
 }
 
 impl Pipeline {
-    /// Wait until nothing is in flight, calling `while_transferring` meanwhile.
+    /// Wait until no batch is being sent. Call `while_transferring` again and
+    /// again during the wait.
     ///
-    /// Returns the SPI driver, the buffer that was free and the buffer that
-    /// has just been sent (or the spare one when nothing was in flight).
+    /// Return the SPI driver, the buffer that was free, and the buffer that
+    /// was just sent. When nothing was being sent, the third value is the
+    /// spare buffer.
     fn drain(self, mut while_transferring: impl FnMut()) -> (DisplaySpiDma, DmaTxBuf, DmaTxBuf) {
         match self {
             Self::Idle { spi, free, spare } => (spi, free, spare),
             Self::InFlight { transfer, free } => {
-                // A busy wait on purpose: the transfer takes a few
-                // milliseconds, and the hook turns the wait into useful work.
+                // A busy wait on purpose. A full batch takes only about 1 ms
+                // at 40 MHz, and the callback does useful work during it.
                 while !transfer.is_done() {
                     while_transferring();
                     core::hint::spin_loop();
@@ -109,19 +118,26 @@ impl Pipeline {
     }
 }
 
-/// The LCD's SPI connection after controller setup.
+/// The LCD's SPI connection after the controller setup.
 pub(super) struct Transport {
-    /// `None` only while a method is moving the pipeline between states, so
-    /// the enum's contents can be moved out and back in.
+    /// The SPI driver and the pixel buffers. `None` only while a method
+    /// moves the pipeline from one state to the other: the method takes the
+    /// parts out of the enum and puts them back.
     pipeline: Option<Pipeline>,
-    /// Chip select, active low: frames one command or one pixel stream.
+    /// Chip select (CS), active low. It stays low during one command, or
+    /// during all batches of one window.
     cs: Output<'static>,
-    /// Data/command select: low for a command byte, high for its data.
+    /// Data/command select (DC): low for a command byte, high for its data.
     dc: Output<'static>,
 }
 
 /// Configure the SPI peripheral, run the controller setup and allocate the
 /// two pixel buffers.
+///
+/// # Panics
+///
+/// When the SPI configuration is invalid, a DMA buffer cannot be allocated,
+/// or the controller setup fails.
 pub(super) fn init(resources: Resources, delay: Delay) -> Transport {
     let Resources {
         spi2,
@@ -158,8 +174,13 @@ pub(super) fn init(resources: Resources, delay: Delay) -> Transport {
 }
 
 impl Transport {
-    /// Draw `area` (panel coordinates) from `source`, and return once the
-    /// last batch has reached the panel. Nothing is sent for an empty area.
+    /// Draw `area` (in panel coordinates) from `source`. Return when the last
+    /// batch has reached the panel. For an empty area, send nothing.
+    ///
+    /// # Panics
+    ///
+    /// When a corner of `area` has a negative coordinate, or an SPI command
+    /// or a DMA transfer fails.
     pub(super) fn render(&mut self, area: Rectangle, source: &mut impl ScanlineSource) {
         let Some(bottom_right) = area.bottom_right() else {
             return;
@@ -186,14 +207,20 @@ impl Transport {
         self.finish(|| source.while_transferring());
     }
 
-    /// Take the pipeline out of its slot; every caller puts it back.
+    /// Take the pipeline out of `self.pipeline`. Every caller puts it back
+    /// before it returns.
     fn take_pipeline(&mut self) -> Pipeline {
         self.pipeline
             .take()
             .expect("LCD pipeline is only empty inside Transport methods")
     }
 
-    /// Send one DCS command byte followed by its parameter bytes.
+    /// Send one DCS command byte with DC low, then its parameter bytes with
+    /// DC high. Chip select is low during the command and high after it.
+    ///
+    /// # Panics
+    ///
+    /// When an SPI write fails.
     fn write_command(&mut self, bus: &mut DisplaySpiDma, command: u8, data: &[u8]) {
         self.cs.set_low();
         self.dc.set_low();
@@ -210,11 +237,16 @@ impl Transport {
         self.cs.set_high();
     }
 
-    /// Program one rectangular window from the top-left to the bottom-right
-    /// pixel, both inclusive, and start a memory write into it. The
-    /// controller advances through the window by itself, so the pixel path
-    /// only streams consecutive RGB565 bytes afterwards. Any batch still in
-    /// flight is completed first.
+    /// Set a rectangular window from the top-left pixel to the bottom-right
+    /// pixel, both included, and start a memory write into it.
+    ///
+    /// The controller moves through the window by itself. So after this
+    /// call, the pixel path only sends RGB565 bytes one after the other.
+    /// When a batch is still being sent, this function first waits for it.
+    ///
+    /// # Panics
+    ///
+    /// When an SPI write fails.
     fn begin_window(&mut self, [x0, y0]: [u16; 2], [x1, y1]: [u16; 2]) {
         let (mut spi, free, spare) = self.take_pipeline().drain(|| {});
         self.cs.set_high();
@@ -238,8 +270,8 @@ impl Transport {
         self.pipeline = Some(Pipeline::Idle { spi, free, spare });
     }
 
-    /// The free DMA buffer, to be filled with at most `BATCH_BYTES` of
-    /// big-endian RGB565 pixel data before calling `send`.
+    /// The free DMA buffer. Fill at most [`BATCH_BYTES`] bytes of it with
+    /// RGB565 pixel data, most significant byte first, and then call `send`.
     fn prepare(&mut self) -> &mut [u8] {
         match self.pipeline.as_mut() {
             Some(Pipeline::Idle { free, .. } | Pipeline::InFlight { free, .. }) => {
@@ -249,9 +281,17 @@ impl Transport {
         }
     }
 
-    /// Send the first `byte_len` bytes of the prepared buffer. While the
-    /// previous batch is still on the bus, `while_transferring` is called
-    /// repeatedly so the caller can do useful work instead of waiting.
+    /// Start to send the first `byte_len` bytes of the prepared buffer. Do
+    /// nothing when `byte_len` is 0.
+    ///
+    /// First wait until the previous batch has left the bus. During this
+    /// wait, call `while_transferring` again and again, so the caller can do
+    /// useful work. Return as soon as the new transfer has started; do not
+    /// wait for it.
+    ///
+    /// # Panics
+    ///
+    /// When the DMA transfer does not start.
     fn send(&mut self, byte_len: usize, while_transferring: impl FnMut()) {
         debug_assert!(byte_len <= BATCH_BYTES);
         if byte_len == 0 {
@@ -270,7 +310,9 @@ impl Transport {
         self.pipeline = Some(Pipeline::InFlight { transfer, free });
     }
 
-    /// Wait for the last batch of the current window to reach the panel.
+    /// Wait until the last batch of the current window has reached the panel,
+    /// calling `while_transferring` during the wait. Then set chip select
+    /// high, which ends the memory write.
     fn finish(&mut self, while_transferring: impl FnMut()) {
         let (spi, free, spare) = self.take_pipeline().drain(while_transferring);
         self.cs.set_high();
@@ -278,7 +320,11 @@ impl Transport {
     }
 }
 
-/// A surface coordinate as the controller's 16-bit address.
+/// Convert a panel coordinate into the controller's 16-bit address.
+///
+/// # Panics
+///
+/// When `value` is negative or larger than `u16::MAX`.
 fn panel_coordinate(value: i32) -> u16 {
     u16::try_from(value).expect("surface coordinates fit the panel")
 }

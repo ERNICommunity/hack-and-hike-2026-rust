@@ -4,18 +4,24 @@
 /// yz) and three linear terms (x, y, z).
 pub const PARAMS: usize = 9;
 /// A pivot smaller than this fraction of the largest matrix entry counts as
-/// zero, so a nearly singular system is rejected instead of amplifying noise.
+/// zero. The pivot is the entry that the elimination divides by. So a nearly
+/// singular system (one without a unique solution) is rejected, and noise is
+/// not amplified.
 const SOLVER_RELATIVE_PIVOT_EPSILON: f32 = 1.0e-6;
-/// Most Jacobi rotations [`symmetric_eigen_3`] performs before it gives
-/// up iterating.
+/// Largest number of Jacobi rotations that [`symmetric_eigen_3`] performs.
+/// After that it stops and returns the current result.
 const JACOBI_ROTATIONS: usize = 18;
 /// Off-diagonal magnitude below which the matrix counts as diagonal and the
 /// Jacobi iteration stops early.
 const JACOBI_CONVERGED_OFF_DIAGONAL: f32 = 1.0e-7;
 
-/// Solve `matrix * x = rhs` by Gauss-Jordan elimination with partial pivoting.
+/// Solve `matrix * x = rhs` by Gauss-Jordan elimination with partial
+/// pivoting. Partial pivoting means: for each column, the row with the
+/// largest absolute value in that column is used to eliminate the others.
 ///
-/// Returns `None` when the system is singular or numerically unstable.
+/// Returns `None` when the matrix is all zeros, when a pivot is too small
+/// (the system is singular or nearly singular), or when the result is not
+/// finite.
 pub fn solve_linear<const N: usize>(
     mut matrix: [[f32; N]; N],
     mut rhs: [f32; N],
@@ -73,7 +79,8 @@ pub fn solve_linear<const N: usize>(
     rhs.iter().all(|value| value.is_finite()).then_some(rhs)
 }
 
-/// Eigen-decomposition of a real symmetric 3x3 matrix.
+/// Eigen-decomposition of a real symmetric 3x3 matrix: its eigenvalues and
+/// eigenvectors. For an eigenvector `v` with eigenvalue `λ`, `matrix * v = λ v`.
 pub struct Eigen3 {
     /// Eigenvalues, in no particular order. `values[i]` belongs to column `i`
     /// of `vectors`.
@@ -82,8 +89,15 @@ pub struct Eigen3 {
     pub vectors: [[f32; 3]; 3],
 }
 
-/// Jacobi diagonalization. The fixed rotation count gives deterministic cost
-/// on the embedded target and is ample for a 3x3 matrix.
+/// Eigenvalues and eigenvectors of a symmetric 3x3 matrix, by the Jacobi
+/// method.
+///
+/// Each Jacobi rotation sets the largest off-diagonal entry to zero. The
+/// loop stops when all off-diagonal entries are tiny, or after
+/// `JACOBI_ROTATIONS` rotations. This limit keeps the run time predictable
+/// on the microcontroller, and it is more than enough for a 3x3 matrix.
+///
+/// Returns `None` when an eigenvalue is not finite.
 pub fn symmetric_eigen_3(mut matrix: [[f32; 3]; 3]) -> Option<Eigen3> {
     let mut vectors = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
@@ -135,7 +149,8 @@ pub fn symmetric_eigen_3(mut matrix: [[f32; 3]; 3]) -> Option<Eigen3> {
         .then_some(Eigen3 { values, vectors })
 }
 
-/// Row and column of the largest off-diagonal element (row < column).
+/// Row and column of the largest off-diagonal entry, by absolute value,
+/// with row < column.
 fn largest_off_diagonal(matrix: [[f32; 3]; 3]) -> (usize, usize) {
     let a01 = matrix[0][1].abs();
     let a02 = matrix[0][2].abs();

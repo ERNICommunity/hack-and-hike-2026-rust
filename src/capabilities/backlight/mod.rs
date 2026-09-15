@@ -1,8 +1,8 @@
-//! LCD backlight brightness.
+//! The brightness of the screen's backlight.
 //!
-//! The application sets a [`Brightness`]; a CPU1 task applies it to the power
-//! chip over the shared I2C bus. Only the newest request matters, so a
-//! request that has not been applied yet is replaced by a newer one.
+//! The application sets a [`Brightness`]. A CPU1 task sends it to the power
+//! chip over the shared I2C bus. Only the newest request matters: a new
+//! request replaces an older request that is not applied yet.
 //!
 //! ```ignore
 //! backlight.set(Brightness::new(30));
@@ -15,23 +15,31 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 pub(crate) use runtime::spawn;
 
 /// Backlight brightness in percent, from [`Brightness::MIN`] to
-/// [`Brightness::FULL`]. There is no "off": the lowest setting keeps the panel
-/// visibly lit.
+/// [`Brightness::FULL`].
+///
+/// There is no "off": at the lowest setting, the screen is still lit. The
+/// power chip has only eight brightness levels, so percentages that are
+/// close to each other can look the same.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Brightness(u8);
 
-/// The percentage was outside 1 to 100.
+/// Error: the percentage is not between 1 and 100.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvalidBrightness;
 
 impl Brightness {
-    /// The dimmest setting, 1 %. The panel stays readable.
+    /// The lowest setting, 1 %. The screen is still readable.
     pub const MIN: Self = Self(1);
-    /// Full brightness, 100 %: the setting at boot.
+    /// Full brightness, 100 %. This is the setting at start-up.
     pub const FULL: Self = Self(100);
 
-    /// For percentages written in the code. Panics outside 1 to 100, so a
-    /// typo fails at compile time in a `const`.
+    /// A brightness of `percent`, for a value written in the code. For a
+    /// value computed at run time, use `Brightness::try_from`.
+    ///
+    /// # Panics
+    ///
+    /// When `percent` is not between 1 and 100. In a `const`, the error
+    /// appears at compile time.
     pub const fn new(percent: u8) -> Self {
         assert!(
             percent >= Self::MIN.0 && percent <= Self::FULL.0,
@@ -46,7 +54,7 @@ impl Brightness {
     }
 }
 
-/// For percentages computed at run time, for example from a slider.
+/// For a percentage computed at run time, for example from a slider.
 impl TryFrom<u8> for Brightness {
     type Error = InvalidBrightness;
 
@@ -61,14 +69,14 @@ impl TryFrom<u8> for Brightness {
 
 /// The state shared by the handle (CPU0) and the backlight task (CPU1).
 struct Service {
-    /// The newest brightness not yet applied. A `Signal` holds at most one value:
-    /// signalling again overwrites it, which is exactly "only the newest request
-    /// matters".
+    /// The newest brightness that is not applied yet. A `Signal` holds at
+    /// most one value. A new request replaces the old one, so only the newest
+    /// request is applied.
     request: Signal<CriticalSectionRawMutex, Brightness>,
 }
 
-/// The one shared backlight state. A plain `static` works across cores because
-/// the signal synchronizes itself.
+/// The one shared backlight state. A plain `static` is safe to use from both
+/// cores, because the signal protects its value with a critical section.
 static SERVICE: Service = Service {
     request: Signal::new(),
 };
@@ -80,14 +88,14 @@ pub struct Backlight {
 }
 
 impl Backlight {
-    /// Request a new brightness. A request that has not been applied yet is
-    /// replaced by the newer one.
+    /// Request a new brightness. Never waits. When an earlier request is not
+    /// applied yet, this request replaces it.
     pub fn set(&mut self, brightness: Brightness) {
         self.service.request.signal(brightness);
     }
 }
 
-/// CPU1 side of the signal.
+/// CPU1 side of the signal, used by the backlight task.
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
     /// Points at the signal shared with the application's handle on CPU0.
@@ -95,7 +103,7 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    /// Wait for the next brightness request.
+    /// Wait for the next brightness request, and take it out of the signal.
     async fn next_request(self) -> Brightness {
         self.service.request.wait().await
     }

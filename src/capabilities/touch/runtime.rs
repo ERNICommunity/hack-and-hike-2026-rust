@@ -1,7 +1,8 @@
 //! CPU1 task polling the FT6336 touch controller.
 //!
-//! The controller has an interrupt line, but polling every 5 ms is simpler,
-//! costs one short I2C read and keeps up with a fast finger.
+//! The FT6336 has an interrupt line. The task does not use it: polling every
+//! 5 ms is simpler, needs only one short I2C read, and follows even a quick
+//! finger movement.
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
@@ -15,12 +16,17 @@ use super::{Runtime, TouchEvent};
 
 /// I2C address of the FT6336.
 const FT6336_ADDR: u8 = 0x38;
-/// First register of the report: touch count, then the first point.
+/// First register of the report. The report starts with the number of
+/// touches, followed by the position of the first touch point.
 const FT6336_REPORT_REGISTER: u8 = 0x02;
-/// Time between two reads of the controller.
+/// Wait between two reads of the controller.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Start polling the touch controller on CPU1.
+///
+/// # Panics
+///
+/// When the task is already running.
 pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
     spawner.spawn(poll_task(bus, runtime).expect("touch task already spawned"));
 }
@@ -34,8 +40,8 @@ enum Sample {
     Down(Point),
 }
 
-/// Poll the controller once. `None` when the read failed or the reported
-/// position is outside the panel; such samples are simply skipped.
+/// Read the controller once. Returns `None` when the read failed or the
+/// reported position is outside the panel. The task skips such samples.
 async fn read_sample(bus: SystemI2cBus) -> Option<Sample> {
     let mut report = [0u8; 5];
     {
@@ -56,17 +62,24 @@ async fn read_sample(bus: SystemI2cBus) -> Option<Sample> {
     Some(Sample::Down(Point::new(i32::from(x), i32::from(y))))
 }
 
-/// Turns raw samples into press, move and release events. Never waits for
-/// the application.
+/// Turn samples into press, move and release events. Never waits for the
+/// application.
+///
+/// A skipped sample (`None`) changes nothing. A finger that stays at the
+/// same position gives no event.
 #[embassy_executor::task]
 async fn poll_task(bus: SystemI2cBus, runtime: Runtime) {
     let mut pressed_at: Option<Point> = None;
 
     loop {
         match (read_sample(bus).await, pressed_at) {
+            // When the queue has no room for the press, `pressed_at` stays
+            // `None`. The next sample with a finger tries the press again. So
+            // moves and a release never arrive without their press.
             (Some(Sample::Down(point)), None) => {
-                pressed_at = Some(point);
-                runtime.publish(TouchEvent::Pressed(point));
+                if runtime.publish(TouchEvent::Pressed(point)) {
+                    pressed_at = Some(point);
+                }
             }
             (Some(Sample::Down(point)), Some(last)) if point != last => {
                 pressed_at = Some(point);

@@ -1,4 +1,5 @@
-//! CPU1 task that applies brightness requests over the shared system bus.
+//! CPU1 task that applies brightness requests. It sets the voltage of the
+//! backlight rail on the AXP2101 power chip over the shared system I2C bus.
 
 use embassy_executor::Spawner;
 use log::warn;
@@ -12,8 +13,9 @@ pub(crate) fn spawn(spawner: &Spawner, bus: SystemI2cBus, runtime: Runtime) {
     spawner.spawn(apply_task(bus, runtime).expect("backlight task already spawned"));
 }
 
-/// Wait for a request, apply it, repeat. A failed I2C write is logged and the
-/// next request tries again.
+/// Wait for a request, apply it, and repeat. A failed I2C transfer is logged.
+/// The failed request is not tried again; the next request is applied as
+/// usual.
 #[embassy_executor::task]
 async fn apply_task(bus: SystemI2cBus, runtime: Runtime) {
     loop {

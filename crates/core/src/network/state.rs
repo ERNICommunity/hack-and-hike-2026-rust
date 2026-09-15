@@ -1,6 +1,7 @@
 //! Peer table and network status, independent of the radio.
 //!
-//! [`NetworkState`] lives on CPU1; applications see it through [`Snapshot`].
+//! [`NetworkState`] lives on CPU1. Applications see it through a
+//! [`Snapshot`].
 
 use core::fmt;
 
@@ -8,10 +9,11 @@ use arrayvec::ArrayVec;
 
 use super::protocol::{self, DeviceId, MacAddress};
 
-/// Most peers tracked at once. The longest-unseen peer is replaced when full.
+/// The largest number of peers in the peer table. When the table is full, a
+/// new peer replaces the peer that was silent the longest.
 pub const MAX_PEERS: usize = 10;
 
-/// A 2.4 GHz Wi-Fi channel number, 1 to 14. Boards only hear each other on
+/// A 2.4 GHz Wi-Fi channel number, 1 to 14. Boards hear each other only on
 /// the same channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RadioChannel(u8);
@@ -26,8 +28,13 @@ impl RadioChannel {
     /// The highest channel number.
     pub const MAX: u8 = 14;
 
-    /// For channel numbers written in the code. Panics outside 1 to 14, so
-    /// a typo fails at compile time in a `const`.
+    /// A channel for a number written in the code. For a number computed at
+    /// run time, use `RadioChannel::try_from`.
+    ///
+    /// # Panics
+    ///
+    /// When `number` is not between 1 and 14. In a `const`, the error
+    /// appears at compile time.
     pub const fn new(number: u8) -> Self {
         assert!(
             number >= Self::MIN && number <= Self::MAX,
@@ -64,26 +71,29 @@ impl fmt::Display for RadioChannel {
 /// What the network is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// The radio is being initialized.
+    /// The radio is being set up.
     Starting,
-    /// The radio works but no peer has been heard.
+    /// The radio works, but no peer is in range now.
     Ready,
     /// At least one peer is in range.
     PeerPresent,
-    /// The radio failed to initialize; nothing will be sent or received.
+    /// The radio failed to start. Nothing is sent or received.
     Fault,
 }
 
 /// One currently known peer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer {
-    /// Which board it is; pass it to `Network::send_to`.
+    /// Which board it is. Pass it to `Network::send_to`.
     pub id: DeviceId,
-    /// Received signal strength in dBm; closer to zero is stronger.
+    /// Signal strength of the last frame from this peer, in dBm. A value
+    /// closer to zero means a stronger signal.
     pub rssi_dbm: i8,
-    /// Time since the peer was last heard.
+    /// Milliseconds since the peer was last heard, when the snapshot was
+    /// taken.
     pub age_ms: u32,
-    /// Time until the peer is forgotten if it stays silent.
+    /// Milliseconds until the peer is removed if it stays silent, when the
+    /// snapshot was taken.
     pub expires_in_ms: u32,
     /// How long the peer has been running, from the uptime in its last
     /// beacon plus the time since. `None` until its first beacon arrives.
@@ -93,8 +103,10 @@ pub struct Peer {
 /// Peer table and counters as published by CPU1.
 #[derive(Clone, Copy, Debug)]
 pub struct Snapshot {
-    /// Increments with every change to the peer table or counters; compare
-    /// it to skip redrawing an unchanged snapshot.
+    /// Increases with every change to the peer table or the radio counters.
+    /// Compare it with the last value to skip redrawing an unchanged
+    /// snapshot. A change of only `tx_queue_full` or `rx_queue_full` does not
+    /// change the revision.
     pub revision: u32,
     /// What the network is doing.
     pub status: Status,
@@ -107,11 +119,13 @@ pub struct Snapshot {
     peers: [Option<Peer>; MAX_PEERS],
     /// Frames sent successfully: beacons and messages.
     pub tx_packets: u32,
-    /// Frames received from other boards.
+    /// Valid frames received from other boards.
     pub rx_packets: u32,
-    /// Frames the radio failed to send.
+    /// Frames that were not sent: the radio failed, or the recipient was no
+    /// longer in the peer table.
     pub tx_errors: u32,
-    /// Frames that were not valid frames of this protocol.
+    /// Received frames that are not valid frames of this protocol, or that
+    /// are for another board.
     pub rx_invalid: u32,
     /// Peers replaced because the table was full.
     pub peer_evictions: u32,
@@ -132,25 +146,27 @@ impl Snapshot {
         self.peers.iter().flatten()
     }
 
-    /// The peers in range, taking the snapshot.
+    /// The peers in range, in no particular order. This consumes the
+    /// snapshot.
     pub fn into_peers(self) -> impl Iterator<Item = Peer> {
         self.peers.into_iter().flatten()
     }
 }
 
-/// One row of the peer table, as the radio keeps it.
+/// One row of the peer table, as CPU1 keeps it.
 #[derive(Clone, Copy)]
 struct PeerState {
     /// The peer's id, from its frames.
     device_id: DeviceId,
-    /// Where to send unicast frames for this peer.
+    /// The radio address for frames addressed only to this peer (unicast).
     mac: MacAddress,
     /// Signal strength of the last frame heard from the peer, in dBm.
     rssi_dbm: i8,
-    /// When the peer was last heard, on our clock.
+    /// When the peer was last heard, in milliseconds on this board's clock.
     last_seen_ms: u64,
-    /// When the peer booted on our clock, worked out from the uptime in its
-    /// last beacon. Negative for a peer that booted before we did.
+    /// When the peer started, in milliseconds on this board's clock. It comes
+    /// from the uptime in the peer's last beacon. Negative for a peer that
+    /// started before this board. `None` until the first beacon.
     started_at_ms: Option<i64>,
 }
 
@@ -162,9 +178,9 @@ pub struct Heard {
     pub device_id: DeviceId,
     /// The sender's radio address.
     pub mac: MacAddress,
-    /// Signal strength of the frame.
+    /// Signal strength of the frame, in dBm.
     pub rssi_dbm: i8,
-    /// Uptime carried by a beacon; `None` for application messages.
+    /// Uptime in milliseconds from a beacon; `None` for application messages.
     pub uptime_ms: Option<u32>,
 }
 
@@ -173,11 +189,13 @@ pub struct Heard {
 pub struct Received {
     /// The sender was not a peer before this frame.
     pub is_new: bool,
-    /// A peer that was replaced to make room for the sender.
+    /// The radio address of a peer that was removed to make room for the
+    /// sender.
     pub evicted: Option<MacAddress>,
 }
 
-/// Queue-full counters kept outside the state, passed in for the snapshot.
+/// The queue-full counters. They are kept outside [`NetworkState`] and
+/// passed to [`NetworkState::snapshot`].
 #[doc(hidden)]
 #[derive(Clone, Copy, Default)]
 pub struct QueueCounters {
@@ -187,38 +205,52 @@ pub struct QueueCounters {
     pub rx_queue_full: u32,
 }
 
-/// The radio's view of the network: the peer table and the counters.
+/// The network as CPU1 sees it: the peer table and the counters.
 #[doc(hidden)]
 pub struct NetworkState {
+    /// Increases with every change; becomes [`Snapshot::revision`].
     revision: u32,
+    /// Whether the radio started.
     radio: RadioStatus,
+    /// This board's own id.
     local_id: DeviceId,
+    /// The channel all boards use.
     channel: RadioChannel,
+    /// A peer that is silent for longer than this, in milliseconds, is
+    /// removed.
     peer_timeout_ms: u64,
+    /// Sequence number of the next beacon. Starts at 1.
     next_sequence: u32,
+    /// The peer table's slots; `None` is an empty slot.
     peers: [Option<PeerState>; MAX_PEERS],
+    /// See [`Snapshot::tx_packets`].
     tx_packets: u32,
+    /// See [`Snapshot::rx_packets`].
     rx_packets: u32,
+    /// See [`Snapshot::tx_errors`].
     tx_errors: u32,
+    /// See [`Snapshot::rx_invalid`].
     rx_invalid: u32,
+    /// See [`Snapshot::peer_evictions`].
     peer_evictions: u32,
 }
 
-/// The radio's own state; whether peers are present is derived from the
+/// The state of the radio itself. Whether peers are present comes from the
 /// peer table when a snapshot is taken.
 #[derive(Clone, Copy)]
 enum RadioStatus {
-    /// Neither `mark_ready` nor `mark_fault` has been called yet.
+    /// Neither `mark_ready` nor `mark_fault` was called yet.
     Starting,
-    /// The radio came up.
+    /// The radio started.
     Ready,
-    /// The radio failed to come up.
+    /// The radio failed to start.
     Fault,
 }
 
 impl NetworkState {
-    /// An empty peer table for this board; peers silent for longer than
-    /// `peer_timeout_ms` are forgotten by [`expire_peers`](Self::expire_peers).
+    /// An empty peer table for this board. Peers that are silent for longer
+    /// than `peer_timeout_ms` are removed by
+    /// [`expire_peers`](Self::expire_peers).
     pub fn new(local_id: DeviceId, channel: RadioChannel, peer_timeout_ms: u64) -> Self {
         Self {
             revision: 0,
@@ -236,13 +268,13 @@ impl NetworkState {
         }
     }
 
-    /// The radio came up.
+    /// Record that the radio started.
     pub fn mark_ready(&mut self) {
         self.radio = RadioStatus::Ready;
         self.bump_revision();
     }
 
-    /// The radio failed to come up.
+    /// Record that the radio failed to start.
     pub fn mark_fault(&mut self) {
         self.radio = RadioStatus::Fault;
         self.bump_revision();
@@ -253,37 +285,42 @@ impl NetworkState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// The next beacon to send, numbered.
+    /// The next beacon to send, with the next sequence number and the uptime
+    /// `now_ms`.
     pub fn next_beacon(&mut self, now_ms: u64) -> protocol::BeaconPacket {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
         protocol::BeaconPacket {
             device_id: self.local_id,
             sequence,
-            // Wraps after 49 days, which is fine for an uptime hint.
+            // The uptime wraps around after about 49 days. That is good
+            // enough for an uptime display.
             uptime_ms: (now_ms % (u64::from(u32::MAX) + 1)) as u32,
         }
     }
 
-    /// Count a frame the radio sent.
+    /// Count a frame that was sent.
     pub fn record_send_ok(&mut self) {
         self.tx_packets = self.tx_packets.wrapping_add(1);
         self.bump_revision();
     }
 
-    /// Count a frame the radio failed to send.
+    /// Count a frame that was not sent: the radio failed, or the recipient
+    /// has no route.
     pub fn record_send_error(&mut self) {
         self.tx_errors = self.tx_errors.wrapping_add(1);
         self.bump_revision();
     }
 
-    /// Count a received frame that is not ours or is malformed.
+    /// Count a received frame that is not a valid frame of this protocol, or
+    /// an application frame for another board.
     pub fn record_invalid_receive(&mut self) {
         self.rx_invalid = self.rx_invalid.wrapping_add(1);
         self.bump_revision();
     }
 
-    /// The radio address to use for a unicast to `device_id`.
+    /// The radio address for a frame to `device_id` only. `None` when that
+    /// board is not in the peer table.
     pub fn route_for(&self, device_id: DeviceId) -> Option<MacAddress> {
         self.peers
             .iter()
@@ -292,8 +329,11 @@ impl NetworkState {
             .map(|peer| peer.mac)
     }
 
-    /// Add or refresh the sender of a valid frame. A new peer may replace the
-    /// longest-silent one when the table is full.
+    /// Add the sender of a valid frame to the peer table, or update its row.
+    /// Also counts the frame in `rx_packets`.
+    ///
+    /// When the table is full, a new peer replaces the peer that was silent
+    /// the longest.
     pub fn record_receive(&mut self, heard: Heard, now_ms: u64) -> Received {
         self.rx_packets = self.rx_packets.wrapping_add(1);
         self.bump_revision();
@@ -307,8 +347,8 @@ impl NetworkState {
             peer.mac = heard.mac;
             peer.rssi_dbm = heard.rssi_dbm;
             peer.last_seen_ms = now_ms;
-            // An application message says nothing about uptime; keep what
-            // the peer's last beacon said.
+            // An application message has no uptime. Keep the start time from
+            // the peer's last beacon.
             if let Some(uptime_ms) = heard.uptime_ms {
                 peer.started_at_ms = Some(started_at(now_ms, uptime_ms));
             }
@@ -334,7 +374,9 @@ impl NetworkState {
         }
     }
 
-    /// A free slot, or the slot of the longest-unseen peer, which is evicted.
+    /// The index of a free slot. When there is none, the peer that was
+    /// silent the longest is removed and counted in `peer_evictions`. Then
+    /// its slot and its radio address are returned.
     fn slot_for_new_peer(&mut self) -> (usize, Option<MacAddress>) {
         let mut oldest_index = 0;
         let mut oldest_seen = u64::MAX;
@@ -354,7 +396,7 @@ impl NetworkState {
         (oldest_index, evicted)
     }
 
-    /// Forget peers that have been silent for longer than the timeout and
+    /// Remove the peers that were silent for longer than the timeout, and
     /// return their radio addresses.
     pub fn expire_peers(&mut self, now_ms: u64) -> ArrayVec<MacAddress, MAX_PEERS> {
         let mut expired = ArrayVec::new();
@@ -373,7 +415,7 @@ impl NetworkState {
         expired
     }
 
-    /// The current state as seen by applications.
+    /// The current state for applications, at the time `now_ms`.
     pub fn snapshot(&self, now_ms: u64, queues: QueueCounters) -> Snapshot {
         let mut peers = [None; MAX_PEERS];
         for (target, source) in peers.iter_mut().zip(self.peers.iter().flatten()) {
@@ -413,8 +455,8 @@ impl NetworkState {
     }
 }
 
-/// When a peer booted, on our clock, in milliseconds: now minus its
-/// reported uptime. Negative when it booted before we did.
+/// When a peer started, in milliseconds on this board's clock: now minus
+/// its reported uptime. Negative when it started before this board.
 fn started_at(now_ms: u64, uptime_ms: u32) -> i64 {
     now_ms as i64 - i64::from(uptime_ms)
 }

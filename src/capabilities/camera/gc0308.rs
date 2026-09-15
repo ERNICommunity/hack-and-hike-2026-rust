@@ -1,8 +1,10 @@
 //! Register setup of the GC0308 camera sensor.
 //!
-//! The sensor is programmed once during bring-up, over the shared I2C bus
-//! (the sensor calls it SCCB). Capturing afterwards only uses the parallel
-//! bus and never touches I2C again.
+//! The GC0308 is a small image sensor for 640x480 pixels (VGA). This
+//! firmware uses it at 320x240 pixels. The sensor is programmed once during
+//! bring-up, over the shared I2C bus. The sensor's documentation calls this
+//! control bus SCCB (Serial Camera Control Bus). After that, capturing uses
+//! only the parallel bus and never uses I2C again.
 
 use esp_hal::delay::Delay;
 
@@ -10,18 +12,19 @@ use crate::board::registers::Registers;
 
 use super::BringUpError;
 
-/// I2C address of the GC0308.
+/// 7-bit I2C address of the GC0308.
 const ADDRESS: u8 = 0x21;
-/// Product ID register.
+/// Product ID (PID) register.
 const PID_REGISTER: u8 = 0x00;
-/// The product ID a GC0308 reports.
+/// The product ID that a GC0308 reports.
 const EXPECTED_PID: u8 = 0x9b;
 
-/// The GC0308 has two register pages; this register selects one.
+/// The GC0308 has two register pages, 0 and 1. A write to this register
+/// selects the page. Writing `0xf0` resets the sensor.
 const PAGE_SELECT: u8 = 0xfe;
 /// Output pixel format (page 0).
 const OUTPUT_FORMAT: u8 = 0x24;
-/// RGB565, most significant byte first: what the display wants.
+/// RGB565, most significant byte first. The display uses the same format.
 const RGB565_BE: u8 = 0xa6;
 /// Mirror and flip bits (page 0).
 const ORIENTATION: u8 = 0x14;
@@ -29,14 +32,16 @@ const ORIENTATION: u8 = 0x14;
 const ORIENTATION_HORIZONTAL_MIRROR_MASK: u8 = 0x01;
 /// Bit in `ORIENTATION` that flips the image upside down.
 const ORIENTATION_VERTICAL_FLIP_MASK: u8 = 0x02;
-/// Both orientation bits, the part of `ORIENTATION` this driver changes.
+/// Both orientation bits. This driver changes only these bits of
+/// `ORIENTATION`.
 const ORIENTATION_MASK: u8 = ORIENTATION_HORIZONTAL_MIRROR_MASK | ORIENTATION_VERTICAL_FLIP_MASK;
 
-// Espressif's GC0308 baseline register program, followed by the QVGA
-// subsampling changes below. The sensor has no XCLK pin on CoreS3 Lite; its
-// onboard clock source is used while LCD_CAM operates in slave mode.
+// Espressif's basic GC0308 register program. `program` writes the QVGA
+// subsampling changes after it. On the CoreS3 Lite, the sensor has no XCLK
+// (external clock) pin from the ESP32-S3. It uses the clock on the board,
+// and LCD_CAM runs in slave mode.
 /// The register program as `(register, value)` pairs, written in order.
-/// Includes `PAGE_SELECT` writes that switch between the two pages.
+/// It includes `PAGE_SELECT` writes that switch between the two pages.
 const DEFAULT_REGS: &[(u8, u8)] = &[
     (0xfe, 0x00),
     (0xec, 0x20),
@@ -279,7 +284,16 @@ const DEFAULT_REGS: &[(u8, u8)] = &[
     (0xfe, 0x00),
 ];
 
-/// Program the sensor for 320x240 RGB565 and check that it is a GC0308.
+/// Program the sensor for 320x240 pixels in RGB565, then check that it is a
+/// GC0308.
+///
+/// The register program is written first. The product ID is read after it.
+///
+/// # Errors
+///
+/// [`BringUpError::Bus`] when an I2C transfer fails, and
+/// [`BringUpError::UnexpectedPid`] when the product ID is not
+/// [`EXPECTED_PID`].
 pub(super) fn init<I2C>(i2c: &mut I2C, delay: Delay) -> Result<(), BringUpError<I2C::Error>>
 where
     I2C: embedded_hal::i2c::I2c,
@@ -296,20 +310,29 @@ where
     }
 }
 
-/// Reset the sensor and write the register program.
+/// Reset the sensor and write the register program. The two waits take
+/// 160 ms together.
+///
+/// # Errors
+///
+/// The error of the first I2C transfer that fails.
 fn program<I2C>(sensor: &mut Registers<'_, I2C>, delay: Delay) -> Result<(), I2C::Error>
 where
     I2C: embedded_hal::i2c::I2c,
 {
-    // Software reset, matching the sensor driver's documented startup sequence.
+    // Software reset: write 0xf0 to register 0xfe, then wait 80 ms. This is
+    // the documented start-up sequence of the sensor driver.
     sensor.write(PAGE_SELECT, 0xf0)?;
     delay.delay_millis(80u32);
 
     sensor.write_all(DEFAULT_REGS)?;
     delay.delay_millis(80u32);
 
-    // Native QVGA via 1/2 subsampling. This preserves the full field of view
-    // while producing exactly 320x240 pixels for LCD_CAM.
+    // QVGA (320x240) directly from the sensor, with 1/2 subsampling: the
+    // sensor reduces its 640x480 image to half the width and half the
+    // height. The image keeps the full field of view, and LCD_CAM receives
+    // exactly 320x240 pixels. The page 0 write sets the output format. The
+    // page 1 writes set the subsampling.
     sensor.write(PAGE_SELECT, 0x00)?;
     sensor.write(OUTPUT_FORMAT, RGB565_BE)?;
     sensor.write(PAGE_SELECT, 0x01)?;
@@ -324,11 +347,12 @@ where
     ])?;
     sensor.write(PAGE_SELECT, 0x00)?;
 
-    // CoreS3 Lite mounts the sensor 180 degrees relative to the LCD. The
-    // sensor-side vertical flip corrects the upside-down mounting; the
-    // horizontal axis stays reversed so the preview is mirrored like a
-    // selfie camera. Doing this in the sensor keeps the LCD/DMA path free of
-    // per-pixel work.
+    // On the CoreS3 Lite, the sensor is mounted at 180 degrees to the LCD.
+    // A 180-degree turn reverses both axes. The vertical flip in the sensor
+    // corrects the vertical axis. The horizontal axis stays reversed, so the
+    // image is a mirror image, like the front camera of a phone. The mirror
+    // bit is cleared. The sensor does this work, so the LCD and DMA path
+    // does not need to change any pixel.
     sensor.update_bits(
         ORIENTATION,
         ORIENTATION_MASK,

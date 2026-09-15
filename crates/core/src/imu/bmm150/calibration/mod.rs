@@ -1,9 +1,33 @@
-//! Runtime hard/soft-iron calibration for the BMM150 magnetic field.
+//! Run-time hard-iron and soft-iron calibration of the BMM150 magnetic
+//! field.
 //!
-//! The magnetometer sits inside an enclosure that distorts the field. While
-//! the user moves the device, samples are collected until they cover the
-//! sphere well enough to fit an ellipsoid; a fitted model is then validated on
-//! fresh samples before it is accepted.
+//! The magnetometer sits inside an enclosure that distorts the field:
+//!
+//! - Hard iron: magnetized parts near the sensor add a constant offset to
+//!   every reading.
+//! - Soft iron: metal near the sensor stretches and bends the field
+//!   differently in each direction.
+//!
+//! Without distortion, the readings of all directions lie on a sphere
+//! around zero. With distortion, they lie on an ellipsoid with its center
+//! away from zero. The calibration fits that ellipsoid and maps it back onto
+//! a sphere.
+//!
+//! How it works:
+//!
+//! 1. Warm-up: the first samples give the extrema (the smallest and largest
+//!    value on each axis). Their midpoint is the first guess of the center,
+//!    the fit origin.
+//! 2. Coverage: while the user turns the board, samples from many
+//!    directions go into the fit. One such round of collecting samples is a
+//!    fit epoch.
+//! 3. Fit: with enough samples and directions, an ellipsoid is fitted. A
+//!    plausible fit becomes a candidate. A rejected fit starts a new epoch.
+//! 4. Validation: the candidate is checked on new samples. It is accepted,
+//!    or it is rejected and a new epoch starts.
+//!
+//! An epoch that takes too long without a fit attempt starts everything
+//! over, extrema included (see `STALLED_EPOCH_SAMPLES`).
 
 mod fit;
 mod math;
@@ -14,31 +38,36 @@ use crate::imu::vec3;
 
 use fit::{Candidate, MIN_FIT_SAMPLES, Model, NormalEquations, Validation};
 
-/// Compensated fields inside the enclosure can be far larger than the Earth's
-/// field before hard-iron removal. Keep the learning window broad, but reject
-/// near-zero and overflow-like samples.
+/// Smallest raw field strength, in uT, that the calibration learns from.
+///
+/// Before the hard-iron offset is removed, the fields inside the enclosure
+/// can be much stronger than the Earth's field. So the learning window is
+/// wide. It only rejects samples that are near zero or look like an
+/// overflow.
 const LEARNING_FIELD_MIN_UT: f32 = 5.0;
-/// Upper end of the learning window, in uT; see `LEARNING_FIELD_MIN_UT`.
+/// Largest raw field strength, in uT, that the calibration learns from; see
+/// `LEARNING_FIELD_MIN_UT`.
 const LEARNING_FIELD_MAX_UT: f32 = 4000.0;
-/// Corrected fields are normalized to 50 uT; this window leaves room for noise
-/// and transient disturbances.
+/// Smallest corrected field strength, in uT, that counts as the Earth's
+/// field. Corrected fields have a strength of about 50 uT. The window leaves
+/// room for noise and short disturbances.
 const EARTH_FIELD_MIN_UT: f32 = 25.0;
-/// Upper end of the Earth-field window, in uT; see
-/// `EARTH_FIELD_MIN_UT`.
+/// Largest corrected field strength, in uT, that counts as the Earth's
+/// field; see `EARTH_FIELD_MIN_UT`.
 const EARTH_FIELD_MAX_UT: f32 = 80.0;
 
 /// Smallest extent, in uT, the samples must span on every axis before a
 /// fit is attempted.
 const TARGET_SPAN_UT: f32 = 35.0;
-/// Samples seen before the first fit origin may be chosen.
+/// Learnable samples needed before the fit origin is chosen.
 const ORIGIN_WARMUP_SAMPLES: u32 = 36;
-/// Extent, in uT, the samples must span on every axis before the first
-/// fit origin is chosen, so the midpoint of the extrema is a usable guess of
-/// the hard-iron offset.
+/// Extent, in uT, the samples must span on every axis before the fit origin
+/// is chosen. Then the midpoint of the extrema is a usable guess of the
+/// hard-iron offset.
 const ORIGIN_MIN_SPAN_UT: f32 = 20.0;
 
 /// Direction bins around the origin: 6 cube faces times 4 quadrants (see
-/// `fit::direction_bin`). One bit per bin in the `u32` bit masks.
+/// `fit::direction_bin`). The `u32` bit masks have one bit per bin.
 const DIRECTION_BIN_COUNT: usize = 24;
 /// Distinct direction bins that must hold samples before a fit is
 /// attempted.
@@ -46,17 +75,29 @@ const MIN_DIRECTION_BINS: u32 = 12;
 /// Cube faces that must hold samples before a fit is attempted: all six,
 /// so each axis has been seen pointing both ways.
 const MIN_DIRECTION_FACES: u32 = 6;
-/// Samples per direction bin that enter the fit. Further samples in a full
-/// bin are skipped, so holding the board in one direction does not outweigh
-/// the others.
+/// Largest number of samples per direction bin that go into the fit. More
+/// samples in a full bin are skipped. So a board held in one direction does
+/// not get more weight than the other directions.
 const MAX_SAMPLES_PER_DIRECTION_BIN: u8 = 32;
-/// Samples added to the fit between two fit attempts.
+/// Samples that must go into the fit since the last fit attempt (or since
+/// the start of the epoch) before the next attempt.
 const REFIT_INTERVAL_SAMPLES: u16 = 16;
-/// Distinct direction bins that must have received new samples since the
-/// last attempt before the fit is tried again.
+/// Distinct direction bins that must receive fit samples since the last fit
+/// attempt (or since the start of the epoch) before the next attempt.
 const MIN_REFIT_DIRECTION_BINS: u32 = 4;
+/// Learnable samples one epoch may take without a fit attempt. After that,
+/// the calibration starts over from nothing, extrema included. This is two
+/// minutes at the magnetometer's 30 Hz. Samples during warm-up and during
+/// validation do not count.
+///
+/// Why: a single disturbed sample (for example from a magnet that passes by)
+/// stretches the extrema, and the extrema are never reset otherwise. Their
+/// midpoint is then far from the real center. It puts all later samples
+/// into the same few direction bins, so the coverage can never be complete.
+const STALLED_EPOCH_SAMPLES: u32 = 3600;
 
-// Progress reporting: the three phases add up to 99 %, 100 % means accepted.
+// Progress reporting: the three phases add up to 99 %. 100 % means that a
+// model is accepted.
 /// Share of the progress for choosing the fit origin.
 const ORIGIN_PHASE_PERCENT: f32 = 20.0;
 /// Share of the progress for covering enough directions.
@@ -74,40 +115,44 @@ const VALIDATION_PHASE_PERCENT: f32 = 14.0;
 /// is.
 pub struct Calibration {
     /// Least-squares sums of the samples in the current fit epoch. Reset when
-    /// a fit or candidate is rejected.
+    /// a new epoch starts.
     equations: NormalEquations,
-    /// Smallest learnable raw field seen on each axis, in uT. Kept across fit
-    /// epochs.
+    /// Smallest learnable raw field seen on each axis, in uT. Kept for the
+    /// next fit epoch, but reset when an epoch stalls.
     min: [f32; 3],
-    /// Largest learnable raw field seen on each axis, in uT. Kept across fit
-    /// epochs.
+    /// Largest learnable raw field seen on each axis, in uT. Kept for the
+    /// next fit epoch, but reset when an epoch stalls.
     max: [f32; 3],
-    /// Learnable samples seen in total, including those not added to the fit.
-    /// Saturates at `u32::MAX`.
+    /// Learnable samples seen since the start, including those not added to
+    /// the fit. Reset when an epoch stalls. Stops at `u32::MAX`.
     samples: u32,
-    /// Point the fit samples are taken relative to. `None` during warm-up;
-    /// set to the midpoint of the extrema after warm-up and at every fresh
-    /// epoch.
+    /// The point that fit samples are measured from, in uT. `None` during
+    /// warm-up. Set to the midpoint of the extrema after warm-up and at the
+    /// start of every new epoch.
     fit_origin_ut: Option<[f32; 3]>,
     /// Samples added to `equations` in this epoch.
     fit_samples: u32,
+    /// Learnable samples seen in this epoch while no candidate was being
+    /// validated. Used to detect an epoch that cannot complete (see
+    /// `STALLED_EPOCH_SAMPLES`).
+    epoch_samples: u32,
     /// Samples added to `equations` since the last fit attempt.
     samples_since_fit: u16,
-    /// Bit mask of the direction bins that received samples since the last
-    /// fit attempt; bit `n` is bin `n`.
+    /// Bit mask of the direction bins that received fit samples since the
+    /// last fit attempt. Bit `n` is bin `n`.
     refit_direction_bins: u32,
-    /// Bit mask of the direction bins seen in this epoch; bit `n` is bin
-    /// `n`.
+    /// Bit mask of the direction bins seen in this epoch, also those that
+    /// were already full. Bit `n` is bin `n`.
     direction_bins: u32,
-    /// Bit mask of the six cube faces seen in this epoch.
+    /// Bit mask of the six cube faces seen in this epoch. Bit `n` is face `n`.
     direction_faces: u8,
     /// Samples added to the fit from each direction bin, capped at
     /// `MAX_SAMPLES_PER_DIRECTION_BIN`.
     direction_bin_samples: [u8; DIRECTION_BIN_COUNT],
-    /// A fitted model being validated. No new fit is attempted while it is
-    /// set.
+    /// A fitted model that is being validated. No new fit is attempted while
+    /// it is set.
     candidate: Option<Candidate>,
-    /// The accepted model. Once set, learning stops for good.
+    /// The accepted model. Once it is set, learning stops permanently.
     model: Option<Model>,
 }
 
@@ -127,6 +172,7 @@ impl Calibration {
             samples: 0,
             fit_origin_ut: None,
             fit_samples: 0,
+            epoch_samples: 0,
             samples_since_fit: 0,
             refit_direction_bins: 0,
             direction_bins: 0,
@@ -157,7 +203,10 @@ impl Calibration {
         self.model.map_or(field_ut, |model| model.apply(field_ut))
     }
 
-    /// Learn from one raw body-frame field.
+    /// Learn from one raw body-frame field, in uT.
+    ///
+    /// Does nothing when a model is already accepted or when the field is not
+    /// learnable.
     pub fn observe(&mut self, field_ut: [f32; 3]) {
         if self.model.is_some() || !Self::is_learnable(field_ut) {
             return;
@@ -192,6 +241,15 @@ impl Calibration {
             }
         }
 
+        if self.candidate.is_none() {
+            self.epoch_samples = self.epoch_samples.saturating_add(1);
+            if self.epoch_samples > STALLED_EPOCH_SAMPLES {
+                info!("BMM150 calibration stalled; starting over with fresh extrema");
+                *self = Self::new();
+                return;
+            }
+        }
+
         let bin = fit::direction_bin(field_ut, self.coverage_origin());
         self.direction_bins |= 1 << bin;
         self.direction_faces |= 1 << (bin / 4);
@@ -215,7 +273,7 @@ impl Calibration {
     }
 
     /// Fit a model to this epoch's samples. A plausible fit becomes the
-    /// candidate; otherwise the epoch starts over.
+    /// candidate. Otherwise a new epoch starts.
     fn try_fit(&mut self, fit_origin: [f32; 3]) {
         match fit::fit_model(&self.equations, fit_origin, self.min, self.max) {
             Some(model) => {
@@ -280,12 +338,14 @@ impl Calibration {
             && self.direction_faces.count_ones() >= MIN_DIRECTION_FACES
     }
 
-    /// Midpoint of the observed extrema, a rough hard-iron estimate.
+    /// Midpoint of the observed extrema, in uT: a rough estimate of the
+    /// hard-iron offset.
     fn coverage_origin(&self) -> [f32; 3] {
         vec3::scale(vec3::add(self.min, self.max), 0.5)
     }
 
-    /// Smallest extent of the observed samples along any axis.
+    /// Smallest extent of the observed samples along any axis, in uT. 0
+    /// before the first sample.
     fn minimum_span(&self) -> f32 {
         if self.samples == 0 {
             return 0.0;
@@ -295,14 +355,18 @@ impl Calibration {
             .fold(f32::MAX, f32::min)
     }
 
-    /// A rejected fit says the accumulated equations do not describe a
-    /// physically acceptable ellipsoid. Adding a few more directions to that
-    /// history could unbalance it further, so keep the raw extrema, recenter
-    /// on their midpoint and build the next fit from a fresh sample set.
+    /// Start a new fit epoch, after a fit or a candidate was rejected.
+    ///
+    /// A rejection means that the collected samples do not give a physically
+    /// possible ellipsoid. More samples added to the same sums could make the
+    /// balance between directions even worse. So this keeps the raw extrema,
+    /// moves the fit origin to their midpoint and collects a new set of
+    /// samples for the next fit.
     fn restart_fit_epoch(&mut self) {
         self.equations = NormalEquations::new();
         self.fit_origin_ut = Some(self.coverage_origin());
         self.fit_samples = 0;
+        self.epoch_samples = 0;
         self.samples_since_fit = 0;
         self.refit_direction_bins = 0;
         self.direction_bins = 0;
@@ -312,7 +376,7 @@ impl Calibration {
     }
 }
 
-/// Truncate a 0..=100 float percentage to `u8`.
+/// A percentage as `u8`: limited to 0 to 100 and rounded down.
 fn percent(value: f32) -> u8 {
     value.clamp(0.0, 100.0) as u8
 }

@@ -12,8 +12,10 @@ pub struct RawTouch {
 /// Decode the five bytes starting at register `0x02`: the touch count and
 /// the first point. `None` when no finger is down.
 ///
-/// The low nibble of the first byte is the number of fingers; the high
-/// nibbles of the coordinate bytes carry event flags and are ignored.
+/// The low nibble (the low four bits) of the first byte is the number of
+/// fingers. The coordinates have 12 bits each: the low nibble of the high
+/// byte, then the low byte. The high nibbles of the high bytes hold the
+/// event flag (for X) and the touch ID (for Y). This function ignores them.
 pub fn decode_report(report: [u8; 5]) -> Option<RawTouch> {
     if report[0] & 0x0F == 0 {
         return None;
@@ -26,6 +28,11 @@ pub fn decode_report(report: [u8; 5]) -> Option<RawTouch> {
 
 /// Map a point of a `width` x `height` panel onto the same panel mounted
 /// upside down.
+///
+/// # Panics
+///
+/// In debug builds, when `x` is not less than `width` or `y` is not less
+/// than `height`.
 pub const fn rotate_180(x: u16, y: u16, width: u16, height: u16) -> (u16, u16) {
     (width - 1 - x, height - 1 - y)
 }

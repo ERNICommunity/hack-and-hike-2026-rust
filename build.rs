@@ -1,9 +1,18 @@
-//! Build script: turns this binary into a linker error-handling script so that
-//! common linking mistakes print a hint instead of a bare undefined symbol.
+//! Build script that prints hints for common linker errors.
+//!
+//! The compiled build script has two jobs:
+//!
+//! - Cargo runs it without arguments before the build. It then tells the
+//!   linker to run this same program when linking fails.
+//! - The linker runs it with two arguments, for example
+//!   `undefined-symbol malloc`. For some known missing symbols, it prints a
+//!   hint that names the likely cause.
+//!
 //! Copied from the esp-generate template.
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // Arguments mean that the linker runs this program after an error.
     if let Some(kind) = args.get(1) {
         let Some(what) = args.get(2) else {
             std::process::exit(1);
@@ -45,6 +54,8 @@ fn main() {
         std::process::exit(0);
     }
 
+    // No arguments: Cargo runs the build script. Register this program as the
+    // linker's error-handling script.
     println!(
         "cargo:rustc-link-arg=-Wl,--error-handling-script={}",
         std::env::current_exe()

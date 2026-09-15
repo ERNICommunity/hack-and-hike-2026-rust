@@ -1,8 +1,10 @@
 //! Register access shared by the I2C chips on the board.
 //!
-//! Most chips on the bus expose 8-bit registers at 8-bit addresses: write the
-//! register address, then read or write the value. These two small wrappers
-//! bind a bus to one chip address so drivers read like a register map:
+//! Most chips on the bus have 8-bit registers at 8-bit register addresses.
+//! To read, write the register address, then read the value. To write, send
+//! the register address and the value together. The two small types here
+//! connect a bus with one chip address. So driver code looks like a register
+//! map:
 //!
 //! ```ignore
 //! let mut pmic = Registers::new(&mut i2c, 0x34);
@@ -42,8 +44,8 @@ impl<'a, I2C: embedded_hal::i2c::I2c> Registers<'a, I2C> {
             .try_for_each(|&(register, value)| self.write(register, value))
     }
 
-    /// Change only the bits selected by `mask` to those of `value`: read the
-    /// register, replace those bits, write it back.
+    /// Set the bits selected by `mask` to the bits of `value`, and keep the
+    /// other bits. Reads the register, changes those bits and writes it back.
     pub(crate) fn update_bits(
         &mut self,
         register: u8,
@@ -55,7 +57,7 @@ impl<'a, I2C: embedded_hal::i2c::I2c> Registers<'a, I2C> {
     }
 }
 
-/// The async twin of [`Registers`], for CPU1 tasks on the shared bus.
+/// The async version of [`Registers`], for CPU1 tasks on the shared bus.
 pub(crate) struct AsyncRegisters<'a, I2C> {
     /// The bus, borrowed exclusively while this value lives.
     i2c: &'a mut I2C,
@@ -74,7 +76,8 @@ impl<'a, I2C: embedded_hal_async::i2c::I2c> AsyncRegisters<'a, I2C> {
         self.i2c.write(self.address, &[register, value]).await
     }
 
-    /// Change only the bits selected by `mask` to those of `value`.
+    /// Set the bits selected by `mask` to the bits of `value`, and keep the
+    /// other bits. Reads the register, changes those bits and writes it back.
     pub(crate) async fn update_bits(
         &mut self,
         register: u8,

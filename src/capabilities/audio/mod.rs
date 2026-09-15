@@ -1,17 +1,17 @@
 //! Microphone and speaker.
 //!
-//! Applications see two independent handles, [`Microphone`] and [`Speaker`],
-//! that exchange audio as signed 16-bit samples at [`SAMPLE_RATE_HZ`], two
-//! channels interleaved: left, right, left, right, ... One left and right
+//! Applications get two independent handles, [`Microphone`] and [`Speaker`].
+//! Both use signed 16-bit samples at [`SAMPLE_RATE_HZ`], with two channels
+//! interleaved: left, right, left, right, ... One left sample and one right
 //! sample together are a *frame*.
 //!
-//! Underneath, both share one I2S peripheral and clock on CPU1: the speaker
-//! path generates the clock and the microphone path follows it. Two codec
-//! chips convert: the ES7210 digitizes the two microphones, the AW88298
-//! amplifies the speaker.
+//! Inside, both use one I2S peripheral on CPU1. I2S is a bus for digital
+//! audio. The speaker side generates its clock, and the microphone side uses
+//! the same clock. Two codec chips convert the signals: the ES7210 digitizes
+//! the two microphones, and the AW88298 amplifies the speaker signal.
 //!
-//! The board has a single loudspeaker. The applications here write the same
-//! sample to both channels, which is the safe choice.
+//! The board has only one loudspeaker. The applications in this project
+//! write the same sample to both channels. This is the safe choice.
 
 mod codecs;
 mod runtime;
@@ -39,52 +39,60 @@ pub const FRAMES_PER_BLOCK: usize = 512;
 /// Samples in one microphone block: `FRAMES_PER_BLOCK` frames of `CHANNELS`.
 pub const SAMPLES_PER_BLOCK: usize = FRAMES_PER_BLOCK * CHANNELS;
 
-/// Microphone blocks the application may fall behind by before the oldest
-/// unread block is dropped. Eight blocks is about 256 ms, enough to bridge a
-/// loop iteration that stalls on a slow capability (the camera's frame wait
-/// is the worst case). Each block is 2 KiB.
+/// Size of the microphone queue in blocks. When the queue is full, the
+/// oldest unread block is dropped. Eight blocks are about 256 ms. That is
+/// enough for a loop iteration that waits on a slow capability. The camera's
+/// wait for a frame is the slowest case. Each block is 2 KiB.
 const MIC_QUEUE_BLOCKS: usize = 8;
-/// Speaker frames buffered ahead of playback. One DMA descriptor refill takes
-/// up to 1023 frames, so the queue holds at least that much to keep a refill
-/// from draining it before the application tops it up.
+/// Size of the speaker queue in stereo frames: 1,024 frames, about 64 ms.
+///
+/// When the DMA has sent one descriptor, the playback task refills about
+/// 1,023 frames at once. A DMA descriptor is one block of the DMA buffer.
+/// The queue is at least that large. So a queue that the application keeps
+/// full can supply a whole refill.
 const SPEAKER_QUEUE_FRAMES: usize = 1_024;
 
 /// The speaker ring: room for [`SPEAKER_QUEUE_FRAMES`] frames, stored as
 /// interleaved samples.
 type SpeakerQueue = FrameRing<{ SPEAKER_QUEUE_FRAMES * CHANNELS }, CHANNELS>;
 
-/// The I2S peripheral and pins wired to the codecs, owned by CPU1.
+/// The I2S peripheral and the pins connected to the codecs. The audio task
+/// on CPU1 takes them.
 pub(crate) struct Resources {
     /// The I2S controller.
     pub(crate) i2s0: I2S0<'static>,
-    /// The DMA channel streaming samples in both directions.
+    /// The DMA channel that moves samples in both directions.
     pub(crate) dma: DMA_CH0<'static>,
-    /// Master clock for the codecs.
+    /// Master clock (MCLK) for the codecs.
     pub(crate) mclk: GPIO0<'static>,
-    /// Bit clock.
+    /// Bit clock (BCLK, also called BCK): one cycle for each data bit.
     pub(crate) bclk: GPIO34<'static>,
-    /// Word select: which channel the current sample belongs to.
+    /// Word select (WS, also called LRCK): shows whether the current sample
+    /// is left or right.
     pub(crate) word_select: GPIO33<'static>,
-    /// Samples from the microphone codec.
+    /// Samples from the microphone codec (ES7210).
     pub(crate) data_in: GPIO14<'static>,
-    /// Samples to the speaker amplifier.
+    /// Samples to the speaker amplifier (AW88298).
     pub(crate) data_out: GPIO13<'static>,
 }
 
-/// Metadata delivered with every microphone block.
+/// Information that comes with every microphone block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MicBlockInfo {
-    /// Increments with every captured block, so gaps reveal lost blocks.
+    /// Increases by one with every captured block. A gap in the numbers
+    /// means that blocks were lost.
     pub sequence: u32,
-    /// Total blocks dropped so far because the application fell behind.
+    /// Number of blocks dropped since start, because the application did
+    /// not read them in time.
     pub dropped_blocks: u32,
-    /// Largest absolute left sample in this block.
+    /// Largest absolute value of the left samples in this block, 0 to 32768.
     pub peak_left: u16,
-    /// Largest absolute right sample in this block.
+    /// Largest absolute value of the right samples in this block, 0 to
+    /// 32768.
     pub peak_right: u16,
 }
 
-/// One captured microphone block as it travels from CPU1 to CPU0.
+/// One captured microphone block, on its way from CPU1 to CPU0.
 #[derive(Clone, Copy)]
 struct MicBlock {
     /// Interleaved stereo samples.
@@ -94,7 +102,7 @@ struct MicBlock {
 }
 
 impl MicBlock {
-    /// An all-zero block, to start building from.
+    /// A block with all values 0. The capture task starts from it.
     const SILENT: Self = Self {
         samples: [0; SAMPLES_PER_BLOCK],
         info: MicBlockInfo {
@@ -106,17 +114,19 @@ impl MicBlock {
     };
 }
 
-/// The queues shared by the handles (CPU0) and the audio tasks (CPU1).
+/// The queues that the handles (CPU0) and the audio tasks (CPU1) share.
 struct Service {
-    /// Captured blocks waiting for the application.
+    /// Captured blocks that wait for the application.
     mic_blocks: Channel<CriticalSectionRawMutex, MicBlock, MIC_QUEUE_BLOCKS>,
-    /// Samples waiting to be played. A critical-section mutex, because both
-    /// cores touch the ring and each access is a short copy.
+    /// Samples that wait to be played. The mutex uses a critical section,
+    /// which blocks interrupts and the other core for a short time. This is
+    /// acceptable, because both cores use the ring and each access is only
+    /// a short copy.
     speaker: Mutex<CriticalSectionRawMutex, RefCell<SpeakerQueue>>,
 }
 
-/// The one set of audio queues. A plain `static` works across cores because
-/// every field synchronizes itself.
+/// The only set of audio queues. A plain `static` works on both cores,
+/// because every field does its own synchronization.
 static SERVICE: Service = Service {
     mic_blocks: Channel::new(),
     speaker: Mutex::new(RefCell::new(SpeakerQueue::new())),
@@ -124,9 +134,9 @@ static SERVICE: Service = Service {
 
 /// Application handle for the microphones.
 ///
-/// Audio arrives in blocks of [`FRAMES_PER_BLOCK`] stereo frames, 32 ms each.
-/// Blocks wait in a small queue; when the application does not read them in
-/// time the oldest block is dropped and
+/// Audio comes in blocks of [`FRAMES_PER_BLOCK`] stereo frames, 32 ms each.
+/// Up to eight blocks (about 256 ms) wait in a queue. When the application
+/// does not read them in time, the oldest block is dropped, and
 /// [`dropped_blocks`](MicBlockInfo::dropped_blocks) counts it.
 ///
 /// ```ignore
@@ -136,7 +146,7 @@ static SERVICE: Service = Service {
 /// }
 /// ```
 ///
-/// A block is 2 KiB; keep the buffer in a struct or a `static`, not on a
+/// A block is 2 KiB. Keep the buffer in a struct or a `static`, not on a
 /// small task stack.
 pub struct Microphone {
     /// Points at the queues shared with the CPU1 audio tasks.
@@ -144,8 +154,9 @@ pub struct Microphone {
 }
 
 impl Microphone {
-    /// Copy the oldest unread block into `samples`. `None` when no complete
-    /// block is waiting.
+    /// Copy the oldest unread block into `samples` and return its
+    /// information. Return `None` when no complete block is waiting. Never
+    /// waits.
     pub fn next_block(&mut self, samples: &mut [i16; SAMPLES_PER_BLOCK]) -> Option<MicBlockInfo> {
         let block = self.service.mic_blocks.try_receive().ok()?;
         samples.copy_from_slice(&block.samples);
@@ -155,10 +166,11 @@ impl Microphone {
 
 /// Application handle for the speaker.
 ///
-/// The application queues interleaved stereo samples; CPU1 drains the queue
-/// into the amplifier and plays silence whenever the queue runs empty. The
-/// queue holds about 64 ms, so feed it a little on every loop iteration
-/// instead of writing a whole sound at once.
+/// The application puts interleaved stereo samples into a queue. CPU1 takes
+/// them from the queue and sends them to the amplifier. When the queue is
+/// empty, the speaker plays silence. The queue holds 1024 frames (64 ms). So
+/// add a few samples on every loop iteration. Do not try to write a whole
+/// sound at once.
 ///
 /// ```ignore
 /// let mut chunk = [0i16; 128 * audio::CHANNELS];
@@ -174,10 +186,11 @@ pub struct Speaker {
 }
 
 impl Speaker {
-    /// Stereo frames that can be queued right now.
+    /// The number of stereo frames that fit into the queue now.
     ///
-    /// Only the application writes to the queue, so a following [`write`] of
-    /// at most this many frames is always accepted in full.
+    /// Only the application adds to the queue, so the free space can only
+    /// grow until the next [`write`]. A [`write`] of at most this many frames
+    /// is always accepted completely.
     ///
     /// [`write`]: Speaker::write
     pub fn available_frames(&self) -> usize {
@@ -186,8 +199,12 @@ impl Speaker {
             .lock(|queue| queue.borrow().free_frames())
     }
 
-    /// Queue interleaved stereo samples (left, right, left, right, ...).
-    /// Returns the number of frames accepted; an odd trailing sample is ignored.
+    /// Add interleaved stereo samples (left, right, left, right, ...) to the
+    /// queue. Never waits.
+    ///
+    /// Return the number of frames accepted. When the queue does not have
+    /// room for all frames, only the first frames that fit are accepted. A
+    /// last sample without its partner is ignored.
     pub fn write(&mut self, samples: &[i16]) -> usize {
         self.service
             .speaker
@@ -195,7 +212,7 @@ impl Speaker {
     }
 }
 
-/// CPU1 side of the queues.
+/// The CPU1 side of the queues.
 #[derive(Clone, Copy)]
 pub(crate) struct Runtime {
     /// Points at the queues shared with the application's handles on CPU0.
@@ -203,13 +220,14 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    /// True when publishing another block would drop the oldest unread one.
+    /// Whether the microphone queue is full. If it is, the next
+    /// [`Runtime::publish_microphone_block`] drops the oldest unread block.
     fn microphone_queue_is_full(self) -> bool {
         self.service.mic_blocks.is_full()
     }
 
-    /// Queue a captured block for the application, dropping the oldest unread
-    /// block first when the application has fallen behind.
+    /// Put a captured block into the queue for the application. When the
+    /// queue is full, drop the oldest unread block first.
     fn publish_microphone_block(self, block: MicBlock) {
         if self.service.mic_blocks.is_full() {
             let _dropped = self.service.mic_blocks.try_receive();
@@ -219,7 +237,8 @@ impl Runtime {
         }
     }
 
-    /// Take queued speaker frames for playback. Returns how many frames were read.
+    /// Move whole stereo frames from the speaker queue into `out`, for
+    /// playback. Return the number of frames, not samples.
     fn read_speaker(self, out: &mut [i16]) -> usize {
         self.service
             .speaker
@@ -227,17 +246,20 @@ impl Runtime {
     }
 }
 
-/// The ends of the audio queues, created once by the board.
+/// The ends of the audio queues. The board creates them once.
 pub(crate) struct Endpoints {
-    /// For the application.
+    /// The microphone handle, for the application.
     pub(crate) microphone: Microphone,
-    /// For the application.
+    /// The speaker handle, for the application.
     pub(crate) speaker: Speaker,
-    /// For the CPU1 audio tasks.
+    /// The CPU1 side, for the audio tasks.
     pub(crate) runtime: Runtime,
 }
 
-/// All ends of the audio queues.
+/// All ends of the audio queues. [`Board::init`](crate::Board::init) calls
+/// it once. Every call returns ends of the same queues. A second
+/// [`Speaker`] would break the promise of [`Speaker::available_frames`],
+/// which expects only one writer.
 pub(crate) fn endpoints() -> Endpoints {
     Endpoints {
         microphone: Microphone { service: &SERVICE },

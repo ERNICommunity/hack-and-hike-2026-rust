@@ -1,28 +1,29 @@
-//! The 320x240 LCD.
+//! The 320x240 LCD screen.
 //!
-//! [`Display`] exclusively owns the panel. Applications draw through a
-//! borrowed [`Surface`], which bounds every write to one rectangle of the
+//! [`Display`] is the only owner of the panel. Applications draw through a
+//! borrowed [`Surface`]. A surface limits every write to one rectangle of the
 //! panel. There are two ways to draw on a surface:
 //!
-//! - [`Surface::render_scanlines`] hands the application one row of pixels
-//!   at a time to fill in. Good for plain fills and patterns.
-//! - [`Surface::render_from`] streams ready-made rows from a
+//! - [`Surface::render_scanlines`] gives the application one row of pixels
+//!   at a time to fill. Use it for plain fills and patterns.
+//! - [`Surface::render_from`] sends ready-made rows from a
 //!   [`ScanlineSource`], such as a camera [`Frame`](super::camera::Frame).
 //!
-//! For text and shapes, draw into a [`Canvas`](crate::ui::Canvas) and let it
-//! send only what changed.
+//! For text and shapes, draw into a [`Canvas`](crate::ui::Canvas). The canvas
+//! sends only the pixels that changed.
 //!
 //! # Coordinates and colours
 //!
-//! The origin is the top-left corner of the screen, `x` grows to the right
-//! and `y` downwards. Touch events use the same coordinates. Pixels are
-//! [`Rgb565`]: 5 bits of red, 6 of green, 5 of blue.
+//! The origin (0, 0) is the top-left corner of the screen. `x` grows to the
+//! right, and `y` grows downwards. Touch events use the same coordinates.
+//! Pixels are [`Rgb565`]: 5 bits of red, 6 of green, 5 of blue.
 //!
 //! # Timing
 //!
-//! Drawing waits for the SPI DMA transfer to finish before it returns. A full
-//! frame takes about 31 ms, a small rectangle a fraction of a millisecond, so
-//! redraw only what changed.
+//! Drawing runs on CPU0, inside your call. The call returns only after the
+//! pixels have been sent to the panel over the SPI bus. A full screen takes
+//! about 31 ms, a small rectangle less than a millisecond. So redraw only
+//! what changed.
 
 mod controller;
 mod transport;
@@ -49,29 +50,31 @@ pub const SIZE: Size = Size::new(WIDTH as u32, HEIGHT as u32);
 /// The whole panel, for `display.surface(SCREEN)`.
 pub const SCREEN: Rectangle = Rectangle::new(Point::zero(), SIZE);
 
-/// Bytes of one RGB565 pixel on the wire, most significant byte first. A
-/// [`ScanlineSource`] row holds this many bytes per pixel.
+/// Bytes of one RGB565 pixel as sent to the panel, most significant byte
+/// first. A [`ScanlineSource`] row has this many bytes for each pixel.
 pub const BYTES_PER_PIXEL: usize = 2;
 
-// The scanline scratch buffer lives in static RAM rather than on the main
-// stack; `Display` keeps the only reference to it.
-/// One row of pixels, [`WIDTH`] long. The `StaticCell` hands out its
-/// `&'static mut` exactly once, in [`init`].
+// The row buffer is in static RAM, not on the main stack. `Display` holds
+// the only reference to it.
+/// One row of pixels, [`WIDTH`] pixels long. The `StaticCell` gives out its
+/// `&'static mut` reference only once, in [`init`].
 static LINE_BUFFER: StaticCell<[Rgb565; WIDTH]> = StaticCell::new();
 
-/// The peripherals and pins wired to the LCD, consumed once by [`init`].
+/// The peripherals and pins connected to the LCD. [`init`] takes them once.
 pub(crate) struct Resources {
-    /// The SPI controller driving the panel.
+    /// The SPI controller that drives the panel.
     pub(crate) spi2: SPI2<'static>,
-    /// The DMA channel that streams pixel data to SPI2.
+    /// The DMA (direct memory access) channel that sends pixel data to SPI2
+    /// without the CPU.
     pub(crate) dma: DMA_CH1<'static>,
-    /// SPI clock.
+    /// SPI clock (SCK).
     pub(crate) sck: GPIO36<'static>,
-    /// SPI data out.
+    /// SPI data out (MOSI, main out, sub in).
     pub(crate) mosi: GPIO37<'static>,
-    /// Data/command select of the panel controller.
+    /// Data/command select (DC) of the panel controller: low for a command
+    /// byte, high for data bytes.
     pub(crate) dc: GPIO35<'static>,
-    /// Chip select of the panel controller.
+    /// Chip select (CS) of the panel controller, active low.
     pub(crate) cs: GPIO3<'static>,
 }
 
@@ -80,42 +83,52 @@ pub(crate) struct Resources {
 /// There is exactly one, from [`Board::init`](crate::Board::init). Borrow a
 /// [`Surface`] from it to draw.
 pub struct Display {
-    /// The SPI DMA pipeline that sends commands and pixels to the panel.
+    /// The SPI DMA connection that sends commands and pixels to the panel.
     transport: transport::Transport,
-    /// Scratch row for [`Surface::render_scanlines`], kept in static RAM
-    /// rather than on the caller's stack.
+    /// A temporary row for [`Surface::render_scanlines`]. It is in static
+    /// RAM, not on the caller's stack.
     line_buffer: &'static mut [Rgb565; WIDTH],
 }
 
-/// Borrowed access to one rectangle of the panel.
+/// Access to one rectangle of the panel, borrowed from the [`Display`].
 ///
-/// Row indices and nested rectangles are local to the surface: row 0 is its
-/// top row, whatever its position on the panel. A surface borrows the
-/// [`Display`] mutably, so only one exists at a time; it gives the display
-/// back when it goes out of scope.
+/// Row numbers and the rectangles of subsurfaces are relative to the
+/// surface: row 0 is the top row of the surface, wherever the surface is on
+/// the panel. A surface borrows the `Display` mutably, so only one surface
+/// can be used at a time. The display is free again when the surface goes
+/// out of scope.
 pub struct Surface<'a> {
-    /// The display, borrowed mutably so no other surface can draw meanwhile.
+    /// The display, borrowed mutably, so no other surface can draw at the
+    /// same time.
     display: &'a mut Display,
     /// The rectangle this surface covers, in panel coordinates.
     area: Rectangle,
 }
 
-/// Supplies ready-to-send rows of big-endian RGB565 bytes.
+/// A source of pixel rows as big-endian RGB565 bytes, ready to send.
 ///
-/// Implement this for anything that already holds pixels in that format, for
-/// example a framebuffer or a camera frame, and draw it with
-/// [`Surface::render_from`]. Rows are requested top to bottom, in batches.
+/// Implement it for anything that already has pixels in this format, for
+/// example a frame buffer or a camera frame. Draw it with
+/// [`Surface::render_from`]. Rows are requested from top to bottom, a few
+/// rows at a time.
 pub trait ScanlineSource {
-    /// Fill `row` with the bytes of scanline `y` of the surface being drawn.
+    /// Fill `row` with the bytes of row `y` of the surface. `y` is relative
+    /// to the surface: 0 is its top row. `row` has [`BYTES_PER_PIXEL`] bytes
+    /// for each pixel of the surface's width.
     fn fill_row(&mut self, y: usize, row: &mut [u8]);
 
-    /// Called repeatedly while the LCD is still receiving the previous rows.
-    /// Use it for work that should overlap with the transfer, such as
-    /// capturing the next camera frame. The default does nothing.
+    /// Called again and again while the panel still receives the previous
+    /// rows. Use it for work that can run during the transfer, such as
+    /// capturing the next camera frame. By default, it does nothing.
     fn while_transferring(&mut self) {}
 }
 
-/// Initialize the panel controller and the SPI DMA pipeline.
+/// Initialize the panel controller and the SPI DMA connection.
+///
+/// # Panics
+///
+/// When the SPI setup or the panel controller setup fails, or when it is
+/// called a second time.
 pub(crate) fn init(resources: Resources, delay: Delay) -> Display {
     Display {
         transport: transport::init(resources, delay),
@@ -124,17 +137,18 @@ pub(crate) fn init(resources: Resources, delay: Delay) -> Display {
 }
 
 impl Display {
-    /// Borrow the display for drawing inside `area`, in panel coordinates.
+    /// Borrow the display to draw inside `area`, in panel coordinates.
     /// [`SCREEN`] is the whole panel.
     ///
     /// # Panics
     ///
-    /// When `area` does not fit the panel. The rectangles an application
-    /// draws into are fixed by its layout, so that is a programming error,
-    /// not a runtime condition.
+    /// When `area` does not fit on the panel. An empty rectangle (width or
+    /// height 0) also fits on the right or bottom edge; it draws nothing. The
+    /// rectangles of an application come from its layout, so a rectangle
+    /// that does not fit is a programming error.
     pub fn surface(&mut self, area: Rectangle) -> Surface<'_> {
         assert!(
-            SCREEN.intersection(&area) == area,
+            fits(SCREEN, area),
             "surface {area:?} does not fit the {WIDTH}x{HEIGHT} panel"
         );
         Surface {
@@ -160,15 +174,18 @@ impl Surface<'_> {
         self.area.size.height as usize
     }
 
-    /// Borrow a smaller surface, `area` being local to this surface.
+    /// Borrow a smaller surface inside this one. `area` is relative to this
+    /// surface.
     ///
     /// # Panics
     ///
-    /// When `area` does not fit inside this surface.
+    /// When `area` does not fit inside this surface. An empty rectangle
+    /// (width or height 0) also fits on the right or bottom edge; it draws
+    /// nothing.
     pub fn subsurface(&mut self, area: Rectangle) -> Surface<'_> {
         let local = Rectangle::new(Point::zero(), self.area.size);
         assert!(
-            local.intersection(&area) == area,
+            fits(local, area),
             "subsurface {area:?} does not fit its parent {local:?}"
         );
         Surface {
@@ -177,11 +194,12 @@ impl Surface<'_> {
         }
     }
 
-    /// Draw the whole surface one row at a time.
+    /// Draw the whole surface, one row at a time. Return when all rows have
+    /// reached the panel.
     ///
-    /// `render_row` receives the row index (0 is the top row of the surface)
-    /// and a slice of exactly [`width()`](Self::width) pixels to fill. It is
-    /// called once per row, top to bottom.
+    /// `render_row` gets the row number (0 is the top row of the surface) and
+    /// a slice of exactly [`width()`](Self::width) pixels to fill. It is
+    /// called once for each row, from top to bottom.
     ///
     /// ```ignore
     /// display.surface(SCREEN).render_scanlines(|y, row| {
@@ -198,8 +216,9 @@ impl Surface<'_> {
         display.transport.render(*area, &mut rows);
     }
 
-    /// Draw the whole surface from rows that are already RGB565 big-endian
-    /// bytes, for example a camera frame.
+    /// Draw the whole surface from rows that are already big-endian RGB565
+    /// bytes, for example a camera frame. Return when all rows have reached
+    /// the panel.
     ///
     /// `source` is asked for [`height()`](Self::height) rows of
     /// [`width()`](Self::width) pixels each.
@@ -208,13 +227,15 @@ impl Surface<'_> {
     }
 }
 
-/// Adapts a per-row closure to the byte-oriented transport.
+/// A [`ScanlineSource`] that gets its rows from the closure of
+/// [`Surface::render_scanlines`]. The closure fills [`Rgb565`] pixels, and
+/// the transport needs bytes, so this type converts each row.
 struct ComputedRows<'a, F> {
-    /// The application's closure, called with the row index and a row of pixels
+    /// The application's closure. It gets the row number and a row of pixels
     /// to fill.
     render_row: F,
-    /// Scratch row the closure fills, [`Surface::width`] pixels long; converted to
-    /// bytes right after.
+    /// The temporary row that the closure fills, [`Surface::width`] pixels
+    /// long. `fill_row` converts it to bytes right after.
     pixels: &'a mut [Rgb565],
 }
 
@@ -225,4 +246,34 @@ impl<F: FnMut(usize, &mut [Rgb565])> ScanlineSource for ComputedRows<'_, F> {
             bytes.copy_from_slice(&RawU16::from(*pixel).into_inner().to_be_bytes());
         }
     }
+}
+
+/// Whether `area` lies completely inside `outer`, edges included.
+///
+/// An empty rectangle (width or height 0) also fits when it starts on the
+/// right or bottom edge of `outer`. It draws nothing. A test that compares
+/// `area` with its intersection with `outer` would reject it, because an
+/// empty rectangle has no pixels in common with `outer`.
+///
+/// The calculation uses `i64`, so `x + width` cannot overflow for any
+/// `i32` position and `u32` size.
+fn fits(outer: Rectangle, area: Rectangle) -> bool {
+    let start = |rectangle: Rectangle| {
+        (
+            i64::from(rectangle.top_left.x),
+            i64::from(rectangle.top_left.y),
+        )
+    };
+    let end = |rectangle: Rectangle| {
+        let (x, y) = start(rectangle);
+        (
+            x + i64::from(rectangle.size.width),
+            y + i64::from(rectangle.size.height),
+        )
+    };
+    let (outer_x, outer_y) = start(outer);
+    let (outer_right, outer_bottom) = end(outer);
+    let (x, y) = start(area);
+    let (right, bottom) = end(area);
+    x >= outer_x && y >= outer_y && right <= outer_right && bottom <= outer_bottom
 }

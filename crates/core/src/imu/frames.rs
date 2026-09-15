@@ -7,8 +7,9 @@
 //!               z: into the screen (points down when the device lies flat)
 //! ```
 //!
-//! Fusion works in the screen frame so that "gravity" and "north" mean
-//! something to the application; sensors deliver body-frame values.
+//! The sensors deliver values in the body frame. Fusion works in the screen
+//! frame, so that the "gravity" and "north" vectors it returns are directly
+//! useful to the application.
 
 /// Express a body-frame vector in the screen frame.
 pub fn screen_from_body(v: [f32; 3]) -> [f32; 3] {

@@ -1,8 +1,8 @@
 //! Hack & Hike firmware library for the M5Stack CoreS3 Lite.
 //!
-//! An application is a binary in `src/bin/`. It calls [`Board::init`], takes
-//! the capability handles it needs from the returned [`Board`] and runs its
-//! own loop:
+//! An application is a binary in `src/bin/`. It calls [`Board::init`] once.
+//! From the returned [`Board`], it keeps the capability handles it needs.
+//! Then it runs its own loop:
 //!
 //! ```ignore
 //! #[esp_rtos::main]
@@ -17,8 +17,8 @@
 //!
 //! # Where to look
 //!
-//! - [`capabilities`]: one module per piece of hardware, each with a small
-//!   handle type: [`Display`](capabilities::display::Display),
+//! - [`capabilities`]: one module for each part of the hardware. Each module
+//!   has a small handle type: [`Display`](capabilities::display::Display),
 //!   [`Touch`](capabilities::touch::Touch), [`Imu`](capabilities::imu::Imu),
 //!   [`Microphone`](capabilities::audio::Microphone),
 //!   [`Speaker`](capabilities::audio::Speaker),
@@ -31,10 +31,10 @@
 //!   helpers and a slider.
 //! - [`synth`]: sine waves for the speaker.
 //! - [`logging`]: the log history and a memory usage report.
-//! - [`psram`]: long-lived buffers in the external PSRAM.
+//! - [`psram`]: long-lived buffers in PSRAM, the external RAM chip.
 //!
-//! Everything hardware-specific (pins, power rails, the second CPU core)
-//! stays inside this library; applications never need `esp_hal`.
+//! All hardware details (pins, power rails, the second CPU core) stay inside
+//! this library. Applications never need `esp_hal`.
 
 #![no_std]
 #![warn(missing_docs)]
@@ -42,8 +42,8 @@
 
 extern crate alloc;
 
-// The panic handler: prints the message and a backtrace on the USB serial
-// port. Linked in for its side effect only.
+// The panic handler. It prints the panic message and a backtrace on the USB
+// serial port. Nothing in the crate calls it; `as _` only links it in.
 use esp_backtrace as _;
 
 mod board;
@@ -52,5 +52,5 @@ pub mod logging;
 pub mod synth;
 pub mod ui;
 
-// Both live in `src/board/`; the rest of that module stays private.
+// Both live in `src/board/`. The rest of that module stays private.
 pub use board::{Board, psram};
