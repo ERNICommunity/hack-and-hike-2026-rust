@@ -1,4 +1,4 @@
-//! Where the navigation rail and the content area sit on the panel.
+//! Where the navigation rail and the content area are on the panel.
 
 use embedded_graphics::{
     prelude::{Point, Size},
@@ -6,10 +6,11 @@ use embedded_graphics::{
 };
 use hack_and_hike::capabilities::display;
 
-/// Width of the navigation rail on the left edge.
+/// Width of the navigation rail on the left edge, in pixels.
 pub(crate) const NAV_WIDTH: u32 = 44;
-/// Size of every screen: the panel minus the rail. The KDL layout files
-/// repeat it, and each screen checks at compile time that they agree.
+/// Size of every screen: the panel without the rail, 276 x 240 pixels. The
+/// KDL layout files repeat this size, and each screen checks at compile time
+/// that the two sizes are equal.
 pub(crate) const CONTENT_SIZE: Size =
     Size::new(display::SIZE.width - NAV_WIDTH, display::SIZE.height);
 /// The rail, in panel coordinates.

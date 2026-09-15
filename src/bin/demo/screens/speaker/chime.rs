@@ -1,7 +1,8 @@
-//! A short chime stored in flash as IMA ADPCM and decoded while it plays.
+//! A short chime, stored in flash as IMA ADPCM and decoded while it plays.
 //!
-//! `assets/speaker_chime.adpcm` is a mono 16 kHz clip of 11,904 samples,
-//! about 744 ms, at four bits per sample.
+//! ADPCM (adaptive differential pulse-code modulation) is a compressed audio
+//! format with 4 bits per sample. `assets/speaker_chime.adpcm` is a mono
+//! 16 kHz clip of 11,904 samples, 744 ms.
 
 use hack_and_hike_core::audio::adpcm::Decoder;
 
@@ -10,16 +11,17 @@ const DATA: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/speaker_chime.adpcm"
 ));
-/// Samples in the clip: two per byte.
+/// Samples in the clip: two for each byte.
 const CHIME_SAMPLES: usize = 11_904;
 const _: () = assert!(DATA.len() * 2 == CHIME_SAMPLES);
 
 /// Plays the chime once per [`FlashChime::restart`].
 pub(super) struct FlashChime {
     /// The ADPCM decoder state. Each sample is decoded relative to the previous
-    /// one, so a restart needs a fresh decoder.
+    /// one, so a restart needs a new decoder.
     decoder: Decoder,
-    /// Index of the next 4-bit code; two per byte, high nibble first.
+    /// Index of the next 4-bit code. Each byte holds two codes, the high 4 bits
+    /// first.
     next_code: usize,
     /// Whether the clip is playing.
     playing: bool,

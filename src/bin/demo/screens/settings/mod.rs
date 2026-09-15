@@ -1,8 +1,13 @@
 //! Display brightness: a slider that sets the backlight.
 //!
-//! The screen to copy when you add one: a KDL layout (`settings.kdl`) for
-//! the static labels, a value label and a slider added in code, and one
-//! capability handle. It redraws only when the brightness changed.
+//! Copy this screen when you add a screen. It has:
+//!
+//! - a KDL layout file, `settings.kdl`, for the static labels (KDL is a small
+//!   document language),
+//! - a value label and a slider, added in code,
+//! - one capability handle.
+//!
+//! It redraws only when the brightness changed.
 
 use embedded_gui::WidgetId;
 use hack_and_hike::{
@@ -16,8 +21,8 @@ use hack_and_hike::{
 
 use crate::{layout, screens::Screen, styles};
 
-// The layout file becomes Rust at compile time: a `...App` struct with a
-// `build` function and one `WidgetId` per named node.
+// The layout file becomes Rust code at compile time: a `...App` struct with a
+// `build` function and one `WidgetId` for each named node.
 /// The widgets generated from `settings.kdl`: the labels and the slots for
 /// the value label and the slider.
 mod generated {
@@ -37,20 +42,20 @@ pub(crate) struct SettingsScreen {
     backlight: Backlight,
     /// The brightness last requested.
     brightness: Brightness,
-    /// The widget tree built from `settings.kdl`, plus the value label added in
-    /// code.
+    /// The widget tree built from `settings.kdl`, plus the value label that the
+    /// code adds.
     gui: &'static mut gui::Context<NODES>,
     /// The "BRIGHTNESS %" readout.
     value_label: WidgetId,
-    /// Turns touches into a brightness percentage and draws itself; drawn over
-    /// the GUI, not part of it.
+    /// Turns touches into a brightness percentage and draws itself. It is
+    /// drawn on top of the GUI and is not part of it.
     slider: Slider,
     /// Whether the screen needs a redraw.
     dirty: bool,
 }
 
 impl SettingsScreen {
-    /// Build the layout and the widgets; the backlight starts at full
+    /// Build the layout and the widgets. The backlight starts at full
     /// brightness.
     pub(crate) fn new(backlight: Backlight) -> Self {
         let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);

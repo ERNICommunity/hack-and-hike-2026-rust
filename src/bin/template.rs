@@ -1,8 +1,11 @@
-//! A starting point for your own application: copy this file to
-//! `src/bin/<your_name>.rs` and build it with `cargo build --release --bin
-//! <your_name>`.
+//! A starting point for your own application.
 //!
-//! As it is, a light blue spot follows your finger on a dark blue screen.
+//! Copy this file to `src/bin/<your_name>.rs`. Build it with
+//! `cargo build --release --bin <your_name>`. To put it on the board, run
+//! `cargo dist --bin <your_name>` and flash `firmware.bin` (see the README).
+//!
+//! Without changes, it shows a dark blue screen, and a light blue spot
+//! follows your finger.
 
 #![no_std]
 #![no_main]
@@ -22,25 +25,27 @@ use hack_and_hike::{
     ui::{Canvas, theme},
 };
 
-// Writes the application descriptor the bootloader checks before starting
-// the firmware. Every application needs this line exactly once.
+// This line writes the application descriptor. The bootloader checks it
+// before it starts the firmware. Every application needs this line exactly
+// once.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-/// Size of the spot under the finger, in pixels.
+/// Diameter of the spot under the finger, in pixels.
 const SPOT_DIAMETER: u32 = 120;
 
-/// The entry point. `async` because the loop waits with `.await`; `-> !`
-/// because firmware never returns.
+/// The entry point. It is `async` because the loop waits with `.await`. It
+/// returns `!` (never) because firmware runs forever.
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
-    // Keep the handles you need; the rest of the board keeps running anyway.
+    // Keep the handles you need. The rest of the hardware keeps running.
     let Board {
         mut display,
         mut touch,
         ..
     } = Board::init();
 
-    // Draw into the canvas, then show it: only what changed is sent.
+    // Draw into the canvas, then show it on the display. `show` sends only
+    // the pixels that changed.
     let mut canvas = Canvas::new(SIZE);
     canvas.clear(theme::DARK_BLUE);
     canvas.show(&mut display.surface(SCREEN));

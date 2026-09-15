@@ -1,8 +1,9 @@
 //! The navigation rail on the left and the routing of touches.
 //!
-//! A touch that starts on the rail selects a screen when it is released on
-//! the same button. A touch that starts in the content area is forwarded to
-//! the visible screen in content coordinates.
+//! A touch that starts on the rail selects a screen when the finger is
+//! released on the same button. A touch that starts in the content area goes
+//! to the visible screen, in content coordinates: `(0, 0)` is the top-left
+//! corner of the content area.
 
 use embedded_graphics::prelude::Point;
 use hack_and_hike::{
@@ -20,7 +21,8 @@ use crate::layout::NAV_WIDTH;
 pub(crate) enum ViewId {
     /// The ESP-NOW screen: pings, pongs and the peers in range.
     Network,
-    /// The attitude screen: angles, horizon and compass.
+    /// The attitude screen (how the board is held): angles, horizon and
+    /// compass.
     Imu,
     /// The live microphone waveforms.
     Microphone,
@@ -35,7 +37,8 @@ pub(crate) enum ViewId {
 }
 
 impl ViewId {
-    /// Top-to-bottom order on the rail; the first one is shown at boot.
+    /// The buttons from top to bottom on the rail. The first screen is shown
+    /// at boot.
     pub(crate) const ALL: [Self; 7] = [
         Self::Network,
         Self::Imu,
@@ -62,13 +65,15 @@ impl ViewId {
 
 /// Icons are 16 x 16 pixels.
 const ICON_SIZE: usize = 16;
-/// A 1-bit icon: one `u16` per row, most significant bit on the left, a set
-/// bit is a lit pixel. Write `0x0180` as binary to see the shape.
+/// A 1-bit icon: one `u16` per row. The most significant bit is the pixel on
+/// the left. A set bit is a lit pixel. Write a row, such as `0x0180`, in
+/// binary to see its shape.
 type Icon = [u16; ICON_SIZE];
 
-/// The rail is split evenly between the buttons.
+/// Height of one rail button, in pixels. The buttons share the rail
+/// equally.
 const BUTTON_HEIGHT: usize = display::HEIGHT / ViewId::ALL.len();
-/// Where the icon starts inside its button, to centre it.
+/// Where the icon starts horizontally inside its button, to centre it.
 const ICON_X: usize = (NAV_WIDTH as usize - ICON_SIZE) / 2;
 /// Where the icon starts vertically inside its button, to centre it.
 const ICON_Y: usize = (BUTTON_HEIGHT - ICON_SIZE) / 2;
@@ -114,25 +119,27 @@ const LOG_ICON: Icon = [
 /// Where the current touch started.
 #[derive(Clone, Copy)]
 enum Gesture {
-    /// On a rail button; `None` once the finger left that button, which
+    /// On a rail button. `None` after the finger left that button, which
     /// cancels the selection.
     Rail(Option<ViewId>),
-    /// In the content area; the visible screen gets every event until the
-    /// finger lifts.
+    /// In the content area. The visible screen gets every event until the
+    /// finger is released.
     Content,
 }
 
 /// Owns the touch handle and turns raw touches into screen selections and
 /// content touches.
 pub(crate) struct Navigation {
-    /// The touch controller; `poll` drains the events it has queued.
+    /// The touch handle. `poll` reads all events that are waiting in its
+    /// queue.
     touch: Touch,
-    /// The touch in progress; `None` while no finger is down.
+    /// The touch in progress. `None` while no finger touches the screen.
     gesture: Option<Gesture>,
 }
 
 impl Navigation {
-    /// Route the touches of `touch`.
+    /// Create the router for the touches of `touch`. No touch is in
+    /// progress.
     pub(crate) const fn new(touch: Touch) -> Self {
         Self {
             touch,
@@ -140,8 +147,9 @@ impl Navigation {
         }
     }
 
-    /// Process all pending touches. Content touches go to `on_content`; the
-    /// return value is a screen the user selected on the rail, if any.
+    /// Handle all waiting touch events. Touches in the content area go to
+    /// `on_content`. Return the screen that the user selected on the rail, or
+    /// `None`.
     pub(crate) fn poll(&mut self, mut on_content: impl FnMut(TouchEvent)) -> Option<ViewId> {
         let mut selected = None;
 
@@ -180,8 +188,8 @@ impl Navigation {
     }
 }
 
-/// The same event with its point relative to the content area's top-left
-/// corner, the coordinates every screen works in.
+/// The same event, with its point relative to the top-left corner of the
+/// content area. Every screen works in these coordinates.
 fn in_content_coordinates(event: TouchEvent) -> TouchEvent {
     let shift = |point: Point| point - Point::new(NAV_WIDTH as i32, 0);
     match event {

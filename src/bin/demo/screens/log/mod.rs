@@ -1,8 +1,8 @@
 //! The device log: the newest lines of everything written through `log`.
 //!
-//! Checks ten times a second whether anything was logged, copies the lines
-//! that fit the screen and redraws. Useful to see what the firmware does
-//! without a serial monitor.
+//! Ten times a second, the screen checks whether anything was logged. If so,
+//! it copies as many of the newest lines as fit the screen, and redraws. So
+//! you can see what the firmware does without a serial monitor.
 
 use embassy_time::{Duration, Instant};
 use embedded_graphics::{prelude::Point, primitives::Rectangle};
@@ -15,8 +15,8 @@ use hack_and_hike::{
 
 use crate::{layout, screens::Screen};
 
-// The layout file becomes Rust at compile time: a `...App` struct with a
-// `build` function and one `WidgetId` per named node.
+// The layout file becomes Rust code at compile time: a `...App` struct with a
+// `build` function and one `WidgetId` for each named node.
 /// The widgets generated from `log.kdl`: the title and the body slot.
 mod generated {
     use embedded_gui::prelude::*;
@@ -33,20 +33,23 @@ const _: () = assert!(generated::LogApp::HEIGHT == layout::CONTENT_SIZE.height);
 
 /// The log screen and its copy of the newest lines.
 pub(crate) struct LogScreen {
-    /// The shared log buffer; its revision changes whenever a line is logged.
+    /// The shared log history. Its revision changes whenever a line is
+    /// logged.
     history: LogHistory,
-    /// As many lines as fit the body, filled from the history.
+    /// Room for as many lines as fit the body, filled from the history. The
+    /// memory is in PSRAM (the external RAM chip).
     lines: &'static mut [Line],
     /// How many of `lines` are filled.
     shown: usize,
-    /// The history revision `lines` was copied at.
+    /// The history revision at the time `lines` was copied. `None` before the
+    /// first copy.
     revision: Option<u32>,
     /// The widget tree built from `log.kdl`, drawn under the lines.
     gui: &'static mut gui::Context<NODES>,
     /// Where the lines are drawn.
     body: Rectangle,
-    /// When the history was last checked, to check at most every
-    /// `REFRESH_PERIOD`.
+    /// When the history was last checked. The screen checks it at most once
+    /// every `REFRESH_PERIOD`.
     last_refresh: Instant,
     /// Whether the screen needs a redraw.
     dirty: bool,

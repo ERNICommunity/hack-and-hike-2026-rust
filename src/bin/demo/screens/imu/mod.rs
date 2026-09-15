@@ -1,14 +1,18 @@
-//! Attitude and heading as a perspective horizon with a compass.
+//! Attitude (how the board is held) and heading, as a horizon in perspective
+//! with a compass.
 //!
-//! The header shows the sensor status, the magnetometer state and roll,
-//! pitch and yaw as numbers. Below it, a small 3-D view looks out of the
-//! camera side of the board: a sky and a ground grid meet at the horizon,
-//! and N, E, S, W letters stand on the ground where those directions are.
+//! The IMU (inertial measurement unit) is the accelerometer, gyroscope and
+//! magnetometer. The header shows the sensor status, the magnetometer state
+//! and roll, pitch and yaw as numbers. Below it, a small 3-D view looks out
+//! of the camera side of the board. A sky grid and a ground grid meet at the
+//! horizon. The eight compass labels (N, NE, E, ... NW) stand on the ground
+//! where those directions are.
 //!
 //! - `projection`: from the IMU's attitude to a perspective camera, plus
-//!   line clipping.
+//!   line clipping. A perspective camera draws far objects smaller than near
+//!   ones.
 //! - `horizon`: the sky, the ground, the grids and the crosshair.
-//! - `compass`: the direction letters, drawn as strokes in the 3-D world.
+//! - `compass`: the direction letters, drawn as lines in the 3-D world.
 
 mod compass;
 mod horizon;
@@ -33,8 +37,8 @@ use hack_and_hike::{
 
 use crate::{layout, screens::Screen};
 
-// The layout file becomes Rust at compile time: a `...App` struct with a
-// `build` function and one `WidgetId` per named node.
+// The layout file becomes Rust code at compile time: a `...App` struct with a
+// `build` function and one `WidgetId` for each named node.
 /// The widgets generated from `imu.kdl`: the header and the 3-D view slots.
 mod generated {
     use embedded_gui::prelude::*;
@@ -45,7 +49,8 @@ mod generated {
 const NODES: usize = 16;
 const _: () = assert!(generated::ImuApp::WIDTH == layout::CONTENT_SIZE.width);
 const _: () = assert!(generated::ImuApp::HEIGHT == layout::CONTENT_SIZE.height);
-/// Matches the 100 Hz fusion rate; the handle keeps only the newest sample.
+/// How often the screen checks for a new sample. It matches the 100 Hz rate of
+/// the sensor fusion. The handle keeps only the newest sample.
 const UPDATE_PERIOD: Duration = Duration::from_millis(10);
 
 // Text positions inside the header, in pixels from its top-left corner.
@@ -57,7 +62,7 @@ const HEADER_TITLE_Y: i32 = 3;
 const HEADER_STATUS_Y: i32 = 19;
 /// Row of the magnetometer state.
 const HEADER_MAGNETOMETER_Y: i32 = 35;
-/// Where the roll/pitch/yaw columns start inside the header.
+/// Where the roll, pitch and yaw columns start inside the header.
 const HEADER_VALUES_X: i32 = 78;
 /// Background of the numeric header.
 const HEADER_BACKGROUND: Rgb565 = theme::WHITE;
@@ -70,13 +75,16 @@ const VALUE_Y: i32 = 22;
 
 /// The IMU screen and the sample it shows.
 pub(crate) struct ImuScreen {
-    /// The IMU handle; `latest` returns the newest fused sample.
+    /// The IMU handle. `latest` returns the newest sample of the sensor
+    /// fusion, which combines the three sensors into one orientation.
     imu: Imu,
-    /// The newest sample; `None` until the first one arrives.
+    /// The newest sample. `None` until the first one arrives.
     sample: Option<Sample>,
-    /// When `update` last polled the IMU, to poll at most every `UPDATE_PERIOD`.
+    /// When `update` last asked the IMU for a sample. It asks at most once
+    /// every `UPDATE_PERIOD`.
     last_update: Instant,
-    /// The widget tree built from `imu.kdl`, drawn under the header and the view.
+    /// The widget tree built from `imu.kdl`, drawn under the header and the
+    /// view.
     gui: &'static mut gui::Context<NODES>,
     /// The numeric header at the top.
     header: Rectangle,
@@ -87,7 +95,8 @@ pub(crate) struct ImuScreen {
 }
 
 impl ImuScreen {
-    /// Build the layout; nothing is shown until the first sample.
+    /// Build the layout. Until the first sample arrives, the header shows
+    /// "WAITING" above an empty view.
     pub(crate) fn new(imu: Imu) -> Self {
         let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::ImuApp::build(gui).expect("imu.kdl fits the GUI capacities");
@@ -162,7 +171,15 @@ fn draw_header_frame(canvas: &mut Canvas, area: Rectangle, status: &str) {
     );
 }
 
-/// The whole header: status, magnetometer state and the three angles.
+/// The whole header: the status, the magnetometer state and the three angles.
+///
+/// The magnetometer line shows one of these:
+///
+/// - `MAG`: the field strength in µT (microtesla), after the calibration.
+/// - `CAL`: the progress of the calibration.
+/// - `DIST`: the field strength, while the field is disturbed, for example
+///   by a magnet nearby.
+/// - `MAG MISSING`: the magnetometer does not answer or sends no new data.
 fn draw_header(
     canvas: &mut Canvas,
     area: Rectangle,

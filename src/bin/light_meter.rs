@@ -1,8 +1,9 @@
-//! A light meter: the screen shows the ambient light in lux and how close
-//! something is to the front of the board, as numbers and as a bar. The
-//! proximity sensor's raw count is shown too, for calibrating the range.
-//! Cover the sensor with your hand, or switch the room light off: in the
-//! dark the screen turns dark too.
+//! A light meter. The screen shows the ambient light in lux and how close
+//! something is to the front of the board, as numbers and as a bar.
+//!
+//! The screen also shows the raw count of the proximity sensor. It helps you
+//! to check the range of the percentage. Cover the sensor with your hand, or
+//! switch off the room light. In the dark, the screen turns dark too.
 
 #![no_std]
 #![no_main]
@@ -29,16 +30,16 @@ esp_bootloader_esp_idf::esp_app_desc!();
 const DARK_LUX: f32 = 10.0;
 /// Left edge of the labels and the bar, in pixels.
 const MARGIN: i32 = 20;
-/// The proximity bar: full width means something at the glass.
+/// The proximity bar. It is full when something touches the glass.
 const BAR: Rectangle = Rectangle::new(Point::new(MARGIN, 190), Size::new(280, 24));
 
-/// What the screen shows: the sample rounded to what the text can display,
-/// so the screen is only redrawn when a visible digit changes.
+/// What the screen shows: the readings as whole numbers, like the text shows
+/// them. The screen is redrawn only when a visible digit changes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Shown {
-    /// Whole lux.
+    /// Ambient light in whole lux, with the fraction cut off.
     lux: u32,
-    /// Closeness in percent.
+    /// Closeness in percent, 0 to 100.
     proximity: u8,
     /// The proximity sensor's raw count.
     raw_proximity: u16,
@@ -54,7 +55,7 @@ async fn main(_spawner: Spawner) -> ! {
     } = Board::init();
     let mut canvas = Canvas::new(SIZE);
 
-    // Both handles come from one chip: either both are there or neither.
+    // Both handles come from one chip. So either both are there, or neither.
     let (Some(mut light), Some(mut proximity)) = (light, proximity) else {
         canvas.clear(theme::WHITE);
         let whole_screen = canvas.bounding_box();
@@ -75,8 +76,8 @@ async fn main(_spawner: Spawner) -> ! {
     let mut closeness = None;
     let mut drawn = None;
     loop {
-        // Each handle delivers its own samples; keep the newest of each and
-        // draw once both have arrived.
+        // Each handle delivers its own samples. Keep the newest sample of each,
+        // and draw when both have arrived.
         if let Some(sample) = light.latest() {
             lux = Some(sample.lux as u32);
         }
@@ -100,9 +101,9 @@ async fn main(_spawner: Spawner) -> ! {
     }
 }
 
-/// Draw the two readings and the proximity bar.
+/// Draw the two readings, the raw count and the proximity bar.
 fn draw(canvas: &mut Canvas, shown: Shown) {
-    // Light colours by day, dark ones in the dark.
+    // Light colours in bright light, dark colours below `DARK_LUX`.
     let (background, text, accent) = if (shown.lux as f32) < DARK_LUX {
         (theme::CHARCOAL, theme::WHITE, theme::LIGHT_BLUE)
     } else {
@@ -142,7 +143,7 @@ fn draw(canvas: &mut Canvas, shown: Shown) {
         text,
     );
 
-    // The bar: an outline for the full range, filled as far as the count.
+    // The bar: an outline for the full range, filled up to the percentage.
     let Ok(()) = BAR
         .into_styled(PrimitiveStyle::with_stroke(text, 1))
         .draw(canvas);

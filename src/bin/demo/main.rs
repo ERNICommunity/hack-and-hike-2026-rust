@@ -1,8 +1,14 @@
-//! Full Hack & Hike demo: one screen per capability plus settings and a log.
+//! The full Hack & Hike demo: seven screens for network, IMU, microphone,
+//! speaker, camera, settings (backlight) and the log. There is no screen for
+//! the light and proximity sensor yet.
 //!
-//! `main` brings up the board, hands each screen the handles it owns, and
-//! runs the loop: route touches, update every screen, draw the visible one,
-//! pause briefly unless the visible screen forbids it.
+//! `main` starts the board, gives each screen the handles it owns, and runs
+//! the loop. Each loop iteration does these steps:
+//!
+//! 1. Route the touch events.
+//! 2. Update every screen.
+//! 3. Draw the visible screen.
+//! 4. Pause for 2 ms, unless the visible screen does not allow it.
 //!
 //! ```text
 //! ┌────┬───────────────────────────┐
@@ -22,7 +28,9 @@
 //! - `layout`: where the rail and the content area are.
 //! - `navigation`: the rail's icons and the routing of touches.
 //! - `screens`: the [`Screen`] trait and one module per screen.
-//! - `styles`: the widget styles the KDL layout files refer to.
+//! - `styles`: the widget styles that the KDL layout files refer to. KDL is
+//!   a small document language. Each screen describes its static layout in
+//!   a `.kdl` file.
 
 #![no_std]
 #![no_main]
@@ -47,21 +55,23 @@ use screens::{
 // the firmware. Every application needs this line exactly once.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-/// Pause between loop iterations, unless the visible screen forbids it (see
-/// `Screen::may_idle`). Short enough for the IMU screen to feel live, long
-/// enough to let CPU0 tasks run.
+/// Pause between loop iterations, unless the visible screen does not allow it
+/// (see [`Screen::may_idle`]). It is short, so the IMU screen follows the
+/// board without a visible delay. The `.await` lets other CPU0 tasks run.
 const LOOP_PERIOD: Duration = Duration::from_millis(2);
 
-/// Every screen, one field each. A struct rather than an array, because the
-/// screens are different types.
+/// Every screen, one field each. This is a struct and not an array, because
+/// the screens are different types.
 struct Screens {
-    /// ESP-NOW pings and pongs, and the peers in range.
+    /// ESP-NOW pings and pongs, and the peers in range. ESP-NOW is
+    /// Espressif's protocol for short Wi-Fi messages between boards.
     network: NetworkScreen,
     /// Roll, pitch and yaw, with a 3-D horizon and compass.
     imu: ImuScreen,
     /// The live waveform of both microphone channels.
     microphone: MicrophoneScreen,
-    /// The melody and chime player; it keeps playing on other screens.
+    /// The melody and chime player. It keeps playing while another screen is
+    /// visible.
     speaker: SpeakerScreen,
     /// The live camera preview.
     camera: CameraScreen,
@@ -72,8 +82,8 @@ struct Screens {
 }
 
 impl Screens {
-    /// The screen for `id`, as a trait object: the shell calls the same
-    /// methods on every screen without knowing its type.
+    /// The screen for `id`, as a trait object. So the shell calls the same
+    /// methods on every screen and does not need to know its type.
     fn get_mut(&mut self, id: ViewId) -> &mut dyn Screen {
         match id {
             ViewId::Network => &mut self.network,
@@ -86,7 +96,8 @@ impl Screens {
         }
     }
 
-    /// Let every screen do its background work, visible or not.
+    /// Let every screen do its background work, visible or not. For example,
+    /// the speaker screen writes audio and the network screen reads messages.
     fn update_all(&mut self, now: Instant) {
         for id in ViewId::ALL {
             self.get_mut(id).update(now);
@@ -94,7 +105,8 @@ impl Screens {
     }
 }
 
-/// The entry point: create the screens, then route, update and draw forever.
+/// The entry point: create the screens, then route touches, update and draw
+/// in an endless loop.
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     let Board {
@@ -139,8 +151,8 @@ async fn main(_spawner: Spawner) -> ! {
             screens.get_mut(active).leave();
             active = next;
             screens.get_mut(active).enter();
-            // Some screens draw on the surface directly; the panel no
-            // longer shows what the canvas last showed.
+            // Some screens draw on the surface directly, without the canvas.
+            // So the panel may not show what the canvas showed last.
             canvas.invalidate();
             navigation::render(&mut display.surface(layout::NAV_AREA), active);
             log::info!("Screen {:?}", active);

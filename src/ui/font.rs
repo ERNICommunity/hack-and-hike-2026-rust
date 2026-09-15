@@ -1,9 +1,10 @@
 //! Top-anchored fonts for `embedded-gui`.
 //!
-//! `embedded-gui` draws `embedded-graphics` fonts on the alphabetic baseline,
-//! which puts every glyph one ascent above the rectangle it belongs to. These
-//! adapters draw from the top-left corner instead, so widget text lines up
-//! with the layout the same way [`super::common::text`] does.
+//! `embedded-gui` places `embedded-graphics` fonts on their baseline (the
+//! line that letters sit on). That puts every character too high, above the
+//! rectangle it belongs to. These adapters place characters by their top-left
+//! corner instead. So the text of widgets lines up with the layout, in the
+//! same way as with [`super::common::text`].
 
 use embedded_graphics::{
     Drawable as _, Pixel,
@@ -17,7 +18,7 @@ use embedded_gui::{Font, FontId};
 
 use super::common;
 
-/// A monospace font whose glyph origin is its top-left corner.
+/// A monospace font that places each character by its top-left corner.
 pub struct TopAnchored(&'static MonoFont<'static>);
 
 impl TopAnchored {

@@ -1,8 +1,8 @@
 //! A looping melody and a chime, with tempo and pitch sliders.
 //!
-//! Audio keeps playing while another screen is visible, so the speaker queue
-//! is fed from `update`, which the shell calls for every screen. The melody
-//! and the chime are mixed: both can play at once.
+//! Audio keeps playing while another screen is visible. So the screen writes
+//! to the speaker queue in `update`, which the shell calls for every screen.
+//! The melody and the chime are mixed, so both can play at the same time.
 
 mod chime;
 mod melody;
@@ -22,8 +22,8 @@ use crate::{layout, screens::Screen, styles};
 use chime::FlashChime;
 use melody::MelodySynth;
 
-// The layout file becomes Rust at compile time: a `...App` struct with a
-// `build` function and one `WidgetId` per named node.
+// The layout file becomes Rust code at compile time: a `...App` struct with a
+// `build` function and one `WidgetId` for each named node.
 /// The widgets generated from `speaker.kdl`: labels, buttons and the slots
 /// for the readouts and sliders.
 mod generated {
@@ -36,7 +36,8 @@ mod generated {
 const NODES: usize = 16;
 const _: () = assert!(generated::SpeakerApp::WIDTH == layout::CONTENT_SIZE.width);
 const _: () = assert!(generated::SpeakerApp::HEIGHT == layout::CONTENT_SIZE.height);
-/// Frames generated per chunk when topping up the speaker queue.
+/// Stereo frames generated per chunk when the screen fills the speaker
+/// queue. The chunk is PCM data: plain 16-bit samples.
 const PCM_CHUNK_FRAMES: usize = 128;
 /// The same chunk in samples.
 const PCM_CHUNK_SAMPLES: usize = PCM_CHUNK_FRAMES * audio::CHANNELS;
@@ -45,10 +46,11 @@ const PCM_CHUNK_SAMPLES: usize = PCM_CHUNK_FRAMES * audio::CHANNELS;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OutOfRange;
 
-/// Melody tempo in quarter-note beats per minute, 60 to 180.
+/// Melody tempo in quarter-note beats per minute (BPM), 60 to 180.
 ///
-/// A newtype: a plain `u16` could be a tempo, a pitch or anything else; a
-/// `TempoBpm` can only be a valid tempo.
+/// This is a newtype: a struct that wraps one value to give it a meaning. A
+/// plain `u16` could be a tempo, a pitch or anything else. A `TempoBpm` can
+/// only be a valid tempo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TempoBpm(u16);
 
@@ -66,7 +68,7 @@ impl TempoBpm {
     }
 }
 
-/// For slider values.
+/// Converts a slider value. Values outside 60 to 180 give [`OutOfRange`].
 impl TryFrom<i32> for TempoBpm {
     type Error = OutOfRange;
 
@@ -80,8 +82,8 @@ impl TryFrom<i32> for TempoBpm {
     }
 }
 
-/// Transposition of the melody in semitones, -12 to +12 (an octave down or
-/// up).
+/// Transposition of the melody in semitones, -12 to +12. A semitone is the
+/// smallest step between two notes. 12 semitones are one octave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PitchSemitones(i8);
 
@@ -99,7 +101,7 @@ impl PitchSemitones {
     }
 }
 
-/// For slider values.
+/// Converts a slider value. Values outside -12 to +12 give [`OutOfRange`].
 impl TryFrom<i32> for PitchSemitones {
     type Error = OutOfRange;
 
@@ -115,7 +117,7 @@ impl TryFrom<i32> for PitchSemitones {
 
 /// The speaker screen, its two sound sources and its controls.
 pub(crate) struct SpeakerScreen {
-    /// The speaker handle; `update` keeps its queue filled.
+    /// The speaker handle. `update` fills its queue.
     speaker: Speaker,
     /// Generates the looping melody, one sample at a time.
     melody: MelodySynth,
@@ -127,8 +129,8 @@ pub(crate) struct SpeakerScreen {
     tempo: TempoBpm,
     /// The melody transposition, changed by `pitch_slider`.
     pitch: PitchSemitones,
-    /// The widget tree built from `speaker.kdl`, plus the readouts added in code.
-    /// It handles the button clicks.
+    /// The widget tree built from `speaker.kdl`, plus the readouts that the
+    /// code adds. It handles the button clicks.
     gui: &'static mut gui::Context<NODES>,
     /// PLAY / STOP.
     play_button: WidgetId,
@@ -140,16 +142,18 @@ pub(crate) struct SpeakerScreen {
     tempo_value: WidgetId,
     /// The pitch readout.
     pitch_value: WidgetId,
-    /// Sets `tempo` from touches, 60 to 180 BPM; drawn over the GUI.
+    /// Sets `tempo` from touches, 60 to 180 BPM. It is drawn on top of the
+    /// GUI.
     tempo_slider: Slider,
-    /// Sets `pitch` from touches, -12 to +12 semitones; drawn over the GUI.
+    /// Sets `pitch` from touches, -12 to +12 semitones. It is drawn on top of
+    /// the GUI.
     pitch_slider: Slider,
     /// Whether the screen needs a redraw.
     dirty: bool,
 }
 
 impl SpeakerScreen {
-    /// Build the layout, the readouts and the sliders; nothing plays yet.
+    /// Build the layout, the readouts and the sliders. Nothing plays yet.
     pub(crate) fn new(speaker: Speaker) -> Self {
         let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app = generated::SpeakerApp::build(gui).expect("speaker.kdl fits the GUI capacities");
@@ -195,8 +199,8 @@ impl SpeakerScreen {
         }
     }
 
-    /// The next audio frame: the melody (when on) plus the chime, clamped to
-    /// the 16-bit range.
+    /// The next sample, for both channels of one frame: the melody (when it is
+    /// on) plus the chime, clamped to the 16-bit range.
     fn next_sample(&mut self) -> i16 {
         let melody = if self.playing {
             self.melody.next_sample(self.tempo, self.pitch)
@@ -208,7 +212,8 @@ impl SpeakerScreen {
             .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
     }
 
-    /// Generate as much audio as the speaker queue accepts right now.
+    /// Generate as much audio as the speaker queue accepts now. Do nothing
+    /// when neither the melody nor the chime plays.
     fn feed_speaker(&mut self) {
         while self.playing || self.chime.is_playing() {
             let frames = self.speaker.available_frames().min(PCM_CHUNK_FRAMES);
@@ -259,7 +264,8 @@ impl Screen for SpeakerScreen {
         {
             self.pitch = pitch;
         }
-        // Buttons change appearance while pressed, so redraw on every touch.
+        // A button looks different while it is pressed, so redraw on every
+        // touch.
         self.dirty = true;
     }
 

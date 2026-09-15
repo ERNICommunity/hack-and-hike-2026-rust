@@ -1,7 +1,8 @@
 //! Live waveform of both microphone channels.
 //!
-//! The labels come from the KDL layout; the waveforms are drawn straight to
-//! the display so a new block never repaints the whole screen.
+//! The labels come from the KDL layout. The waveforms are drawn directly on
+//! the display, without the canvas. So a new block repaints only the two
+//! waveform areas, not the labels.
 
 mod waveform;
 
@@ -19,8 +20,8 @@ use static_cell::ConstStaticCell;
 
 use crate::{layout, screens::Screen};
 
-// The layout file becomes Rust at compile time: a `...App` struct with a
-// `build` function and one `WidgetId` per named node.
+// The layout file becomes Rust code at compile time: a `...App` struct with a
+// `build` function and one `WidgetId` for each named node.
 /// The widgets generated from `microphone.kdl`: the labels and the two
 /// waveform slots.
 mod generated {
@@ -33,53 +34,63 @@ mod generated {
 const NODES: usize = 16;
 const _: () = assert!(generated::MicrophoneApp::WIDTH == layout::CONTENT_SIZE.width);
 const _: () = assert!(generated::MicrophoneApp::HEIGHT == layout::CONTENT_SIZE.height);
-/// One microphone block lasts 32 ms; checking more often finds nothing new.
+/// One microphone block lasts 32 ms. If the screen checks more often, it
+/// usually finds nothing new.
 const UPDATE_PERIOD: Duration = Duration::from_millis(32);
-/// Points drawn per channel; each covers `FRAMES_PER_BLOCK / POINTS` frames.
+/// Points drawn for each channel. Each point stands for
+/// `FRAMES_PER_BLOCK / POINTS` frames.
 pub(super) const POINTS: usize = 128;
-/// How far a point may swing from the centre line, in pixels.
+/// The largest distance of a point from the centre line, in pixels.
 pub(super) const MAX_AMPLITUDE_PIXELS: i32 = 42;
-/// Quiet blocks are not stretched to full height beyond this peak.
+/// The smallest peak value used for scaling. Each block is scaled so that its
+/// loudest sample reaches `MAX_AMPLITUDE_PIXELS`. For a quiet block, this
+/// value is used instead of its peak, so noise is not enlarged to full
+/// height.
 const PEAK_FLOOR: u16 = 1024;
 
-// One PCM block is 2 KiB: keep it in static memory instead of on the stack.
-/// The memory behind `MicrophoneScreen::samples`. `take` hands it out once
-/// and panics on a second call, so only one screen can own it.
+// One PCM block (plain 16-bit samples) is 2 KiB. So it is in static memory
+// and not on the stack.
+/// The memory behind `MicrophoneScreen::samples`. `take` returns it once and
+/// panics on a second call, so only one screen can own it.
 static SAMPLES: ConstStaticCell<[i16; audio::SAMPLES_PER_BLOCK]> =
     ConstStaticCell::new([0; audio::SAMPLES_PER_BLOCK]);
 
-/// One waveform point per channel, in pixels from the centre line.
+/// The waveform of both channels: `POINTS` points each. A point is a
+/// distance from the centre line in pixels. Positive values are above the
+/// line.
 #[derive(Clone, Copy)]
 pub(super) struct WaveformFrame {
-    /// The left channel, oldest sample first.
+    /// The left channel, oldest point first.
     pub(super) left: [i8; POINTS],
-    /// The right channel, oldest sample first.
+    /// The right channel, oldest point first.
     pub(super) right: [i8; POINTS],
 }
 
 /// The microphone screen and the waveform it shows.
 pub(crate) struct MicrophoneScreen {
-    /// The microphone handle; `next_block` copies a queued block into
+    /// The microphone handle. `next_block` copies a waiting block into
     /// `samples`.
     microphone: Microphone,
     /// The newest block, in static memory.
     samples: &'static mut [i16; audio::SAMPLES_PER_BLOCK],
     /// The waveform being shown.
     frame: WaveformFrame,
-    /// Dropped-block counter of the last block seen; `None` right after
-    /// entering, because blocks dropped while another screen was visible do
-    /// not count.
+    /// The dropped-block counter of the last block seen. `None` at boot and
+    /// after `enter`. Then the next block only sets the counter and logs no
+    /// warning. After that, each change of the counter logs a warning, also
+    /// while the screen is hidden.
     dropped_blocks: Option<u32>,
-    /// When `update` last looked for blocks, to look at most every
+    /// When `update` last looked for blocks. It looks at most once every
     /// `UPDATE_PERIOD`.
     last_update: Instant,
-    /// The widget tree built from `microphone.kdl`: the MIC L and MIC R labels.
+    /// The widget tree built from `microphone.kdl`: the MIC L and MIC R
+    /// labels.
     gui: &'static mut gui::Context<NODES>,
     /// Where the left waveform is drawn.
     left: Rectangle,
     /// Where the right waveform is drawn.
     right: Rectangle,
-    /// Whether the labels must be drawn (after entering the screen).
+    /// Whether the labels must be drawn, for example after `enter`.
     labels_dirty: bool,
     /// Whether the waveforms changed since they were drawn.
     frame_dirty: bool,
@@ -91,8 +102,9 @@ impl MicrophoneScreen {
     ///
     /// # Panics
     ///
-    /// When the KDL layout changed so that a waveform area is not a multiple
-    /// of `POINTS` wide or too low for `MAX_AMPLITUDE_PIXELS`.
+    /// When the KDL layout changed so that a waveform area does not fit the
+    /// drawing code: its width is not a multiple of `POINTS`, or half its
+    /// height is not more than `MAX_AMPLITUDE_PIXELS`.
     pub(crate) fn new(microphone: Microphone) -> Self {
         let gui = gui::context::<NODES>(layout::CONTENT_SIZE.width, layout::CONTENT_SIZE.height);
         let app =
@@ -127,8 +139,9 @@ impl MicrophoneScreen {
         }
     }
 
-    /// Reduce the block in `self.samples` to one point per channel and per
-    /// `FRAMES_PER_POINT` frames, keeping the loudest sample of each group.
+    /// Reduce the block in `self.samples` to `POINTS` points for each channel.
+    /// Each point is the loudest sample of its `FRAMES_PER_POINT` frames.
+    /// Return whether any point changed.
     fn update_frame(&mut self, info: MicBlockInfo) -> bool {
         const FRAMES_PER_POINT: usize = audio::FRAMES_PER_BLOCK / POINTS;
         let left_scale = i32::from(info.peak_left.max(PEAK_FLOOR));
@@ -158,8 +171,9 @@ impl MicrophoneScreen {
     }
 }
 
-/// A sample as a pixel offset from the centre line, where `scale` is the
-/// sample value that reaches `MAX_AMPLITUDE_PIXELS`.
+/// A sample as a distance in pixels from the centre line. `scale` is the
+/// sample value that reaches `MAX_AMPLITUDE_PIXELS`. Larger values are
+/// clamped.
 fn quantize(sample: i16, scale: i32) -> i8 {
     ((i32::from(sample) * MAX_AMPLITUDE_PIXELS) / scale)
         .clamp(-MAX_AMPLITUDE_PIXELS, MAX_AMPLITUDE_PIXELS) as i8
@@ -177,7 +191,7 @@ impl Screen for MicrophoneScreen {
         }
         self.last_update = now;
 
-        // Drain the backlog and show only the newest block.
+        // Read all waiting blocks, and keep only the newest one.
         let mut newest = None;
         while let Some(info) = self.microphone.next_block(self.samples) {
             newest = Some(info);
@@ -189,10 +203,7 @@ impl Screen for MicrophoneScreen {
         if let Some(previous) = self.dropped_blocks
             && info.dropped_blocks != previous
         {
-            warn!(
-                "Microphone dropped blocks while the waveform was active: total {}",
-                info.dropped_blocks
-            );
+            warn!("Microphone dropped blocks: total {}", info.dropped_blocks);
         }
         self.dropped_blocks = Some(info.dropped_blocks);
         if self.update_frame(info) {

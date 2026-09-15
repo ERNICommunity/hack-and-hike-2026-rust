@@ -1,15 +1,16 @@
 //! The project colour palette.
 //!
-//! These are ordinary `embedded-graphics` colours; `Rgb565::RED`,
-//! `Rgb565::new(31, 63, 31)` and friends work everywhere too.
+//! These are normal `embedded-graphics` colours. Other colours, such as
+//! `Rgb565::RED` or `Rgb565::new(31, 63, 31)`, work everywhere too.
 //!
-//! RGB565 has 32 levels of red and blue and 64 of green, so a colour picked
-//! on a computer screen looks close but not identical on the panel.
+//! RGB565 has 32 levels of red and blue, and 64 levels of green. So a colour
+//! that you choose on a computer screen looks similar on the panel, but not
+//! the same.
 
 use embedded_graphics::pixelcolor::Rgb565;
 
-/// An `0xRRGGBB` colour, as written on the web, converted to RGB565 by
-/// dropping the low bits of each channel.
+/// Convert an `0xRRGGBB` colour, as written on the web, to RGB565. The low
+/// bits of each channel are dropped.
 ///
 /// ```ignore
 /// const ORANGE: Rgb565 = theme::rgb(0xFF8000);

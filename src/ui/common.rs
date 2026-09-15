@@ -1,9 +1,9 @@
-//! Fonts and text helpers on top of `embedded-graphics`.
+//! Fonts and text helpers for `embedded-graphics`.
 //!
-//! Shapes need no helpers: `Rectangle`, `Line`, `Circle` and the rest of
-//! `embedded_graphics::primitives` draw straight onto a [`Canvas`]. Text uses
-//! bitmap fonts at their native size: at 320x240 they are crisper than
-//! scaled glyphs, and every character is a fixed number of pixels wide.
+//! Shapes need no helpers: `Rectangle`, `Line`, `Circle` and the other types
+//! in `embedded_graphics::primitives` draw directly onto a [`Canvas`]. Text
+//! uses bitmap fonts at their original size. At 320x240, they look sharper
+//! than scaled letters, and every character has the same width in pixels.
 //!
 //! ```ignore
 //! common::text(&mut canvas, "SCORE", Point::new(10, 10), common::TITLE_FONT, theme::DARK_BLUE);
@@ -13,7 +13,7 @@
 //! lines.line("Second line", theme::DARK_GRAY);
 //! ```
 //!
-//! To show numbers, format them into a fixed buffer first:
+//! To show numbers, first format them into a buffer of fixed size:
 //! `let mut text = ArrayString::<16>::new(); write!(text, "{score}")`.
 
 use embedded_graphics::{
@@ -37,22 +37,22 @@ pub const BODY_FONT: &MonoFont<'static> = &FONT_7X13;
 /// Small, 6x12 pixels per character: dense lists such as the log.
 pub const DENSE_FONT: &MonoFont<'static> = &FONT_6X12;
 
-/// Height of one line of `BODY_FONT` text.
+/// Height of one line of `BODY_FONT` text, in pixels.
 pub const BODY_LINE_HEIGHT: i32 = 13;
-/// Height of one line of `DENSE_FONT` text.
+/// Height of one line of `DENSE_FONT` text, in pixels.
 pub const DENSE_LINE_HEIGHT: i32 = 12;
 
 /// Draw `text` with its top-left corner at `origin`.
 ///
-/// Characters that the font does not have (anything beyond ASCII) are drawn
-/// as a placeholder.
+/// Characters that the font does not have (everything that is not ASCII) are
+/// drawn as `?`.
 pub fn text(canvas: &mut Canvas, text: &str, origin: Point, font: &MonoFont<'_>, color: Rgb565) {
     let style = MonoTextStyle::new(font, color);
     let Ok(_) = Text::with_baseline(text, origin, style, Baseline::Top).draw(canvas);
 }
 
-/// Draw `text` centered horizontally and vertically inside `area`. Text wider
-/// than `area` extends beyond it on both sides.
+/// Draw `text` in the centre of `area`, both horizontally and vertically.
+/// Text that is wider than `area` goes beyond it on both sides.
 pub fn centered_text(
     canvas: &mut Canvas,
     area: Rectangle,
@@ -68,8 +68,8 @@ pub fn centered_text(
     let Ok(_) = Text::with_text_style(text, area.center(), style, layout).draw(canvas);
 }
 
-/// Writes consecutive lines of [`BODY_FONT`] text downwards from a start
-/// point, like a very small text console.
+/// Writes lines of [`BODY_FONT`] text, one below the other, from a start
+/// point.
 pub struct Lines<'a> {
     /// The canvas the lines are drawn on, borrowed until the `Lines` is dropped.
     canvas: &'a mut Canvas,

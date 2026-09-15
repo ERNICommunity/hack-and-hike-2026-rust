@@ -1,10 +1,11 @@
-//! An off-screen image to draw into, then show on the display.
+//! An image in memory to draw into, and then show on the display.
 //!
-//! Sending pixels to the panel is the slow part of drawing: a full frame takes
-//! about 31 ms on the SPI bus, whatever the CPU does. [`Canvas`] therefore
-//! remembers what the panel already shows and sends only the pixels that
-//! differ. An application can redraw its whole picture every time something
-//! changes and still update the panel in a millisecond or two.
+//! Sending pixels to the panel is the slow part of drawing: a full screen
+//! takes about 31 ms on the SPI bus, however fast the CPU is. So [`Canvas`]
+//! remembers what the panel already shows, and sends only the pixels that
+//! are different. An application can draw its whole picture again every time
+//! something changes. A small change still reaches the panel in a
+//! millisecond or two.
 
 use core::convert::Infallible;
 
@@ -20,9 +21,12 @@ use crate::{
     capabilities::display::{BYTES_PER_PIXEL, ScanlineSource, Surface},
 };
 
-/// Unchanged rows between two changed ones that are still sent in the same
-/// window. Programming a new window costs three commands and a fresh DMA
-/// transfer; a few rows of unchanged pixels cost less than that.
+/// The largest number of unchanged rows between two changed rows that still
+/// go into the same window.
+///
+/// A new window costs three panel commands and a new DMA transfer. (DMA,
+/// direct memory access, sends the bytes without the CPU.) Sending a few
+/// unchanged rows costs less than that.
 const MAX_GAP_ROWS: i32 = 4;
 
 /// A rectangle of pixels in PSRAM to draw on with `embedded-graphics`.
@@ -42,23 +46,25 @@ const MAX_GAP_ROWS: i32 = 4;
 /// canvas.show(&mut display.surface(display::SCREEN));
 /// ```
 ///
-/// Drawing cannot fail, which is why `let Ok(()) = ...` compiles: the error
-/// type is [`Infallible`].
+/// Drawing cannot fail: the error type is [`Infallible`]. That is why
+/// `let Ok(()) = ...` compiles without an `else`.
 ///
 /// # Showing
 ///
 /// [`Canvas::show`] copies the canvas to the panel, but only the pixels that
 /// changed since the last `show`:
 ///
-/// - The canvas keeps a second copy of what the panel shows (the *shadow*)
-///   and compares against it, so redrawing the same picture sends nothing.
-/// - Changed rows are grouped into a few rectangles, so a number in one
-///   corner and a highlight in another do not send the whole screen between
+/// - The canvas keeps a second copy of what the panel shows, and compares
+///   with it. So drawing the same picture again sends nothing.
+/// - Changed rows are grouped into a few rectangles. So a change in one
+///   corner and a change in another corner do not send all the rows between
 ///   them.
-/// - [`Canvas::clear`] with the same colour as last time only repaints what
-///   was drawn since, instead of every pixel.
+/// - [`Canvas::clear`] with the same colour as last time paints again only
+///   what was drawn since then, not every pixel.
 ///
-/// Create a canvas once, before your loop: its memory is never freed.
+/// Create a canvas once, before your loop, because its memory is never
+/// freed. A canvas uses 4 bytes of PSRAM for each pixel: 2 for the image and
+/// 2 for the copy of the panel.
 pub struct Canvas {
     /// What the application drew, row by row.
     pixels: &'static mut [Rgb565],
@@ -74,7 +80,9 @@ pub struct Canvas {
     background: Rgb565,
     /// Pixels drawn since the last `clear`.
     drawn: Bounds,
-    /// Pixels drawn since the last `show`: the only ones `show` compares.
+    /// The area that the next `show` compares with the panel. It holds the
+    /// pixels drawn since the last `show`. After `new`, `invalidate` or a
+    /// `clear` with a new colour, it is the whole canvas.
     changed: Bounds,
 }
 
@@ -83,7 +91,8 @@ impl Canvas {
     ///
     /// # Panics
     ///
-    /// When `size` has no pixels.
+    /// When `size` has no pixels, or when PSRAM does not have enough free
+    /// memory.
     pub fn new(size: Size) -> Self {
         let count = size.width as usize * size.height as usize;
         assert!(count != 0, "a canvas needs at least one pixel");
@@ -106,9 +115,9 @@ impl Canvas {
 
     /// Fill the whole canvas with one colour.
     ///
-    /// Clearing to the colour of the previous `clear` only repaints the area
-    /// drawn since then, which is the common case of "clear, draw, show" in a
-    /// loop.
+    /// When `color` is the same as in the previous `clear`, only the area
+    /// drawn since then is painted again. This makes the usual loop of clear,
+    /// draw and show fast.
     pub fn clear(&mut self, color: Rgb565) {
         if self.background == color {
             if let Some(drawn) = self.drawn.rectangle() {
@@ -123,7 +132,7 @@ impl Canvas {
         self.drawn = Bounds::EMPTY;
     }
 
-    /// Fill a rectangle with one colour; the part outside the canvas is
+    /// Fill a rectangle with one colour. The part outside the canvas is
     /// ignored.
     pub fn fill(&mut self, area: Rectangle, color: Rgb565) {
         let area = area.intersection(&self.bounding_box());
@@ -134,7 +143,7 @@ impl Canvas {
         self.mark_drawn(area);
     }
 
-    /// Set one pixel; a point outside the canvas is ignored.
+    /// Set one pixel. A point outside the canvas is ignored.
     pub fn set(&mut self, point: Point, color: Rgb565) {
         if self.bounding_box().contains(point) {
             let index = self.index(point);
@@ -146,12 +155,16 @@ impl Canvas {
 
     /// Copy the pixels that changed since the last `show` to `surface`.
     ///
-    /// Blocks until they have reached the panel: well under a millisecond for
-    /// a small change, about 31 ms when every pixel changed.
+    /// Wait until the pixels have reached the panel: much less than a
+    /// millisecond for a small change, about 31 ms when every pixel changed.
+    ///
+    /// The canvas compares with what it showed last time. So call
+    /// [`Canvas::invalidate`] first when you show it at another place on the
+    /// panel, or when something else drew there.
     ///
     /// # Panics
     ///
-    /// When `surface` is not the size of the canvas.
+    /// When `surface` does not have the same size as the canvas.
     pub fn show(&mut self, surface: &mut Surface<'_>) {
         assert_eq!(
             surface.size(),
@@ -163,8 +176,9 @@ impl Canvas {
         };
         self.changed = Bounds::EMPTY;
 
-        // Walk the candidate rows and collect consecutive changed rows into
-        // one window, as wide as the widest change among them.
+        // Check each candidate row. Changed rows go into one window when at
+        // most `MAX_GAP_ROWS` unchanged rows lie between them. The window is
+        // as wide as the widest change in its rows.
         let mut window = Bounds::EMPTY;
         let mut last_changed_row = i32::MIN;
         for y in candidates.rows() {
@@ -188,7 +202,7 @@ impl Canvas {
     /// Forget what the panel shows, so the next `show` sends the whole
     /// canvas.
     ///
-    /// Call this after something other than this canvas drew on the same part
+    /// Call this when something other than this canvas drew on the same part
     /// of the panel, for example `Surface::render_scanlines` or another
     /// canvas.
     pub fn invalidate(&mut self) {
@@ -201,7 +215,8 @@ impl Canvas {
         point.y as usize * self.size.width as usize + point.x as usize
     }
 
-    /// Fill `area`, which must lie inside the canvas, without bookkeeping.
+    /// Fill `area`, which must lie inside the canvas. Does not update
+    /// `drawn` or `changed`.
     fn paint(&mut self, area: Rectangle, color: Rgb565) {
         let width = area.size.width as usize;
         for y in area.rows() {
@@ -218,6 +233,9 @@ impl Canvas {
 
     /// The first and last column of row `y`, within `columns`, where the
     /// canvas differs from the panel; `None` when the row is unchanged.
+    ///
+    /// When the canvas does not know what the panel shows, every column in
+    /// `columns` counts as changed.
     fn changed_columns(&self, y: i32, columns: core::ops::Range<i32>) -> Option<(i32, i32)> {
         if !self.panel_known {
             return Some((columns.start, columns.end - 1));
@@ -263,8 +281,9 @@ impl DrawTarget for Canvas {
         I: IntoIterator<Item = Pixel<Self::Color>>,
     {
         let canvas = self.bounding_box();
-        // Collect the bounds locally: one comparison per pixel instead of
-        // updating both trackers every time.
+        // Collect the drawn area in a local value, and update `drawn` and
+        // `changed` once at the end. That is cheaper than updating both for
+        // every pixel.
         let mut touched = Bounds::EMPTY;
         for Pixel(point, color) in pixels {
             if canvas.contains(point) {
@@ -303,13 +322,13 @@ struct Bounds {
 }
 
 impl Bounds {
-    /// Contains nothing: `min` above and right of `max`.
+    /// Contains nothing: `min` is below and to the right of `max`.
     const EMPTY: Self = Self {
         min: Point::new(i32::MAX, i32::MAX),
         max: Point::new(i32::MIN, i32::MIN),
     };
 
-    /// Exactly `area`, which must not be empty.
+    /// Exactly `area`. An empty `area` gives [`Bounds::EMPTY`].
     fn of(area: Rectangle) -> Self {
         let mut bounds = Self::EMPTY;
         bounds.include(area);
@@ -341,10 +360,12 @@ impl Bounds {
     }
 }
 
-/// The rows of one window of a canvas, converted for the display.
+/// The rows of one window of a canvas, converted to the bytes the display
+/// expects: two bytes per pixel, high byte first.
 ///
-/// `pixels` and `shown` start at the window's top-left pixel; rows are
-/// `canvas_width` apart. Every row sent is also copied into `shown`.
+/// `pixels` and `shown` start at the window's top-left pixel. Rows are
+/// `canvas_width` pixels apart. Every row that is sent is also copied into
+/// `shown`.
 struct Rows<'a> {
     /// The application's pixels, from the window's top-left pixel to the end of
     /// the canvas.

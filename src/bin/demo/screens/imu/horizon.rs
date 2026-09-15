@@ -1,10 +1,12 @@
-//! The artificial horizon: sky, ground, their perspective grids and the
+//! The artificial horizon: sky, ground, their grids in perspective and the
 //! crosshair.
 //!
-//! The sky and the ground are filled column by column from the horizon line.
-//! The grids are lines on two horizontal planes above and below the viewer,
-//! projected with the camera from `projection`; each pixel is coloured by
-//! its distance from the horizon, so the lines fade into it.
+//! The view is first filled with the sky colour. Then the ground is filled
+//! column by column, from the horizon line. The grids are lines on two
+//! horizontal planes above and below the viewer. The camera from
+//! `projection` projects them onto the screen. Each pixel of a grid line gets
+//! a colour for its distance from the horizon, so the lines fade into the
+//! horizon.
 
 use embedded_graphics::{
     pixelcolor::Rgb565,
@@ -21,12 +23,14 @@ use super::{
     },
 };
 
-/// Below this cosine of the roll the horizon is nearly vertical, and the
-/// column-by-column fill switches to a side-of-line test.
+/// When the absolute value of `cos_roll` is not above this value, the horizon
+/// is almost vertical. Then the fill tests the side of the line for each
+/// column instead of computing the horizon's row.
 const HORIZON_VERTICAL_COS_EPSILON: f32 = 0.015;
 
-// Crosshair in the middle of the view: a gap for the centre dot, a short
-// vertical tick and two reference bars above and below.
+// The crosshair in the middle of the view: two horizontal arms with a gap
+// between them, a short vertical tick through the centre, and two reference
+// bars above and below.
 /// Length in pixels of each horizontal arm, left and right of the centre.
 const CROSSHAIR_ARM_LENGTH: u32 = 26;
 /// Pixels between the centre and the inner end of each arm.
@@ -40,29 +44,37 @@ const CROSSHAIR_UPPER_BAR: (i32, u32) = (-23, 40);
 /// horizontally.
 const CROSSHAIR_LOWER_BAR: (i32, u32) = (22, 24);
 
-// Keep an 8-unit regular grid near the viewer, then progressively thin lines
-// that are already sub-pixel close together. At +/-1024 world units the +/-8
-// floor/ceiling planes project to less than one pixel from the horizon, so this
-// is effectively the mathematical horizon at the display's resolution.
-/// Grid spacing up to `GRID_NEAR_EXTENT`; doubles after each extent below.
+// Near the viewer, the grid lines are 8 world units apart. Farther away, the
+// space between the lines doubles in steps, because the lines would be less
+// than about one pixel apart on the screen. At 1024 world units, the two
+// planes (8 units above and below the viewer) are about 1.5 pixels from the
+// horizon. So the grid ends very close to the true horizon.
+/// Space between grid lines up to `GRID_NEAR_EXTENT`, in world units. It
+/// doubles after each of the extents below.
 const GRID_NEAR_SPACING: f32 = 8.0;
-/// Up to this distance the lines are 8 world units apart, beyond it 16.
+/// Up to this distance, the lines are 8 world units apart. Beyond it, they
+/// are 16 units apart.
 const GRID_NEAR_EXTENT: f32 = 96.0;
-/// Up to this distance the lines are 16 world units apart, beyond it 32.
+/// Up to this distance, the lines are 16 world units apart. Beyond it, they
+/// are 32 units apart.
 const GRID_MID_EXTENT: f32 = 192.0;
-/// Up to this distance the lines are 32 world units apart, beyond it 64.
+/// Up to this distance, the lines are 32 world units apart. Beyond it, they
+/// are 64 units apart.
 const GRID_FAR_EXTENT: f32 = 384.0;
 /// How far the grid reaches in every direction, in world units.
 const GRID_EXTENT: f32 = 1024.0;
-/// Height of the sky plane above the viewer (and of the ground below).
+/// Height of the sky plane above the viewer, in world units. The ground plane
+/// is the same distance below.
 const PERSPECTIVE_PLANE_HEIGHT: f32 = 8.0;
 
-// Grid line colour by pixel distance from the horizon: lines fade towards it.
-/// Index of the last entry of the fade tables: pixels this far from the
-/// horizon or farther get the full line colour.
+// The colour of a grid line depends on the pixel's distance from the horizon.
+// So the lines fade towards the horizon.
+/// Index of the last entry of the fade tables. Pixels this far from the
+/// horizon, or farther, get the full line colour.
 const GRID_FADE_LAST: usize = 56;
 /// Sky grid colour for each pixel distance from the horizon, index 0 to
-/// `GRID_FADE_LAST`: almost the sky colour at the horizon, darker further away.
+/// `GRID_FADE_LAST`. At the horizon it is almost the sky colour. Farther away
+/// it is darker.
 const SKY_GRID_FADE: [Rgb565; 57] = [
     Rgb565::new(0, 40, 26),
     Rgb565::new(0, 40, 26),
@@ -123,8 +135,8 @@ const SKY_GRID_FADE: [Rgb565; 57] = [
     Rgb565::new(0, 13, 15),
 ];
 /// Ground grid colour for each pixel distance from the horizon, index 0 to
-/// `GRID_FADE_LAST`: almost the ground colour at the horizon, lighter further
-/// away.
+/// `GRID_FADE_LAST`. At the horizon it is almost the ground colour. Farther
+/// away it is lighter.
 const GROUND_GRID_FADE: [Rgb565; 57] = [
     Rgb565::new(11, 23, 11),
     Rgb565::new(11, 23, 11),
@@ -208,7 +220,7 @@ enum Plane {
 }
 
 impl Plane {
-    /// The plane's height in world units: positive is up.
+    /// The plane's height in world units. Positive is up.
     const fn height(self) -> f32 {
         match self {
             Self::Sky => PERSPECTIVE_PLANE_HEIGHT,
@@ -226,7 +238,7 @@ impl Plane {
 }
 
 /// Draw the whole view into `area`: sky and ground, both grids with the
-/// compass letters, and the crosshair on top.
+/// compass labels, and the crosshair on top.
 pub(super) fn draw_attitude(frame: &mut Canvas, area: Rectangle, attitude: DisplayAttitude) {
     let x0 = area.top_left.x;
     let y0 = area.top_left.y;
@@ -239,7 +251,8 @@ pub(super) fn draw_attitude(frame: &mut Canvas, area: Rectangle, attitude: Displ
     frame.fill(area, theme::LIGHT_BLUE);
 
     if camera.cos_roll.abs() > HORIZON_VERTICAL_COS_EPSILON {
-        // One reciprocal replaces a floating-point division for every column.
+        // Compute `1 / cos_roll` once, instead of one division for every
+        // column.
         let inv_cos_roll = 1.0 / camera.cos_roll;
         for local_x in 0..width {
             let x_delta = local_x - center_x;
@@ -318,7 +331,8 @@ fn draw_perspective_world(frame: &mut Canvas, area: Rectangle, camera: Perspecti
     compass::draw_world_compass_labels(frame, area, camera, Plane::Ground.height());
 }
 
-/// All grid lines of one plane: dense near the viewer, sparse far away.
+/// All grid lines of one plane: close together near the viewer, farther
+/// apart far away.
 fn draw_world_grid_plane(
     frame: &mut Canvas,
     area: Rectangle,
@@ -344,8 +358,8 @@ fn draw_world_grid_plane(
     }
 }
 
-/// The two lines of one plane at `coordinate`: one running north-south, one
-/// east-west.
+/// The two lines of one plane at `coordinate`: one runs north-south, and one
+/// runs east-west.
 fn draw_world_grid_coordinate(
     frame: &mut Canvas,
     area: Rectangle,
@@ -372,7 +386,8 @@ fn draw_world_grid_coordinate(
     );
 }
 
-/// Project one world segment, clip it to the near plane and draw it.
+/// Draw one segment in world coordinates: rotate it into camera coordinates,
+/// clip it to the near plane, project it and draw it.
 fn draw_world_segment(
     frame: &mut Canvas,
     area: Rectangle,
@@ -400,7 +415,7 @@ fn draw_world_segment(
     }
 }
 
-/// Clip a projected line to the viewport and draw it.
+/// Clip a projected line to the viewport, and draw it.
 fn draw_clipped_line(
     frame: &mut Canvas,
     area: Rectangle,
@@ -418,8 +433,10 @@ fn draw_clipped_line(
     }
 }
 
-/// Bresenham walk that carries the horizon equation along, so each pixel's
-/// distance from the horizon costs two additions instead of two multiplies.
+/// Draw a line pixel by pixel with the Bresenham algorithm, which steps from
+/// pixel to pixel with integers only. The horizon equation is updated at each
+/// step. So each pixel's distance from the horizon costs at most two
+/// additions instead of two multiplications.
 fn draw_line_pixels(
     frame: &mut Canvas,
     area: Rectangle,
@@ -435,8 +452,9 @@ fn draw_line_pixels(
     let mut error = dx + dy;
     let colors = plane.fade();
 
-    // Screen-clipped coordinates keep this comfortably inside i32 even at the
-    // +/-80 degree pitch limit; no 64-bit arithmetic is needed in the hot loop.
+    // The coordinates are clipped to the screen, and `horizon_c_q10` is
+    // clamped. So the sum stays inside `i32` at every attitude, and the pixel
+    // loop needs no 64-bit arithmetic.
     let mut signed_q10 =
         camera.horizon_a_q10 * x0 + camera.horizon_b_q10 * y0 + camera.horizon_c_q10;
     let step_x_q10 = camera.horizon_a_q10 * sx;

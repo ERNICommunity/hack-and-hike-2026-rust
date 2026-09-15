@@ -1,16 +1,16 @@
-//! Glue between `embedded-gui` and the rest of the firmware.
+//! The connection between `embedded-gui` and the rest of the firmware.
 //!
-//! A screen describes its layout in a KDL file next to its code. The
-//! `embedded_gui::include_gui!` macro turns the file into Rust at compile
-//! time. At run time the screen:
+//! A screen describes its layout in a KDL file next to its code. KDL is a
+//! small document language. The `embedded_gui::include_gui!` macro turns the
+//! file into Rust code at compile time. At run time, the screen:
 //!
-//! 1. allocates a [`Context`] once with [`context`] and builds the layout
+//! 1. creates a [`Context`] once with [`context`], and builds the layout
 //!    into it,
-//! 2. looks up the rectangles of empty slots with [`slot`] to draw its own
+//! 2. gets the rectangles of empty slots with [`slot`], to draw its own
 //!    content there,
-//! 3. forwards touches with [`click_buttons`],
-//! 4. draws the widgets onto a [`Canvas`] with [`render`], then its own
-//!    content on top.
+//! 3. passes touch events to the widgets with [`click_buttons`],
+//! 4. draws the widgets onto a [`Canvas`] with [`render`], and then draws
+//!    its own content on top.
 //!
 //! See `src/bin/demo/screens/settings/` for a complete example.
 
@@ -28,19 +28,25 @@ use crate::{board::psram, capabilities::touch::TouchEvent};
 
 use super::Canvas;
 
-/// UI events one touch may queue before the screen drains them; a single tap
-/// produces about nine.
+/// UI events that can wait in the context's queue. [`click_buttons`] reads
+/// them after each touch event. One tap creates about nine.
 pub const EVENTS: usize = 16;
-/// Regions `embedded-gui` tracks as needing a redraw. The canvas does its own
-/// change tracking, so this only needs to be non-zero.
+/// Areas that `embedded-gui` remembers as needing a redraw. The canvas finds
+/// its own changes, so this only needs to be more than zero.
 pub const DIRTY_RECTS: usize = 8;
 
-/// The `embedded-gui` context of one screen with room for `NODES` widgets.
+/// The `embedded-gui` context of one screen, with room for `NODES` widgets.
 pub type Context<const NODES: usize> = GuiContext<'static, NODES, EVENTS, DIRTY_RECTS>;
 
-/// Allocate a screen's GUI context of `width` x `height` pixels in PSRAM; it
-/// lives for the rest of the run. A context is about 20 KiB, too large to
-/// keep in a struct on a task's stack.
+/// Create the GUI context of a screen of `width` x `height` pixels, in PSRAM.
+/// The memory is never freed.
+///
+/// A context is about 20 KiB. That is too large for a struct on a task's
+/// stack.
+///
+/// # Panics
+///
+/// When PSRAM does not have enough free memory.
 pub fn context<const NODES: usize>(width: u32, height: u32) -> &'static mut Context<NODES> {
     psram::leaked_value(|| Context::new(Rect::new(0, 0, width, height)))
 }
@@ -49,8 +55,8 @@ pub fn context<const NODES: usize>(width: u32, height: u32) -> &'static mut Cont
 ///
 /// # Panics
 ///
-/// When the id is unknown: the layout is fixed at compile time, so a missing
-/// node is a programming error, not a runtime condition.
+/// When the id is unknown. The layout is fixed at compile time, so a missing
+/// node is a programming error.
 pub fn slot<const NODES: usize>(gui: &Context<NODES>, id: WidgetId) -> Rectangle {
     let rect = gui_rect(gui, id);
     Rectangle::new(Point::new(rect.x, rect.y), Size::new(rect.w, rect.h))
@@ -62,14 +68,15 @@ fn gui_rect<const NODES: usize>(gui: &Context<NODES>, id: WidgetId) -> Rect {
         .expect("every KDL node has a rectangle after build()")
 }
 
-/// Put a numeric readout (a caption on the left, a number on the right) into
-/// the slot of the KDL node `id`. Change the number with [`set_value`].
+/// Put a value label (a caption on the left, a number on the right) into the
+/// slot of the KDL node `id`. Change the number with [`set_value`].
 ///
-/// KDL files cannot declare value labels, so screens add them in code.
+/// KDL files cannot describe value labels, so screens add them in code.
 ///
 /// # Panics
 ///
-/// When the context has no room for another widget: raise its `NODES`.
+/// When the id is unknown, or when the context has no room for another
+/// widget. In that case, make its `NODES` larger.
 pub fn add_value_label<const NODES: usize>(
     gui: &mut Context<NODES>,
     id: WidgetId,
@@ -82,23 +89,26 @@ pub fn add_value_label<const NODES: usize>(
         .expect("the GUI context has room for a value label")
 }
 
-/// Change the text of a label or button. The text must live for the whole
-/// run, which in practice means a string literal.
+/// Change the text of a label or button. The text must be `'static`, which
+/// usually means a string literal. When `id` is not a label or button,
+/// nothing changes.
 pub fn set_text<const NODES: usize>(gui: &mut Context<NODES>, id: WidgetId, text: &'static str) {
     if let Err(error) = gui.set_widget_property(id, PropertyKey::Text, PropertyValue::Str(text)) {
         debug!("GUI text update failed: {:?}", error);
     }
 }
 
-/// Change the number shown by a value label from [`add_value_label`].
+/// Change the number of a value label from [`add_value_label`]. When `id` is
+/// not a value label, nothing changes.
 pub fn set_value<const NODES: usize>(gui: &mut Context<NODES>, id: WidgetId, value: i32) {
     if let Err(error) = gui.set_value_label(id, value) {
         debug!("GUI value update failed: {:?}", error);
     }
 }
 
-/// Deliver a touch to the widgets and call `on_click` with the id of every
-/// button it clicked. `event` must be in the coordinates of the context.
+/// Pass a touch event to the widgets. Call `on_click` with the id of every
+/// button that the touch clicked. The position of `event` must be in the
+/// coordinates of the context.
 ///
 /// ```ignore
 /// let mut clicked = None;
@@ -131,7 +141,7 @@ pub fn click_buttons<const NODES: usize>(
     }
 }
 
-/// Draw the widgets onto `canvas`. Draw anything of your own afterwards.
+/// Draw the widgets onto `canvas`. Draw your own content after this call.
 pub fn render<const NODES: usize>(gui: &mut Context<NODES>, canvas: &mut Canvas) {
     if let Err(error) = gui.render(canvas) {
         debug!("GUI render failed: {:?}", error);

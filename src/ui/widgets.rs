@@ -1,8 +1,8 @@
-//! Touch-friendly widgets drawn with `embedded-graphics`.
+//! Widgets for touch input, drawn with `embedded-graphics`.
 //!
-//! `embedded-gui` provides buttons and labels; its slider cannot be dragged
-//! with a finger and is too small for a touch screen, so the slider lives
-//! here.
+//! `embedded-gui` has buttons and labels. Its slider is too small for a touch
+//! screen, and you cannot move it with a finger. So this module has its own
+//! slider.
 
 use embedded_graphics::{
     prelude::*,
@@ -19,14 +19,14 @@ const THUMB_DIAMETER: u32 = 22;
 const THUMB_HOLE_DIAMETER: u32 = 12;
 /// Height of the bar the handle slides along.
 const TRACK_HEIGHT: u32 = 8;
-/// Touches this far outside the slider still count.
+/// A press up to this many pixels outside the slider still grabs it.
 const HIT_MARGIN: u32 = 8;
 
 /// A horizontal slider over an integer range, drawn inside a fixed rectangle.
 ///
-/// The slider does not store its value: the application keeps the value,
-/// passes touches to [`Slider::handle_touch`] and draws the current value
-/// with [`Slider::draw`].
+/// The slider does not store its value. The application keeps the value,
+/// passes touch events to [`Slider::handle_touch`], and draws the current
+/// value with [`Slider::draw`].
 ///
 /// ```ignore
 /// let mut slider = Slider::new(Rectangle::new(Point::new(20, 100), Size::new(280, 40)), 0, 100);
@@ -53,7 +53,13 @@ pub struct Slider {
 impl Slider {
     /// A slider drawn inside `area`, from `min` on the left to `max` on the
     /// right.
+    ///
+    /// # Panics
+    ///
+    /// When `min` is not below `max`. In a `const`, the error appears at
+    /// compile time.
     pub const fn new(area: Rectangle, min: i32, max: i32) -> Self {
+        assert!(min < max, "a slider's min must be below its max");
         Self {
             area,
             min,
@@ -62,12 +68,13 @@ impl Slider {
         }
     }
 
-    /// Feed a touch event, in the coordinates of the canvas the slider is
-    /// drawn on. Returns the new value while the finger presses, drags or
-    /// releases on this slider, and `None` for touches elsewhere.
+    /// Handle a touch event. Its position must be in the coordinates of the
+    /// canvas that the slider is drawn on.
     ///
-    /// A drag that starts on the slider keeps controlling it even when the
-    /// finger strays outside.
+    /// Return the new value when a press starts on the slider (or up to 8
+    /// pixels around it), and for the moves and the release that follow.
+    /// Return `None` for all other touch events. During a drag, the slider
+    /// follows the finger even when the finger leaves the slider.
     pub fn handle_touch(&mut self, event: TouchEvent) -> Option<i32> {
         match event {
             TouchEvent::Pressed(point) if self.hit_area().contains(point) => {
@@ -83,7 +90,9 @@ impl Slider {
         }
     }
 
-    /// Draw the slider at `value`, clamped to its range.
+    /// Draw the slider with its handle at `value`. A value outside the range
+    /// is drawn at the nearest end. The slider first paints its whole
+    /// rectangle white.
     pub fn draw(&self, canvas: &mut Canvas, value: i32) {
         canvas.fill(self.area, theme::WHITE);
 
@@ -115,7 +124,10 @@ impl Slider {
         self.area.offset(HIT_MARGIN as i32)
     }
 
-    /// Leftmost and rightmost thumb centre positions.
+    /// The leftmost and rightmost column of the handle's centre.
+    ///
+    /// The two columns are always at least one pixel apart, so `value_at`
+    /// never divides by zero, even in a very narrow area.
     fn track_bounds(&self) -> (i32, i32) {
         let radius = THUMB_DIAMETER as i32 / 2;
         let left = self.area.top_left.x + radius;
@@ -127,15 +139,21 @@ impl Slider {
     fn value_at(&self, x: i32) -> i32 {
         let (left, right) = self.track_bounds();
         let span = right - left;
-        let offset = x.clamp(left, right) - left;
-        self.min + (offset * (self.max - self.min) + span / 2) / span
+        let offset = i64::from(x.clamp(left, right) - left);
+        // Use 64-bit math, so that wide ranges cannot overflow.
+        let range = i64::from(self.max) - i64::from(self.min);
+        let value = i64::from(self.min) + (offset * range + i64::from(span) / 2) / i64::from(span);
+        value as i32
     }
 
     /// The column of the handle's centre for `value`.
     fn thumb_x(&self, value: i32) -> i32 {
         let (left, right) = self.track_bounds();
-        let range = (self.max - self.min).max(1);
-        let offset = value.clamp(self.min, self.max) - self.min;
-        left + (offset * (right - left) + range / 2) / range
+        // Use 64-bit math, so that wide ranges cannot overflow. `range` is
+        // never zero, because `new` asserts `min < max`.
+        let range = i64::from(self.max) - i64::from(self.min);
+        let offset = i64::from(value.clamp(self.min, self.max)) - i64::from(self.min);
+        let width = i64::from(right - left);
+        left + ((offset * width + range / 2) / range) as i32
     }
 }
