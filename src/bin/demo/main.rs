@@ -1,6 +1,6 @@
-//! The full Hack & Hike demo: seven screens for network, IMU, microphone,
-//! speaker, camera, settings (backlight) and the log. There is no screen for
-//! the light and proximity sensor yet.
+//! The full Hack & Hike demo: eight screens for network, IMU, microphone,
+//! speaker, camera, proximity (with ambient light), settings (backlight) and
+//! the log.
 //!
 //! `main` starts the board, gives each screen the handles it owns, and runs
 //! the loop. Each loop iteration does these steps:
@@ -17,6 +17,7 @@
 //! │ 🎤 │   (content area,          │
 //! │ 🔊 │    276 x 240 pixels)      │
 //! │ 📷 │                           │
+//! │ ☀  │                           │
 //! │ ⚙  │                           │
 //! │ 📄 │                           │
 //! └────┴───────────────────────────┘
@@ -48,7 +49,8 @@ use hack_and_hike::{Board, ui::Canvas};
 use navigation::{Navigation, ViewId};
 use screens::{
     Screen, camera::CameraScreen, imu::ImuScreen, log::LogScreen, microphone::MicrophoneScreen,
-    network::NetworkScreen, settings::SettingsScreen, speaker::SpeakerScreen,
+    network::NetworkScreen, proximity::ProximityScreen, settings::SettingsScreen,
+    speaker::SpeakerScreen,
 };
 
 // Writes the application descriptor the bootloader checks before starting
@@ -75,6 +77,8 @@ struct Screens {
     speaker: SpeakerScreen,
     /// The live camera preview.
     camera: CameraScreen,
+    /// Proximity and ambient light, from one sensor.
+    proximity: ProximityScreen,
     /// The display brightness slider.
     settings: SettingsScreen,
     /// The newest lines of the device log.
@@ -91,6 +95,7 @@ impl Screens {
             ViewId::Microphone => &mut self.microphone,
             ViewId::Speaker => &mut self.speaker,
             ViewId::Camera => &mut self.camera,
+            ViewId::Proximity => &mut self.proximity,
             ViewId::Settings => &mut self.settings,
             ViewId::Log => &mut self.log,
         }
@@ -119,9 +124,8 @@ async fn main(_spawner: Spawner) -> ! {
         camera,
         backlight,
         log,
-        // The demo has no screen for the light and proximity sensor yet.
-        light: _,
-        proximity: _,
+        light,
+        proximity,
     } = Board::init();
 
     let mut screens = Screens {
@@ -130,6 +134,7 @@ async fn main(_spawner: Spawner) -> ! {
         microphone: MicrophoneScreen::new(microphone),
         speaker: SpeakerScreen::new(speaker),
         camera: CameraScreen::new(camera),
+        proximity: ProximityScreen::new(light, proximity),
         settings: SettingsScreen::new(backlight),
         log: LogScreen::new(log),
     };

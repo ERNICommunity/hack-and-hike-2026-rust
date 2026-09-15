@@ -367,7 +367,7 @@ it.
 
 ## The demo application
 
-`src/bin/demo/` is the full firmware, with seven screens. Its shell
+`src/bin/demo/` is the full firmware, with eight screens. Its shell
 (`main.rs`) does these steps in each loop iteration:
 
 1. Route the touch events.
@@ -672,7 +672,7 @@ in `src/bin/`.
 the capability.
 
 **A framework before you need it.** The demo's `Screen` trait has six
-methods. It exists because seven screens share them. Two screens do not need
+methods. It exists because eight screens share them. Two screens do not need
 a trait.
 
 **A loop without `.await`.** It blocks every other task on CPU0.

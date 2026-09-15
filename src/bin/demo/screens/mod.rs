@@ -17,6 +17,7 @@ pub(crate) mod imu;
 pub(crate) mod log;
 pub(crate) mod microphone;
 pub(crate) mod network;
+pub(crate) mod proximity;
 pub(crate) mod settings;
 pub(crate) mod speaker;
 

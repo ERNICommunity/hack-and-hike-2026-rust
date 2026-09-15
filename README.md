@@ -762,7 +762,7 @@ log::info!("button pressed at {}", point.x);
 | `light_meter` | display, light, proximity | Lux and proximity as numbers and a bar; dark colours in the dark |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `panic_backtrace` | display, touch | A deliberate panic, for [reading a backtrace](#when-your-application-panics) |
-| `demo` | all capabilities except light and proximity | Several screens with navigation (see below) |
+| `demo` | all capabilities | Several screens with navigation (see below) |
 
 **Color Ping** shows four colour bands below a short text. When you tap a
 band, the board broadcasts that colour. Every other board that receives it
@@ -790,12 +790,12 @@ and its state. Copy this pattern when your program becomes too large for
 `main`.
 
 **Demo** is the largest application. It has Network, IMU, Microphone,
-Speaker, Camera, Settings (backlight) and Log screens, and a navigation rail
-(a column of icons) to switch between them. It has no screen for the light
-and proximity sensor yet. Every screen implements the same small `Screen`
-trait. To add a screen, copy `src/bin/demo/screens/settings/`. It has a KDL
-layout file (a text file that describes the labels and their positions), a
-slider, and one capability handle.
+Speaker, Camera, Proximity (with ambient light), Settings (backlight)
+and Log screens, and a navigation rail (a column of icons) to switch between
+them. Every screen implements the same small `Screen` trait. To add a
+screen, copy `src/bin/demo/screens/settings/`. It has a KDL layout file (a
+text file that describes the labels and their positions), a slider, and one
+capability handle.
 
 ## The Rust you will meet
 

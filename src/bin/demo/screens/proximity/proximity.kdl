@@ -1,0 +1,11 @@
+screen id="Proximity" width=276 height=240 {
+    grid cols="1fr" rows="18px 20px 20px 20px 20px 20px 20px 1fr" gap=8 padding=12 {
+        label id="title" text="PROXIMITY & LIGHT" col=0 row=0 style="crate::styles::title()"
+        label id="proximity_value" text="" col=0 row=1
+        label id="raw_value" text="" col=0 row=2
+        label id="proximity_bar" text="" col=0 row=3
+        label id="lux_value" text="" col=0 row=4
+        label id="lux_bar" text="" col=0 row=5
+        label id="hint" text="Cover the sensor or dim the light" col=0 row=6 style="crate::styles::hint()"
+    }
+}

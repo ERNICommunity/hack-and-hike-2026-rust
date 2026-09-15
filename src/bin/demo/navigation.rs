@@ -30,6 +30,8 @@ pub(crate) enum ViewId {
     Speaker,
     /// The live camera preview.
     Camera,
+    /// Proximity and ambient light, with bars.
+    Proximity,
     /// The display brightness slider.
     Settings,
     /// The newest lines of the device log.
@@ -39,12 +41,13 @@ pub(crate) enum ViewId {
 impl ViewId {
     /// The buttons from top to bottom on the rail. The first screen is shown
     /// at boot.
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Network,
         Self::Imu,
         Self::Microphone,
         Self::Speaker,
         Self::Camera,
+        Self::Proximity,
         Self::Settings,
         Self::Log,
     ];
@@ -57,6 +60,7 @@ impl ViewId {
             Self::Microphone => &MICROPHONE_ICON,
             Self::Speaker => &SPEAKER_ICON,
             Self::Camera => &CAMERA_ICON,
+            Self::Proximity => &PROXIMITY_ICON,
             Self::Settings => &SETTINGS_ICON,
             Self::Log => &LOG_ICON,
         }
@@ -104,6 +108,12 @@ const SPEAKER_ICON: Icon = [
 const CAMERA_ICON: Icon = [
     0x0000, 0x0000, 0x0F00, 0x1980, 0x7FFE, 0x4002, 0x43C2, 0x4662, 0x4C32, 0x4C32, 0x4662, 0x43C2,
     0x4002, 0x7FFE, 0x0000, 0x0000,
+];
+/// The rail button of the proximity screen: a sun, for the light sensor
+/// that also measures proximity.
+const PROXIMITY_ICON: Icon = [
+    0x0000, 0x0180, 0x2184, 0x1008, 0x03C0, 0x07E0, 0x0FF0, 0x6FF6, 0x6FF6, 0x0FF0, 0x07E0, 0x03C0,
+    0x1008, 0x2184, 0x0180, 0x0000,
 ];
 /// The rail button of the settings screen.
 const SETTINGS_ICON: Icon = [
