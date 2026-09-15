@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Rust 1.65 or newer, including Cargo
+- Rust 1.84 or newer, including Cargo (`.cargo/config.toml` uses the `host-tuple` target)
 - Desktop Chrome or Edge on the host computer
 
 Node, npm, a ChatGPT account, and an internet connection are not required.
@@ -42,6 +42,8 @@ For VS Code Dev Containers, add this to your existing `.devcontainer/devcontaine
 | `ESP_AUTOFLASH_BIND` | `0.0.0.0` | Server bind address |
 | `ESP_AUTOFLASH_PORT` | `8080` | Server port |
 | `ESP_AUTOFLASH_SERIAL_PORT_SEARCH` | `303a:*` | USB `VID:PID`, `VID:*`, or `*` |
+| `ESP_AUTOFLASH_ELF_DIRS` | `$CARGO_TARGET_DIR`, `target`, `../target` | Cargo target directories searched for the ELF file of a panicking firmware, separated like `PATH` |
+| `ESP_AUTOFLASH_ADDR2LINE` | found on `PATH` or in the rustup `esp` toolchain | The `addr2line` used to decode backtraces |
 
 Example for a CP210x adapter:
 
@@ -66,7 +68,7 @@ On first use, the browser still requires a user gesture to grant access to each 
 cargo build --release
 ```
 
-Copy `target/release/esp-autoflash-server` to another compatible machine. All browser assets are embedded, so no `site/` directory is required next to the executable.
+Copy `target/<host triple>/release/esp-autoflash-server` to another compatible machine. All browser assets are embedded, so no `site/` directory is required next to the executable.
 
 ## Tests
 
@@ -74,7 +76,7 @@ Copy `target/release/esp-autoflash-server` to another compatible machine. All br
 cargo test
 ```
 
-The tests cover URL decoding, path traversal rejection, USB search validation, content types, and the presence of the embedded application files.
+The tests cover URL decoding, path traversal rejection, USB search validation, content types, the presence of the embedded application files, SHA-256, and backtrace request parsing and decoding output.
 
 ## Firmware warning
 

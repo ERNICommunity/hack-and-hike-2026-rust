@@ -36,6 +36,7 @@ the board.
 - [The board](#the-board)
 - [Your first application](#your-first-application)
 - [Create your own application](#create-your-own-application)
+- [When your application panics](#when-your-application-panics)
 - [How the hardware reaches your loop](#how-the-hardware-reaches-your-loop)
 - [The capabilities](#the-capabilities)
 - [The built-in applications](#the-built-in-applications)
@@ -305,6 +306,47 @@ every binary. When the application grows, turn it into a folder,
 Keep the rules of your application (what a touch means, what a message means,
 which colour is which) in your application. The capabilities stay generic.
 
+## When your application panics
+
+A panic (an `unwrap()` on `None`, an index past the end of an array, a
+`panic!`) stops the program. The serial log shows the message, the file and
+line of the panic, and a backtrace: the chain of calls that led there, as bare
+addresses.
+
+```text
+====================== PANIC ======================
+panicked at src/bin/panic_backtrace.rs:89:5:
+index out of bounds: the len is 3 but the index is 3
+
+Backtrace:
+
+0x4209d358
+0x4205f584
+...
+```
+
+The firmware on the board has no debug information to name those addresses,
+but the build on your computer does. The autoflash serial console looks them
+up for you and prints each function, file and line below the backtrace. For a
+log from anywhere else, copy the panic output, then:
+
+```bash
+./scripts/backtrace.sh panic_backtrace
+```
+
+Paste the output, press Ctrl+D, and each address comes back as a function,
+file and line, including the functions the compiler inlined:
+
+```text
+0x4205f584: panic_backtrace::band_name at src/bin/panic_backtrace.rs:89
+ (inlined by) panic_backtrace::on_tap at src/bin/panic_backtrace.rs:78
+ (inlined by) ...main_task... at src/bin/panic_backtrace.rs:67
+```
+
+Pass the name of the application you flashed, and decode before you rebuild
+it: a new build moves the addresses. The `panic_backtrace` application panics
+on purpose when you tap its red band, to try this out.
+
 ## How the hardware reaches your loop
 
 The chips are read and fed by tasks on the second CPU core. Your loop on the
@@ -531,6 +573,7 @@ log::info!("button pressed at {}", point.x);
 | `template` | display, touch | The file to copy: a spot follows your finger |
 | `light_meter` | display, light, proximity | Lux and proximity as numbers and a bar; dark colours in the dark |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
+| `panic_backtrace` | display, touch | A deliberate panic, for [reading a backtrace](#when-your-application-panics) |
 | `demo` | everything | A screen per capability with navigation |
 
 **Color Ping** splits the screen into four colour bands. Tapping a band
@@ -622,7 +665,7 @@ are internal to the library; everything else is private to its module.
 crates/core/        hardware-independent logic with tests
 src/
 ├── lib.rs          the library every application uses
-├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, template.rs
+├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, template.rs
 ├── board/          the PCB: pins, power rails, I2C bus, PSRAM, Board::init() and CPU1
 ├── capabilities/   one module per capability: the APIs you call
 ├── logging.rs      logging with on-device history, memory usage report

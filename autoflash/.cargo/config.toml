@@ -1,0 +1,10 @@
+# The server runs on your computer, not on the ESP32. Cargo also reads the
+# repository's `.cargo/config.toml`, which builds for the ESP32-S3; this
+# setting takes precedence and builds for the machine running Cargo.
+#
+# That file's `build-std` list cannot be undone from here (Cargo joins lists
+# from all config files), so inside the repository `core` and `alloc` are
+# still compiled from source on the first build. The binary lands in
+# `target/<host triple>/release/`.
+[build]
+target = "host-tuple"

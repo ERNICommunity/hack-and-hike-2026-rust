@@ -1,5 +1,7 @@
 import { ESPLoader, Transport } from "esptool-js";
+import { BacktraceCollector, decodeBacktrace, elfSha256Of, formatBacktrace } from "./backtrace";
 import {
+  BACKTRACE_QUIET_MS,
   FILE_POLL_INTERVAL_MS,
   FILE_STABLE_FOR_MS,
   FLASH_ADDRESS,
@@ -47,6 +49,10 @@ type DeviceSession = {
   monitorStart?: Promise<void>;
   monitorLoop?: Promise<void>;
   stopRequested: boolean;
+  /** Hash of the ELF file behind the firmware this page last flashed to the device. */
+  elfSha256?: string;
+  backtraces: BacktraceCollector;
+  backtraceTimer?: number;
 };
 
 /**
@@ -363,6 +369,8 @@ let applicationLog = "";
 let searchingForDevices = true;
 let unsupportedBrowser = false;
 let firmwareHandle: FileSystemFileHandle | undefined;
+/** Hash of the ELF file behind the selected firmware, for devices this page has not flashed. */
+let firmwareElfSha256: string | undefined;
 let restoredHandle: FileSystemFileHandle | undefined;
 let observedFileSignature: string | undefined;
 let settlingSignature: string | undefined;
@@ -425,6 +433,37 @@ function renderTerminalOutput(): void {
 function appendOutput(session: DeviceSession, value: string): void {
   session.log = trimLog(`${session.log}${value}`);
   if (!applicationTabActive && activeDevice === session) renderTerminalOutput();
+}
+
+/** Serial output from the device; a panic backtrace in it is decoded when it ends. */
+function receiveSerialOutput(session: DeviceSession, value: string): void {
+  const { display, completed } = session.backtraces.push(value);
+  if (display) appendOutput(session, display);
+  for (const addresses of completed) void appendDecodedBacktrace(session, addresses);
+
+  window.clearTimeout(session.backtraceTimer);
+  if (session.backtraces.pending) {
+    session.backtraceTimer = window.setTimeout(() => {
+      const addresses = session.backtraces.finish();
+      if (addresses) void appendDecodedBacktrace(session, addresses);
+    }, BACKTRACE_QUIET_MS);
+  }
+}
+
+async function appendDecodedBacktrace(session: DeviceSession, addresses: string[]): Promise<void> {
+  const elfSha256 = session.elfSha256 ?? firmwareElfSha256;
+  let text: string;
+  try {
+    if (!elfSha256) {
+      throw new Error("choose the firmware file that is on the device; it needs an ESP-IDF app descriptor with the ELF hash");
+    }
+    text = formatBacktrace(await decodeBacktrace(elfSha256, addresses));
+  } catch (error) {
+    // The collector hid the raw addresses from the log; show them when they cannot be decoded.
+    text = `Backtrace not decoded: ${errorMessage(error)}\n${addresses.join("\n")}\n`;
+  }
+  const separator = session.log.length > 0 && !session.log.endsWith("\n") ? "\n" : "";
+  appendOutput(session, `${separator}\n${text}`);
 }
 
 function appendAutoflashOutput(value: string): void {
@@ -729,10 +768,10 @@ async function startMonitor(session: DeviceSession, allowDuringFlash = false): P
             streamEnded = true;
             break;
           }
-          if (value) appendOutput(session, decoder.decode(value, { stream: true }));
+          if (value) receiveSerialOutput(session, decoder.decode(value, { stream: true }));
         }
         const remainder = decoder.decode();
-        if (remainder) appendOutput(session, remainder);
+        if (remainder) receiveSerialOutput(session, remainder);
       } catch (error) {
         if (!session.stopRequested && session.connected) {
           appendSystem(`Serial monitor stopped: ${errorMessage(error)}`, "error", session);
@@ -950,6 +989,7 @@ async function attachPort(port: SerialPort, source: "Authorized" | "Found", acti
       log: "",
       monitorOpened: false,
       stopRequested: false,
+      backtraces: new BacktraceCollector(),
     };
     nextDeviceNumber += 1;
 
@@ -1088,6 +1128,7 @@ async function chooseFirmware(): Promise<void> {
 async function attachFirmware(handle: FileSystemFileHandle): Promise<void> {
   const file = await handle.getFile();
   firmwareHandle = handle;
+  firmwareElfSha256 = elfSha256Of(new Uint8Array(await file.arrayBuffer()));
   observedFileSignature = signatureOf(file);
   settlingSignature = undefined;
   ui.fileName.textContent = file.name;
@@ -1211,6 +1252,8 @@ async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
   const file = await firmwareHandle.getFile();
   if (file.size === 0) throw new Error("The selected firmware file is empty.");
   const image = new Uint8Array(await file.arrayBuffer());
+  const elfSha256 = elfSha256Of(image);
+  firmwareElfSha256 = elfSha256;
   ui.fileMeta.textContent = `${formatBytes(file.size)} · loaded ${new Date().toLocaleTimeString()}`;
   updateProgress(0, `${reason === "change" ? "Change stable" : "Manual flash"} · loading ${file.name}`);
   appendSystem(`${reason === "change" ? "File changed" : "Manual flash"}: writing ${file.name} (${formatBytes(file.size)}) to ${targets.length} device${targets.length === 1 ? "" : "s"}${targets.length === 1 ? "" : " in parallel"} at 0x${FLASH_ADDRESS.toString(16)}.`);
@@ -1247,6 +1290,7 @@ async function flashLatestFirmware(reason: "change" | "manual"): Promise<void> {
       file,
       (percent, detail) => reportDeviceProgress(session, percent, detail),
     );
+    session.elfSha256 = elfSha256;
     completedDevices.add(session);
     progressByDevice.set(session, 100);
     if (targets.length > 1) refreshParallelProgress();

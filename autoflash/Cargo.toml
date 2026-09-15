@@ -2,8 +2,13 @@
 name = "esp-autoflash-server"
 version = "1.0.0"
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.84"
 publish = false
+
+# A workspace of its own. Without this, Cargo sees the firmware workspace in
+# the repository root and refuses to build this package, which is not one of
+# its members.
+[workspace]
 
 [[bin]]
 name = "esp-autoflash-server"
@@ -12,3 +17,4 @@ path = "server/main.rs"
 [profile.release]
 strip = true
 lto = "thin"
+

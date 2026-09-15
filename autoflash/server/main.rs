@@ -1,3 +1,6 @@
+mod backtrace;
+mod sha256;
+
 use std::env;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -6,10 +9,18 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use backtrace::Symbolizer;
+
 const DEFAULT_BIND: &str = "0.0.0.0";
 const DEFAULT_PORT: &str = "8080";
 const DEFAULT_SERIAL_PORT_SEARCH: &str = "303a:*";
 const MAX_REQUEST_HEADER_BYTES: usize = 32 * 1024;
+const BACKTRACE_API_PATH: &str = "/api/backtrace";
+
+struct AppState {
+    serial_port_search: String,
+    symbolizer: Symbolizer,
+}
 
 struct EmbeddedAsset {
     path: &'static str,
@@ -33,19 +44,29 @@ fn main() -> io::Result<()> {
 
     let address = format!("{bind}:{port}");
     let listener = TcpListener::bind(&address)?;
-    let serial_port_search = Arc::new(serial_port_search);
+    let state = Arc::new(AppState {
+        serial_port_search,
+        symbolizer: Symbolizer::from_env(),
+    });
 
     println!("ESP AutoFlash listening on http://{address}");
     println!("From the host, open the forwarded port at http://localhost:{port}");
-    println!("Serial device match: {}", serial_port_search.as_str());
+    println!("Serial device match: {}", state.serial_port_search);
+    let elf_directories: Vec<String> = state
+        .symbolizer
+        .elf_directories()
+        .iter()
+        .map(|directory| directory.display().to_string())
+        .collect();
+    println!("Backtraces are decoded with ELF files from: {}", elf_directories.join(", "));
     println!("Serving {} embedded files; no runtime assets are required", EMBEDDED_ASSETS.len());
 
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
-                let serial_port_search = Arc::clone(&serial_port_search);
+                let state = Arc::clone(&state);
                 thread::spawn(move || {
-                    if let Err(error) = handle_connection(stream, serial_port_search.as_str()) {
+                    if let Err(error) = handle_connection(stream, &state) {
                         eprintln!("request failed: {error}");
                     }
                 });
@@ -57,7 +78,7 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream, serial_port_search: &str) -> io::Result<()> {
+fn handle_connection(mut stream: TcpStream, state: &AppState) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(15)))?;
 
@@ -92,6 +113,11 @@ fn handle_connection(mut stream: TcpStream, serial_port_search: &str) -> io::Res
         );
     }
 
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if path == BACKTRACE_API_PATH {
+        return write_backtrace_response(&mut stream, &state.symbolizer, query, method == "HEAD");
+    }
+
     let Some(relative_path) = normalized_request_path(target) else {
         return write_text_response(
             &mut stream,
@@ -105,7 +131,7 @@ fn handle_connection(mut stream: TcpStream, serial_port_search: &str) -> io::Res
     if relative_path == Path::new("runtime-config.js") {
         return write_runtime_config_response(
             &mut stream,
-            serial_port_search,
+            &state.serial_port_search,
             method == "HEAD",
         );
     }
@@ -277,6 +303,37 @@ fn write_text_response(
     write!(
         stream,
         "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nPermissions-Policy: serial=(self)\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    if !head_only {
+        stream.write_all(body.as_bytes())?;
+    }
+    stream.flush()
+}
+
+fn write_backtrace_response(
+    stream: &mut TcpStream,
+    symbolizer: &Symbolizer,
+    query: &str,
+    head_only: bool,
+) -> io::Result<()> {
+    let (status, reason, body) = match backtrace::parse_request(query) {
+        None => (
+            400,
+            "Bad Request",
+            backtrace::error_json("expected elf=<sha256 hex>&addresses=<hex>,<hex>,..."),
+        ),
+        Some(request) => match symbolizer.decode(&request) {
+            Ok((elf, frames)) => (200, "OK", backtrace::frames_json(&elf, &frames)),
+            Err(error) => {
+                let (status, reason) = error.http_status();
+                (status, reason, backtrace::error_json(&error.message()))
+            }
+        },
+    };
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     if !head_only {

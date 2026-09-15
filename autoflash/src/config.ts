@@ -22,5 +22,8 @@ export const FILE_POLL_INTERVAL_MS = 400;
 export const FILE_STABLE_FOR_MS = 700;
 export const MONITOR_RESTART_DELAY_MS = 350;
 
+/** A panic backtrace has ended when the serial output has been quiet this long. */
+export const BACKTRACE_QUIET_MS = 300;
+
 /** Prevent an unattended tab from growing without bound. */
 export const MAX_LOG_CHARACTERS = 350_000;

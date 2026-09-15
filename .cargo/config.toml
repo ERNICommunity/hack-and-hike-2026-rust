@@ -9,6 +9,11 @@ rustflags = [
     "link-arg=-Wl,--no-warn-rwx-segments",
 ]
 
+[env]
+# How many stack frames a panic prints. The default of 10 is mostly used up
+# by the panic machinery itself before it reaches application code.
+ESP_BACKTRACE_CONFIG_BACKTRACE_FRAMES = "20"
+
 [unstable]
 build-std = ["core", "alloc"]
 
