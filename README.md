@@ -33,7 +33,7 @@ gives your code access to that piece of hardware.
 
 ## Contents
 
-- [Open the project](#open-the-project)
+- [Setup](#setup)
 - [Build](#build)
 - [Run the tests](#run-the-tests)
 - [The board](#the-board)
@@ -50,46 +50,21 @@ gives your code access to that piece of hardware.
 - [Reading order](#reading-order)
 - [Going deeper](#going-deeper)
 
-## Open the project
+## Setup
 
 You work inside a development container (Dev Container). The container has
 the Rust toolchain for the ESP32-S3 and all other tools. You do not install
 them on your computer.
 
-Install these on your computer:
+To install all necessary tools for running Dev Containers using the [Rust Dev Environment Setup](https://dev.azure.com/erniegh/ERNI-Rust-Techstack/_git/erni-rust-local-dev-setup).
 
-- VS Code with the **Dev Containers** extension.
-- Docker or Podman, to run the container.
-- Chrome or Edge, to flash the board. The flashing tool, autoflash, uses Web
-  Serial, a browser API for serial ports. Chrome and Edge support it.
-
-Then:
+After installing:
 
 1. Open the repository folder in VS Code.
 2. Choose **Reopen in Container** when VS Code asks. You can also run the
    command **Dev Containers: Reopen in Container**.
 3. Wait. The first time, VS Code builds the container and downloads all
    dependencies. This takes a while. Later starts are much faster.
-
-To see what the container setup is doing, run the command
-**Dev Containers: Show Container Log**.
-
-**Podman only:** do two things once on your computer.
-
-1. In the VS Code settings, set **Dev › Containers: Docker Path**
-   (`dev.containers.dockerPath`) to `podman`. You do not need this if the
-   `docker` command on your computer already runs Podman.
-2. Add this to `~/.config/containers/containers.conf`:
-
-   ```toml
-   [containers]
-   userns = "keep-id"
-   ```
-
-   It gives the user in the container the same ID as your user on the host.
-   Without it, the container user cannot write to the project folder, and
-   files created in the container do not belong to you. The setting applies
-   to all your Podman containers. Docker does not need it.
 
 ## Build
 
