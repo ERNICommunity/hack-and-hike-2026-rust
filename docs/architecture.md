@@ -347,6 +347,11 @@ panel. Other code may draw there: `render_scanlines`, a camera frame or
 another canvas. After that, call `canvas.invalidate()`, so the next `show`
 sends everything. The demo calls it every time the visible screen changes.
 
+`canvas.show_while(&mut surface, || ...)` works like `show`, and calls the
+closure again and again while it compares rows and while the panel receives
+them. A camera application uses it to empty the camera buffer during the
+transfer (`|| frame.pump()`); see `src/bin/face_unlock.rs`.
+
 ### The `ui` module
 
 `src/ui/` is optional. An application can also draw on a `Surface` without
@@ -640,6 +645,7 @@ Code that needs no hardware lives in `crates/core`:
 | `light` | decoding of the light and proximity sensor's data, the lux formula, the proximity scale |
 | `lines` | the log history: a fixed-size ring of text lines |
 | `touch` | decoding of the touch controller's report |
+| `face` | face features from a camera image (local binary patterns), their distance, and the face lock's rules |
 
 It is a `no_std` library: it does not use Rust's standard library, so it
 also works on the ESP32-S3. The firmware depends on it. It has ordinary unit
