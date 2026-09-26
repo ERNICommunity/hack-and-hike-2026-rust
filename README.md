@@ -737,6 +737,7 @@ log::info!("button pressed at {}", point.x);
 | `light_meter` | display, light, proximity | Lux and proximity as numbers and a bar; dark colours in the dark |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `panic_backtrace` | display, touch | A deliberate panic, for [reading a backtrace](#when-your-application-panics) |
+| `face_unlock` | display, touch, camera | Enrol your face, then the board unlocks when it sees it again |
 | `demo` | all capabilities | Several screens with navigation (see below) |
 
 **Color Ping** shows four colour bands below a short text. When you tap a
@@ -841,7 +842,7 @@ tells the network what it needs to know about your type.
 crates/core/        hardware-independent logic with tests
 src/
 ├── lib.rs          the library every application uses
-├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, template.rs
+├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, face_unlock.rs, template.rs
 ├── board/          the PCB: pins, power rails, I2C bus, PSRAM, Board::init() and CPU1
 ├── capabilities/   one module per capability: the APIs you call
 ├── logging.rs      logging with on-device history, memory usage report

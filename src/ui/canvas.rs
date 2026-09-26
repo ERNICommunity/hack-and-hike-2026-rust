@@ -166,6 +166,20 @@ impl Canvas {
     ///
     /// When `surface` does not have the same size as the canvas.
     pub fn show(&mut self, surface: &mut Surface<'_>) {
+        self.show_while(surface, || {});
+    }
+
+    /// Like [`Canvas::show`], but call `while_waiting` again and again while
+    /// the canvas looks for changed rows and while the panel receives them.
+    ///
+    /// Use it for work that must not wait until the pixels have reached the
+    /// panel, such as emptying the camera buffer with
+    /// [`Frame::pump`](crate::capabilities::camera::Frame::pump).
+    ///
+    /// # Panics
+    ///
+    /// When `surface` does not have the same size as the canvas.
+    pub fn show_while(&mut self, surface: &mut Surface<'_>, mut while_waiting: impl FnMut()) {
         assert_eq!(
             surface.size(),
             self.size,
@@ -182,11 +196,12 @@ impl Canvas {
         let mut window = Bounds::EMPTY;
         let mut last_changed_row = i32::MIN;
         for y in candidates.rows() {
+            while_waiting();
             let Some((left, right)) = self.changed_columns(y, candidates.columns()) else {
                 continue;
             };
             if !window.is_empty() && y - last_changed_row > MAX_GAP_ROWS + 1 {
-                self.send(surface, window);
+                self.send(surface, window, &mut while_waiting);
                 window = Bounds::EMPTY;
             }
             window.include_point(Point::new(left, y));
@@ -194,7 +209,7 @@ impl Canvas {
             last_changed_row = y;
         }
         if !window.is_empty() {
-            self.send(surface, window);
+            self.send(surface, window, &mut while_waiting);
         }
         self.panel_known = true;
     }
@@ -251,8 +266,14 @@ impl Canvas {
         Some((columns.start + first as i32, columns.start + last as i32))
     }
 
-    /// Send one window of the canvas and remember it as shown.
-    fn send(&mut self, surface: &mut Surface<'_>, window: Bounds) {
+    /// Send one window of the canvas and remember it as shown. Call
+    /// `while_waiting` while the panel receives the rows.
+    fn send(
+        &mut self,
+        surface: &mut Surface<'_>,
+        window: Bounds,
+        while_waiting: &mut impl FnMut(),
+    ) {
         let Some(area) = window.rectangle() else {
             return;
         };
@@ -261,6 +282,7 @@ impl Canvas {
             pixels: &self.pixels[start..],
             shown: &mut self.shown[start..],
             canvas_width: self.size.width as usize,
+            while_waiting,
         };
         surface.subsurface(area).render_from(&mut rows);
     }
@@ -366,7 +388,7 @@ impl Bounds {
 /// `pixels` and `shown` start at the window's top-left pixel. Rows are
 /// `canvas_width` pixels apart. Every row that is sent is also copied into
 /// `shown`.
-struct Rows<'a> {
+struct Rows<'a, F> {
     /// The application's pixels, from the window's top-left pixel to the end of
     /// the canvas.
     pixels: &'a [Rgb565],
@@ -376,9 +398,12 @@ struct Rows<'a> {
     /// Pixels per canvas row: how far to step in `pixels` to reach the next row.
     /// The window itself may be narrower.
     canvas_width: usize,
+    /// The caller's work while the panel receives the rows; see
+    /// [`Canvas::show_while`].
+    while_waiting: &'a mut F,
 }
 
-impl ScanlineSource for Rows<'_> {
+impl<F: FnMut()> ScanlineSource for Rows<'_, F> {
     fn fill_row(&mut self, y: usize, row: &mut [u8]) {
         let start = y * self.canvas_width;
         let width = row.len() / BYTES_PER_PIXEL;
@@ -387,5 +412,9 @@ impl ScanlineSource for Rows<'_> {
             bytes.copy_from_slice(&RawU16::from(*pixel).into_inner().to_be_bytes());
         }
         self.shown[start..start + width].copy_from_slice(pixels);
+    }
+
+    fn while_transferring(&mut self) {
+        (self.while_waiting)();
     }
 }

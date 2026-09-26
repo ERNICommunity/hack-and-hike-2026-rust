@@ -12,6 +12,7 @@
 //! | Module | Contents | Used by |
 //! | --- | --- | --- |
 //! | [`audio`] | the speaker's ring buffer, an ADPCM (compressed audio) decoder | audio capability, demo |
+//! | [`face`] | face features from the camera image, the face lock's rules | `face_unlock` application |
 //! | [`imu`] | sensor fusion, magnetometer compensation and calibration | IMU capability |
 //! | [`light`] | data decoding, lux formula and proximity scale of the light sensor | light and proximity capabilities |
 //! | [`lines`] | a fixed-size history of text lines | log history |
@@ -27,6 +28,7 @@
 #![warn(clippy::missing_docs_in_private_items)]
 
 pub mod audio;
+pub mod face;
 pub mod imu;
 pub mod light;
 pub mod lines;
