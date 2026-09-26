@@ -25,6 +25,9 @@ USER $USER_NAME
 
 ENV RUST_VERSION=$TOOLCHAIN_VERSION
 
+# Keep build artifacts off the workspace bind mount.
+ENV CARGO_TARGET_DIR=/tmp/cargo-target
+
 # Host toolchain for the host-side tests, rustfmt and rust-analyzer.
 RUN rustup toolchain install "$TOOLCHAIN_VERSION" --component rustfmt --component clippy --component rust-analyzer --component rust-src && \
     rustup default "$TOOLCHAIN_VERSION"
