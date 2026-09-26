@@ -5,19 +5,35 @@
 //! local binary patterns (LBP), compared with the chi-square distance.
 //!
 //! 1. A [`Patch`] is a small grey image of the square in the middle of the
-//!    camera frame. The user holds their face in this square; there is no
-//!    face detection. Each patch pixel is the mean brightness of a 2x2
-//!    block of camera pixels, which also reduces the sensor noise.
-//! 2. [`Codes`] gives each patch pixel an 8-bit code: one bit for each of
-//!    its 8 neighbours, set when the neighbour is brighter than the pixel.
-//!    Brighter or darker light changes every pixel by about the same amount,
-//!    so the codes stay the same. That is why LBP works under different
-//!    light.
+//!    camera frame. The user holds their face in the oval on the screen;
+//!    there is no face detection. Each patch pixel is the mean brightness of
+//!    a 2x2 block of camera pixels, which also reduces the sensor noise.
+//! 2. [`prepare`] removes most of the effect of the light (see below) and
+//!    gives each pixel an 8-bit code: one bit for each of its 8 neighbours,
+//!    set when the neighbour is brighter than the pixel. The result is
+//!    [`Codes`].
 //! 3. [`Features`] divides a window of the codes into a grid of cells and
 //!    counts the codes in each cell: one histogram per cell. The histograms
-//!    describe the texture of each part of the face: eyes, nose, mouth.
+//!    describe the texture of each part of the face: eyes, nose, mouth. Only
+//!    codes inside an oval count, so the background in the corners of the
+//!    window does not.
 //! 4. [`Features::distance`] compares two faces: 0 means the histograms are
 //!    the same, 2 means they have nothing in common.
+//!
+//! The light step follows Tan and Triggs, "Enhanced local texture feature
+//! sets for face recognition under difficult lighting conditions" (2010):
+//!
+//! - A gamma curve brightens the dark parts, so a face in shadow keeps its
+//!   details.
+//! - A difference of two blurs (DoG, difference of Gaussians) keeps the
+//!   details of the face and removes slow changes of brightness, such as a
+//!   lamp on one side.
+//! - Dividing by the mean contrast makes a dim image and a bright image
+//!   alike, so the noise tolerance of the codes means the same in both.
+//!
+//! Tests with photos of 158 people (the LFW data set) showed that these steps
+//! halve the effect of dim light, side light and camera noise, and that the
+//! oval reduces the effect of the background.
 //!
 //! A face is never in exactly the same place twice. So [`best_distance`]
 //! moves the window over a few [`OFFSETS`] and keeps the smallest distance.
@@ -25,11 +41,12 @@
 //! and when to lock again.
 //!
 //! The firmware must empty the camera's buffer every few milliseconds. So
-//! the slow steps work one row or one comparison at a time, and
-//! [`best_distance`] calls back between comparisons.
+//! [`prepare`] and [`best_distance`] call back after each small step.
 
 /// Side of the [`Patch`] in pixels.
 pub const PATCH_SIZE: usize = 96;
+/// Pixels in a [`Patch`].
+pub const PIXELS: usize = PATCH_SIZE * PATCH_SIZE;
 /// Camera pixels per patch pixel along each axis. Each patch pixel is the
 /// mean of a `SCALE` x `SCALE` block.
 pub const SCALE: usize = 2;
@@ -41,10 +58,10 @@ pub const CODES_SIZE: usize = PATCH_SIZE - 2;
 /// Side of the window of codes that [`Features`] describe: 80.
 pub const WINDOW: usize = 80;
 /// Cells along each side of the window.
-pub const GRID: usize = 5;
-/// Side of one cell, in codes: 16.
+pub const GRID: usize = 10;
+/// Side of one cell, in codes: 8.
 pub const CELL: usize = WINDOW / GRID;
-/// Cells in the window: 25.
+/// Cells in the window: 100.
 pub const CELLS: usize = GRID * GRID;
 /// Histogram bins per cell: 58 uniform patterns and one bin for all other
 /// patterns (see [`UNIFORM_BIN`]).
@@ -52,22 +69,95 @@ pub const BINS: usize = 59;
 /// The largest window offset inside the codes: 14.
 pub const MAX_OFFSET: usize = CODES_SIZE - WINDOW;
 /// The offset of the window in the middle of the codes: 7. Enrolment uses
-/// it, and the guide box on the screen shows it.
+/// it, and the oval on the screen shows it.
 pub const CENTER_OFFSET: usize = MAX_OFFSET / 2;
 /// The window offsets that [`best_distance`] tries, along each axis. Nine
 /// windows in all. One patch pixel is two camera pixels, so the face may be
 /// up to 14 camera pixels away from the middle.
 pub const OFFSETS: [usize; 3] = [0, CENTER_OFFSET, MAX_OFFSET];
+/// Half the width of the oval in which codes count, in codes.
+pub const MASK_HALF_WIDTH: usize = 34;
+/// Half the height of the oval in which codes count, in codes.
+pub const MASK_HALF_HEIGHT: usize = 38;
 /// How much brighter than the centre pixel a neighbour must be for its bit
-/// to be set, in grey levels. Without it, sensor noise in flat areas such
-/// as the cheeks would set random bits.
-pub const NOISE_TOLERANCE: u8 = 3;
-
-/// Codes counted in one [`Features`]: 6,400.
-const SAMPLES: u32 = (CELLS * CELL * CELL) as u32;
+/// to be set, after [`prepare`] scaled the mean contrast to [`CONTRAST`].
+/// Without it, sensor noise in flat areas such as the cheeks would set
+/// random bits.
+pub const TOLERANCE: f32 = 1.0;
+/// The mean absolute value of the prepared image inside the oval.
+pub const CONTRAST: f32 = 12.75;
+/// The exponent of the gamma curve: values below 1 brighten dark parts.
+pub const GAMMA: f32 = 0.2;
+/// Standard deviation of the fine blur, in patch pixels.
+const FINE_SIGMA: f32 = 1.0;
+/// Standard deviation of the coarse blur, in patch pixels.
+const COARSE_SIGMA: f32 = 2.0;
+/// Pixels on each side of the centre in the fine blur: three sigmas.
+const FINE_RADIUS: usize = 3;
+/// Pixels on each side of the centre in the coarse blur: three sigmas.
+const COARSE_RADIUS: usize = 6;
+/// Length of the `f32` slice that [`Workspace::new`] needs: four images.
+pub const WORKSPACE_LEN: usize = 4 * PIXELS;
 
 const _: () = assert!(WINDOW.is_multiple_of(GRID));
 const _: () = assert!(WINDOW <= CODES_SIZE);
+const _: () = assert!(2 * MASK_HALF_WIDTH <= WINDOW && 2 * MASK_HALF_HEIGHT <= WINDOW);
+// A cell count must fit in a `u8`.
+const _: () = assert!(CELL * CELL <= u8::MAX as usize);
+
+/// Whether code (`x`, `y`) of a window lies inside the oval. The oval is
+/// centred in the window; the test uses the centre of each code.
+const fn in_mask(x: usize, y: usize) -> bool {
+    let (a, b) = (MASK_HALF_WIDTH as i64, MASK_HALF_HEIGHT as i64);
+    let dx = 2 * x as i64 + 1 - WINDOW as i64;
+    let dy = 2 * y as i64 + 1 - WINDOW as i64;
+    // (dx/2)^2 / a^2 + (dy/2)^2 / b^2 <= 1, without division.
+    dx * dx * b * b + dy * dy * a * a <= 4 * a * a * b * b
+}
+
+/// For each row of a window, the columns inside the oval: `start..end`.
+/// The oval is convex, so they are one run. Empty rows have `start == end`.
+pub const MASK_ROWS: [(u8, u8); WINDOW] = {
+    let mut rows = [(0_u8, 0_u8); WINDOW];
+    let mut y = 0;
+    while y < WINDOW {
+        let mut x = 0;
+        while x < WINDOW && !in_mask(x, y) {
+            x += 1;
+        }
+        let start = x;
+        while x < WINDOW && in_mask(x, y) {
+            x += 1;
+        }
+        rows[y] = (start as u8, x as u8);
+        y += 1;
+    }
+    rows
+};
+
+/// Codes counted in one [`Features`]: those inside the oval, about 4,050.
+pub const MASKED_CODES: usize = {
+    let mut count = 0;
+    let mut y = 0;
+    while y < WINDOW {
+        count += (MASK_ROWS[y].1 - MASK_ROWS[y].0) as usize;
+        y += 1;
+    }
+    count
+};
+
+/// `1 / n` for each possible sum `n` of two cell counts, and 0 for `n = 0`.
+/// The ESP32-S3 has no instruction for `f32` division, so
+/// [`Features::distance`] multiplies with these instead.
+const RECIPROCALS: [f32; 2 * CELL * CELL + 1] = {
+    let mut table = [0.0; 2 * CELL * CELL + 1];
+    let mut n = 1;
+    while n < table.len() {
+        table[n] = 1.0 / n as f32;
+        n += 1;
+    }
+    table
+};
 
 /// The brightness (luma) of one big-endian RGB565 pixel, 0 to 255.
 ///
@@ -91,7 +181,7 @@ pub fn luma(high: u8, low: u8) -> u8 {
 #[derive(Clone)]
 pub struct Patch {
     /// Brightness of each pixel, row by row.
-    pixels: [u8; PATCH_SIZE * PATCH_SIZE],
+    pixels: [u8; PIXELS],
 }
 
 /// Whether a [`Patch`] is good enough to compare faces.
@@ -119,7 +209,7 @@ impl Patch {
     /// A black patch.
     pub const fn new() -> Self {
         Self {
-            pixels: [0; PATCH_SIZE * PATCH_SIZE],
+            pixels: [0; PIXELS],
         }
     }
 
@@ -159,7 +249,7 @@ impl Patch {
     }
 
     /// Check the brightness and contrast of the middle window: the part of
-    /// the patch that enrolment uses and the guide box shows.
+    /// the patch that enrolment uses and the oval shows.
     pub fn quality(&self) -> Quality {
         // Code (x, y) belongs to patch pixel (x + 1, y + 1).
         let start = CENTER_OFFSET + 1;
@@ -196,6 +286,162 @@ impl Default for Patch {
     }
 }
 
+/// Working memory of [`prepare`]: four images of `f32` values, and the
+/// tables for the gamma curve and the blurs.
+pub struct Workspace<'a> {
+    /// The gamma curve for each grey level.
+    gamma: [f32; 256],
+    /// The weights of the fine blur, which add up to 1.
+    fine_kernel: [f32; 2 * FINE_RADIUS + 1],
+    /// The weights of the coarse blur, which add up to 1.
+    coarse_kernel: [f32; 2 * COARSE_RADIUS + 1],
+    /// The patch after the gamma curve.
+    image: &'a mut [f32],
+    /// A blur's result after its first (horizontal) pass.
+    scratch: &'a mut [f32],
+    /// The fine blur, and at the end the prepared image.
+    fine: &'a mut [f32],
+    /// The coarse blur.
+    coarse: &'a mut [f32],
+}
+
+impl<'a> Workspace<'a> {
+    /// Use `memory` as working memory. The firmware allocates it in PSRAM.
+    ///
+    /// # Panics
+    ///
+    /// When `memory` is not [`WORKSPACE_LEN`] values long.
+    pub fn new(memory: &'a mut [f32]) -> Self {
+        assert_eq!(memory.len(), WORKSPACE_LEN, "workspace length");
+        let (image, rest) = memory.split_at_mut(PIXELS);
+        let (scratch, rest) = rest.split_at_mut(PIXELS);
+        let (fine, coarse) = rest.split_at_mut(PIXELS);
+        Self {
+            gamma: core::array::from_fn(|level| libm::powf((level as f32 + 1.0) / 256.0, GAMMA)),
+            fine_kernel: gaussian(FINE_SIGMA),
+            coarse_kernel: gaussian(COARSE_SIGMA),
+            image,
+            scratch,
+            fine,
+            coarse,
+        }
+    }
+}
+
+/// The weights of a Gaussian blur with standard deviation `sigma`,
+/// normalised to add up to 1. `N` is the kernel length: 2 * radius + 1.
+fn gaussian<const N: usize>(sigma: f32) -> [f32; N] {
+    let radius = (N / 2) as f32;
+    let mut kernel: [f32; N] = core::array::from_fn(|i| {
+        let offset = i as f32 - radius;
+        libm::expf(-offset * offset / (2.0 * sigma * sigma))
+    });
+    let sum: f32 = kernel.iter().sum();
+    kernel.iter_mut().for_each(|weight| *weight /= sum);
+    kernel
+}
+
+/// One row of a blur's horizontal pass: blur row `row` of `source` into the
+/// same row of `target`. Pixels beyond the edge repeat the edge pixel.
+fn blur_horizontal(source: &[f32], target: &mut [f32], kernel: &[f32], row: usize) {
+    let radius = kernel.len() / 2;
+    let line = &source[row * PATCH_SIZE..(row + 1) * PATCH_SIZE];
+    for (x, out) in target[row * PATCH_SIZE..(row + 1) * PATCH_SIZE]
+        .iter_mut()
+        .enumerate()
+    {
+        let mut sum = 0.0;
+        for (i, weight) in kernel.iter().enumerate() {
+            let column = (x + i).saturating_sub(radius).min(PATCH_SIZE - 1);
+            sum += weight * line[column];
+        }
+        *out = sum;
+    }
+}
+
+/// One row of a blur's vertical pass: row `row` of `target` from the rows
+/// around it in `source`. Rows beyond the edge repeat the edge row.
+fn blur_vertical(source: &[f32], target: &mut [f32], kernel: &[f32], row: usize) {
+    let radius = kernel.len() / 2;
+    let out = &mut target[row * PATCH_SIZE..(row + 1) * PATCH_SIZE];
+    out.fill(0.0);
+    for (i, weight) in kernel.iter().enumerate() {
+        let from = (row + i).saturating_sub(radius).min(PATCH_SIZE - 1);
+        let line = &source[from * PATCH_SIZE..(from + 1) * PATCH_SIZE];
+        for (value, &input) in out.iter_mut().zip(line) {
+            *value += weight * input;
+        }
+    }
+}
+
+/// Prepare `patch` for comparison and compute its `codes`: gamma curve,
+/// difference of two blurs, mean contrast scaled to [`CONTRAST`], then the
+/// local binary pattern of each pixel.
+///
+/// `between` runs after each row of each step, so the caller can do other
+/// urgent work. The firmware empties the camera buffer there.
+pub fn prepare(
+    patch: &Patch,
+    work: &mut Workspace<'_>,
+    codes: &mut Codes,
+    mut between: impl FnMut(),
+) {
+    let Workspace {
+        gamma,
+        fine_kernel,
+        coarse_kernel,
+        image,
+        scratch,
+        fine,
+        coarse,
+    } = work;
+    for (value, &level) in image.iter_mut().zip(&patch.pixels) {
+        *value = gamma[usize::from(level)];
+    }
+    between();
+    for (kernel, blurred) in [
+        (&fine_kernel[..], &mut **fine),
+        (&coarse_kernel[..], &mut **coarse),
+    ] {
+        for row in 0..PATCH_SIZE {
+            blur_horizontal(image, scratch, kernel, row);
+            between();
+        }
+        for row in 0..PATCH_SIZE {
+            blur_vertical(scratch, blurred, kernel, row);
+            between();
+        }
+    }
+
+    // The difference of the blurs keeps the details of the face.
+    for (value, &smooth) in fine.iter_mut().zip(coarse.iter()) {
+        *value -= smooth;
+    }
+    // Its mean absolute value inside the oval of the middle window. Code
+    // (x, y) of that window belongs to patch pixel (x + 1 + CENTER_OFFSET,
+    // y + 1 + CENTER_OFFSET).
+    let mut sum = 0.0;
+    for (y, &(start, end)) in MASK_ROWS.iter().enumerate() {
+        let row = (y + 1 + CENTER_OFFSET) * PATCH_SIZE + 1 + CENTER_OFFSET;
+        for &value in &fine[row + usize::from(start)..row + usize::from(end)] {
+            sum += libm::fabsf(value);
+        }
+    }
+    let mean = sum / MASKED_CODES as f32;
+    // A flat patch has a mean of 0. Its codes are all 0 then, whatever the
+    // factor; `max` only avoids the division by zero.
+    let factor = CONTRAST / mean.max(f32::MIN_POSITIVE);
+    for value in fine.iter_mut() {
+        *value *= factor;
+    }
+    between();
+
+    for row in 0..CODES_SIZE {
+        codes.compute_row(fine, row);
+        between();
+    }
+}
+
 /// Number of bit changes when an 8-bit pattern is read around the circle,
 /// from bit 7 back to bit 0.
 const fn transitions(code: u8) -> u32 {
@@ -225,7 +471,8 @@ pub const UNIFORM_BIN: [u8; 256] = {
 };
 
 /// The local binary pattern code of every inner pixel of a [`Patch`],
-/// already mapped to its histogram bin with [`UNIFORM_BIN`].
+/// already mapped to its histogram bin with [`UNIFORM_BIN`]. [`prepare`]
+/// computes them.
 #[derive(Clone)]
 pub struct Codes {
     /// The bin of each code, row by row. Code (x, y) belongs to patch pixel
@@ -234,21 +481,15 @@ pub struct Codes {
 }
 
 impl Codes {
-    /// Codes for a black patch: all flat.
+    /// Codes for a flat patch.
     pub const fn new() -> Self {
         Self {
             bins: [0; CODES_SIZE * CODES_SIZE],
         }
     }
 
-    /// Compute row `row` of the codes from `patch`. Call it for every row,
-    /// 0 to [`CODES_SIZE`] - 1, before [`Features::compute`].
-    ///
-    /// # Panics
-    ///
-    /// When `row` is [`CODES_SIZE`] or more.
-    pub fn compute_row(&mut self, patch: &Patch, row: usize) {
-        assert!(row < CODES_SIZE, "code row {row} out of range");
+    /// Compute row `row` of the codes from the prepared image.
+    fn compute_row(&mut self, prepared: &[f32], row: usize) {
         // The 8 neighbours, clockwise from the top-left one. The bit number
         // is the position in this list.
         const NEIGHBOURS: [(usize, usize); 8] = [
@@ -261,25 +502,17 @@ impl Codes {
             (0, 2),
             (0, 1),
         ];
+        let at = |x: usize, y: usize| prepared[y * PATCH_SIZE + x];
         let out = &mut self.bins[row * CODES_SIZE..(row + 1) * CODES_SIZE];
         for (x, bin) in out.iter_mut().enumerate() {
-            let limit = patch.at(x + 1, row + 1).saturating_add(NOISE_TOLERANCE);
+            let limit = at(x + 1, row + 1) + TOLERANCE;
             let mut code = 0_u8;
             for (bit, (dx, dy)) in NEIGHBOURS.iter().enumerate() {
-                if patch.at(x + dx, row + dy) >= limit {
+                if at(x + dx, row + dy) >= limit {
                     code |= 1 << bit;
                 }
             }
             *bin = UNIFORM_BIN[usize::from(code)];
-        }
-    }
-
-    /// Compute all rows at once. The firmware calls
-    /// [`compute_row`](Self::compute_row) instead, so it can empty the
-    /// camera buffer between rows.
-    pub fn compute(&mut self, patch: &Patch) {
-        for row in 0..CODES_SIZE {
-            self.compute_row(patch, row);
         }
     }
 }
@@ -291,12 +524,11 @@ impl Default for Codes {
 }
 
 /// The description of one face: a histogram of codes for each cell of a
-/// window.
+/// window. Only codes inside the oval ([`MASK_ROWS`]) count.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Features {
-    /// The histograms, one per cell, row by row. Each holds `CELL * CELL`
-    /// codes.
-    histograms: [[u16; BINS]; CELLS],
+    /// The histograms, one per cell, row by row.
+    histograms: [[u8; BINS]; CELLS],
 }
 
 impl Features {
@@ -318,14 +550,12 @@ impl Features {
             "window offset ({offset_x}, {offset_y}) out of range"
         );
         self.histograms = [[0; BINS]; CELLS];
-        for y in 0..WINDOW {
-            let start = (offset_y + y) * CODES_SIZE + offset_x;
-            let row = &codes.bins[start..start + WINDOW];
+        for (y, &(start, end)) in MASK_ROWS.iter().enumerate() {
+            let (start, end) = (usize::from(start), usize::from(end));
+            let row = (offset_y + y) * CODES_SIZE + offset_x;
             let cells = &mut self.histograms[(y / CELL) * GRID..(y / CELL + 1) * GRID];
-            for (cell, bins) in cells.iter_mut().zip(row.chunks_exact(CELL)) {
-                for &bin in bins {
-                    cell[usize::from(bin)] += 1;
-                }
+            for (x, &bin) in codes.bins[row + start..row + end].iter().enumerate() {
+                cells[(start + x) / CELL][usize::from(bin)] += 1;
             }
         }
     }
@@ -346,13 +576,10 @@ impl Features {
             .iter()
             .zip(other.histograms.as_flattened())
         {
-            let total = u32::from(a) + u32::from(b);
-            if total != 0 {
-                let difference = f32::from(a) - f32::from(b);
-                sum += difference * difference / total as f32;
-            }
+            let difference = f32::from(a) - f32::from(b);
+            sum += difference * difference * RECIPROCALS[usize::from(a) + usize::from(b)];
         }
-        sum / SAMPLES as f32
+        sum / MASKED_CODES as f32
     }
 }
 
@@ -361,8 +588,8 @@ impl Features {
 /// templates.
 ///
 /// `probe` is working memory for the features of each window; it is large,
-/// so the caller provides it. `between` runs after each window, while the
-/// work is not finished. The firmware empties the camera buffer there.
+/// so the caller provides it. `between` runs after each window and after
+/// each comparison. The firmware empties the camera buffer there.
 pub fn best_distance(
     codes: &Codes,
     templates: &[Features],
@@ -376,10 +603,11 @@ pub fn best_distance(
     for offset_y in OFFSETS {
         for offset_x in OFFSETS {
             probe.compute(codes, offset_x, offset_y);
+            between();
             for template in templates {
                 best = best.min(probe.distance(template));
+                between();
             }
-            between();
         }
     }
     Some(best)
@@ -399,7 +627,7 @@ pub const UNLOCK_HOLD_MS: u64 = 5_000;
 /// The smallest threshold that [`FaceLock::set_threshold`] accepts.
 pub const MIN_THRESHOLD: f32 = 0.05;
 /// The largest threshold that [`FaceLock::set_threshold`] accepts.
-pub const MAX_THRESHOLD: f32 = 1.0;
+pub const MAX_THRESHOLD: f32 = 1.5;
 
 /// Where the lock is.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -580,6 +808,10 @@ impl FaceLock {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
+    use std::{boxed::Box, vec};
+
     use super::*;
 
     /// A patch whose pixel (x, y) is `value(x, y)`.
@@ -606,23 +838,38 @@ mod tests {
         }
     }
 
+    /// Vertical stripes: a very different texture from `face`.
+    fn stripes(x: usize, _: usize) -> u8 {
+        if x % 6 < 3 { 60 } else { 180 }
+    }
+
+    /// The codes of `patch`, prepared as the firmware does.
+    fn codes(patch: &Patch) -> Box<Codes> {
+        let mut memory = vec![0.0; WORKSPACE_LEN];
+        let mut work = Workspace::new(&mut memory);
+        let mut codes = Box::new(Codes::new());
+        prepare(patch, &mut work, &mut codes, || {});
+        codes
+    }
+
     /// The features of the middle window of `patch`.
     fn middle_features(patch: &Patch) -> Features {
-        let mut codes = Codes::new();
-        codes.compute(patch);
         let mut features = Features::EMPTY;
-        features.compute(&codes, CENTER_OFFSET, CENTER_OFFSET);
+        features.compute(&codes(patch), CENTER_OFFSET, CENTER_OFFSET);
         features
+    }
+
+    /// The distance between the middle windows of two patches.
+    fn middle_distance(a: &Patch, b: &Patch) -> f32 {
+        middle_features(a).distance(&middle_features(b))
     }
 
     /// The best distance between `probe` and the middle window of
     /// `enrolled`.
     fn best(enrolled: &Patch, probe: &Patch) -> f32 {
         let templates = [middle_features(enrolled)];
-        let mut codes = Codes::new();
-        codes.compute(probe);
         let mut scratch = Features::EMPTY;
-        best_distance(&codes, &templates, &mut scratch, || {}).unwrap()
+        best_distance(&codes(probe), &templates, &mut scratch, || {}).unwrap()
     }
 
     #[test]
@@ -669,67 +916,130 @@ mod tests {
     }
 
     #[test]
+    fn the_mask_is_a_centred_oval() {
+        // The area of an ellipse is pi * a * b.
+        let area = core::f32::consts::PI * (MASK_HALF_WIDTH * MASK_HALF_HEIGHT) as f32;
+        assert!(
+            (MASKED_CODES as f32 - area).abs() < area * 0.01,
+            "{MASKED_CODES}"
+        );
+        let middle = WINDOW / 2;
+        assert_eq!(
+            MASK_ROWS[middle],
+            (
+                (middle - MASK_HALF_WIDTH) as u8,
+                (middle + MASK_HALF_WIDTH) as u8
+            )
+        );
+        assert_eq!(MASK_ROWS[0].0, MASK_ROWS[0].1, "the top row is outside");
+        for y in 0..WINDOW {
+            let (start, end) = MASK_ROWS[y];
+            assert_eq!(MASK_ROWS[WINDOW - 1 - y], (start, end), "row {y}");
+            if start != end {
+                assert_eq!(usize::from(start), WINDOW - usize::from(end), "row {y}");
+            }
+        }
+    }
+
+    #[test]
     fn a_face_matches_itself() {
         let face = patch(|x, y| face(x, y, 0));
-        assert_eq!(
-            middle_features(&face).distance(&middle_features(&face)),
-            0.0
-        );
+        assert_eq!(middle_distance(&face, &face), 0.0);
         assert_eq!(best(&face, &face), 0.0);
     }
 
     #[test]
-    fn brighter_light_does_not_change_the_features() {
-        let normal = patch(|x, y| face(x, y, 0));
-        let brighter = patch(|x, y| face(x, y, 0) + 30);
-        assert_eq!(middle_features(&normal), middle_features(&brighter));
+    fn a_flat_patch_has_only_flat_codes() {
+        let codes = codes(&patch(|_, _| 128));
+        assert!(codes.bins.iter().all(|&bin| bin == 0));
     }
 
     #[test]
-    fn sensor_noise_in_flat_areas_is_ignored() {
-        let flat = patch(|_, _| 120);
-        let noisy = patch(|x, y| 120 + ((x * 7 + y * 13) % 3) as u8);
-        assert_eq!(middle_features(&flat), middle_features(&noisy));
+    fn dim_light_and_side_light_hardly_change_the_features() {
+        let face_patch = patch(|x, y| face(x, y, 0));
+        let other = patch(stripes);
+        let different = middle_distance(&face_patch, &other);
+        // Half the light: the gamma curve and the contrast scaling make it
+        // almost the same image.
+        let dim = patch(|x, y| face(x, y, 0) / 2);
+        let dim_distance = middle_distance(&face_patch, &dim);
+        // Light from the right: the left side gets a third of the light.
+        let side = patch(|x, y| (f32::from(face(x, y, 0)) * (0.33 + 0.67 * x as f32 / 95.0)) as u8);
+        let side_distance = middle_distance(&face_patch, &side);
+        assert!(
+            dim_distance < different / 10.0,
+            "{dim_distance} vs {different}"
+        );
+        assert!(
+            side_distance < different / 5.0,
+            "{side_distance} vs {different}"
+        );
+    }
+
+    #[test]
+    fn camera_noise_changes_a_face_only_a_little() {
+        let face_patch = patch(|x, y| face(x, y, 0));
+        // Noise of up to 2 grey levels.
+        let noisy = patch(|x, y| face(x, y, 0) + ((x * 7 + y * 13) % 5) as u8 - 2);
+        let noise_distance = middle_distance(&face_patch, &noisy);
+        let different = middle_distance(&face_patch, &patch(stripes));
+        assert!(
+            noise_distance < different / 3.0,
+            "{noise_distance} vs {different}"
+        );
+    }
+
+    #[test]
+    fn only_the_oval_counts() {
+        let face_patch = patch(|x, y| face(x, y, 0));
+        // New background in the four corners of the patch. The blurs and
+        // the neighbours reach 7 pixels, and the corners are far enough
+        // outside the oval.
+        let corner = |v: usize| !(16..PATCH_SIZE - 16).contains(&v);
+        let busy = patch(|x, y| {
+            if corner(x) && corner(y) {
+                stripes(x, y)
+            } else {
+                face(x, y, 0)
+            }
+        });
+        assert_eq!(middle_distance(&face_patch, &busy), 0.0);
     }
 
     #[test]
     fn a_moved_face_matches_at_another_offset() {
         let enrolled = patch(|x, y| face(x, y, 0));
         let moved = patch(|x, y| face(x, y, CENTER_OFFSET));
-        // In the middle window alone, the moved face looks different...
-        let middle = middle_features(&enrolled).distance(&middle_features(&moved));
-        assert!(middle > 0.0, "{middle}");
-        // ...but the window at the matching offset finds it.
-        assert_eq!(best(&enrolled, &moved), 0.0);
+        let middle = middle_distance(&enrolled, &moved);
+        let best = best(&enrolled, &moved);
+        // The window at the matching offset finds the face. Near the edge of
+        // the patch, the blurs see repeated edge pixels, so it is not exact.
+        assert!(best < middle / 5.0, "{best} vs {middle}");
     }
 
     #[test]
-    fn different_images_are_farther_than_the_same_image() {
-        let vertical = patch(|x, _| if x % 6 < 3 { 60 } else { 180 });
-        let horizontal = patch(|_, y| if y % 6 < 3 { 60 } else { 180 });
+    fn different_images_are_far_apart() {
+        let vertical = patch(stripes);
+        let horizontal = patch(|x, y| stripes(y, x));
         let face = patch(|x, y| face(x, y, 0));
-        // Two thirds of the stripe codes are flat (code 0) in both
-        // images. The other third differs, so the distance is 2/3.
-        let stripes = best(&vertical, &horizontal);
-        assert!((stripes - 2.0 / 3.0).abs() < 0.05, "{stripes}");
-        // The test face is smooth, so most of its codes are flat too.
-        for other in [&vertical, &horizontal] {
-            let distance = best(&face, other);
-            assert!(distance > 0.2, "{distance}");
+        for (a, b) in [
+            (&vertical, &horizontal),
+            (&face, &vertical),
+            (&face, &horizontal),
+        ] {
+            let distance = best(a, b);
+            assert!(distance > 0.5, "{distance}");
         }
     }
 
     #[test]
     fn distance_is_symmetric_and_at_most_two() {
         let a = middle_features(&patch(|x, y| face(x, y, 0)));
-        let b = middle_features(&patch(|x, _| if x % 6 < 3 { 60 } else { 180 }));
+        let b = middle_features(&patch(stripes));
         assert_eq!(a.distance(&b), b.distance(&a));
-        // A flat image has only code 0. In a gradient that gets brighter to
-        // the right by the noise tolerance (3 per pixel), every pixel has the
-        // code of its three right neighbours. No code is in both.
-        let flat = middle_features(&patch(|_, _| 100));
-        let gradient = middle_features(&patch(|x, _| (3 * x.saturating_sub(CENTER_OFFSET)) as u8));
-        assert!((flat.distance(&gradient) - 2.0).abs() < 1e-6);
+        assert!(a.distance(&b) <= 2.0);
+        // Compared with empty features, every code differs.
+        assert!((a.distance(&Features::EMPTY) - 1.0).abs() < 1e-5);
     }
 
     #[test]
@@ -740,13 +1050,13 @@ mod tests {
     }
 
     #[test]
-    fn best_distance_calls_back_after_each_window() {
+    fn best_distance_calls_back_after_each_step() {
         let codes = Codes::new();
-        let templates = [Features::EMPTY];
+        let templates = [Features::EMPTY, Features::EMPTY];
         let mut scratch = Features::EMPTY;
         let mut calls = 0;
         best_distance(&codes, &templates, &mut scratch, || calls += 1);
-        assert_eq!(calls, OFFSETS.len() * OFFSETS.len());
+        assert_eq!(calls, OFFSETS.len() * OFFSETS.len() * (1 + templates.len()));
     }
 
     #[test]
