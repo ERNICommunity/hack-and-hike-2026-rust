@@ -14,7 +14,7 @@ use static_cell::StaticCell;
 
 use crate::{
     board::i2c,
-    capabilities::{audio, backlight, imu, light, network, proximity, touch},
+    capabilities::{audio, backlight, camera, imu, light, network, proximity, touch},
     logging,
 };
 
@@ -57,6 +57,9 @@ pub(super) struct Cpu1 {
     /// The USB Serial/JTAG peripheral behind the USB-C socket. It carries
     /// the log and the screen feed.
     pub(super) usb: USB_DEVICE<'static>,
+    /// Signal shared with the camera handle, for auto adjust requests.
+    /// `None` when no camera answered.
+    pub(super) camera: Option<camera::Runtime>,
 }
 
 /// Start the second core with its own async executor and the capability
@@ -97,5 +100,8 @@ fn run(cpu1: Cpu1) {
         // Like the I2C bus, the async USB driver is created here, so its
         // interrupt runs on CPU1.
         logging::spawn(&spawner, cpu1.usb);
+        if let Some(camera) = cpu1.camera {
+            camera::spawn(&spawner, system_bus, camera);
+        }
     });
 }

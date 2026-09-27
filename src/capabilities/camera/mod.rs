@@ -39,10 +39,18 @@
 //! The camera is optional, like the light and proximity sensor.
 //! `Board::init` returns `None` for it when no sensor answers, and does not
 //! panic.
+//!
+//! Automatic exposure and automatic white balance are on after start-up.
+//! [`Camera::set_auto_adjust`] switches both off, which freezes the
+//! brightness and the colours, and on again. A CPU1 task writes the sensor
+//! registers, like the backlight task. Applications that never call it see
+//! no change.
 
 mod capture;
 mod gc0308;
+mod runtime;
 
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use esp_hal::delay::Delay;
 use log::{info, warn};
 
@@ -50,6 +58,54 @@ use crate::board::{i2c, io_expander, power};
 
 pub(crate) use capture::Resources;
 pub use capture::{Camera, CaptureStats, Frame, HEIGHT, WIDTH};
+pub(crate) use runtime::spawn;
+
+/// The state shared by the camera handle (CPU0) and the control task (CPU1).
+struct Service {
+    /// The newest auto adjust request that is not applied yet: `true` for
+    /// on, `false` for locked. A new request replaces the old one.
+    request: Signal<CriticalSectionRawMutex, bool>,
+}
+
+/// The one shared control state. A plain `static` is safe to use from both
+/// cores, because the signal protects its value with a critical section.
+static SERVICE: Service = Service {
+    request: Signal::new(),
+};
+
+impl Camera {
+    /// Switch automatic exposure and automatic white balance on (`true`) or
+    /// off (`false`). Off freezes both: the sensor keeps the exposure and the
+    /// colour gains it chose last, so the brightness no longer jumps. Both
+    /// are on after start-up.
+    ///
+    /// Never waits: a task on CPU1 writes the sensor registers shortly
+    /// after. When an earlier request is not applied yet, this one replaces
+    /// it.
+    pub fn set_auto_adjust(&mut self, enabled: bool) {
+        SERVICE.request.signal(enabled);
+    }
+}
+
+/// CPU1 side of the signal, used by the control task.
+#[derive(Clone, Copy)]
+pub(crate) struct Runtime {
+    /// Points at the signal shared with the camera handle on CPU0.
+    service: &'static Service,
+}
+
+impl Runtime {
+    /// Wait for the next auto adjust request, and take it out of the signal.
+    async fn next_request(self) -> bool {
+        self.service.request.wait().await
+    }
+}
+
+/// The CPU1 side of the auto adjust signal. The board creates it only when
+/// the camera answered, and gives it to the control task.
+pub(crate) fn runtime() -> Runtime {
+    Runtime { service: &SERVICE }
+}
 
 /// Milliseconds to wait after the camera power rails turn on, before the
 /// reset pulse. The voltages need this time to become stable.

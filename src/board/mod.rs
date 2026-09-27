@@ -313,6 +313,8 @@ impl Board {
             handle: touch,
             runtime: touch_runtime,
         } = touch::endpoints();
+        // The camera's control task starts only when the camera answered.
+        let camera_runtime = camera.is_some().then(camera::runtime);
 
         logging::report_memory("before CPU1 start");
         cpu1::start(
@@ -339,6 +341,7 @@ impl Board {
                 touch: touch_runtime,
                 light: light_runtimes,
                 usb: peripherals.USB_DEVICE,
+                camera: camera_runtime,
             },
         );
 

@@ -4,7 +4,8 @@
 //! firmware uses it at 320x240 pixels. The sensor is programmed once during
 //! bring-up, over the shared I2C bus. The sensor's documentation calls this
 //! control bus SCCB (Serial Camera Control Bus). After that, capturing uses
-//! only the parallel bus and never uses I2C again.
+//! only the parallel bus. I2C is used again only when an application
+//! switches automatic exposure and white balance ([`set_auto_adjust`]).
 //!
 //! `DEFAULT_REGS` and the reset before it come from Espressif's
 //! esp32-camera driver (`sensors/private_include/gc0308_settings.h` and
@@ -16,8 +17,9 @@
 //! `THIRD_PARTY_NOTICES.md` lists this and every other borrowed part.
 
 use esp_hal::delay::Delay;
+use log::info;
 
-use crate::board::registers::Registers;
+use crate::board::registers::{AsyncRegisters, Registers};
 
 use super::BringUpError;
 
@@ -44,6 +46,17 @@ const ORIENTATION_VERTICAL_FLIP_MASK: u8 = 0x02;
 /// Both orientation bits. This driver changes only these bits of
 /// `ORIENTATION`.
 const ORIENTATION_MASK: u8 = ORIENTATION_HORIZONTAL_MIRROR_MASK | ORIENTATION_VERTICAL_FLIP_MASK;
+/// Automatic exposure control (AEC) settings (page 0). The register program
+/// below writes `0x90`, so AEC is on after start-up. The bit is the one
+/// Espressif's `esp32-camera` driver uses.
+const AEC_CONTROL: u8 = 0xd2;
+/// Bit in `AEC_CONTROL` that switches automatic exposure on.
+const AEC_ENABLE_MASK: u8 = 0x80;
+/// Automatic white balance (AWB) and other automatic functions (page 0).
+/// The register program below writes `0x57`, so AWB is on after start-up.
+const AWB_CONTROL: u8 = 0x22;
+/// Bit in `AWB_CONTROL` that switches automatic white balance on.
+const AWB_ENABLE_MASK: u8 = 0x02;
 
 // Espressif's basic GC0308 register program (esp32-camera, Apache-2.0; see
 // the module documentation). `program` writes the QVGA
@@ -368,4 +381,53 @@ where
         ORIENTATION_MASK,
         ORIENTATION_VERTICAL_FLIP_MASK,
     )
+}
+
+/// Switch automatic exposure and automatic white balance on or off. Off
+/// freezes both: the sensor keeps the exposure and the colour gains it
+/// chose last. Logs the two registers after the change.
+///
+/// This runs on CPU1, on the shared system bus. The start-up program talks
+/// to the sensor at 100 kHz, this bus runs at 400 kHz. The log shows
+/// whether the sensor accepts it.
+///
+/// # Errors
+///
+/// The error of the first I2C transfer that fails.
+pub(super) async fn set_auto_adjust<I2C>(i2c: &mut I2C, enabled: bool) -> Result<(), I2C::Error>
+where
+    I2C: embedded_hal_async::i2c::I2c,
+{
+    let (aec, awb) = if enabled {
+        (AEC_ENABLE_MASK, AWB_ENABLE_MASK)
+    } else {
+        (0, 0)
+    };
+    {
+        let mut sensor = AsyncRegisters::new(i2c, ADDRESS);
+        // Both registers are on page 0. Nothing changes the page after
+        // start-up, but selecting it costs only one write.
+        sensor.write(PAGE_SELECT, 0x00).await?;
+        sensor
+            .update_bits(AEC_CONTROL, AEC_ENABLE_MASK, aec)
+            .await?;
+        sensor
+            .update_bits(AWB_CONTROL, AWB_ENABLE_MASK, awb)
+            .await?;
+    }
+
+    // Read both registers back, so the log shows what the sensor holds now.
+    let mut aec_value = [0u8; 1];
+    let mut awb_value = [0u8; 1];
+    i2c.write_read(ADDRESS, &[AEC_CONTROL], &mut aec_value)
+        .await?;
+    i2c.write_read(ADDRESS, &[AWB_CONTROL], &mut awb_value)
+        .await?;
+    info!(
+        "Camera auto adjust {}: AEC 0x{:02x}, AWB 0x{:02x}",
+        if enabled { "on" } else { "locked" },
+        aec_value[0],
+        awb_value[0]
+    );
+    Ok(())
 }
