@@ -1,0 +1,22 @@
+[package]
+name = "hack-and-hike-vision"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "Hardware-independent image processing of the Hack & Hike face recognition app: pixel formats, downscaling, face alignment and a blur score"
+
+[dependencies]
+# `erf`, `exp` and `sqrt` for the network layers: `no_std` has no float
+# functions of its own.
+libm = "0.2"
+# Reads `i8` and `f32` tensors straight out of a weights file without
+# copying: a safe cast of a byte slice, checked for alignment.
+bytemuck = { version = "1", default-features = false }
+
+# Only the tests decode the fixture photo; the firmware never sees a JPEG.
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[lints]
+workspace = true

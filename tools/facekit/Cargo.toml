@@ -1,0 +1,21 @@
+[package]
+name = "facekit"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+publish = false
+description = "Developer-machine tool for the face ID app: inspects, exports and evaluates the neural-network models"
+
+# A workspace of its own. Without this, Cargo sees the firmware workspace in
+# the repository root and refuses to build this package, which is not one of
+# its members.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tract-onnx = "0.23"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+sha2 = "0.10"
+rayon = "1"
+hack-and-hike-vision = { path = "../../crates/vision" }

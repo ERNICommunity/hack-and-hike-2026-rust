@@ -158,6 +158,15 @@ your computer's target instead.
   `crates/core/src/network/protocol.rs` for an example.
 - Tests that combine several modules are files in `crates/core/tests/`.
 
+The crate `crates/vision` (the image processing and the networks of the
+Face ID application) has tests of the same kind. They compare every
+kernel with a plain loop and both networks with the original models.
+This runs the tests of both crates:
+
+```bash
+./scripts/test.sh -p hack-and-hike-vision
+```
+
 ## The board
 
 ```text
@@ -740,6 +749,7 @@ log::info!("button pressed at {}", point.x);
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `panic_backtrace` | display, touch | A deliberate panic, for [reading a backtrace](#when-your-application-panics) |
 | `face_unlock` | display, touch, camera | Enrol your face, then the board unlocks when it sees it again |
+| `face_id` | display, touch, camera | Two neural networks find and recognise up to four people, and keep them in flash (see below) |
 | `demo` | all capabilities | Several screens with navigation (see below) |
 
 **Color Ping** shows four colour bands below a short text. When you tap a
@@ -766,6 +776,32 @@ audio and drawing each do a small part of their work, and nothing blocks.
 The whole application is one struct, `ColorPingApp`, that owns its handles
 and its state. Copy this pattern when your program becomes too large for
 `main`.
+
+**Face ID** runs two neural networks on the board: a detector (YuNet)
+finds the face and its eyes, nose and mouth corners, and a recognizer
+(EdgeFace-XXS) turns the face into 512 numbers that are compared with the
+people it has learned. Tap **ENROLL** and follow the hints on the panel
+while it records six samples; from then on the banner shows `PERSON 1`
+when it sees you and `UNKNOWN` for everybody else. **DEL** forgets
+everyone, and **-** and **+** move the limit a score has to pass. The
+people are stored in the flash chip, so they survive a restart and a new
+firmware.
+
+The networks are integer arithmetic on the chip's vector instructions: a
+frame takes about a third of a second to search and a face three
+quarters of a second to recognise. They compute the same numbers on
+your computer, which is how they are tested. The parts:
+
+| Part | Where |
+| --- | --- |
+| The application | `src/bin/face_id.rs` |
+| Image processing, the networks, the gallery and the decision | `crates/vision/` |
+| The models in flash, and their licences | `assets/models/` |
+| The tool that makes the models and measures them | `tools/facekit/` |
+| How to get the photos that tool works on (not in the repository) | [tools/facekit/data/README.md](tools/facekit/data/README.md) |
+| Design, accuracy, and what the board taught | [docs/face_id/](docs/face_id/README.md), [docs/face_id/performance.md](docs/face_id/performance.md) |
+
+EdgeFace-XXS is licensed **CC BY-NC-SA 4.0**: no commercial use.
 
 **Demo** is the largest application. It has Network, IMU, Microphone,
 Speaker, Camera, Proximity (with ambient light), Settings (backlight)
@@ -842,9 +878,12 @@ tells the network what it needs to know about your type.
 
 ```text
 crates/core/        hardware-independent logic with tests
+crates/vision/      image processing and the two face networks, with tests
+assets/models/      the face networks' weights and the impostor bank
+tools/facekit/      developer tool for the face models (runs on your computer)
 src/
 ├── lib.rs          the library every application uses
-├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, face_unlock.rs, template.rs
+├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, face_unlock.rs, face_id.rs, template.rs
 ├── board/          the PCB: pins, power rails, I2C bus, PSRAM, Board::init() and CPU1
 ├── capabilities/   one module per capability: the APIs you call
 ├── logging.rs      logging with on-device history, memory usage report

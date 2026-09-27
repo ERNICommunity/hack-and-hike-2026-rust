@@ -1421,7 +1421,9 @@ dependencies = [
  "esp-println",
  "esp-radio",
  "esp-rtos",
+ "esp-storage",
  "hack-and-hike-core",
+ "hack-and-hike-vision",
  "libm",
  "log",
  "mipidsi",
@@ -1439,6 +1441,15 @@ dependencies = [
  "log",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "hack-and-hike-vision"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "image",
+ "libm",
 ]
 
 [[package]]

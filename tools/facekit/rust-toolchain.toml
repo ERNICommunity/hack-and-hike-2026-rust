@@ -1,0 +1,5 @@
+# facekit builds with the stable toolchain of the repository's
+# `rust-version`, not with the `esp` toolchain that the repository root
+# selects for the firmware. `scripts/test.sh` does the same for the tests.
+[toolchain]
+channel = "1.97.0"

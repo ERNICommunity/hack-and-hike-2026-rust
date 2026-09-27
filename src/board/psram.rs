@@ -5,7 +5,10 @@
 //! - **Internal RAM**: fast, but small. The firmware has two heaps of about
 //!   72 KiB each. Every task stack is in internal RAM too.
 //! - **PSRAM** (pseudo-static RAM): an external 8 MiB chip. It is slower, but
-//!   it has much more space.
+//!   it has much more space. It is reached over four data lines at
+//!   80 MHz, so a read or write costs many times what the same access to
+//!   internal RAM costs. Code that walks a large buffer again and again
+//!   feels that; code that works on a small block at a time does not.
 //!
 //! PSRAM has its own heap. It is not part of the global allocator. So a
 //! buffer is in PSRAM only when the code asks for it with one of the two
@@ -30,7 +33,7 @@ use allocator_api2::{boxed::Box, vec::Vec};
 use esp_alloc::{EspHeap, HeapRegion, MemoryCapability};
 use esp_hal::{
     peripherals::PSRAM,
-    psram::{Psram, PsramConfig, PsramMode},
+    psram::{Psram, PsramConfig, PsramMode, SpiRamFreq},
 };
 
 /// The allocator over PSRAM; empty until [`enable`] adds the memory.
@@ -40,7 +43,20 @@ static PSRAM_HEAP: EspHeap = EspHeap::empty();
 /// PSRAM heap. [`Board::init`](crate::Board::init) calls it once.
 pub(crate) fn enable(psram_peripheral: PSRAM<'static>) {
     let config = PsramConfig {
+        // This board's PSRAM answers on the Quad SPI protocol: four data
+        // lines. `PsramMode::Auto` would try the Octal protocol first,
+        // but a chip that speaks Octal does not answer Quad commands at
+        // all, and this one does, so there is nothing to detect.
         mode: PsramMode::QuadSpi,
+        // Run the PSRAM bus at 80 MHz instead of esp-hal's default of 40.
+        // The chip and the board's wiring are rated for it, and esp-hal
+        // tunes the bus timing for anything above 40 MHz by itself.
+        //
+        // This doubles the bandwidth to the external memory, which is
+        // what an application that streams large buffers spends its time
+        // waiting for. The camera's frame buffers and the face
+        // recognition networks both live here.
+        ram_frequency: SpiRamFreq::Freq80m,
         ..PsramConfig::default()
     };
 
