@@ -23,8 +23,8 @@
 //! Bring-up (the start-up of the hardware) stops at once when a required chip
 //! is missing. The power chip, the IO expander and the audio codecs must
 //! answer on I2C. If one does not, `init` panics with a message that names
-//! the chip. The camera and the light and proximity sensor are optional.
-//! When they do not answer, their fields are `None`. The IMU and the touch
+//! the chip. The camera, the light and proximity sensor and the storage are
+//! optional. When they do not answer, their fields are `None`. The IMU and the touch
 //! controller are first contacted from CPU1. There, a failure does not stop
 //! the board: the IMU logs it and sets itself up again, and touch skips the
 //! failed read and polls again.
@@ -63,6 +63,7 @@ use crate::{
         light::{self, Light},
         network::{self, Network},
         proximity::{self, Proximity},
+        storage::{self, Storage},
         touch::{self, Touch},
     },
     logging::{self, LogHistory},
@@ -159,6 +160,9 @@ pub struct Board {
     /// board. It is the same chip as `light`, so `light` and `proximity` are
     /// both `Some` or both `None`.
     pub proximity: Option<Proximity>,
+    /// Data that survives a restart, in the flash chip. `None` when the
+    /// flash chip is too small for it.
+    pub storage: Option<Storage>,
     /// The newest lines written with the `log` macros.
     pub log: LogHistory,
 }
@@ -235,6 +239,7 @@ impl Board {
             },
         );
 
+        let storage = storage::init(peripherals.FLASH);
         let display = display::init(
             display::Resources {
                 spi2: peripherals.SPI2,
@@ -336,6 +341,7 @@ impl Board {
             camera,
             light,
             proximity,
+            storage,
             log,
         }
     }

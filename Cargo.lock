@@ -1420,6 +1420,7 @@ dependencies = [
  "esp-println",
  "esp-radio",
  "esp-rtos",
+ "esp-storage",
  "hack-and-hike-core",
  "libm",
  "log",

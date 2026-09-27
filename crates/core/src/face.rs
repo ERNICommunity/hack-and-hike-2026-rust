@@ -709,6 +709,15 @@ impl FaceLock {
         }
     }
 
+    /// A closed lock with an enrolled face, for example one loaded from
+    /// flash with [`decode_enrolment`].
+    pub fn enrolled(threshold: f32) -> Self {
+        Self {
+            state: State::Locked { streak: 0 },
+            threshold: threshold.clamp(MIN_THRESHOLD, MAX_THRESHOLD),
+        }
+    }
+
     /// Where the lock is.
     pub const fn state(&self) -> State {
         self.state
@@ -804,6 +813,68 @@ impl FaceLock {
             }
         }
     }
+}
+
+/// Bytes of one [`Features`] when saved: one count per bin and cell.
+pub const FEATURE_BYTES: usize = CELLS * BINS;
+/// Bytes of a saved enrolment: the limit (`f32`), then the templates.
+pub const ENROLMENT_BYTES: usize = 4 + TEMPLATES * FEATURE_BYTES;
+/// The record name of a saved enrolment. The features depend on every
+/// step of the method, so change the version when the method changes: an
+/// old enrolment then no longer loads, instead of matching wrongly.
+pub const ENROLMENT_RECORD: &str = "face_unlock/enrolment/lbp-dog-10x10-oval/v1";
+
+impl Features {
+    /// The counts as bytes, cell by cell, to save them.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.histograms.as_flattened()
+    }
+}
+
+/// Write the enrolment into `out`: the limit, then the [`TEMPLATES`]
+/// templates.
+///
+/// # Panics
+///
+/// When there are not [`TEMPLATES`] templates, or `out` is not
+/// [`ENROLMENT_BYTES`] long.
+pub fn encode_enrolment(templates: &[Features], threshold: f32, out: &mut [u8]) {
+    assert_eq!(templates.len(), TEMPLATES, "template count");
+    assert_eq!(out.len(), ENROLMENT_BYTES, "enrolment length");
+    let (limit, rest) = out.split_at_mut(4);
+    limit.copy_from_slice(&threshold.to_le_bytes());
+    for (template, bytes) in templates.iter().zip(rest.chunks_exact_mut(FEATURE_BYTES)) {
+        bytes.copy_from_slice(template.as_bytes());
+    }
+}
+
+/// Read an enrolment that [`encode_enrolment`] wrote: fill `templates` and
+/// return the limit.
+///
+/// `None`, with `templates` unchanged, when `bytes` has the wrong length,
+/// the limit is not a number, or a count is larger than a cell can hold.
+/// Such bytes are not an enrolment of this version.
+///
+/// # Panics
+///
+/// When there are not [`TEMPLATES`] templates.
+pub fn decode_enrolment(bytes: &[u8], templates: &mut [Features]) -> Option<f32> {
+    assert_eq!(templates.len(), TEMPLATES, "template count");
+    if bytes.len() != ENROLMENT_BYTES {
+        return None;
+    }
+    let (limit, rest) = bytes.split_at(4);
+    let threshold = f32::from_le_bytes([limit[0], limit[1], limit[2], limit[3]]);
+    // A count above the cell size would also index past `RECIPROCALS`.
+    if !threshold.is_finite() || rest.iter().any(|&count| usize::from(count) > CELL * CELL) {
+        return None;
+    }
+    for (template, bytes) in templates.iter_mut().zip(rest.chunks_exact(FEATURE_BYTES)) {
+        for (cell, counts) in template.histograms.iter_mut().zip(bytes.chunks_exact(BINS)) {
+            cell.copy_from_slice(counts);
+        }
+    }
+    Some(threshold)
 }
 
 #[cfg(test)]
@@ -1210,5 +1281,48 @@ mod tests {
         assert_eq!(lock.threshold(), MIN_THRESHOLD);
         lock.set_threshold(0.4);
         assert_eq!(lock.threshold(), 0.4);
+    }
+
+    /// Five different templates: faces moved by 0 to 4 pixels.
+    fn five_templates() -> [Features; TEMPLATES] {
+        core::array::from_fn(|index| middle_features(&patch(|x, y| face(x, y, index))))
+    }
+
+    #[test]
+    fn an_enrolment_survives_the_round_trip() {
+        let templates = five_templates();
+        let mut bytes = vec![0; ENROLMENT_BYTES];
+        encode_enrolment(&templates, 0.73, &mut bytes);
+        let mut loaded: [Features; TEMPLATES] = core::array::from_fn(|_| Features::EMPTY);
+        assert_eq!(decode_enrolment(&bytes, &mut loaded), Some(0.73));
+        assert_eq!(loaded, templates);
+    }
+
+    #[test]
+    fn bytes_that_are_not_an_enrolment_are_rejected() {
+        let templates = five_templates();
+        let mut bytes = vec![0; ENROLMENT_BYTES];
+        encode_enrolment(&templates, 0.73, &mut bytes);
+        let mut loaded: [Features; TEMPLATES] = core::array::from_fn(|_| Features::EMPTY);
+        // Too short.
+        assert_eq!(decode_enrolment(&bytes[1..], &mut loaded), None);
+        // A count larger than a cell.
+        let mut too_many = bytes.clone();
+        too_many[4] = (CELL * CELL + 1) as u8;
+        assert_eq!(decode_enrolment(&too_many, &mut loaded), None);
+        // A limit that is not a number.
+        let mut not_a_number = bytes.clone();
+        not_a_number[..4].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_eq!(decode_enrolment(&not_a_number, &mut loaded), None);
+        // Nothing was loaded.
+        assert!(loaded.iter().all(|template| *template == Features::EMPTY));
+    }
+
+    #[test]
+    fn an_enrolled_lock_starts_closed() {
+        let lock = FaceLock::enrolled(0.7);
+        assert_eq!(lock.state(), State::Locked { streak: 0 });
+        assert!(lock.wants_distance());
+        assert_eq!(FaceLock::enrolled(9.0).threshold(), MAX_THRESHOLD);
     }
 }

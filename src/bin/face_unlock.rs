@@ -21,10 +21,14 @@
 //! the face matches, and locks again five seconds after the last match. The
 //! terminal lines also go to the log, so `espflash monitor` shows them too.
 //!
+//! The enrolled face and the limit are saved in flash, so they survive a
+//! restart and a power-off. A new flash of `firmware.bin` erases them. Saving
+//! takes about half a second and pauses the screen and the camera: it happens
+//! once after enrolment, and two seconds after the last tap on **-** or **+**.
+//!
 //! How faces are compared is explained in `hack_and_hike_core::face`. It
 //! is simple and has limits: there is no face detection, so the face must
-//! be in the oval; a photo of the face also unlocks; and the face is kept in
-//! RAM, so it is lost when the board restarts.
+//! be in the oval, and a photo of the face also unlocks.
 //!
 //! The camera's buffer overflows within a few milliseconds. So everything
 //! happens while one camera frame is held, and every slow step calls
@@ -48,6 +52,7 @@ use hack_and_hike::{
     capabilities::{
         camera::{self, Frame},
         display::{BYTES_PER_PIXEL, SCREEN, SIZE, ScanlineSource},
+        storage::{Storage, StorageError},
         touch::TouchEvent,
     },
     psram,
@@ -69,6 +74,9 @@ esp_bootloader_esp_idf::esp_app_desc!();
 /// change the limit with the buttons until your face unlocks and other
 /// faces do not.
 const DEFAULT_THRESHOLD: f32 = 0.75;
+/// How long after the last tap on **-** or **+** the limit is saved, in
+/// milliseconds. Tapping several times saves only once.
+const SAVE_DELAY_MS: u64 = 2_000;
 /// How much one tap on **-** or **+** changes the limit. The distances of
 /// faces lie close together, so the steps are small.
 const THRESHOLD_STEP: f32 = 0.01;
@@ -160,6 +168,7 @@ async fn main(_spawner: Spawner) -> ! {
         mut display,
         mut touch,
         camera,
+        mut storage,
         ..
     } = Board::init();
 
@@ -187,18 +196,25 @@ async fn main(_spawner: Spawner) -> ! {
     let mut workspace = Workspace::new(psram::leaked_slice(face::WORKSPACE_LEN, 0.0));
     let probe = psram::leaked_value(|| Features::EMPTY);
     let templates = psram::leaked_slice(TEMPLATES, Features::EMPTY);
+    // The enrolment as bytes, as it is saved.
+    let record = psram::leaked_slice(face::ENROLMENT_BYTES, 0_u8);
 
     let mut canvas = Canvas::new(PANEL.size);
-    let mut lock = FaceLock::new(DEFAULT_THRESHOLD);
     let mut terminal = Terminal::new();
     terminal.say("face unlock ready");
-    terminal.say("tap ENROLL to start");
+    let mut lock = load_enrolment(storage.as_mut(), record, templates, &mut terminal);
     let mut shown = None;
+    // When to save the enrolment and the limit, in milliseconds.
+    let mut save_at: Option<u64> = None;
 
     loop {
         while let Some(event) = touch.next_event() {
-            if let TouchEvent::Pressed(point) = event {
-                on_press(point - PANEL.top_left, &mut lock, &mut terminal);
+            if let TouchEvent::Pressed(point) = event
+                && on_press(point - PANEL.top_left, &mut lock, &mut terminal)
+                && lock.wants_distance()
+            {
+                // The limit of an enrolled face changed.
+                save_at = Some(Instant::now().as_millis() + SAVE_DELAY_MS);
             }
         }
 
@@ -247,6 +263,7 @@ async fn main(_spawner: Spawner) -> ! {
                     terminal.say("face enrolled");
                     let spread = spread(templates, || frame.pump());
                     terminal.say_fmt(format_args!("spread {spread:.2}"));
+                    save_at = Some(now_ms);
                 }
             }
             Some(Event::Unlocked { distance }) => {
@@ -275,24 +292,85 @@ async fn main(_spawner: Spawner) -> ! {
         }
 
         frame.finish();
+
+        if save_at.is_some_and(|due| now_ms >= due) {
+            save_at = None;
+            // Not while a new enrolment runs: it saves when it is complete.
+            if let Some(storage) = storage.as_mut()
+                && lock.wants_distance()
+            {
+                // The flash write stops the camera's capture, so pause it.
+                // The next `begin_frame` starts it again.
+                camera.pause();
+                face::encode_enrolment(templates, lock.threshold(), record);
+                match storage.save(face::ENROLMENT_RECORD, record) {
+                    Ok(()) => terminal.say("face saved"),
+                    Err(error) => {
+                        log::warn!("Could not save the face: {error:?}");
+                        terminal.say("saving failed");
+                    }
+                }
+            }
+        }
+
         // Let the other tasks run. Do not sleep: the camera buffer would
         // overflow.
         embassy_futures::yield_now().await;
     }
 }
 
-/// Handle a tap at `point`, in panel coordinates.
-fn on_press(point: Point, lock: &mut FaceLock, terminal: &mut Terminal) {
-    if ENROLL_BUTTON.contains(point) {
+/// Load the saved enrolment into `templates`, and return the lock: closed
+/// with the saved face, or empty when there is none. `record` is working
+/// memory for the saved bytes.
+fn load_enrolment(
+    storage: Option<&mut Storage>,
+    record: &mut [u8],
+    templates: &mut [Features],
+    terminal: &mut Terminal,
+) -> FaceLock {
+    let Some(storage) = storage else {
+        terminal.say("no storage: not saved");
+        terminal.say("tap ENROLL to start");
+        return FaceLock::new(DEFAULT_THRESHOLD);
+    };
+    let loaded = match storage.load(face::ENROLMENT_RECORD, record) {
+        Ok(bytes) => face::decode_enrolment(bytes, templates),
+        // Nothing saved, or saved by another application or version.
+        Err(StorageError::Empty | StorageError::OtherRecord) => None,
+        Err(error) => {
+            log::warn!("Could not load the saved face: {error:?}");
+            None
+        }
+    };
+    match loaded {
+        Some(threshold) => {
+            terminal.say("saved face loaded");
+            FaceLock::enrolled(threshold)
+        }
+        None => {
+            terminal.say("tap ENROLL to start");
+            FaceLock::new(DEFAULT_THRESHOLD)
+        }
+    }
+}
+
+/// Handle a tap at `point`, in panel coordinates. Return whether the limit
+/// changed.
+fn on_press(point: Point, lock: &mut FaceLock, terminal: &mut Terminal) -> bool {
+    let step = if ENROLL_BUTTON.contains(point) {
         lock.start_enrolling(Instant::now().as_millis());
         terminal.say("fill the oval");
+        return false;
     } else if MINUS_BUTTON.contains(point) {
-        lock.set_threshold(lock.threshold() - THRESHOLD_STEP);
-        log::info!("limit {:.2}", lock.threshold());
+        -THRESHOLD_STEP
     } else if PLUS_BUTTON.contains(point) {
-        lock.set_threshold(lock.threshold() + THRESHOLD_STEP);
-        log::info!("limit {:.2}", lock.threshold());
-    }
+        THRESHOLD_STEP
+    } else {
+        return false;
+    };
+    lock.set_threshold(lock.threshold() + step);
+    log::info!("limit {:.2}", lock.threshold());
+    true
 }
 
 /// The largest distance between two enrolment samples. A limit a bit above

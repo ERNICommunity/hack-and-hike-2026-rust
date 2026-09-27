@@ -136,7 +136,8 @@ cannot work without:
 Other chips are optional or are contacted later:
 
 - The camera and the light and proximity sensor are optional. When they do
-  not answer, their fields in `Board` are `None`.
+  not answer, their fields in `Board` are `None`. The storage is optional
+  too: it is `None` when the flash chip is smaller than 4 MiB.
 - The IMU and the touch controller are first contacted from CPU1. There, a
   failure does not stop the board. The IMU logs the failure and sets itself
   up again: 1 s after a failed setup, or after 10 failed reads in a row.
@@ -646,6 +647,7 @@ Code that needs no hardware lives in `crates/core`:
 | `lines` | the log history: a fixed-size ring of text lines |
 | `touch` | decoding of the touch controller's report |
 | `face` | face features from a camera image (local binary patterns), their distance, and the face lock's rules |
+| `storage` | the header of a record in flash, a CRC-32 checksum |
 
 It is a `no_std` library: it does not use Rust's standard library, so it
 also works on the ESP32-S3. The firmware depends on it. It has ordinary unit

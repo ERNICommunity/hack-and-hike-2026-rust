@@ -9,8 +9,9 @@
 //!   to the hardware and publishes data for the handle. Applications never
 //!   see it. Handles that use a runtime never wait for the hardware.
 //!
-//! The display and the camera have no runtime. They do their work on CPU0,
-//! inside the calls of the application, and these calls can wait.
+//! The display, the camera and the storage have no runtime. They do their
+//! work on CPU0, inside the calls of the application, and these calls can
+//! wait.
 //!
 //! Hardware details stay inside the library. Chip registers stay inside the
 //! capability. Pin numbers and DMA channels are chosen in
@@ -24,4 +25,5 @@ pub mod imu;
 pub mod light;
 pub mod network;
 pub mod proximity;
+pub mod storage;
 pub mod touch;

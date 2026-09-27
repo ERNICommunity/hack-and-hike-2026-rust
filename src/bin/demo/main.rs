@@ -126,6 +126,8 @@ async fn main(_spawner: Spawner) -> ! {
         log,
         light,
         proximity,
+        // The demo saves nothing.
+        storage: _,
     } = Board::init();
 
     let mut screens = Screens {

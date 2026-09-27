@@ -17,6 +17,7 @@
 //! | [`light`] | data decoding, lux formula and proximity scale of the light sensor | light and proximity capabilities |
 //! | [`lines`] | a fixed-size history of text lines | log history |
 //! | [`network`] | wire protocol, typed messages, peer table | network capability |
+//! | [`storage`] | the header of a record in flash, a CRC-32 checksum | storage capability |
 //! | [`touch`] | decoding of the touch controller's report | touch capability |
 //!
 //! This crate is a good place for new logic that needs tests. If the logic
@@ -33,4 +34,5 @@ pub mod imu;
 pub mod light;
 pub mod lines;
 pub mod network;
+pub mod storage;
 pub mod touch;

@@ -716,6 +716,26 @@ use hack_and_hike::capabilities::backlight::Brightness;
 backlight.set(Brightness::new(30));
 ```
 
+**Storage.** `storage` is an `Option` too: data that survives a restart and a
+power-off, but not a new flash of `firmware.bin`. It keeps one record of up
+to 64 KiB under a name. Saving replaces the record, and loading returns it
+only under the same name. Put your application's name and a version in the
+name. Saving takes about half a second and stops CPU1 meanwhile, so save
+only when something changed, and pause the camera first.
+
+```rust
+if let Some(storage) = storage.as_mut() {
+    if let Err(error) = storage.save("my_app/best_score/v1", &score.to_le_bytes()) {
+        log::warn!("not saved: {error:?}");
+    }
+
+    let mut buffer = [0; 4];
+    if let Ok(saved) = storage.load("my_app/best_score/v1", &mut buffer) {
+        log::info!("saved bytes: {saved:?}");
+    }
+}
+```
+
 **Log.** Use the `log` macros anywhere, on both cores. They print to the USB
 serial port.
 
@@ -737,7 +757,7 @@ log::info!("button pressed at {}", point.x);
 | `light_meter` | display, light, proximity | Lux and proximity as numbers and a bar; dark colours in the dark |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `panic_backtrace` | display, touch | A deliberate panic, for [reading a backtrace](#when-your-application-panics) |
-| `face_unlock` | display, touch, camera | Enrol your face, then the board unlocks when it sees it again |
+| `face_unlock` | display, touch, camera, storage | Enrol your face, then the board unlocks when it sees it again; the face survives a restart |
 | `demo` | all capabilities | Several screens with navigation (see below) |
 
 **Color Ping** shows four colour bands below a short text. When you tap a

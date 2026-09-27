@@ -41,6 +41,7 @@ workspace = true
 esp-hal = { version = "1.2.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "log-04", "unstable"] }
 esp-rtos = { version = "0.4.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["embassy", "esp-alloc", "esp-radio", "esp32s3", "log-04"] }
 esp-radio = { version = "=1.0.0-beta.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", default-features = false, features = ["esp32s3", "esp-now", "esp-alloc", "log-04", "unstable"] }
+esp-storage = { version = "0.10.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3"] }
 esp-bootloader-esp-idf = { version = "0.6.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "log-04"] }
 log = "0.4.27"
 esp-alloc = { version = "0.11.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["internal-heap-stats"] }
