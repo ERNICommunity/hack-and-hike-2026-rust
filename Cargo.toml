@@ -45,12 +45,13 @@ esp-bootloader-esp-idf = { version = "0.6.0", git = "https://github.com/esp-rs/e
 log = "0.4.27"
 esp-alloc = { version = "0.11.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["internal-heap-stats"] }
 allocator-api2 = { version = "0.3", default-features = false, features = ["alloc"] }
-esp-backtrace = { version = "0.20.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "panic-handler", "println"] }
-esp-println = { version = "0.18.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "log-04", "jtag-serial"], default-features = false }
+esp-backtrace = { version = "0.20.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "panic-handler", "println", "custom-pre-backtrace"] }
+esp-println = { version = "0.18.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "jtag-serial"], default-features = false }
 embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-time = { version = "0.5.0", features = ["log"] }
 embassy-sync = { version = "0.8.0" }
 embassy-futures = "0.1"
+embedded-io-async = "0.7"
 libm = "0.2"
 critical-section = "1.2.0"
 static_cell = "2.1.1"

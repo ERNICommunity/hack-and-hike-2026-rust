@@ -17,6 +17,7 @@
 //! | [`light`] | data decoding, lux formula and proximity scale of the light sensor | light and proximity capabilities |
 //! | [`lines`] | a fixed-size history of text lines | log history |
 //! | [`network`] | wire protocol, typed messages, peer table | network capability |
+//! | [`screen`] | wire format of the live screen feed: packets, pixel runs, COBS, CRC | logging (screen mirror), autoflash |
 //! | [`touch`] | decoding of the touch controller's report | touch capability |
 //!
 //! This crate is a good place for new logic that needs tests. If the logic
@@ -33,4 +34,5 @@ pub mod imu;
 pub mod light;
 pub mod lines;
 pub mod network;
+pub mod screen;
 pub mod touch;

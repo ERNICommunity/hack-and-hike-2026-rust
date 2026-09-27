@@ -14,7 +14,8 @@
  *   WCH CH340              1a86:7523
  */
 export const SERIAL_PORT_SEARCH =
-  window.__ESP_AUTOFLASH_CONFIG__?.serialPortSearch?.trim() || "303a:*";
+  // The tests run in Node, which has no `window`.
+  (typeof window === "undefined" ? undefined : window.__ESP_AUTOFLASH_CONFIG__)?.serialPortSearch?.trim() || "303a:*";
 
 /** The baud rate of the serial log. */
 export const MONITOR_BAUD_RATE = 115_200;
@@ -36,3 +37,12 @@ export const BACKTRACE_QUIET_MS = 300;
 
 /** The largest size of each log, so that a tab that nobody watches does not use more and more memory. */
 export const MAX_LOG_CHARACTERS = 350_000;
+
+/** The byte the page sends to ask the device for the whole screen again. Any byte works; "R" is readable in a log. */
+export const SCREEN_REFRESH_REQUEST = "R";
+/** The first byte of every screen packet body. It is never valid UTF-8. */
+export const SCREEN_PACKET_MAGIC = 0xfe;
+/** A packet candidate longer than this is not a packet, and is shown as text. */
+export const SCREEN_MAX_PACKET_BYTES = 4096;
+/** The zoom of the screen dock when the page opens: 1 for 320x240. */
+export const SCREEN_DEFAULT_SCALE = 1;

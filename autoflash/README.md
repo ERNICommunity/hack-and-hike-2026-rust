@@ -88,6 +88,28 @@ The browser stores a handle to the firmware file in IndexedDB, the database of t
 
 After you reload the page, Autoflash uses the same file again. Sometimes the browser asks for permission again. Then click the file button (**Resume**).
 
+### Screen feed
+
+Firmware from this repository sends a live copy of the board's 320x240 screen over the same USB serial port as the log. The device tab shows it in a dock in the upper-right corner of the log.
+
+- The dock appears when the device sends its first screen packet. Older firmware without the feed never shows it. The **Autoflash** tab has no dock.
+- Each device keeps its own image. When you switch tabs, the dock shows the screen of the new device.
+- **1x / 2x** switches the zoom.
+- The refresh button asks the device for the whole screen again. Autoflash also asks each time it opens the serial log, for example after you reload the page.
+- The fullscreen button shows the screen on the whole display, scaled to fit, with sharp pixels. It suits a projector.
+- The line below the image shows the screen updates per second and the data rate.
+
+A user interface screen follows the board within a fraction of a second. A camera image shows about 2 to 3 frames per second: the USB port moves a few hundred KB per second.
+
+The wire format, in short:
+
+- Log text is plain UTF-8, so a serial terminal still shows the log.
+- A screen packet is a `0x00` byte, the body encoded with COBS (Consistent Overhead Byte Stuffing, which removes every `0x00` from the body), and another `0x00` byte.
+- The body starts with the magic byte `0xfe`, then the kind: Hello (the screen size) or Rect (a rectangle of RGB565 pixels, packed into runs). It ends with a CRC-16 (checksum).
+- Any byte to the device is a refresh request. Autoflash sends `R`.
+
+The firmware side, with the full description, is [`crates/core/src/screen.rs`](../crates/core/src/screen.rs). The page side is `src/stream.ts` (splits text and packets) and `src/screen.ts` (draws the packets).
+
 ## Firmware file
 
 Autoflash writes the whole file at address `0x0`. So the file must be a merged image for address `0x0`. A merged image contains the bootloader, the partition table and the application.
@@ -194,6 +216,7 @@ Other settings are constants in `src/config.ts`:
 - the file check interval and the wait time for a stable file
 - the quiet time that ends a backtrace
 - the maximum log size
+- the screen feed: the refresh byte, the packet magic, the largest packet and the default zoom
 
 After a change, build `site/` again.
 
@@ -219,6 +242,8 @@ npm test
   - the ELF hash in an image
   - backtrace detection in the log
   - the decoded text and the request to the server
+  - the split of the serial stream into text and screen packets, with the golden packet from the Rust tests
+  - the pixel runs and the screen image
 
 ## Licenses
 

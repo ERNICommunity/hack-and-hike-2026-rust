@@ -717,7 +717,9 @@ backlight.set(Brightness::new(30));
 ```
 
 **Log.** Use the `log` macros anywhere, on both cores. They print to the USB
-serial port.
+serial port. The same port also carries a live copy of the screen, which
+the autoflash page shows next to the log. The log lines stay plain text, so
+they are still readable in any serial terminal.
 
 - Records at `debug` and `trace` level are filtered out.
 - A record longer than 512 bytes is cut.

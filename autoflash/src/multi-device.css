@@ -114,3 +114,128 @@
   border-color: rgba(255, 112, 106, 0.48);
   background: rgba(255, 112, 106, 0.08);
 }
+
+/* The log area and the screen dock on top of it. The dock is outside the
+   scrolling element, so it stays in place while the log scrolls. */
+.terminal-stage {
+  --screen-scale: 1;
+  position: relative;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.terminal-stage.with-screen .terminal-body pre {
+  padding-right: calc(320px * var(--screen-scale) + 44px);
+}
+
+.screen-dock {
+  position: absolute;
+  top: 10px;
+  right: 18px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--line-bright);
+  background: #101316;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.screen-dock.hidden {
+  display: none;
+}
+
+.screen-dock-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.screen-dock-title {
+  flex: 1;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.screen-dock .icon-button {
+  width: 26px;
+  height: 26px;
+}
+
+.screen-dock-button {
+  height: 26px;
+  min-width: 34px;
+  border: 1px solid var(--line);
+  background: #101316;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.screen-dock-button:hover {
+  color: var(--accent);
+  border-color: #455059;
+}
+
+.screen-dock-canvas {
+  display: grid;
+  place-items: center;
+  background: #000;
+}
+
+.screen-canvas {
+  display: block;
+  width: calc(320px * var(--screen-scale));
+  max-width: calc(100vw - 72px);
+  height: auto;
+  image-rendering: pixelated;
+}
+
+.screen-dock-stats {
+  margin: 0;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+/* Fullscreen: the dock fills the screen and the image scales to fit. */
+.screen-dock:fullscreen {
+  inset: 0;
+  padding: 12px;
+  border: 0;
+  background: #000;
+}
+
+/* The canvas fills the free area and keeps its 4:3 shape: black bars
+   (letterboxing) fill the rest, left and right or above and below. */
+.screen-dock:fullscreen .screen-dock-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.screen-dock:fullscreen .screen-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  object-fit: contain;
+}
+
+@media (max-width: 580px) {
+  .screen-dock {
+    right: 10px;
+  }
+
+  .terminal-stage.with-screen .terminal-body pre {
+    padding-right: 16px;
+    padding-top: calc(240px * var(--screen-scale) + 70px);
+  }
+}

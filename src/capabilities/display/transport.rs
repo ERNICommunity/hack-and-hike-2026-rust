@@ -19,6 +19,10 @@
 //!    is still being sent. While `send` waits, the source's
 //!    `while_transferring` callback runs. The camera uses it to capture its
 //!    next frame.
+//!
+//! The transport reports every batch to the screen mirror in `logging`,
+//! right before it sends the batch. So the live screen feed over USB sees
+//! every pixel that reaches the panel, whoever drew it.
 
 use embedded_graphics::primitives::Rectangle;
 use embedded_hal::spi::SpiBus as _;
@@ -202,6 +206,13 @@ impl Transport {
             {
                 source.fill_row(first_row + offset, row);
             }
+            crate::logging::mirror::record(
+                area.top_left.x as usize,
+                area.top_left.y as usize + first_row,
+                width,
+                rows,
+                &buffer[..rows * row_bytes],
+            );
             self.send(rows * row_bytes, || source.while_transferring());
         }
         self.finish(|| source.while_transferring());

@@ -11,6 +11,7 @@ abbreviations.
 - [CPU0 and CPU1](#cpu0-and-cpu1)
 - [How a capability is built](#how-a-capability-is-built)
 - [Drawing](#drawing)
+- [The screen feed](#the-screen-feed)
 - [The demo application](#the-demo-application)
 - [Cooperative scheduling](#cooperative-scheduling)
 - [Memory and PSRAM](#memory-and-psram)
@@ -39,7 +40,7 @@ flowchart TD
 | Board | `src/board/` | Facts about the PCB (printed circuit board): pins, power rails, reset lines, the I2C bus, register access, PSRAM. Also the power-up order and the start of the second CPU core |
 | Capabilities | `src/capabilities/` | One hardware function each, behind a small handle |
 | Core | `crates/core/` | Math, protocol and buffer code that needs no hardware. Its tests run on your computer (the host) |
-| Logging | `src/logging.rs` | The `log` backend, the log history on the device, a memory usage report |
+| Logging | `src/logging/` | The `log` backend, the log history on the device, a memory usage report. Also the USB serial port: the log text and the live screen feed share it |
 | UI and synth | `src/ui/`, `src/synth.rs` | UI (user interface): canvas, palette, text helpers, a slider, the glue code for `embedded-gui`. Synth: sine waves for the speaker |
 
 The diagram and the table use two abbreviations:
@@ -107,7 +108,9 @@ The order of the steps matters:
 
 1. Heaps and the logger come first, so all later steps can allocate memory
    and write log messages.
-2. PSRAM and the log history, then the RTOS timer.
+2. PSRAM, the log history and the screen mirror's copy of the panel, then
+   the RTOS timer. The mirror starts before the display, so it sees the
+   first picture.
 3. I2C bus recovery. A reset in the middle of an I2C read can leave a chip
    holding the bus. The firmware clocks the bus by hand to free it.
 4. The power chip (AXP2101) turns on the backlight power rail. The IO
@@ -121,7 +124,8 @@ The order of the steps matters:
 6. The display, over SPI with DMA.
 7. The audio codecs, and a check for the light and proximity sensor. Then
    the system I2C bus moves to CPU1.
-8. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks.
+8. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks,
+   and the USB tasks of the log and the screen feed.
 
 All of this stays inside `src/board/` and `camera::bring_up`.
 
@@ -159,7 +163,11 @@ The ESP32-S3 has two CPU cores, CPU0 and CPU1.
 - microphone capture and speaker playback (I2S with DMA),
 - ESP-NOW beacons, sending and receiving (ESP-NOW: Espressif's protocol for
   short Wi-Fi messages between boards, without a router),
-- backlight changes over I2C.
+- backlight changes over I2C,
+- the USB serial port: the writer that sends log text and screen packets,
+  the reader that waits for refresh requests, and the screen encoder that
+  turns screen changes into packets every 40 ms (see
+  [The screen feed](#the-screen-feed)).
 
 All CPU1 tasks run on one async executor and share one 16 KiB stack.
 
@@ -176,6 +184,7 @@ flowchart LR
         Audio["Audio"]
         Network["Network"]
         Backlight["Backlight"]
+        Usb["USB writer, reader, screen encoder"]
     end
     IMU --> App
     Touch --> App
@@ -183,6 +192,7 @@ flowchart LR
     Audio <--> App
     Network <--> App
     App --> Backlight
+    App --> Usb
 ```
 
 The camera is the one sensor that runs on CPU0. The firmware copies camera
@@ -482,6 +492,58 @@ These rules follow from how `embedded-gui` 0.2.6 works:
 Each screen's GUI context is about 20 KiB. So `gui::context` allocates it
 once in PSRAM.
 
+## The screen feed
+
+The USB-C socket is wired to the ESP32-S3's USB Serial/JTAG peripheral. The
+computer sees it as a serial port. The log and a live copy of the screen
+share this port. The autoflash page shows the copy next to the log, for
+presentations. It runs in every application, with no application code.
+
+```mermaid
+flowchart LR
+    Transport["display transport (CPU0)"] -->|"record()"| Shadow["shadow copy + dirty spans (PSRAM)"]
+    Shadow --> Encoder["screen encoder (CPU1, every 40 ms)"]
+    Encoder -->|"2 packet slots"| Writer["USB writer (CPU1)"]
+    Logger["log macros (both cores)"] -->|"8 KiB text queue"| Writer
+    Writer --> Usb["USB serial port"]
+    Usb -->|"refresh request"| Reader["USB reader (CPU1)"]
+    Reader --> Encoder
+```
+
+- **The hook.** Every pixel that reaches the panel passes through
+  `Transport::render` in the display capability. Right before it sends a
+  batch of rows, it calls `logging::mirror::record` with the batch. The
+  canvas, the navigation rail and the camera all use this path.
+- **The shadow copy.** `record` copies the pixels into a 320x240 copy of the
+  panel in PSRAM. For each row, it widens a *dirty span* (also in PSRAM): the first and the
+  last changed column. A full camera frame costs CPU0 about 3 to 4 ms.
+- **The encoder.** Every 40 ms, the encoder task takes the dirty spans and
+  clears them. Rows next to each other with the same span form one
+  rectangle. It reads the pixels from the shadow copy and writes them as
+  packets of at most 768 pixels into a free slot. Equal neighbouring pixels
+  are packed into runs. A row that changes while the encoder reads it is
+  dirty again, and goes out once more at the next tick.
+- **Text first.** The writer task sends log text before packets, so a busy
+  screen never holds back the log. It sends each packet whole, so text
+  never lands inside a packet. With no program reading the port, the writer
+  waits. Then the text queue fills up and new lines are dropped and counted
+  (a warning follows later), and the encoder waits for a free slot.
+- **The format.** Log lines stay plain text, readable in any serial
+  terminal. A packet starts and ends with a `0x00` byte, which text never
+  contains, and has a CRC (checksum). `crates/core/src/screen.rs` describes
+  it.
+- **Refresh.** Any byte from the computer asks for the whole screen. The
+  encoder then sends a Hello packet (the screen size) and all rows. The
+  autoflash page asks each time it opens the port.
+- **Panics.** Before esp-backtrace prints the panic, the hook
+  `custom_pre_backtrace` in `logging` stops the writer and waits a few
+  milliseconds. The writer ends its current 64-byte chunk and stops, so the
+  panic output starts clean. Log lines after a panic are lost.
+
+The USB port moves a few hundred KB per second. User interface screens
+change little and appear at once. A camera screen changes every pixel, so
+its copy shows about 2 to 3 frames per second, sometimes with a tear line.
+
 ## Cooperative scheduling
 
 CPU0 runs an async executor: the part of the async runtime that runs tasks.
@@ -524,7 +586,14 @@ firmware uses it for large buffers that live as long as the device runs:
 - every `Canvas` and the GUI context of each screen,
 - the three camera frame buffers,
 - the log history: the newest 64 log lines,
-- the lines that the demo's Log screen shows.
+- the lines that the demo's Log screen shows,
+- the screen feed's copy of the panel (150 KiB), its dirty spans and its
+  two packet slots.
+
+The screen feed's text queue (8 KiB) is in internal RAM, on the internal
+heap. It is not a static on purpose: the CPU0 stack gets the internal RAM
+that the statics leave free. Every static byte is one byte less of CPU0
+stack, for every application.
 
 About the log: the serial port shows up to 512 bytes of each log record, and
 the history keeps up to 120 bytes of it. A longer record is cut, not
@@ -644,6 +713,7 @@ Code that needs no hardware lives in `crates/core`:
 | `audio` | the speaker's `FrameRing`, the IMA ADPCM decoder |
 | `light` | decoding of the light and proximity sensor's data, the lux formula, the proximity scale |
 | `lines` | the log history: a fixed-size ring of text lines |
+| `screen` | the wire format of the screen feed: packets, pixel runs, COBS framing and the CRC |
 | `touch` | decoding of the touch controller's report |
 | `face` | face features from a camera image (local binary patterns), their distance, and the face lock's rules |
 

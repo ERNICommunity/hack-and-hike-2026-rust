@@ -8,6 +8,8 @@ import {
   FLASH_BAUD_RATE,
   MAX_LOG_CHARACTERS,
   MONITOR_BAUD_RATE,
+  SCREEN_DEFAULT_SCALE,
+  SCREEN_REFRESH_REQUEST,
   SERIAL_PORT_SEARCH,
 } from "./config";
 import {
@@ -17,6 +19,8 @@ import {
   requestPortFilters,
 } from "./device-search";
 import { loadFirmwareHandle, saveFirmwareHandle } from "./file-store";
+import { ScreenMirror } from "./screen";
+import { DeviceStreamParser } from "./stream";
 import "./styles.css";
 import "./multi-device.css";
 
@@ -82,6 +86,10 @@ type DeviceSession = {
   backtraces: BacktraceCollector;
   /** Ends a pending backtrace after `BACKTRACE_QUIET_MS` without output. */
   backtraceTimer?: number;
+  /** Splits the serial stream into log text and screen packets. */
+  stream: DeviceStreamParser;
+  /** The live copy of the device screen, from the screen packets. */
+  screen: ScreenMirror;
 };
 
 /**
@@ -366,8 +374,24 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             </div>
           </div>
           <div class="terminal-tabs" id="terminal-tabs" role="tablist" aria-label="Device and Autoflash logs"></div>
-          <div class="terminal-body" id="terminal-body" role="tabpanel" aria-live="polite" aria-label="Serial output">
-            <pre id="terminal-output"></pre>
+          <div class="terminal-stage" id="terminal-stage">
+            <div class="terminal-body" id="terminal-body" role="tabpanel" aria-live="polite" aria-label="Serial output">
+              <pre id="terminal-output"></pre>
+            </div>
+            <aside class="screen-dock hidden" id="screen-dock" aria-label="Device screen">
+              <div class="screen-dock-toolbar">
+                <span class="screen-dock-title">Screen</span>
+                <button class="screen-dock-button" id="screen-scale-button" type="button" title="Switch between 1x and 2x">${SCREEN_DEFAULT_SCALE}x</button>
+                <button class="icon-button" id="screen-refresh-button" type="button" aria-label="Refresh screen" title="Ask the device for the whole screen again">
+                  <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
+                </button>
+                <button class="icon-button" id="screen-fullscreen-button" type="button" aria-label="Fullscreen" title="Fullscreen">
+                  <svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+                </button>
+              </div>
+              <div class="screen-dock-canvas" id="screen-canvas-host"></div>
+              <p class="screen-dock-stats" id="screen-stats">0 updates/s · 0.0 KB/s</p>
+            </aside>
           </div>
         </article>
       </section>
@@ -399,6 +423,7 @@ const ui = {
   progressBar: element("progress-bar"),
   flashButton: element<HTMLButtonElement>("flash-button"),
   terminalTabs: element("terminal-tabs"),
+  terminalStage: element("terminal-stage"),
   terminalBody: element("terminal-body"),
   terminalOutput: element<HTMLPreElement>("terminal-output"),
   terminalStatus: element("terminal-status"),
@@ -407,6 +432,12 @@ const ui = {
   clearLogButton: element<HTMLButtonElement>("clear-log-button"),
   copyLogButton: element<HTMLButtonElement>("copy-log-button"),
   downloadLogButton: element<HTMLButtonElement>("download-log-button"),
+  screenDock: element("screen-dock"),
+  screenCanvasHost: element("screen-canvas-host"),
+  screenStats: element("screen-stats"),
+  screenScaleButton: element<HTMLButtonElement>("screen-scale-button"),
+  screenRefreshButton: element<HTMLButtonElement>("screen-refresh-button"),
+  screenFullscreenButton: element<HTMLButtonElement>("screen-fullscreen-button"),
 };
 
 /** All device sessions, by their current port object. */
@@ -452,6 +483,8 @@ let reconnectTimer: number | undefined;
 let reconnectTimerDueAt: number | undefined;
 /** The reconnect sweep that runs now, if any. */
 let reconnectSweep: Promise<void> | undefined;
+/** The zoom of the screen dock: 1 or 2. It applies to every device. */
+let screenScale = SCREEN_DEFAULT_SCALE;
 
 const sleep = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 
@@ -500,11 +533,71 @@ function renderTerminalOutput(): void {
     ui.terminalStatus.textContent = activeDevice!.status;
     ui.terminalBody.setAttribute("aria-labelledby", `terminal-tab-${activeDevice!.number}`);
   }
+  renderScreenDock();
   // Do not replace unchanged text. Replacing it would clear the text that the
   // user has selected in the log.
   if (ui.terminalOutput.textContent === text) return;
   ui.terminalOutput.textContent = text;
   if (ui.autoscrollToggle.checked) ui.terminalBody.scrollTop = ui.terminalBody.scrollHeight;
+}
+
+/** The device whose screen the dock shows, or `undefined` when the dock is hidden. */
+function screenDockDevice(): DeviceSession | undefined {
+  if (applicationTabActive || !activeDevice?.screen.received) return undefined;
+  return activeDevice;
+}
+
+/**
+ * Show the screen of the active device in the dock, or hide the dock. The dock
+ * is hidden on the Autoflash tab and until the device has sent its first
+ * screen packet.
+ */
+function renderScreenDock(): void {
+  const session = screenDockDevice();
+  ui.screenDock.classList.toggle("hidden", !session);
+  ui.terminalStage.classList.toggle("with-screen", Boolean(session));
+  ui.terminalStage.style.setProperty("--screen-scale", String(screenScale));
+  if (!session) return;
+  const canvas = session.screen.canvas;
+  if (ui.screenCanvasHost.firstChild !== canvas) ui.screenCanvasHost.replaceChildren(canvas);
+  renderScreenStats();
+}
+
+/** Show the packet rates of the screen in the dock. */
+function renderScreenStats(): void {
+  const session = screenDockDevice();
+  if (!session) return;
+  const updates = session.screen.updatesPerSecond();
+  const kilobytes = session.screen.bytesPerSecond() / 1_024;
+  ui.screenStats.textContent = `${updates} updates/s · ${kilobytes.toFixed(1)} KB/s`;
+}
+
+/** Apply a screen packet of a device. The first packet makes the dock appear. */
+function receiveScreenPacket(session: DeviceSession, body: Uint8Array): void {
+  const first = !session.screen.received;
+  session.screen.apply(body);
+  if (first && session.screen.received && !applicationTabActive && activeDevice === session) renderScreenDock();
+}
+
+/**
+ * Ask the device for the whole screen. Any byte is a refresh request. The
+ * byte is written through a short-lived writer, and never while esptool-js
+ * owns the port.
+ */
+async function requestScreenRefresh(session: DeviceSession): Promise<void> {
+  if (flashing || session.state === "flashing" || !session.connected) return;
+  const writable = session.port.writable;
+  if (!writable || writable.locked) return;
+  let writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
+  try {
+    writer = writable.getWriter();
+    await writer.write(new TextEncoder().encode(SCREEN_REFRESH_REQUEST));
+  } catch {
+    // A device without the screen feed ignores the byte. A failed write is
+    // not worth a message: the next refresh tries again.
+  } finally {
+    writer?.releaseLock();
+  }
 }
 
 /** Add text to the log of a device. */
@@ -866,7 +959,7 @@ async function startMonitor(session: DeviceSession, allowDuringFlash = false): P
     session.stopRequested = false;
     const readable = session.port.readable;
     if (!readable) throw new Error("The serial port did not provide a readable stream.");
-    const decoder = new TextDecoder();
+    session.stream.reset();
     const reader = readable.getReader();
     session.disconnectedAt = undefined;
     const reconnecting = session.monitorOpened;
@@ -878,6 +971,9 @@ async function startMonitor(session: DeviceSession, allowDuringFlash = false): P
     session.monitorReader = reader;
     setDeviceState(session, "connected", "Receiving serial output");
     appendSystem(`Serial monitor opened at ${MONITOR_BAUD_RATE.toLocaleString()} baud.`, "success", session);
+    // Bring the screen copy up to date. A device that was already running has
+    // sent its Hello long ago.
+    void requestScreenRefresh(session);
 
     session.monitorLoop = (async () => {
       let streamEnded = false;
@@ -888,10 +984,9 @@ async function startMonitor(session: DeviceSession, allowDuringFlash = false): P
             streamEnded = true;
             break;
           }
-          if (value) receiveSerialOutput(session, decoder.decode(value, { stream: true }));
+          if (value) session.stream.feed(value);
         }
-        const remainder = decoder.decode();
-        if (remainder) receiveSerialOutput(session, remainder);
+        session.stream.finish();
       } catch (error) {
         if (!session.stopRequested && session.connected) {
           appendSystem(`Serial monitor stopped: ${errorMessage(error)}`, "error", session);
@@ -1138,6 +1233,11 @@ async function attachPort(port: SerialPort, source: "Authorized" | "Found", acti
       monitorOpened: false,
       stopRequested: false,
       backtraces: new BacktraceCollector(),
+      stream: new DeviceStreamParser(
+        (text) => receiveSerialOutput(session, text),
+        (body) => receiveScreenPacket(session, body),
+      ),
+      screen: new ScreenMirror(),
     };
     nextDeviceNumber += 1;
 
@@ -1671,6 +1771,25 @@ ui.watchToggle.addEventListener("change", () => {
 });
 
 ui.flashButton.addEventListener("click", () => queueFlash("manual"));
+ui.screenScaleButton.addEventListener("click", () => {
+  screenScale = screenScale === 1 ? 2 : 1;
+  ui.screenScaleButton.textContent = `${screenScale}x`;
+  renderScreenDock();
+});
+ui.screenRefreshButton.addEventListener("click", () => {
+  const session = screenDockDevice();
+  if (session) void requestScreenRefresh(session);
+});
+ui.screenFullscreenButton.addEventListener("click", () => {
+  if (document.fullscreenElement) {
+    void document.exitFullscreen();
+  } else {
+    void ui.screenDock.requestFullscreen().catch((error) => {
+      appendSystem(`Fullscreen failed: ${errorMessage(error)}`, "error");
+    });
+  }
+});
+window.setInterval(renderScreenStats, 500);
 ui.autoscrollToggle.addEventListener("change", () => {
   if (ui.autoscrollToggle.checked) ui.terminalBody.scrollTop = ui.terminalBody.scrollHeight;
 });
