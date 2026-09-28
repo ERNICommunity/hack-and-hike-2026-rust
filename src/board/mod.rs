@@ -52,7 +52,9 @@ pub(crate) mod power;
 pub mod psram;
 pub(crate) mod registers;
 
-use esp_hal::{clock::CpuClock, delay::Delay, timer::timg::TimerGroup};
+use esp_hal::{
+    clock::CpuClock, delay::Delay, peripherals::FROM_CPU_INTR2, timer::timg::TimerGroup,
+};
 use log::{LevelFilter, info, warn};
 
 use crate::{
@@ -163,6 +165,11 @@ pub struct Board {
     pub proximity: Option<Proximity>,
     /// The newest lines written with the `log` macros.
     pub log: LogHistory,
+    /// A software interrupt that the board does not use. An application can
+    /// start an `esp_rtos::embassy::InterruptExecutor` on it: its tasks
+    /// interrupt the main task on CPU0, for work that must keep running
+    /// during a long computation, such as emptying the camera's buffer.
+    pub spare_interrupt: FROM_CPU_INTR2<'static>,
 }
 
 impl Board {
@@ -342,6 +349,7 @@ impl Board {
             light,
             proximity,
             log,
+            spare_interrupt: peripherals.FROM_CPU_INTR2,
         }
     }
 }

@@ -126,6 +126,7 @@ async fn main(_spawner: Spawner) -> ! {
         log,
         light,
         proximity,
+        ..
     } = Board::init();
 
     let mut screens = Screens {

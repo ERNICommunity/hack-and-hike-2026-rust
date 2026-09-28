@@ -247,6 +247,18 @@ impl Frame<'_> {
         self.camera.pump_capture();
     }
 
+    /// Whether [`Frame::finish`] would return at once: a newer whole frame
+    /// is waiting, or the capture stopped because the DMA ring overflowed.
+    /// In the second case `finish` reports the dropped frame, and the next
+    /// [`Camera::begin_frame`] starts the capture again. Call
+    /// [`Camera::pump`] before, so the check sees the newest data.
+    ///
+    /// A loop that calls `finish` only when this is true never waits for the
+    /// sensor and still recovers from an overflow.
+    pub fn can_finish(&self) -> bool {
+        self.camera.ready || self.camera.is_stopped()
+    }
+
     /// Make the next complete frame the frame to show, and end this `Frame`.
     ///
     /// Return at once when a frame was completed while this one was drawn.

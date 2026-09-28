@@ -24,11 +24,16 @@
 //!
 //! The detector takes a third of a second per frame and the recognizer
 //! three quarters of a second per face, and the camera's buffer overflows
-//! within a few milliseconds if nobody empties it. So a cycle copies one frame into PSRAM (emptying the buffer as it
-//! goes), then pauses the camera, then works on the copy: the detector
-//! on a 4x scaled-down version, the recognizer on the face cut out of a
-//! 2x version, and the preview from the copy with the box drawn on top.
-//! The next cycle restarts the camera.
+//! within a few milliseconds if nobody empties it. So the camera and the
+//! screen belong to a task on an interrupt executor (see [`stream`]): it
+//! interrupts the networks every few milliseconds to empty the camera's
+//! buffer, and shows the live image about ten times per second, with the
+//! box of the newest detection drawn on top.
+//!
+//! A cycle of the main task asks that task for a copy of the newest frame,
+//! then works on the copy: the detector on a 4x scaled-down version, the
+//! recognizer on the face cut out of a 2x version. The box on the preview
+//! is therefore up to one cycle old, while the image is live.
 //!
 //! # What is kept
 //!
@@ -41,21 +46,32 @@
 
 extern crate alloc;
 
-use core::{fmt::Write as _, ops::Range};
+use core::{
+    cell::Cell,
+    fmt::Write as _,
+    ops::Range,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use arrayvec::{ArrayString, ArrayVec};
 use embassy_executor::Spawner;
+use embassy_sync::{
+    blocking_mutex::{Mutex, raw::CriticalSectionRawMutex},
+    signal::Signal,
+};
 use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::{
     pixelcolor::{Rgb565, raw::RawU16},
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
 };
+use esp_hal::interrupt::Priority;
+use esp_rtos::embassy::InterruptExecutor;
 use hack_and_hike::{
     Board,
     capabilities::{
-        camera::{self, Frame},
-        display::{BYTES_PER_PIXEL, SCREEN, SIZE, ScanlineSource},
+        camera::{self, Camera, Frame},
+        display::{BYTES_PER_PIXEL, Display, SCREEN, SIZE, ScanlineSource},
         touch::TouchEvent,
     },
     psram,
@@ -82,11 +98,12 @@ use hack_and_hike_vision::{
     quality::laplacian_variance,
 };
 use log::{info, warn};
+use static_cell::StaticCell;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// Which build this is, in the log and on the screen at start-up.
-const BUILD_ID: &str = "faceid-7";
+const BUILD_ID: &str = "faceid-9";
 
 /// The recognizer's integer weights, in flash.
 static EDGEFACE: &[u8] = include_fkb!("../../assets/models/edgeface_xxs.int8.fkb");
@@ -121,6 +138,12 @@ const SOURCE_HEIGHT: usize = camera::HEIGHT / SOURCE_SCALE;
 const SCANLINE_BYTES: usize = camera::WIDTH * BYTES_PER_PIXEL;
 /// Rows copied between two pumps of the camera's buffer.
 const COPY_ROWS_PER_PUMP: usize = 8;
+/// How often the live preview is drawn at most. Each drawing keeps CPU0
+/// busy for about 18 ms (the SPI transfer), time the networks lose.
+const PREVIEW_PERIOD: Duration = Duration::from_millis(100);
+/// How often the stream task empties the camera's buffer. The buffer holds
+/// 40 rows, about 5 ms of the sensor's data.
+const PUMP_PERIOD: Duration = Duration::from_millis(2);
 
 // The screen: the camera on the left, the panel on the right.
 /// Width of the camera preview, in pixels.
@@ -277,11 +300,12 @@ async fn main(_spawner: Spawner) -> ! {
         mut display,
         mut touch,
         camera,
+        spare_interrupt,
         ..
     } = Board::init();
     info!("=== face id [{BUILD_ID}] ===");
 
-    let Some(mut camera) = camera else {
+    let Some(camera) = camera else {
         warn!("No camera found; face id needs it");
         let mut canvas = Canvas::new(SIZE);
         canvas.clear(theme::WHITE);
@@ -334,8 +358,15 @@ async fn main(_spawner: Spawner) -> ! {
     app.terminal.say_fmt(format_args!("face id {BUILD_ID}"));
     app.terminal.say("tap ENROLL to start");
 
-    let mut canvas = Canvas::new(PANEL.size);
+    let mut canvas: &'static mut Canvas = psram::leaked_value(|| Canvas::new(PANEL.size));
     let mut shown = None;
+
+    // From here on, the camera and the screen belong to the stream task.
+    static EXECUTOR: StaticCell<InterruptExecutor<2>> = StaticCell::new();
+    let executor = EXECUTOR.init(InterruptExecutor::new(spare_interrupt));
+    executor
+        .start(Priority::Priority1)
+        .spawn(stream(camera, display).expect("the stream task starts once"));
 
     loop {
         while let Some(event) = touch.next_event() {
@@ -344,16 +375,12 @@ async fn main(_spawner: Spawner) -> ! {
             }
         }
 
-        // 1. One frame into PSRAM, then the camera rests.
-        let started = Instant::now();
-        let Some(mut frame) = camera.begin_frame() else {
-            embassy_futures::yield_now().await;
-            continue;
-        };
-        copy_frame(&mut frame, buffers.frame);
-        frame.finish();
-        camera.pause();
-        app.timing.capture_ms = started.elapsed().as_millis() as u32;
+        // 1. A copy of the newest frame, from the stream task.
+        let cycle_started = Instant::now();
+        let previews_before = PREVIEWS_SHOWN.load(Ordering::Relaxed);
+        FRAME_WANTED.signal(core::mem::take(&mut buffers.frame));
+        buffers.frame = FRAME_COPIED.wait().await;
+        app.timing.capture_ms = cycle_started.elapsed().as_millis() as u32;
 
         // 2. Detect.
         let started = Instant::now();
@@ -361,12 +388,13 @@ async fn main(_spawner: Spawner) -> ! {
         app.timing.detect_ms = started.elapsed().as_millis() as u32;
         let judged = face.map(|face| app.judge(&face));
 
-        // 3. The preview: the frame with the box and the landmarks.
-        display.surface(PREVIEW).render_from(&mut Preview {
-            frame: buffers.frame,
-            face: judged
-                .as_ref()
-                .map(|judged| (judged.face, app.box_color(judged))),
+        // 3. The box and the landmarks on the live preview.
+        OVERLAY.lock(|overlay| {
+            overlay.set(
+                judged
+                    .as_ref()
+                    .map(|judged| (judged.face, app.box_color(judged))),
+            );
         });
         app.hint = judged.as_ref().map_or(Hint::NoFace, |judged| judged.hint);
 
@@ -403,11 +431,16 @@ async fn main(_spawner: Spawner) -> ! {
                 app.terminal.say("face gone");
             }
         }
+        let cycle_ms = cycle_started.elapsed().as_millis().max(1) as u32;
+        let previews = PREVIEWS_SHOWN
+            .load(Ordering::Relaxed)
+            .wrapping_sub(previews_before);
         info!(
-            "cycle: capture {} ms, detect {} ms, embed {} ms, {}, {}",
+            "cycle: capture {} ms, detect {} ms, embed {} ms, preview {:.1} fps, {}, {}",
             app.timing.capture_ms,
             app.timing.detect_ms,
             if embedded { app.timing.embed_ms } else { 0 },
+            previews as f32 * 1000.0 / cycle_ms as f32,
             match &judged {
                 Some(judged) => judged.describe(),
                 None => ArrayString::from("no face").expect("fits"),
@@ -419,10 +452,79 @@ async fn main(_spawner: Spawner) -> ! {
         let status = app.status(gallery);
         if shown != Some(status) {
             shown = Some(status);
-            app.draw_panel(&mut canvas, &status, gallery);
-            canvas.show(&mut display.surface(PANEL));
+            app.draw_panel(canvas, &status, gallery);
+            PANEL_WANTED.signal(canvas);
+            canvas = PANEL_SHOWN.wait().await;
         }
         embassy_futures::yield_now().await;
+    }
+}
+
+/// The main task's empty frame buffer, for the stream task to fill.
+static FRAME_WANTED: Signal<CriticalSectionRawMutex, &'static mut [u8]> = Signal::new();
+/// The same buffer back, holding the newest camera frame.
+static FRAME_COPIED: Signal<CriticalSectionRawMutex, &'static mut [u8]> = Signal::new();
+/// The drawn panel, for the stream task to show.
+static PANEL_WANTED: Signal<CriticalSectionRawMutex, &'static mut Canvas> = Signal::new();
+/// The same canvas back, once it is on the screen.
+static PANEL_SHOWN: Signal<CriticalSectionRawMutex, &'static mut Canvas> = Signal::new();
+/// The newest detection, in frame pixels, and the colour of its box.
+static OVERLAY: Mutex<CriticalSectionRawMutex, Cell<Option<(Face, Rgb565)>>> =
+    Mutex::new(Cell::new(None));
+/// Preview frames drawn so far, for the frame rate in the log.
+static PREVIEWS_SHOWN: AtomicU32 = AtomicU32::new(0);
+
+/// The camera and the screen, on an interrupt executor of CPU0.
+///
+/// The main task runs the networks for hundreds of milliseconds without a
+/// pause. This task interrupts it every [`PUMP_PERIOD`] to empty the
+/// camera's buffer, so the camera never stops, and draws the newest frame
+/// with the [`OVERLAY`] every [`PREVIEW_PERIOD`]. It also serves the main
+/// task: it copies the newest frame into [`FRAME_WANTED`]'s buffer and
+/// shows [`PANEL_WANTED`]'s canvas.
+///
+/// Nothing here waits for the sensor, except the start of the capture after
+/// start-up or a dropped frame (at most two frame periods).
+#[embassy_executor::task]
+async fn stream(mut camera: Camera, mut display: Display) -> ! {
+    let mut next_preview = Instant::now();
+    // Whether the newest frame is not drawn yet.
+    let mut fresh = false;
+    let mut frame_target = None;
+    loop {
+        camera.pump();
+        // Move on to the newest whole frame, without waiting for one. After
+        // an overflow of the camera's buffer, `finish` ends the stopped
+        // capture, and the next `begin_frame` starts it again.
+        if let Some(frame) = camera.begin_frame()
+            && frame.can_finish()
+        {
+            frame.finish();
+            fresh = true;
+        }
+        if frame_target.is_none() {
+            frame_target = FRAME_WANTED.try_take();
+        }
+        if let Some(mut frame) = camera.begin_frame() {
+            if let Some(target) = frame_target.take() {
+                copy_frame(&mut frame, target);
+                FRAME_COPIED.signal(target);
+            }
+            if fresh && Instant::now() >= next_preview {
+                fresh = false;
+                next_preview = Instant::now() + PREVIEW_PERIOD;
+                let face = OVERLAY.lock(Cell::get);
+                display
+                    .surface(PREVIEW)
+                    .render_from(&mut Preview { frame, face });
+                PREVIEWS_SHOWN.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if let Some(canvas) = PANEL_WANTED.try_take() {
+            canvas.show_while(&mut display.surface(PANEL), || camera.pump());
+            PANEL_SHOWN.signal(canvas);
+        }
+        Timer::after(PUMP_PERIOD).await;
     }
 }
 
@@ -1016,19 +1118,18 @@ impl core::fmt::Write for Cut<'_> {
     }
 }
 
-/// The middle columns of the copied frame, with the face box and the
+/// The middle columns of the newest camera frame, with the face box and the
 /// landmarks drawn on top.
 struct Preview<'a> {
-    /// The copied frame.
-    frame: &'a [u8],
+    /// The newest camera frame.
+    frame: Frame<'a>,
     /// The face to draw, in frame pixels, and the colour of its box.
     face: Option<(Face, Rgb565)>,
 }
 
 impl ScanlineSource for Preview<'_> {
     fn fill_row(&mut self, y: usize, row: &mut [u8]) {
-        let start = y * SCANLINE_BYTES;
-        row.copy_from_slice(&self.frame[start + PREVIEW_BYTES.start..start + PREVIEW_BYTES.end]);
+        row.copy_from_slice(&self.frame.scanline(y)[PREVIEW_BYTES]);
         let Some((face, color)) = &self.face else {
             return;
         };
@@ -1051,7 +1152,9 @@ impl ScanlineSource for Preview<'_> {
         }
     }
 
-    fn while_transferring(&mut self) {}
+    fn while_transferring(&mut self) {
+        self.frame.pump();
+    }
 }
 
 /// Set the pixels in `columns` of a row of big-endian RGB565 bytes to

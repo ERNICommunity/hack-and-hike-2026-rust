@@ -274,13 +274,21 @@ is left to gain is in [`performance.md`](performance.md).
 
 ## The application (`src/bin/face_id.rs`)
 
-The camera's buffer overflows within milliseconds without a pump, so a
-cycle copies one frame into PSRAM (pumping as it goes), pauses the
-camera, and works on the copy: detector on the 4x scaled-down frame,
-gates (framing, pose, sharpness), preview with box and landmarks, then,
-when the face passes the gates and there is a reason, the recognizer on
-the face cut out of the 2x scaled-down frame. About three cycles per
-second while scanning, one per second while recognizing.
+The camera's buffer overflows within milliseconds without a pump, and
+the networks hold CPU0 for hundreds of milliseconds. So the camera and
+the screen belong to a task on an interrupt executor of CPU0 (on the
+board's spare software interrupt, `FROM_CPU_INTR2`). It interrupts the
+networks every 2 ms to empty the camera's buffer, and draws the live
+preview at up to 10 frames per second with the box and landmarks of the
+newest detection. The main task's cycle asks it for a copy of the newest
+frame and works on the copy: detector on the 4x scaled-down frame, gates
+(framing, pose, sharpness), then, when the face passes the gates and
+there is a reason, the recognizer on the face cut out of the 2x
+scaled-down frame. It hands its panel canvas to the same task to show.
+About three cycles per second while scanning, one per second while
+recognizing, before the preview's share of CPU0 (each preview frame is
+about 18 ms of SPI transfer); the log's `cycle:` line reports the
+preview's frame rate next to the network timings.
 
 Enrollment records six embeddings while the panel asks for small turns
 of the head; people are `person 1` to `person 4`. Recognition fuses
