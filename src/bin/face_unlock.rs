@@ -26,9 +26,9 @@
 //! takes about half a second and pauses the screen and the camera: it happens
 //! once after enrolment, and two seconds after the last tap on **-** or **+**.
 //!
-//! How faces are compared is explained in `hack_and_hike_core::face`. It
-//! is simple and has limits: there is no face detection, so the face must
-//! be in the oval, and a photo of the face also unlocks.
+//! How faces are compared is explained in the `hack_and_hike_face` crate
+//! (`crates/face`). It is simple and has limits: there is no face detection,
+//! so the face must be in the oval, and a photo of the face also unlocks.
 //!
 //! The camera's buffer overflows within a few milliseconds. So everything
 //! happens while one camera frame is held, and every slow step calls
@@ -58,9 +58,10 @@ use hack_and_hike::{
     psram,
     ui::{Canvas, common, theme},
 };
-use hack_and_hike_core::face::{
-    self, CENTER_OFFSET, Codes, Event, FaceLock, Features, MASK_HALF_HEIGHT, MASK_HALF_WIDTH,
-    Observation, PATCH_SIZE, Patch, Quality, SCALE, SOURCE_SIZE, State, TEMPLATES, Workspace,
+use hack_and_hike_face::{
+    self as face, CENTER_OFFSET, Codes, Event, FaceLock, Features, MASK_HALF_HEIGHT,
+    MASK_HALF_WIDTH, Observation, PATCH_SIZE, Patch, Quality, SCALE, SOURCE_SIZE, State, TEMPLATES,
+    Workspace,
 };
 
 // This line writes the application descriptor. The bootloader checks it

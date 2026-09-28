@@ -42,6 +42,15 @@
 //!
 //! The firmware must empty the camera's buffer every few milliseconds. So
 //! [`prepare`] and [`best_distance`] call back after each small step.
+//!
+//! This crate belongs to the `face_unlock` application
+//! (`src/bin/face_unlock.rs`), not to the shared library. Like
+//! `crates/core`, it is plain `no_std` Rust without an ESP32 dependency, so
+//! its tests run on your computer with `./scripts/test.sh`.
+
+#![no_std]
+#![warn(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
 
 /// Side of the [`Patch`] in pixels.
 pub const PATCH_SIZE: usize = 96;

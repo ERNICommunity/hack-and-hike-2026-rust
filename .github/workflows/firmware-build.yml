@@ -29,10 +29,10 @@ jobs:
       - name: Install host Rust toolchain
         run: rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy
 
-      - name: Lint the core crate and its tests
+      - name: Lint the host crates and their tests
         run: |
           host_target="$(rustc +"$RUST_VERSION" -vV | sed -n 's/^host: //p')"
-          cargo +"$RUST_VERSION" clippy -p hack-and-hike-core --all-targets --target "$host_target" -- -D warnings
+          cargo +"$RUST_VERSION" clippy -p hack-and-hike-core -p hack-and-hike-face --all-targets --target "$host_target" -- -D warnings
 
       - name: Run host tests
         run: RUSTFLAGS="-D warnings" ./scripts/test.sh

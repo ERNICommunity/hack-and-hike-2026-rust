@@ -13,7 +13,7 @@ bench = false
 # `src/bin/my_app.rs` builds with `cargo build --release --bin my_app`.
 
 [workspace]
-members = ["crates/core"]
+members = ["crates/core", "crates/face"]
 
 [workspace.package]
 # The one place the toolchain version is written down. CI and
@@ -70,6 +70,8 @@ arrayvec = { version = "0.7.8", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 postcard = { version = "1.1", default-features = false }
 hack-and-hike-core = { path = "crates/core" }
+# Only the face_unlock application uses it.
+hack-and-hike-face = { path = "crates/face" }
 
 [profile.dev]
 # Unoptimized builds are too slow for the display and sensor loops.

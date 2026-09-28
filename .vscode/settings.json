@@ -31,7 +31,7 @@
         "editor.defaultFormatter": "rust-lang.rust-analyzer",
         "editor.formatOnSave": true
     },
-    // rust-analyzer checks the firmware target. The tests in crates/core build
+    // rust-analyzer checks the firmware target. The tests in crates/core and crates/face build
     // for your computer instead, so they are excluded here; run them with
     // scripts/test.sh, which also reports their compile errors.
     "rust-analyzer.cargo.allTargets": false,
