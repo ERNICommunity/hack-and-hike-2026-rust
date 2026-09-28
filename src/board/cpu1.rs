@@ -1,11 +1,13 @@
 //! Start-up of CPU1, the second CPU core.
 //!
 //! CPU1 runs the timing-sensitive capability tasks: sensors, touch, audio,
-//! radio and backlight control. Applications never use CPU1 directly. They
-//! use the capability handles, which exchange data with the CPU1 tasks.
+//! radio and backlight control. It also runs the USB tasks of the log: the
+//! writer, the reader for refresh requests and the screen feed encoder.
+//! Applications never use CPU1 directly. They use the capability handles,
+//! which exchange data with the CPU1 tasks.
 
 use esp_hal::{
-    peripherals::{CPU_CTRL, FROM_CPU_INTR1},
+    peripherals::{CPU_CTRL, FROM_CPU_INTR1, USB_DEVICE},
     system::Stack,
 };
 use static_cell::StaticCell;
@@ -13,6 +15,7 @@ use static_cell::StaticCell;
 use crate::{
     board::i2c,
     capabilities::{audio, backlight, imu, light, network, proximity, touch},
+    logging,
 };
 
 /// Size of the one CPU1 stack. All CPU1 tasks share it, because one executor
@@ -51,6 +54,9 @@ pub(super) struct Cpu1 {
     /// Signals shared with the light and the proximity handles. One LTR-553
     /// task publishes to both. `None` when no sensor answered.
     pub(super) light: Option<(light::Runtime, proximity::Runtime)>,
+    /// The USB Serial/JTAG peripheral behind the USB-C socket. It carries
+    /// the log and the screen feed.
+    pub(super) usb: USB_DEVICE<'static>,
 }
 
 /// Start the second core with its own async executor and the capability
@@ -88,5 +94,8 @@ fn run(cpu1: Cpu1) {
             light::spawn(&spawner, system_bus, light, proximity);
         }
         audio::spawn(&spawner, cpu1.audio_resources, cpu1.audio);
+        // Like the I2C bus, the async USB driver is created here, so its
+        // interrupt runs on CPU1.
+        logging::spawn(&spawner, cpu1.usb);
     });
 }

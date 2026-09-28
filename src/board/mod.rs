@@ -32,7 +32,8 @@
 //! The order of the steps matters:
 //!
 //! 1. Heaps and the logger, so all later steps can allocate and log.
-//! 2. PSRAM and the log history, then the RTOS timer.
+//! 2. PSRAM, the log history and the screen mirror's copy of the panel,
+//!    then the RTOS timer.
 //! 3. I2C bus recovery. Then the power chip turns on the backlight rail, and
 //!    the IO expander resets the display and the touch controller. These two
 //!    chips do not work before this step.
@@ -41,7 +42,8 @@
 //! 5. The display over SPI.
 //! 6. The audio codecs and a check for the light and proximity sensor. Then
 //!    the system I2C bus moves to CPU1.
-//! 7. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks.
+//! 7. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks,
+//!    and the USB tasks of the log and the screen feed.
 
 mod cpu1;
 pub(crate) mod i2c;
@@ -192,6 +194,8 @@ impl Board {
 
         psram::enable(peripherals.PSRAM);
         let log = logging::enable_history();
+        // Before the display starts, so the mirror sees the first picture.
+        logging::mirror::enable();
         logging::report_memory("after PSRAM setup");
 
         let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -327,6 +331,7 @@ impl Board {
                 network: network_runtime,
                 touch: touch_runtime,
                 light: light_runtimes,
+                usb: peripherals.USB_DEVICE,
             },
         );
 

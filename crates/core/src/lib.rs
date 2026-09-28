@@ -17,6 +17,7 @@
 //! | [`light`] | data decoding, lux formula and proximity scale of the light sensor | light and proximity capabilities |
 //! | [`lines`] | a fixed-size history of text lines | log history |
 //! | [`network`] | wire protocol, typed messages, peer table | network capability |
+//! | [`screen`] | wire format of the live screen feed: packets, pixel runs, COBS, CRC | logging (screen mirror), autoflash |
 //! | [`storage`] | the header of a record in flash, a CRC-32 checksum | storage capability |
 //! | [`touch`] | decoding of the touch controller's report | touch capability |
 //!
@@ -34,5 +35,6 @@ pub mod imu;
 pub mod light;
 pub mod lines;
 pub mod network;
+pub mod screen;
 pub mod storage;
 pub mod touch;
