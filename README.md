@@ -29,6 +29,7 @@ gives your code access to that piece of hardware.
 | Camera | `Camera` | 320x240 frames in RGB565 (16-bit colour) |
 | Light | `Light` | Ambient light in lux |
 | Proximity | `Proximity` | How close something is to the front, in percent |
+| Storage | `Storage` | Keep up to 64 KiB of data through a restart and a power-off |
 | Log | `LogHistory` | The newest lines your code logged, to show on the screen |
 
 ## Contents
@@ -471,13 +472,14 @@ flowchart LR
 In the diagram, FT6336 is the touch controller chip. I2C is a two-wire bus
 for sensor chips. I2S is a bus for audio samples.
 
-There are two exceptions. They run on your own core and can wait:
+There are three exceptions. They run on your own core and can wait:
 
 - **Drawing** waits until the SPI DMA transfer is finished. (SPI is the bus
   to the display. DMA, direct memory access, sends the pixels without the
   CPU.) The whole screen takes about 31 ms.
 - **A camera frame** waits for the sensor, unless the next frame is already
   complete.
+- **Storage** waits for the flash chip. Saving takes about half a second.
 
 This is why the applications draw only when something changed.
 
@@ -669,6 +671,11 @@ milliseconds of data, so something must copy the data out of it often:
 
 Otherwise frames are dropped and a warning is logged.
 
+To draw a `Canvas` next to the camera picture, use
+`canvas.show_while(&mut surface, || frame.pump())` instead of `show`. It
+empties the camera's buffer while the canvas goes to the panel.
+`src/bin/face_unlock.rs` does this.
+
 **Light.** `light` is an `Option` too. `latest()` returns the newest sample,
 or `None` when nothing new arrived since the last call. The sensor measures
 ten times per second. After the sensor changes its gain (its sensitivity),
@@ -760,7 +767,7 @@ log::info!("button pressed at {}", point.x);
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `panic_backtrace` | display, touch | A deliberate panic, for [reading a backtrace](#when-your-application-panics) |
 | `face_unlock` | display, touch, camera, storage | Enrol your face, then the board unlocks when it sees it again; the face survives a restart |
-| `demo` | all capabilities | Several screens with navigation (see below) |
+| `demo` | all capabilities except storage | Several screens with navigation (see below) |
 
 **Color Ping** shows four colour bands below a short text. When you tap a
 band, the board broadcasts that colour. Every other board that receives it
@@ -867,7 +874,7 @@ src/
 ├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, face_unlock.rs, template.rs
 ├── board/          the PCB: pins, power rails, I2C bus, PSRAM, Board::init() and CPU1
 ├── capabilities/   one module per capability: the APIs you call
-├── logging.rs      logging with on-device history, memory usage report
+├── logging/        logging with on-device history, memory usage report, screen feed
 ├── synth.rs        sine waves and note frequencies for the speaker
 └── ui/             canvas, palette, text helpers, slider, embedded-gui glue
 ```

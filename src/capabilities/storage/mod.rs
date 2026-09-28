@@ -68,10 +68,11 @@ pub enum StorageError {
     /// The data does not fit: longer than [`MAX_LEN`] when saving, or longer
     /// than the buffer when loading.
     TooLarge,
-    /// The saved data does not match its checksum.
+    /// The saved record is damaged: its length is impossible, or its data
+    /// does not match its checksum.
     Corrupt,
-    /// The flash chip reported an error.
-    Flash(FlashStorageError),
+    /// The flash chip reported an error. The log has the details.
+    Flash,
 }
 
 /// Application handle for the storage; see the [module docs](self).
@@ -119,13 +120,13 @@ impl Storage {
     /// [`StorageError::Empty`] when nothing is saved,
     /// [`StorageError::OtherRecord`] when the record has another name,
     /// [`StorageError::TooLarge`] when it does not fit into `buffer`,
-    /// [`StorageError::Corrupt`] when its checksum does not match, and
-    /// [`StorageError::Flash`] when the flash chip reports an error.
+    /// [`StorageError::Corrupt`] when its length or its checksum is wrong,
+    /// and [`StorageError::Flash`] when the flash chip reports an error.
     pub fn load<'b>(&mut self, name: &str, buffer: &'b mut [u8]) -> Result<&'b [u8], StorageError> {
         let mut sector = Sector([0; SECTOR]);
         self.flash
             .read_nor(self.base, &mut sector.0[..HEADER_LEN])
-            .map_err(StorageError::Flash)?;
+            .map_err(flash_error)?;
         let header_bytes: &[u8; HEADER_LEN] = (&sector.0[..HEADER_LEN])
             .try_into()
             .expect("the slice has HEADER_LEN bytes");
@@ -134,7 +135,11 @@ impl Storage {
             return Err(StorageError::OtherRecord);
         }
         let length = header.length as usize;
-        if length > buffer.len() || length > MAX_LEN {
+        if length > MAX_LEN {
+            // No save writes such a header.
+            return Err(StorageError::Corrupt);
+        }
+        if length > buffer.len() {
             return Err(StorageError::TooLarge);
         }
 
@@ -147,7 +152,7 @@ impl Storage {
             let words = chunk.len().next_multiple_of(WORD);
             self.flash
                 .read_nor(offset, &mut sector.0[..words])
-                .map_err(StorageError::Flash)?;
+                .map_err(flash_error)?;
             chunk.copy_from_slice(&sector.0[..chunk.len()]);
             crc.update(chunk);
             offset += SECTOR as u32;
@@ -175,7 +180,7 @@ impl Storage {
         let used = (HEADER_LEN + data.len()).next_multiple_of(SECTOR) as u32;
         self.flash
             .erase(self.base, self.base + used)
-            .map_err(StorageError::Flash)?;
+            .map_err(flash_error)?;
 
         // The data first, sector by sector through internal RAM. The end of
         // the last word is padded with erased bytes.
@@ -187,7 +192,7 @@ impl Storage {
             sector.0[chunk.len()..words].fill(0xFF);
             self.flash
                 .write_nor(offset, &sector.0[..words])
-                .map_err(StorageError::Flash)?;
+                .map_err(flash_error)?;
             offset += SECTOR as u32;
         }
 
@@ -195,8 +200,15 @@ impl Storage {
         sector.0[..HEADER_LEN].copy_from_slice(&header.to_bytes());
         self.flash
             .write_nor(self.base, &sector.0[..HEADER_LEN])
-            .map_err(StorageError::Flash)?;
+            .map_err(flash_error)?;
         info!("Saved {} bytes as {}", data.len(), name);
         Ok(())
     }
+}
+
+/// Log a flash error and turn it into [`StorageError::Flash`], so the
+/// error type of the flash driver stays inside the capability.
+fn flash_error(error: FlashStorageError) -> StorageError {
+    warn!("Flash error: {error:?}");
+    StorageError::Flash
 }

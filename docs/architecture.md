@@ -16,6 +16,7 @@ abbreviations.
 - [Cooperative scheduling](#cooperative-scheduling)
 - [Memory and PSRAM](#memory-and-psram)
 - [The camera path](#the-camera-path)
+- [The storage](#the-storage)
 - [The network protocol](#the-network-protocol)
 - [Tests and the core crate](#tests-and-the-core-crate)
 - [Common mistakes](#common-mistakes)
@@ -86,6 +87,7 @@ sequenceDiagram
     Board->>I2C: free a bus a reset may have left busy
     Board->>I2C: enable backlight rail, reset LCD + touch
     Board->>I2C: power the camera, program the sensor (100 kHz)
+    Board->>Board: check the flash size for the storage
     Board->>Board: initialize the display over SPI DMA
     Board->>I2C: configure microphone and speaker codecs
     Board->>I2C: look for the light and proximity sensor
@@ -121,7 +123,8 @@ The order of the steps matters:
    expander resets the camera sensor (GC0308). The sensor shares the I2C
    pins, but it is programmed at 100 kHz instead of the normal 400 kHz. So
    this step creates its own short-lived I2C driver for it.
-6. The display, over SPI with DMA.
+6. The storage (only a check of the flash size), then the display, over
+   SPI with DMA.
 7. The audio codecs, and a check for the light and proximity sensor. Then
    the system I2C bus moves to CPU1.
 8. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks,
@@ -214,8 +217,10 @@ Some calls on CPU0 do wait:
   completed while you were drawing.
 - The first `begin_frame()` after boot or after `pause()` waits for a whole
   frame.
+- `storage.load()` and `storage.save()` wait for the flash chip. A save
+  takes about half a second; see [The storage](#the-storage).
 
-Each of these blocks your loop for milliseconds. For this reason, the loop
+Each of these blocks your loop for milliseconds, a save for longer. For this reason, the loop
 draws only when something changed.
 
 ## How a capability is built
@@ -277,8 +282,11 @@ the frames into the DMA buffer and plays silence when the ring is empty.
 Only the application writes into the ring. So a write of at most
 `available_frames()` frames is always accepted in full.
 
-The display and the camera are CPU0 capabilities. Their handles drive the
-hardware directly, with DMA, from the application's own loop.
+The display, the camera and the storage are CPU0 capabilities. Their
+handles drive the hardware directly from the application's own loop: the
+display and the camera with DMA, the storage through the ROM's flash
+functions. They have only a `mod.rs` and their chip drivers, and no
+runtime.
 
 ## Drawing
 
@@ -669,6 +677,45 @@ Errors do not stop the camera:
 
 A camera application should use this path and not copy frames.
 
+## The storage
+
+The storage keeps one record in the flash chip: a block of bytes under a
+name. It survives a restart and a power-off.
+
+Where the record lies:
+
+- The flash chip has 16 MiB. The image header of `firmware.bin` says 4 MiB,
+  and the ROM's flash functions refuse addresses above that size.
+- `espflash` makes one application partition from 0x10000 to the end of the
+  4 MiB. An application uses about 1 MiB of it.
+- The record uses the last 64 KiB of the 4 MiB, from 0x3F0000. That is the
+  unused end of the application partition.
+- `cargo dist` pads `firmware.bin` to 4 MiB. So flashing a new
+  `firmware.bin` erases the record.
+
+The record starts with a 20-byte header. The format is in
+`hack_and_hike_core::storage`:
+
+- a magic number and a format version,
+- the **kind**: the hash of the record name, like a network message kind,
+- the length of the data and its CRC-32 checksum.
+
+Rules for writing:
+
+- `save` erases the sectors it needs first (4 KiB each), then writes the
+  data, then the header. A save that stops half way, for example because the
+  power goes off, leaves no valid header, so `load` returns `Empty`.
+- `load` returns the data only when the kind matches the name. So an
+  application never reads the record of another application as its own.
+  Put the application name and a version in the name, and change the
+  version when the data changes its meaning.
+- While the flash chip erases or writes, no CPU can read the flash or
+  PSRAM. `save` stops CPU1 for each step (touch, IMU, audio and radio
+  pause), and interrupts on CPU0 wait. The camera's ring overflows in that
+  time, so pause the camera before a save.
+- The data goes through a 4 KiB buffer on the stack, because the flash chip
+  cannot copy from or to PSRAM while it works.
+
 ## The network protocol
 
 All boards use ESP-NOW on one Wi-Fi channel (channel 6):
@@ -786,6 +833,9 @@ team name in the message name, for example `"team-otters.hello"`.
   each have one.
 - **Codec**: here a chip that converts between sound and digital samples.
   The ES7210 reads the two microphones, and the AW88298 drives the speaker.
+- **Flash**: the 16 MiB memory chip that holds the firmware. The storage
+  keeps its record there too. Flash is erased in sectors of 4 KiB before it
+  is written again.
 - **Frame**: a word with three meanings in this document. A stereo (audio)
   frame is one left and one right sample. A camera or display frame is one
   image of 320x240 pixels. A radio frame is one ESP-NOW packet of at most
