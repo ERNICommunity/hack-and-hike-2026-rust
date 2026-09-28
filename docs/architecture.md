@@ -37,7 +37,7 @@ flowchart TD
 
 | Layer | Path | Owns |
 | --- | --- | --- |
-| Application | `src/bin/` | What the board does: screens, rules, message types |
+| Application | `src/bin/`, and crates that only one application uses (`crates/face/`) | What the board does: screens, rules, message types |
 | Board | `src/board/` | Facts about the PCB (printed circuit board): pins, power rails, reset lines, the I2C bus, register access, PSRAM. Also the power-up order and the start of the second CPU core |
 | Capabilities | `src/capabilities/` | One hardware function each, behind a small handle |
 | Core | `crates/core/` | Math, protocol and buffer code that needs no hardware. Its tests run on your computer (the host) |
@@ -447,7 +447,9 @@ To add a screen:
    and give it a 16x16 icon in `ViewId::icon`.
 
 Copy `screens/settings/` first. It has a KDL layout, a slider and one
-handle.
+handle. It also keeps its setting in the storage: it loads the brightness in
+`new` and saves it in `update`, after the finger left the slider and the
+new value is on the screen.
 
 ### Layout files (KDL)
 
@@ -457,13 +459,14 @@ the file into Rust code at compile time.
 
 ```kdl
 screen id="Settings" width=276 height=240 {
-    grid cols="48px 1fr 48px" rows="20px 20px 52px 18px 20px 1fr" gap=8 padding=12 {
+    grid cols="48px 1fr 48px" rows="20px 20px 52px 18px 20px 20px 1fr" gap=8 padding=12 {
         label id="title" text="SETTINGS" col=0 row=0 col_span=3 style="crate::styles::title()"
         label id="brightness_value" text="" col=0 row=1 col_span=3
         label id="brightness_slider" text="" col=0 row=2 col_span=3
         label id="minimum" text="DIM" col=0 row=3 style="crate::styles::hint()"
         label id="maximum" text="MAX" col=2 row=3 style="crate::styles::hint()"
         label id="hint" text="Tap or drag to adjust" col=0 row=4 col_span=3 style="crate::styles::hint()"
+        label id="saved_hint" text="Kept after a restart" col=0 row=5 col_span=3 style="crate::styles::hint()"
     }
 }
 ```
@@ -763,12 +766,18 @@ Code that needs no hardware lives in `crates/core`:
 | `lines` | the log history: a fixed-size ring of text lines |
 | `screen` | the wire format of the screen feed: packets, pixel runs, COBS framing and the CRC |
 | `touch` | decoding of the touch controller's report |
-| `face` | face features from a camera image (local binary patterns), their distance, and the face lock's rules |
 | `storage` | the header of a record in flash, a CRC-32 checksum |
 
 It is a `no_std` library: it does not use Rust's standard library, so it
 also works on the ESP32-S3. The firmware depends on it. It has ordinary unit
-tests, and more tests in `crates/core/tests/`. Run them with:
+tests, and more tests in `crates/core/tests/`.
+
+`crates/face` is built the same way, but it belongs to one application: it
+holds the face math of `face_unlock` (local binary patterns, their distance,
+the rules of the face lock). Logic that only one application uses gets a
+crate of its own like this, so `crates/core` stays shared.
+
+Run the tests of both crates with:
 
 ```bash
 ./scripts/test.sh
@@ -781,7 +790,7 @@ CI (continuous integration, in `.github/workflows/firmware-build.yml`) runs
 on every push to `main`, on every pull request, and when started by hand. It
 does these checks:
 
-- clippy and the tests of the core crate on the host,
+- clippy and the tests of the core and face crates on the host,
 - a format check (`cargo fmt --check`),
 - clippy on the firmware and every application,
 - a release build of every application.
@@ -895,7 +904,8 @@ team name in the message name, for example `"team-otters.hello"`.
 4. One owner per hardware handle. Share state, not handles.
 5. Give control back regularly (`.await`) in CPU0 loops.
 6. Large buffers live in PSRAM, never on a stack.
-7. Logic that can be tested on the host lives in `crates/core`.
+7. Logic that can be tested on the host lives in `crates/core`, or in a
+   crate of its own when only one application uses it (`crates/face`).
 8. Prefer plain structs, enums and functions. Add a trait only when several
    types really share it.
 
