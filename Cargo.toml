@@ -13,7 +13,7 @@ bench = false
 # `src/bin/my_app.rs` builds with `cargo build --release --bin my_app`.
 
 [workspace]
-members = ["crates/core", "crates/vision"]
+members = ["crates/core", "crates/vision", "crates/face"]
 
 [workspace.package]
 # The one place the toolchain version is written down. CI and
@@ -42,9 +42,9 @@ esp-hal = { version = "1.2.0", git = "https://github.com/esp-rs/esp-hal", rev = 
 esp-rtos = { version = "0.4.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["embassy", "esp-alloc", "esp-radio", "esp32s3", "log-04"] }
 esp-radio = { version = "=1.0.0-beta.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", default-features = false, features = ["esp32s3", "esp-now", "esp-alloc", "log-04", "unstable"] }
 esp-bootloader-esp-idf = { version = "0.6.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3", "log-04"] }
-# The face id app keeps its enrollments in the flash chip (the last 128 KB,
-# above the application image). This crate erases and writes sectors and
-# parks CPU1 while it does, since the flash cache is shared.
+# The flash chip: the storage capability's record, and the face id app's
+# enrollments below it. This crate erases and writes sectors and parks
+# CPU1 while it does, since the flash cache is shared.
 esp-storage = { version = "0.10.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["esp32s3"] }
 log = "0.4.27"
 esp-alloc = { version = "0.11.0", git = "https://github.com/esp-rs/esp-hal", rev = "dbd951f78c1276461ea3050c2ba71f552a3508ef", features = ["internal-heap-stats"] }
@@ -74,6 +74,8 @@ serde = { version = "1.0", default-features = false, features = ["derive"] }
 postcard = { version = "1.1", default-features = false }
 hack-and-hike-core = { path = "crates/core" }
 hack-and-hike-vision = { path = "crates/vision" }
+# Only the face_unlock application uses it.
+hack-and-hike-face = { path = "crates/face" }
 
 [profile.dev]
 # Unoptimized builds are too slow for the display and sensor loops.

@@ -16,6 +16,7 @@ abbreviations.
 - [Cooperative scheduling](#cooperative-scheduling)
 - [Memory and PSRAM](#memory-and-psram)
 - [The camera path](#the-camera-path)
+- [The storage](#the-storage)
 - [The network protocol](#the-network-protocol)
 - [Tests and the core crate](#tests-and-the-core-crate)
 - [Common mistakes](#common-mistakes)
@@ -36,7 +37,7 @@ flowchart TD
 
 | Layer | Path | Owns |
 | --- | --- | --- |
-| Application | `src/bin/` | What the board does: screens, rules, message types |
+| Application | `src/bin/`, and crates that only one application uses (`crates/face/`) | What the board does: screens, rules, message types |
 | Board | `src/board/` | Facts about the PCB (printed circuit board): pins, power rails, reset lines, the I2C bus, register access, PSRAM. Also the power-up order and the start of the second CPU core |
 | Capabilities | `src/capabilities/` | One hardware function each, behind a small handle |
 | Core | `crates/core/` | Math, protocol and buffer code that needs no hardware. Its tests run on your computer (the host) |
@@ -86,6 +87,7 @@ sequenceDiagram
     Board->>I2C: free a bus a reset may have left busy
     Board->>I2C: enable backlight rail, reset LCD + touch
     Board->>I2C: power the camera, program the sensor (100 kHz)
+    Board->>Board: check the flash size for the storage
     Board->>Board: initialize the display over SPI DMA
     Board->>I2C: configure microphone and speaker codecs
     Board->>I2C: look for the light and proximity sensor
@@ -121,7 +123,8 @@ The order of the steps matters:
    expander resets the camera sensor (GC0308). The sensor shares the I2C
    pins, but it is programmed at 100 kHz instead of the normal 400 kHz. So
    this step creates its own short-lived I2C driver for it.
-6. The display, over SPI with DMA.
+6. The storage (only a check of the flash size), then the display, over
+   SPI with DMA.
 7. The audio codecs, and a check for the light and proximity sensor. Then
    the system I2C bus moves to CPU1.
 8. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks,
@@ -140,7 +143,8 @@ cannot work without:
 Other chips are optional or are contacted later:
 
 - The camera and the light and proximity sensor are optional. When they do
-  not answer, their fields in `Board` are `None`.
+  not answer, their fields in `Board` are `None`. The storage is optional
+  too: it is `None` when the flash chip is smaller than 4 MiB.
 - The IMU and the touch controller are first contacted from CPU1. There, a
   failure does not stop the board. The IMU logs the failure and sets itself
   up again: 1 s after a failed setup, or after 10 failed reads in a row.
@@ -213,8 +217,10 @@ Some calls on CPU0 do wait:
   completed while you were drawing.
 - The first `begin_frame()` after boot or after `pause()` waits for a whole
   frame.
+- `storage.load()` and `storage.save()` wait for the flash chip. A save
+  takes about half a second; see [The storage](#the-storage).
 
-Each of these blocks your loop for milliseconds. For this reason, the loop
+Each of these blocks your loop for milliseconds, a save for longer. For this reason, the loop
 draws only when something changed.
 
 ## How a capability is built
@@ -276,8 +282,11 @@ the frames into the DMA buffer and plays silence when the ring is empty.
 Only the application writes into the ring. So a write of at most
 `available_frames()` frames is always accepted in full.
 
-The display and the camera are CPU0 capabilities. Their handles drive the
-hardware directly, with DMA, from the application's own loop.
+The display, the camera and the storage are CPU0 capabilities. Their
+handles drive the hardware directly from the application's own loop: the
+display and the camera with DMA, the storage through the ROM's flash
+functions. They have only a `mod.rs` and their chip drivers, and no
+runtime.
 
 ## Drawing
 
@@ -455,7 +464,9 @@ To add a screen:
    and give it a 16x16 icon in `ViewId::icon`.
 
 Copy `screens/settings/` first. It has a KDL layout, a slider and one
-handle.
+handle. It also keeps its setting in the storage: it loads the brightness in
+`new` and saves it in `update`, after the finger left the slider and the
+new value is on the screen.
 
 ### Layout files (KDL)
 
@@ -465,13 +476,14 @@ the file into Rust code at compile time.
 
 ```kdl
 screen id="Settings" width=276 height=240 {
-    grid cols="48px 1fr 48px" rows="20px 20px 52px 18px 20px 1fr" gap=8 padding=12 {
+    grid cols="48px 1fr 48px" rows="20px 20px 52px 18px 20px 20px 1fr" gap=8 padding=12 {
         label id="title" text="SETTINGS" col=0 row=0 col_span=3 style="crate::styles::title()"
         label id="brightness_value" text="" col=0 row=1 col_span=3
         label id="brightness_slider" text="" col=0 row=2 col_span=3
         label id="minimum" text="DIM" col=0 row=3 style="crate::styles::hint()"
         label id="maximum" text="MAX" col=2 row=3 style="crate::styles::hint()"
         label id="hint" text="Tap or drag to adjust" col=0 row=4 col_span=3 style="crate::styles::hint()"
+        label id="saved_hint" text="Kept after a restart" col=0 row=5 col_span=3 style="crate::styles::hint()"
     }
 }
 ```
@@ -713,6 +725,48 @@ between frames, such as Face ID:
   buffer in exchange. The application works on the frame for as long as it
   likes, and nothing is copied.
 
+## The storage
+
+The storage keeps one record in the flash chip: a block of bytes under a
+name. It survives a restart, a power-off and a new firmware from
+`cargo dist`.
+
+Where the record lies:
+
+- The flash chip has 16 MiB. The image header of `firmware.bin` says 4 MiB,
+  and the ROM's flash functions refuse addresses above that size.
+- `espflash` makes one application partition from 0x10000 to the end of the
+  4 MiB. An application uses 1 to 2.5 MiB of it.
+- The record uses the last 64 KiB of the 4 MiB, from 0x3F0000. That is the
+  unused end of the application partition.
+- Face ID keeps its enrollments in the 128 KiB below the record, from
+  0x3D0000, with flash code of its own: they do not fit one record.
+- `cargo dist` writes a `firmware.bin` that ends with the application
+  (`--skip-padding`). So flashing a new `firmware.bin` keeps the record.
+
+The record starts with a 20-byte header. The format is in
+`hack_and_hike_core::storage`:
+
+- a magic number and a format version,
+- the **kind**: the hash of the record name, like a network message kind,
+- the length of the data and its CRC-32 checksum.
+
+Rules for writing:
+
+- `save` erases the sectors it needs first (4 KiB each), then writes the
+  data, then the header. A save that stops half way, for example because the
+  power goes off, leaves no valid header, so `load` returns `Empty`.
+- `load` returns the data only when the kind matches the name. So an
+  application never reads the record of another application as its own.
+  Put the application name and a version in the name, and change the
+  version when the data changes its meaning.
+- While the flash chip erases or writes, no CPU can read the flash or
+  PSRAM. `save` stops CPU1 for each step (touch, IMU, audio and radio
+  pause), and interrupts on CPU0 wait. The camera's ring overflows in that
+  time, so pause the camera before a save.
+- The data goes through a 4 KiB buffer on the stack, because the flash chip
+  cannot copy from or to PSRAM while it works.
+
 ## The network protocol
 
 All boards use ESP-NOW on one Wi-Fi channel (channel 6):
@@ -760,11 +814,18 @@ Code that needs no hardware lives in `crates/core`:
 | `lines` | the log history: a fixed-size ring of text lines |
 | `screen` | the wire format of the screen feed: packets, pixel runs, COBS framing and the CRC |
 | `touch` | decoding of the touch controller's report |
-| `face` | face features from a camera image (local binary patterns), their distance, and the face lock's rules |
+| `storage` | the header of a record in flash, a CRC-32 checksum |
 
 It is a `no_std` library: it does not use Rust's standard library, so it
 also works on the ESP32-S3. The firmware depends on it. It has ordinary unit
-tests, and more tests in `crates/core/tests/`. Run them with:
+tests, and more tests in `crates/core/tests/`.
+
+`crates/face` is built the same way, but it belongs to one application: it
+holds the face math of `face_unlock` (local binary patterns, their distance,
+the rules of the face lock). Logic that only one application uses gets a
+crate of its own like this, so `crates/core` stays shared.
+
+Run the tests of both crates with:
 
 ```bash
 ./scripts/test.sh
@@ -777,7 +838,7 @@ CI (continuous integration, in `.github/workflows/firmware-build.yml`) runs
 on every push to `main`, on every pull request, and when started by hand. It
 does these checks:
 
-- clippy and the tests of the core crate on the host,
+- clippy and the tests of the core and face crates on the host,
 - a format check (`cargo fmt --check`),
 - clippy on the firmware and every application,
 - a release build of every application.
@@ -829,6 +890,9 @@ team name in the message name, for example `"team-otters.hello"`.
   each have one.
 - **Codec**: here a chip that converts between sound and digital samples.
   The ES7210 reads the two microphones, and the AW88298 drives the speaker.
+- **Flash**: the 16 MiB memory chip that holds the firmware. The storage
+  keeps its record there too. Flash is erased in sectors of 4 KiB before it
+  is written again.
 - **Frame**: a word with three meanings in this document. A stereo (audio)
   frame is one left and one right sample. A camera or display frame is one
   image of 320x240 pixels. A radio frame is one ESP-NOW packet of at most
@@ -888,7 +952,8 @@ team name in the message name, for example `"team-otters.hello"`.
 4. One owner per hardware handle. Share state, not handles.
 5. Give control back regularly (`.await`) in CPU0 loops.
 6. Large buffers live in PSRAM, never on a stack.
-7. Logic that can be tested on the host lives in `crates/core`.
+7. Logic that can be tested on the host lives in `crates/core`, or in a
+   crate of its own when only one application uses it (`crates/face`).
 8. Prefer plain structs, enums and functions. Add a trait only when several
    types really share it.
 

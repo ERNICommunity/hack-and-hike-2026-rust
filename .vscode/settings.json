@@ -9,7 +9,7 @@
     "editor.minimap.size": "fill",
     // do not show the right sidebar because we need the screen space for a two column editor layout
     "workbench.secondarySideBar.defaultVisibility": "hidden",
-    "chat.disableAIFeatures": false,
+    "chat.disableAIFeatures": true,
     // Keep rust-analyzer snappy by using a separate target dir inside the cargo target dir
     "rust-analyzer.cargo.targetDir": true,
     // adjust explorer view to show tasks
@@ -31,7 +31,7 @@
         "editor.defaultFormatter": "rust-lang.rust-analyzer",
         "editor.formatOnSave": true
     },
-    // rust-analyzer checks the firmware target. The tests in crates/core build
+    // rust-analyzer checks the firmware target. The tests in crates/core and crates/face build
     // for your computer instead, so they are excluded here; run them with
     // scripts/test.sh, which also reports their compile errors.
     "rust-analyzer.cargo.allTargets": false,

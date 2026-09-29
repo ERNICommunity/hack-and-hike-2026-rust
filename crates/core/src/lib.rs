@@ -12,12 +12,12 @@
 //! | Module | Contents | Used by |
 //! | --- | --- | --- |
 //! | [`audio`] | the speaker's ring buffer, an ADPCM (compressed audio) decoder | audio capability, demo |
-//! | [`face`] | face features from the camera image, the face lock's rules | `face_unlock` application |
 //! | [`imu`] | sensor fusion, magnetometer compensation and calibration | IMU capability |
 //! | [`light`] | data decoding, lux formula and proximity scale of the light sensor | light and proximity capabilities |
 //! | [`lines`] | a fixed-size history of text lines | log history |
 //! | [`network`] | wire protocol, typed messages, peer table | network capability |
 //! | [`screen`] | wire format of the live screen feed: packets, pixel runs, COBS, CRC | logging (screen mirror), autoflash |
+//! | [`storage`] | the header of a record in flash, a CRC-32 checksum | storage capability |
 //! | [`touch`] | decoding of the touch controller's report | touch capability |
 //!
 //! This crate is a good place for new logic that needs tests. If the logic
@@ -29,10 +29,10 @@
 #![warn(clippy::missing_docs_in_private_items)]
 
 pub mod audio;
-pub mod face;
 pub mod imu;
 pub mod light;
 pub mod lines;
 pub mod network;
 pub mod screen;
+pub mod storage;
 pub mod touch;

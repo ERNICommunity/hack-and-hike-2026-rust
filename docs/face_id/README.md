@@ -381,11 +381,15 @@ starts, it runs the self-test (`nn::check`); the panel's terminal says
 
 ### Enrollments in flash
 
-The gallery lives in the last 128 KB of the 4 MB flash chip (from offset
-`0x3E0000`), above the application image, so flashing a new firmware
-keeps it: `cargo dist` writes an image that ends with the application
+The gallery lives in 128 KB of the 4 MB flash chip from offset
+`0x3D0000`, above the application image and below the storage
+capability's record (the last 64 KB), so flashing a new firmware keeps
+it: `cargo dist` writes an image that ends with the application
 (`--skip-padding`). Up to `faceid-13` the image was padded to the whole
-flash, and every flash through autoflash erased the gallery. Sector 0 is a header (magic, version, the number of people,
+flash, and every flash through autoflash erased the gallery. Up to
+`faceid-14` the gallery began at `0x3E0000` and shared its last 64 KB
+with the storage record; a board enrolled before `faceid-15` starts
+empty once. Sector 0 is a header (magic, version, the number of people,
 each slot's name and template count); sectors 1 onward hold one 24 KB
 block per slot, twelve embeddings of 512 `f32` values. The app loads it
 at boot and writes it when an enrollment completes (six samples) and

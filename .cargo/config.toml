@@ -20,6 +20,6 @@ build-std = ["core", "alloc"]
 [alias]
 # A merged image for address 0x0 that ends with the application. Without
 # `--skip-padding` it would be padded to the whole 4 MB flash, and flashing
-# it would erase what applications keep above their image (Face ID's
-# enrollments in the last 128 KB).
+# it would erase what applications keep above their image (the storage
+# capability's record, Face ID's enrollments).
 dist = "espflash save-image --chip esp32s3 --release --merge --skip-padding firmware.bin"

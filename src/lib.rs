@@ -25,8 +25,9 @@
 //!   [`Network`](capabilities::network::Network),
 //!   [`Camera`](capabilities::camera::Camera),
 //!   [`Light`](capabilities::light::Light),
-//!   [`Proximity`](capabilities::proximity::Proximity) and
-//!   [`Backlight`](capabilities::backlight::Backlight).
+//!   [`Proximity`](capabilities::proximity::Proximity),
+//!   [`Backlight`](capabilities::backlight::Backlight) and
+//!   [`Storage`](capabilities::storage::Storage).
 //! - [`ui`]: a [`Canvas`](ui::Canvas) to draw on, the colour palette, text
 //!   helpers and a slider.
 //! - [`synth`]: sine waves for the speaker.

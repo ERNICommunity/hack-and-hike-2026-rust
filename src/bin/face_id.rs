@@ -122,7 +122,7 @@ use static_cell::StaticCell;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// Which build this is, in the log and on the screen at start-up.
-const BUILD_ID: &str = "faceid-14";
+const BUILD_ID: &str = "faceid-15";
 
 /// The recognizer's integer weights, in flash.
 static EDGEFACE: &[u8] = include_fkb!("../../assets/models/edgeface_xxs.int8.fkb");
@@ -1616,11 +1616,14 @@ fn paint(row: &mut [u8], columns: Range<i32>, color: [u8; 2]) {
 
 /// The enrollments in the flash chip.
 ///
-/// The last 128 KB of the 4 MB flash lie above the application image
-/// (2.4 MB from offset 64 KB), so a new firmware does not touch them:
-/// `cargo dist` writes an image that ends with the application
-/// (`--skip-padding`), and autoflash writes only that. An image padded to
-/// the size of the flash would erase them. The layout, in 4 KB sectors:
+/// 128 KB of the 4 MB flash above the application image (2.4 MB from
+/// offset 64 KB), right below the record of the storage capability (the
+/// last 64 KB): a new firmware does not touch them, since `cargo dist`
+/// writes an image that ends with the application (`--skip-padding`) and
+/// autoflash writes only that. An image padded to the size of the flash
+/// would erase them. The enrollments do not fit the storage capability's
+/// one record of at most 64 KB, hence a store of their own. The layout, in
+/// 4 KB sectors:
 ///
 /// - sector 0: a header: the magic `FACE`, the format version, the
 ///   number of people, and for each of the four slots the name (its
@@ -1639,8 +1642,10 @@ mod store {
     };
     use log::warn;
 
-    /// Where the store starts: the last 128 KB of a 4 MB flash.
-    const BASE: u32 = 0x3E_0000;
+    /// Where the store starts: 128 KB below the storage capability's
+    /// record, which begins at `0x3F_0000`. (Up to `faceid-14` the store
+    /// began at `0x3E_0000` and shared its last 64 KB with that record.)
+    const BASE: u32 = 0x3D_0000;
     /// The sector size.
     const SECTOR: usize = 4096;
     /// One slot's block: twelve embeddings.
@@ -1670,10 +1675,12 @@ mod store {
     impl Store {
         /// Open the flash.
         pub fn open() -> Self {
-            // SAFETY: nothing else in this firmware drives the flash chip
-            // directly; the framework only executes from it through the
-            // cache, which the driver switches off around each operation
-            // after parking CPU1.
+            // SAFETY: nothing else drives the flash chip: `Board::init`
+            // gives the peripheral to the storage capability, and this
+            // application drops that handle with the rest of `Board`. The
+            // framework only executes from the flash through the cache,
+            // which the driver switches off around each operation after
+            // parking CPU1.
             let flash = FlashStorage::new(unsafe { FLASH::steal() }).multicore_auto_park();
             Self {
                 flash,

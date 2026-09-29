@@ -29,6 +29,7 @@ gives your code access to that piece of hardware.
 | Camera | `Camera` | 320x240 frames in RGB565 (16-bit colour) |
 | Light | `Light` | Ambient light in lux |
 | Proximity | `Proximity` | How close something is to the front, in percent |
+| Storage | `Storage` | Keep up to 64 KiB of data through a restart and a power-off |
 | Log | `LogHistory` | The newest lines your code logged, to show on the screen |
 
 ## Contents
@@ -143,6 +144,12 @@ The crate `crates/core` holds the logic that does not need the hardware:
 - the log history
 - the light sensor's data decoding, lux formula and proximity scale
 - the decoding of the touch controller's report
+- the header and the checksum of the storage's record
+- the format of the screen feed
+
+The crate `crates/face` holds the face math of the `face_unlock`
+application. It is a crate of its own, because only that application uses
+it.
 
 This code has ordinary Rust tests that run on your computer:
 
@@ -151,8 +158,8 @@ This code has ordinary Rust tests that run on your computer:
 ```
 
 The repository's Cargo configuration builds for the ESP32-S3, so a plain
-`cargo test` does not work. The script runs `cargo test` for that crate with
-your computer's target instead.
+`cargo test` does not work. The script runs `cargo test` for these crates
+with your computer's target instead.
 
 - Unit tests are next to the code, in a `#[cfg(test)] mod tests` block. See
   `crates/core/src/network/protocol.rs` for an example.
@@ -480,13 +487,14 @@ flowchart LR
 In the diagram, FT6336 is the touch controller chip. I2C is a two-wire bus
 for sensor chips. I2S is a bus for audio samples.
 
-There are two exceptions. They run on your own core and can wait:
+There are three exceptions. They run on your own core and can wait:
 
 - **Drawing** waits until the SPI DMA transfer is finished. (SPI is the bus
   to the display. DMA, direct memory access, sends the pixels without the
   CPU.) The whole screen takes about 31 ms.
 - **A camera frame** waits for the sensor, unless the next frame is already
   complete.
+- **Storage** waits for the flash chip. Saving takes about half a second.
 
 This is why the applications draw only when something changed. Both
 have versions that never wait, for an application that computes a lot
@@ -680,6 +688,11 @@ milliseconds of data, so something must copy the data out of it often:
 
 Otherwise frames are dropped and a warning is logged.
 
+To draw a `Canvas` next to the camera picture, use
+`canvas.show_while(&mut surface, || frame.pump())` instead of `show`. It
+empties the camera's buffer while the canvas goes to the panel.
+`src/bin/face_unlock.rs` does this.
+
 An application that computes for a long time between frames, such as
 Face ID, cannot call `pump` often enough. It gives the camera and the
 screen to a task of their own, on an interrupt executor, which uses calls
@@ -737,6 +750,28 @@ use hack_and_hike::capabilities::backlight::Brightness;
 backlight.set(Brightness::new(30));
 ```
 
+**Storage.** `storage` is an `Option` too: data that survives a restart, a
+power-off and a new flash of `firmware.bin`. It keeps one record of up
+to 64 KiB under a name. Saving replaces the record, and loading returns it
+only under the same name. Put your application's name and a version in the
+name. Saving takes about half a second and stops CPU1 meanwhile, so save
+only when something changed, and pause the camera first. The demo's
+Settings screen keeps the brightness this way, and `face_unlock` keeps the
+enrolled face.
+
+```rust
+if let Some(storage) = storage.as_mut() {
+    if let Err(error) = storage.save("my_app/best_score/v1", &score.to_le_bytes()) {
+        log::warn!("not saved: {error:?}");
+    }
+
+    let mut buffer = [0; 4];
+    if let Ok(saved) = storage.load("my_app/best_score/v1", &mut buffer) {
+        log::info!("saved bytes: {saved:?}");
+    }
+}
+```
+
 **Log.** Use the `log` macros anywhere, on both cores. They print to the USB
 serial port. The same port also carries a live copy of the screen, which
 the autoflash page shows next to the log. The log lines stay plain text, so
@@ -763,7 +798,7 @@ log::info!("button pressed at {}", point.x);
 | `light_meter` | display, light, proximity | Lux and proximity as numbers and a bar; dark colours in the dark |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `panic_backtrace` | display, touch | A deliberate panic, for [reading a backtrace](#when-your-application-panics) |
-| `face_unlock` | display, touch, camera | Enrol your face, then the board unlocks when it sees it again |
+| `face_unlock` | display, touch, camera, storage | Enrol your face, then the board unlocks when it sees it again; the face survives a restart |
 | `face_id` | display, touch, camera | Two neural networks find and recognise up to four people, and keep them in flash (see below) |
 | `demo` | all capabilities | Several screens with navigation (see below) |
 
@@ -791,6 +826,42 @@ audio and drawing each do a small part of their work, and nothing blocks.
 The whole application is one struct, `ColorPingApp`, that owns its handles
 and its state. Copy this pattern when your program becomes too large for
 `main`.
+
+**Face Unlock** shows the camera on the left, with an oval in the middle,
+and the state of the lock on the right. Tap **ENROLL** and hold your face in
+the oval: the board keeps five samples in two seconds. After that, three
+matching frames in a row unlock the board. It locks again five seconds after
+the last match. **-** and **+** change the limit: how different a face may
+look and still count as yours. The status line shows the distance of each
+frame next to the limit, so you can choose a good limit for your room.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Empty: nothing saved
+    [*] --> Locked: face loaded from storage
+    Empty --> Enrolling: tap ENROLL
+    Locked --> Enrolling: tap ENROLL
+    Enrolling --> Locked: 5 samples kept, face saved
+    Locked --> Unlocked: 3 matching frames in a row
+    Unlocked --> Locked: 5 s without a match
+```
+
+The face and the limit are saved in the storage, so they survive a restart.
+The method is simple and has limits: there is no face detection, so your
+face must be in the oval, and a photo of your face also unlocks the board.
+
+Face Unlock shows three patterns to copy:
+
+- **A camera and slow work in one loop.** The camera's buffer overflows
+  within a few milliseconds. So the application works on one held frame and
+  calls `frame.pump()` between the slow steps. It draws its canvas with
+  `canvas.show_while(&mut surface, || frame.pump())`.
+- **Saving only after a change.** A save takes about half a second. The
+  application saves once after enrolment, and two seconds after the last tap
+  on **-** or **+**. It pauses the camera before it saves.
+- **Application logic in its own crate.** The face math is in
+  `crates/face`, with tests that run on your computer. Only this application
+  uses it, so it is not in the shared `crates/core`.
 
 **Face ID** runs two neural networks on the board: a detector (YuNet)
 finds the face and its eyes, nose and mouth corners, and a recognizer
@@ -848,12 +919,12 @@ preview stays live while the networks compute. The parts:
 EdgeFace-XXS is licensed **CC BY-NC-SA 4.0**: no commercial use.
 
 **Demo** is the largest application. It has Network, IMU, Microphone,
-Speaker, Camera, Proximity (with ambient light), Settings (backlight)
-and Log screens, and a navigation rail (a column of icons) to switch between
+Speaker, Camera, Proximity (with ambient light), Settings (backlight, kept in
+the storage) and Log screens, and a navigation rail (a column of icons) to switch between
 them. Every screen implements the same small `Screen` trait. To add a
 screen, copy `src/bin/demo/screens/settings/`. It has a KDL layout file (a
 text file that describes the labels and their positions), a slider, and one
-capability handle.
+capability handle. It also keeps its setting in the storage.
 
 ## The Rust you will meet
 
@@ -863,8 +934,8 @@ can use it. Each handle exists exactly once, so its owner is the only code
 that can use that piece of hardware.
 
 **Moving.** When you pass a handle into a struct, the handle moves. After
-`SettingsScreen::new(backlight)`, you cannot use the `backlight` variable
-any more. To call methods on a handle, keep it in a struct field and write
+`SettingsScreen::new(backlight, storage)`, you cannot use the `backlight`
+variable any more. To call methods on a handle, keep it in a struct field and write
 the methods on the struct, like `ColorPingApp` does.
 
 **Borrowing.** `display.surface(SCREEN)` borrows the display until the
@@ -923,6 +994,7 @@ tells the network what it needs to know about your type.
 ```text
 crates/core/        hardware-independent logic with tests
 crates/vision/      image processing and the two face networks, with tests
+crates/face/        the face math of face_unlock, with tests
 assets/models/      the face networks' weights and the impostor bank
 tools/facekit/      developer tool for the face models (runs on your computer)
 src/
@@ -930,7 +1002,7 @@ src/
 ├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, face_unlock.rs, face_id.rs, template.rs
 ├── board/          the PCB: pins, power rails, I2C bus, PSRAM, Board::init() and CPU1
 ├── capabilities/   one module per capability: the APIs you call
-├── logging.rs      logging with on-device history, memory usage report
+├── logging/        logging with on-device history, memory usage report, screen feed
 ├── synth.rs        sine waves and note frequencies for the speaker
 └── ui/             canvas, palette, text helpers, slider, embedded-gui glue
 ```
@@ -947,7 +1019,7 @@ src/
 | Change how a sensor is configured | the matching capability |
 | Change pins, power or reset wiring | `src/board/` |
 | Change the power-up order | `src/board/` |
-| Add logic that should have tests | `crates/core/` |
+| Add logic that should have tests | `crates/core/`; logic for one application only in a crate of its own, like `crates/face/` |
 
 A simple rule:
 

@@ -1,6 +1,6 @@
 //! The full Hack & Hike demo: eight screens for network, IMU, microphone,
-//! speaker, camera, proximity (with ambient light), settings (backlight) and
-//! the log.
+//! speaker, camera, proximity (with ambient light), settings (backlight,
+//! saved in flash) and the log.
 //!
 //! `main` starts the board, gives each screen the handles it owns, and runs
 //! the loop. Each loop iteration does these steps:
@@ -79,7 +79,8 @@ struct Screens {
     camera: CameraScreen,
     /// Proximity and ambient light, from one sensor.
     proximity: ProximityScreen,
-    /// The display brightness slider.
+    /// The display brightness slider. It keeps the brightness in the
+    /// storage.
     settings: SettingsScreen,
     /// The newest lines of the device log.
     log: LogScreen,
@@ -126,6 +127,7 @@ async fn main(_spawner: Spawner) -> ! {
         log,
         light,
         proximity,
+        storage,
         ..
     } = Board::init();
 
@@ -136,7 +138,7 @@ async fn main(_spawner: Spawner) -> ! {
         speaker: SpeakerScreen::new(speaker),
         camera: CameraScreen::new(camera),
         proximity: ProximityScreen::new(light, proximity),
-        settings: SettingsScreen::new(backlight),
+        settings: SettingsScreen::new(backlight, storage),
         log: LogScreen::new(log),
     };
     let mut navigation = Navigation::new(touch);

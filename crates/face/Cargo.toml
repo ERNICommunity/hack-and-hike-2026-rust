@@ -1,0 +1,13 @@
+[package]
+name = "hack-and-hike-face"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "Face verification of the face_unlock application: local binary patterns and the face lock's rules"
+
+[dependencies]
+libm = "0.2"
+
+[lints]
+workspace = true

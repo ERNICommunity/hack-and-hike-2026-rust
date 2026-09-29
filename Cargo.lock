@@ -1423,6 +1423,7 @@ dependencies = [
  "esp-rtos",
  "esp-storage",
  "hack-and-hike-core",
+ "hack-and-hike-face",
  "hack-and-hike-vision",
  "libm",
  "log",
@@ -1441,6 +1442,13 @@ dependencies = [
  "log",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "hack-and-hike-face"
+version = "0.1.0"
+dependencies = [
+ "libm",
 ]
 
 [[package]]
