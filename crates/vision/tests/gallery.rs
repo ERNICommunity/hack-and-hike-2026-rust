@@ -7,8 +7,8 @@
 //! slightly different pose.
 
 use hack_and_hike_vision::gallery::{
-    EMBEDDING_LEN, Embedding, FUSION_FRAMES, Fusion, Gallery, ImpostorBank, MAX_NAME, MAX_PEOPLE,
-    MAX_TEMPLATES, Match, Thresholds, VOTE_AGREEMENT, VOTE_WINDOW, Vote,
+    Decider, EMBEDDING_LEN, Embedding, FUSION_FRAMES, Fusion, Gallery, ImpostorBank, MAX_NAME,
+    MAX_PEOPLE, MAX_TEMPLATES, Match, SureSteps, Thresholds, VOTE_AGREEMENT, VOTE_WINDOW, Vote,
 };
 
 /// How far from 1 a normalized length may be.
@@ -508,6 +508,212 @@ fn an_undecided_vote_never_settles() {
 }
 
 #[test]
+fn fusion_averages_what_has_arrived_so_far() {
+    let mut fusion = Fusion::new();
+    assert_eq!(fusion.frames(), 0);
+    assert!(fusion.fused_so_far().is_none());
+
+    let base = embedding(1);
+    fusion.push(base);
+    assert_eq!(fusion.frames(), 1);
+    let one = fusion.fused_so_far().expect("one frame is in");
+    assert!(one.similarity(&base) > 0.9999, "one frame is itself");
+
+    // Two frames 60 degrees to either side of nothing in particular: the
+    // average is nearer to the base than either of them.
+    let mut fusion = Fusion::new();
+    let frames = [nearby(&base, 1000, 60.0), nearby(&base, 1001, 60.0)];
+    fusion.push(frames[0]);
+    fusion.push(frames[1]);
+    assert_eq!(fusion.frames(), 2);
+    let two = fusion.fused_so_far().expect("two frames are in");
+    assert!((length(&two) - 1.0).abs() < LENGTH_TOLERANCE);
+    assert!(two.similarity(&base) > frames[0].similarity(&base) + 0.05);
+
+    // With every frame in, it is the full average.
+    fusion.push(nearby(&base, 1002, 60.0));
+    assert_eq!(fusion.frames(), FUSION_FRAMES);
+    let all = fusion.fused_so_far().expect("three frames are in");
+    let full = fusion.fused().expect("three frames are in");
+    assert_eq!(all.values(), full.values());
+}
+
+#[test]
+fn a_settled_vote_holds_until_the_decisions_agree_again() {
+    let mut vote = Vote::new();
+    assert!(vote.settle(Some(0)), "the first value is a change");
+    assert!(vote.has_decided());
+    assert_eq!(vote.stable(), Some(0));
+    assert!(!vote.settle(Some(0)), "the same value again is none");
+
+    // Settling forgets the decisions before it: the run starts again.
+    assert_eq!(vote.push(None), None);
+    assert_eq!(vote.push(None), None);
+    assert!(!vote.settle(Some(0)));
+    for index in 0..VOTE_AGREEMENT - 1 {
+        assert_eq!(vote.push(None), None, "after {index} decisions");
+    }
+    assert_eq!(vote.push(None), Some(None));
+    assert!(vote.settle(Some(1)), "another value is a change");
+}
+
+/// A gallery with one person whose only template is `embedding(1)`, and
+/// a bank of strangers. A probe `degrees` away from the template scores
+/// `cos(degrees)`.
+fn decider_setup() -> (Gallery, Vec<f32>) {
+    let mut gallery = Gallery::new();
+    let person = gallery.enroll("Alexander").expect("a free slot");
+    person.add_template(embedding(1));
+    (gallery, bank_values(&[20, 21, 22, 23]))
+}
+
+#[test]
+fn a_sure_face_is_named_on_its_first_frame() {
+    let (gallery, values) = decider_setup();
+    let bank = ImpostorBank::new(&values);
+    let (thresholds, sure) = (Thresholds::DEFAULT, SureSteps::DEFAULT);
+    let mut decider = Decider::new();
+    assert_eq!(decider.shown(), None);
+
+    // 40 degrees: 0.77, above the limit of one frame.
+    let probe = nearby(&embedding(1), 700, 40.0);
+    let decision = decider.push(probe, &gallery, &bank, &thresholds, &sure);
+    assert!(
+        decision.score > sure.limit(thresholds.accept, 1),
+        "score {}",
+        decision.score
+    );
+    assert_eq!(decision.frames, 1);
+    assert!(decision.sure);
+    assert_eq!(decision.verdict, Some(Some(0)));
+    assert_eq!(decision.shown, Some(Some(0)));
+    assert_eq!(decider.shown(), Some(Some(0)));
+
+    // The same face again changes nothing on the screen.
+    let decision = decider.push(probe, &gallery, &bank, &thresholds, &sure);
+    assert_eq!(decision.frames, 2);
+    assert!(decision.sure);
+    assert_eq!(decision.shown, None);
+    assert_eq!(decider.shown(), Some(Some(0)));
+}
+
+#[test]
+fn a_face_just_above_the_limit_waits_for_the_vote() {
+    let (gallery, values) = decider_setup();
+    let bank = ImpostorBank::new(&values);
+    let (thresholds, sure) = (Thresholds::DEFAULT, SureSteps::DEFAULT);
+    let mut decider = Decider::new();
+
+    // 66 degrees: 0.41, above the accept limit and below every sure
+    // limit. The same frame every time, so the average is that frame.
+    let probe = nearby(&embedding(1), 700, 66.0);
+    let score = probe.similarity(&embedding(1));
+    assert!(score > thresholds.accept && score < sure.limit(thresholds.accept, FUSION_FRAMES));
+    let needed = FUSION_FRAMES + VOTE_AGREEMENT - 1;
+    for frame in 1..=needed {
+        let decision = decider.push(probe, &gallery, &bank, &thresholds, &sure);
+        assert!(!decision.sure, "frame {frame}");
+        let expected = (frame >= FUSION_FRAMES).then_some(Some(0));
+        assert_eq!(decision.verdict, expected, "frame {frame}");
+        let shown = (frame == needed).then_some(Some(0));
+        assert_eq!(decision.shown, shown, "frame {frame}");
+    }
+    assert_eq!(decider.shown(), Some(Some(0)));
+}
+
+#[test]
+fn without_sure_steps_every_face_waits_for_the_vote() {
+    let (gallery, values) = decider_setup();
+    let bank = ImpostorBank::new(&values);
+    let mut decider = Decider::new();
+    let needed = FUSION_FRAMES + VOTE_AGREEMENT - 1;
+    for frame in 1..=needed {
+        // The template itself: a score of 1.
+        let decision = decider.push(
+            embedding(1),
+            &gallery,
+            &bank,
+            &Thresholds::DEFAULT,
+            &SureSteps::NEVER,
+        );
+        assert!(!decision.sure);
+        let shown = (frame == needed).then_some(Some(0));
+        assert_eq!(decision.shown, shown, "frame {frame}");
+    }
+}
+
+#[test]
+fn a_stranger_is_unknown_after_the_first_average() {
+    let (gallery, values) = decider_setup();
+    let bank = ImpostorBank::new(&values);
+    let (thresholds, sure) = (Thresholds::DEFAULT, SureSteps::DEFAULT);
+    let mut decider = Decider::new();
+    for frame in 1..=2 * FUSION_FRAMES {
+        let stranger = embedding(900 + frame as u32);
+        let decision = decider.push(stranger, &gallery, &bank, &thresholds, &sure);
+        assert!(!decision.sure);
+        assert!(decision.score < thresholds.accept);
+        let verdict = (frame >= FUSION_FRAMES).then_some(None);
+        assert_eq!(decision.verdict, verdict, "frame {frame}");
+        // Shown once, with the first average, and not again.
+        let shown = (frame == FUSION_FRAMES).then_some(None);
+        assert_eq!(decision.shown, shown, "frame {frame}");
+    }
+    assert_eq!(decider.shown(), Some(None));
+
+    // The enrolled person steps in after a pause: sure on the first
+    // frame, so named at once over the "unknown", without the vote.
+    decider.pause();
+    let decision = decider.push(embedding(1), &gallery, &bank, &thresholds, &sure);
+    assert_eq!(decision.shown, Some(Some(0)));
+}
+
+#[test]
+fn a_name_gives_way_to_unknown_only_by_the_vote() {
+    let (gallery, values) = decider_setup();
+    let bank = ImpostorBank::new(&values);
+    let (thresholds, sure) = (Thresholds::DEFAULT, SureSteps::DEFAULT);
+    let mut decider = Decider::new();
+    let decision = decider.push(embedding(1), &gallery, &bank, &thresholds, &sure);
+    assert_eq!(decision.shown, Some(Some(0)));
+
+    // The face is not usable for a moment: the name stays.
+    decider.pause();
+    assert_eq!(decider.shown(), Some(Some(0)));
+
+    // A stranger takes the place: unknown after the first average and
+    // the decisions that must agree.
+    let needed = FUSION_FRAMES + VOTE_AGREEMENT - 1;
+    for frame in 1..=needed {
+        let stranger = embedding(900 + frame as u32);
+        let decision = decider.push(stranger, &gallery, &bank, &thresholds, &sure);
+        let shown = (frame == needed).then_some(None);
+        assert_eq!(decision.shown, shown, "frame {frame}");
+    }
+    assert_eq!(decider.shown(), Some(None));
+
+    decider.clear();
+    assert_eq!(decider.shown(), None);
+}
+
+#[test]
+fn the_sure_limits_fall_with_the_frames() {
+    let sure = SureSteps::DEFAULT;
+    let accept = Thresholds::DEFAULT.accept;
+    for frames in 1..FUSION_FRAMES {
+        assert!(sure.limit(accept, frames) > sure.limit(accept, frames + 1));
+    }
+    assert!(sure.limit(accept, FUSION_FRAMES) > accept);
+    // More frames than the average holds count as all of them.
+    assert_eq!(
+        sure.limit(accept, FUSION_FRAMES + 3),
+        sure.limit(accept, FUSION_FRAMES)
+    );
+    assert_eq!(SureSteps::default(), SureSteps::DEFAULT);
+    assert!(SureSteps::NEVER.limit(accept, 1).is_infinite());
+}
+
+#[test]
 fn the_gallery_fits_in_the_firmware_memory() {
     let person = core::mem::size_of::<hack_and_hike_vision::gallery::Person>();
     let gallery = core::mem::size_of::<Gallery>();
@@ -532,4 +738,92 @@ fn the_gallery_fits_in_the_firmware_memory() {
         gallery < 128 * 1024,
         "a gallery of {gallery} bytes is too big"
     );
+}
+
+#[test]
+fn a_sure_face_takes_over_from_another_person() {
+    let (mut gallery, values) = decider_setup();
+    gallery
+        .enroll("Bea")
+        .expect("a free slot")
+        .add_template(embedding(2));
+    let bank = ImpostorBank::new(&values);
+    let (thresholds, sure) = (Thresholds::DEFAULT, SureSteps::DEFAULT);
+    let mut decider = Decider::new();
+    let decision = decider.push(embedding(2), &gallery, &bank, &thresholds, &sure);
+    assert_eq!(decision.shown, Some(Some(1)));
+
+    decider.pause();
+    let decision = decider.push(embedding(1), &gallery, &bank, &thresholds, &sure);
+    assert!(decision.sure);
+    assert_eq!(decision.shown, Some(Some(0)));
+    assert_eq!(decider.shown(), Some(Some(0)));
+}
+
+#[test]
+fn a_sure_score_must_beat_the_bank_too() {
+    let (gallery, mut values) = decider_setup();
+    // A stranger in the bank closer to the probe than the template.
+    let probe = nearby(&embedding(1), 700, 40.0);
+    values.extend_from_slice(probe.values());
+    let bank = ImpostorBank::new(&values);
+    let (thresholds, sure) = (Thresholds::DEFAULT, SureSteps::DEFAULT);
+    let mut decider = Decider::new();
+    let decision = decider.push(probe, &gallery, &bank, &thresholds, &sure);
+    assert!(decision.score > sure.limit(thresholds.accept, 1));
+    assert!(!decision.sure);
+    assert_eq!(decision.shown, None);
+}
+
+#[test]
+fn unknown_is_shown_at_once_while_nothing_is_shown() {
+    let (gallery, values) = decider_setup();
+    let bank = ImpostorBank::new(&values);
+    let (thresholds, sure) = (Thresholds::DEFAULT, SureSteps::DEFAULT);
+    let mut decider = Decider::new();
+    // Plain decisions for the person, not enough to be shown.
+    let probe = nearby(&embedding(1), 700, 66.0);
+    for _ in 0..FUSION_FRAMES {
+        let decision = decider.push(probe, &gallery, &bank, &thresholds, &sure);
+        assert_eq!(decision.shown, None);
+    }
+    assert_eq!(decider.shown(), None);
+
+    // A stranger: unknown with its first average.
+    decider.pause();
+    for frame in 1..=FUSION_FRAMES {
+        let stranger = embedding(900 + frame as u32);
+        let decision = decider.push(stranger, &gallery, &bank, &thresholds, &sure);
+        let shown = (frame == FUSION_FRAMES).then_some(None);
+        assert_eq!(decision.shown, shown, "frame {frame}");
+    }
+}
+
+#[test]
+fn the_vote_outlasts_a_pause_but_not_a_clear() {
+    let (gallery, values) = decider_setup();
+    let bank = ImpostorBank::new(&values);
+    let (thresholds, sure) = (Thresholds::DEFAULT, SureSteps::DEFAULT);
+    // Just above the limit: plain decisions, shown by the vote only.
+    let probe = nearby(&embedding(1), 700, 66.0);
+    let almost = FUSION_FRAMES + VOTE_AGREEMENT - 2;
+    for forget in [false, true] {
+        let mut decider = Decider::new();
+        for _ in 0..almost {
+            let decision = decider.push(probe, &gallery, &bank, &thresholds, &sure);
+            assert_eq!(decision.shown, None);
+        }
+        if forget {
+            decider.clear();
+        } else {
+            decider.pause();
+        }
+        // After a pause the next average adds the one missing decision;
+        // after a clear the vote starts over.
+        for frame in 1..=FUSION_FRAMES {
+            let decision = decider.push(probe, &gallery, &bank, &thresholds, &sure);
+            let shown = (!forget && frame == FUSION_FRAMES).then_some(Some(0));
+            assert_eq!(decision.shown, shown, "forget {forget}, frame {frame}");
+        }
+    }
 }

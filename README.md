@@ -488,7 +488,9 @@ There are two exceptions. They run on your own core and can wait:
 - **A camera frame** waits for the sensor, unless the next frame is already
   complete.
 
-This is why the applications draw only when something changed.
+This is why the applications draw only when something changed. Both
+have versions that never wait, for an application that computes a lot
+between frames (see the **Camera** section below).
 
 ## The capabilities
 
@@ -678,6 +680,16 @@ milliseconds of data, so something must copy the data out of it often:
 
 Otherwise frames are dropped and a warning is logged.
 
+An application that computes for a long time between frames, such as
+Face ID, cannot call `pump` often enough. It gives the camera and the
+screen to a task of their own, on an interrupt executor, which uses calls
+that never wait: `camera.service()`, `camera.advance()` and
+`camera.current()` instead of `begin_frame` and `finish`, and
+`render_from_async` and `canvas.show_async` to draw. Do not mix them
+with `begin_frame` and `finish`. "The camera path" in
+[docs/architecture.md](docs/architecture.md#the-camera-path) explains
+them.
+
 **Light.** `light` is an `Option` too. `latest()` returns the newest sample,
 or `None` when nothing new arrived since the last call. The sensor measures
 ten times per second. After the sensor changes its gain (its sensitivity),
@@ -730,6 +742,9 @@ serial port. The same port also carries a live copy of the screen, which
 the autoflash page shows next to the log. The log lines stay plain text, so
 they are still readable in any serial terminal.
 
+- The live copy costs CPU0 time for every pixel drawn. An application
+  that draws a lot can make it only while a computer reads the port:
+  `logging::mirror_only_when_watched(true)`.
 - Records at `debug` and `trace` level are filtered out.
 - A record longer than 512 bytes is cut.
 - `LogHistory` keeps the newest 64 records, each cut to 120 bytes, to show
@@ -780,17 +795,46 @@ and its state. Copy this pattern when your program becomes too large for
 **Face ID** runs two neural networks on the board: a detector (YuNet)
 finds the face and its eyes, nose and mouth corners, and a recognizer
 (EdgeFace-XXS) turns the face into 512 numbers that are compared with the
-people it has learned. Tap **ENROLL** and follow the hints on the panel
-while it records six samples; from then on the banner shows `PERSON 1`
-when it sees you and `UNKNOWN` for everybody else. **DEL** forgets
-everyone, and **-** and **+** move the limit a score has to pass. The
-people are stored in the flash chip, so they survive a restart and a new
-firmware.
+people it has learned. Put it on the board like any other application:
+
+```bash
+cargo dist --bin face_id
+```
+
+The left part of the screen is the live camera image, with a box around
+the face that the detector found. The panel on the right shows, from top
+to bottom:
+
+- a banner: `NOBODY ENROLLED`, `SCANNING`, the person it sees
+  (`PERSON 1`), `UNKNOWN`, or `ENROLL 3/6` while it records someone;
+- the score of the last face and the limit it has to pass, a hint
+  (`come closer`, `look straight`, `hold still`, `face ok`, ...), the
+  time of each network, and how many people it knows;
+- a small terminal with the newest events;
+- the buttons.
+
+Tap **ENROLL** and follow the hints while it records six samples of your
+face; turn your head a little between them. From then on the banner
+shows `PERSON 1` when it sees you and `UNKNOWN` for everybody else. It
+keeps up to four people, `person 1` to `person 4`. **DEL** forgets all of
+them. **-** lowers the limit a score has to pass (more faces get a name,
+also wrong ones), and **+** raises it. The people are stored in the flash
+chip, so they survive a restart and a new firmware from `cargo dist`.
+
+At start, the application needs a few seconds before the camera image
+appears. It copies the networks' weights into PSRAM, prepares both
+networks, and checks them: it runs both on made-up inputs and compares
+the results with the numbers your computer computes. The terminal then
+says `self-test ok`. The serial log shows how long each network took,
+and then one `cycle:` line per round of work, with the time of each
+step.
 
 The networks are integer arithmetic on the chip's vector instructions: a
-frame takes about a third of a second to search and a face three
-quarters of a second to recognise. They compute the same numbers on
-your computer, which is how they are tested. The parts:
+frame takes about a sixth of a second to search and a face under a
+second to recognise, and a known face is named after the first try.
+They compute the same numbers on your computer, which is how they are
+tested. The camera and the screen have a task of their own, so the
+preview stays live while the networks compute. The parts:
 
 | Part | Where |
 | --- | --- |

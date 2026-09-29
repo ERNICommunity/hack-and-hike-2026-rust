@@ -17,6 +17,7 @@
 //!                                                     │ complete at VSYNC
 //!                                                  ready buffer
 //!                                                     │ swap in `finish`
+//!                                                     │ or `advance`
 //!                                  LCD <── display buffer
 //! ```
 //!
@@ -27,6 +28,43 @@
 //! the ring all the time. With only two buffers, capture would have to wait
 //! for the display to take the completed frame. The ring would then
 //! overflow, and the DMA transfer would stop.
+//!
+//! # Frames on demand
+//!
+//! Copying a frame out of the ring costs CPU0 about 10 ms, and the writes to
+//! PSRAM push other data out of the cache. An application that shows ten
+//! frames per second and computes between them does not want every frame
+//! the sensor sends. After [`Camera::capture_on_demand`], the camera copies
+//! a frame only when [`Camera::request_frame`] asked for one before the
+//! frame began. The bytes of the other frames leave the ring without a
+//! copy, which costs almost nothing.
+//!
+//! # Handing a frame over
+//!
+//! [`Frame::take`] gives the frame's buffer to the application and takes a
+//! spare buffer in exchange: a frame for a long computation, without a copy
+//! of its 150 KiB.
+//!
+//! # Without waiting
+//!
+//! [`Camera::begin_frame`] and [`Frame::finish`] wait for the sensor when
+//! they have to: at the start, and after the ring overflowed, for up to two
+//! frame periods (100 ms), or half a second when the sensor sends nothing. That is right for a loop that only shows the
+//! camera. It is wrong for a task on an interrupt executor: while it
+//! waits, the task it interrupted stands still, and so does the timer of
+//! both CPU cores, which has the same interrupt priority.
+//!
+//! Such a task uses three other functions, which never wait:
+//!
+//! - [`Camera::service`] empties the ring. When the capture is stopped (at
+//!   the start, after an overflow), it starts it again, and the bytes up to
+//!   the next frame boundary are thrown away as they come.
+//! - [`Camera::advance`] makes the newest whole frame the current one, when
+//!   there is a newer one.
+//! - [`Camera::current`] is the current frame, when there is one.
+//!
+//! An overflow then costs the frames that were on their way, and no time.
+//! Use either these three or `begin_frame` and `finish`, not both.
 
 use embassy_time::{Duration, Instant};
 use esp_hal::{
@@ -66,8 +104,9 @@ const FRAME_BYTES: usize = WIDTH * HEIGHT * BYTES_PER_PIXEL;
 /// The sensor never stops. So code must empty the ring at least that often.
 /// [`Surface::render_from`](crate::capabilities::display::Surface::render_from)
 /// does it while the LCD DMA sends each batch of rows. [`Camera::pump`] does
-/// it between frames. When the ring is full, the DMA transfer stops and the
-/// frame is dropped.
+/// it between frames, and [`Camera::service`] does it for code that never
+/// waits. When the ring is full, the DMA transfer stops and the frame is
+/// dropped.
 ///
 /// Do not make the ring larger without a good reason. Every static byte in
 /// internal RAM makes the main stack of CPU0 smaller: that stack gets the
@@ -188,6 +227,11 @@ impl core::fmt::Display for CaptureError {
 /// call [`Frame::finish`]. When the loop does other work between frames,
 /// call [`Camera::pump`] there. When the camera image is not shown, call
 /// [`Camera::pause`], so the next frame starts cleanly.
+///
+/// Code that must never wait uses [`Camera::service`], [`Camera::advance`]
+/// and [`Camera::current`] instead, and perhaps
+/// [`Camera::capture_on_demand`] with [`Camera::request_frame`]; see the
+/// [module docs](super). Do not mix the two ways.
 pub struct Camera {
     /// The camera driver and the DMA ring, in their current state.
     // `None` only while a method moves the stream from one state to the other.
@@ -208,12 +252,56 @@ pub struct Camera {
     /// How many bytes of the frame in progress arrived so far. Bytes past
     /// [`FRAME_BYTES`] are counted but not copied into `capture_buffer`.
     filled: usize,
+    /// Whether frames are copied only on request; see
+    /// [`Camera::capture_on_demand`].
+    on_demand: bool,
+    /// Whether the next frame that begins is wanted: set by
+    /// [`Camera::request_frame`], used up when that frame begins.
+    wanted: bool,
+    /// Whether the frame in progress is copied into `capture_buffer`. When
+    /// not, its bytes are only counted.
+    copying: bool,
+    /// Whether the stream is between a start without waiting
+    /// ([`Camera::service`]) and the first frame boundary after it: the
+    /// bytes are the rest of a frame, and are thrown away.
+    aligning: bool,
+    /// Whether `display_buffer` holds a frame that was not handed over
+    /// with [`Frame::take`].
+    display_whole: bool,
+    /// Whether the ring overflowed and [`Camera::service`] has not dealt
+    /// with it yet.
+    overflowed: bool,
+    /// When the ring was emptied last, while the stream runs.
+    last_pump: Option<Instant>,
+    /// What the capture did since the last [`Camera::take_stats`].
+    stats: CaptureStats,
     /// The byte count of the last frame that ended at VSYNC with the wrong
     /// length. The name says "short", but the frame can also be too long.
     /// It is reported when the next whole frame is shown.
     short_frame: Option<usize>,
     /// Frames dropped so far. Used to log only some of them.
     bad_frames: u32,
+}
+
+/// What the capture did in a stretch of time; see [`Camera::take_stats`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureStats {
+    /// The longest time between two times the ring was emptied. The ring
+    /// overflows when this comes near the time it holds, about 5 ms.
+    pub longest_gap: Duration,
+    /// The time spent copying frames out of the ring into PSRAM.
+    pub copy_time: Duration,
+    /// The whole frames copied.
+    pub frames_copied: u32,
+}
+
+impl CaptureStats {
+    /// Nothing done yet.
+    pub const NONE: Self = Self {
+        longest_gap: Duration::from_ticks(0),
+        copy_time: Duration::from_ticks(0),
+        frames_copied: 0,
+    };
 }
 
 /// One complete camera frame to draw. It does not change while you draw it,
@@ -259,6 +347,26 @@ impl Frame<'_> {
         self.camera.ready || self.camera.is_stopped()
     }
 
+    /// Hand this frame over: give its buffer away and take `spare` in
+    /// exchange. The returned buffer holds the frame, [`WIDTH`] x
+    /// [`HEIGHT`] pixels of big-endian RGB565, row after row.
+    ///
+    /// Use it for a frame that a long computation works on: nothing is
+    /// copied. Until the next frame comes, the camera has no current
+    /// frame ([`Camera::current`] is `None`): its buffer holds what `spare`
+    /// held, for example the frame taken before. With
+    /// [`Camera::begin_frame`], draw a frame after `take` only when
+    /// [`Frame::finish`] has brought a new one.
+    ///
+    /// # Panics
+    ///
+    /// When `spare` is not exactly one frame long.
+    pub fn take(self, spare: &'static mut [u8]) -> &'static mut [u8] {
+        assert_eq!(spare.len(), FRAME_BYTES, "a spare frame buffer");
+        self.camera.display_whole = false;
+        core::mem::replace(&mut self.camera.display_buffer, spare)
+    }
+
     /// Make the next complete frame the frame to show, and end this `Frame`.
     ///
     /// Return at once when a frame was completed while this one was drawn.
@@ -289,7 +397,7 @@ impl ScanlineSource for Frame<'_> {
 
 /// Configure `LCD_CAM` for the sensor, create the DMA ring and allocate the
 /// three frame buffers in PSRAM. Capturing starts with the first
-/// [`Camera::begin_frame`].
+/// [`Camera::begin_frame`] or [`Camera::service`].
 ///
 /// # Panics
 ///
@@ -345,6 +453,14 @@ pub(crate) fn init(resources: Resources) -> Camera {
         ready: false,
         display_ready: false,
         filled: 0,
+        on_demand: false,
+        wanted: false,
+        copying: true,
+        aligning: false,
+        display_whole: false,
+        overflowed: false,
+        last_pump: None,
+        stats: CaptureStats::NONE,
         short_frame: None,
         bad_frames: 0,
     }
@@ -356,14 +472,92 @@ impl Camera {
     pub fn pause(&mut self) {
         self.stop_stream();
         self.display_ready = false;
+        self.display_whole = false;
+        self.overflowed = false;
         self.ready = false;
         self.filled = 0;
+        self.wanted = false;
         self.short_frame = None;
+    }
+
+    /// Empty the ring, and start the capture when it is stopped: at the
+    /// start, after [`Camera::pause`], after the ring overflowed. Never
+    /// waits; see the [module documentation](super).
+    ///
+    /// Call it often: the ring holds a few milliseconds of the sensor's
+    /// data. After a start, the first whole frame comes one to two frame
+    /// periods later.
+    pub fn service(&mut self) {
+        self.pump_capture();
+        if core::mem::take(&mut self.overflowed) {
+            self.report_bad_frame(CaptureError::StreamEnded);
+        }
+        if self.is_stopped() {
+            self.start_stream();
+        }
+    }
+
+    /// Make the newest whole frame the current one. Returns whether there
+    /// was a newer one. Never waits.
+    pub fn advance(&mut self) -> bool {
+        if !self.ready {
+            return false;
+        }
+        self.show_ready_frame();
+        true
+    }
+
+    /// The current frame: the newest whole frame that
+    /// [`Camera::advance`] has seen. `None` before the first frame, and
+    /// after the frame was handed over with [`Frame::take`].
+    pub fn current(&mut self) -> Option<Frame<'_>> {
+        (self.display_ready && self.display_whole).then_some(Frame { camera: self })
+    }
+
+    /// Frames dropped so far: by an overflow of the ring, by a wrong
+    /// length, and, in [`Camera::begin_frame`] and [`Frame::finish`], by a
+    /// sensor that sent nothing in time. [`Camera::service`] does not
+    /// notice a silent sensor: no frame comes.
+    pub fn bad_frames(&self) -> u32 {
+        self.bad_frames
+    }
+
+    /// What the capture did since the last call of this function.
+    pub fn take_stats(&mut self) -> CaptureStats {
+        core::mem::replace(&mut self.stats, CaptureStats::NONE)
+    }
+
+    /// Copy frames only on request (`true`), or every frame the sensor
+    /// sends (`false`, as after start-up).
+    ///
+    /// On request means: a frame is copied when [`Camera::request_frame`]
+    /// was called before the sensor began to send it. So a frame is ready
+    /// one to two frame periods after the request. A [`Frame::finish`] that
+    /// has to wait asks for a frame by itself.
+    pub fn capture_on_demand(&mut self, on_demand: bool) {
+        self.on_demand = on_demand;
+    }
+
+    /// Ask for a frame newer than the current one. When one is ready, or
+    /// on its way into the capture buffer, that one is it; otherwise the
+    /// next frame that the sensor begins is copied. When the frame on its
+    /// way is lost (the ring overflowed, or the frame had the wrong
+    /// length), the next one is copied instead. Without
+    /// [`Camera::capture_on_demand`], every frame is copied and this call
+    /// changes nothing.
+    ///
+    /// A caller that asks again while its frame is on its way does not get
+    /// a second frame copied: a copy costs CPU0 about 10 ms.
+    pub fn request_frame(&mut self) {
+        let on_its_way = self.copying && !self.aligning && !self.is_stopped();
+        if !self.ready && !on_its_way {
+            self.wanted = true;
+        }
     }
 
     /// Copy the data that the sensor has sent so far for the next frame.
     /// Never waits. Does nothing while the camera is paused, and before the
-    /// first [`Camera::begin_frame`].
+    /// first frame of [`Camera::begin_frame`] or [`Camera::advance`].
     ///
     /// The sensor sends data all the time into a small buffer. The buffer
     /// holds only a few milliseconds of data. Drawing a [`Frame`] empties the
@@ -452,6 +646,8 @@ impl Camera {
         };
 
         if synced.is_ok() {
+            self.aligning = false;
+            self.last_pump = None;
             self.stream = Some(Stream::Running(transfer));
         } else {
             self.stream = Some(Stream::Running(transfer).stopped());
@@ -469,6 +665,10 @@ impl Camera {
         let Some(Stream::Running(transfer)) = self.stream.as_mut() else {
             return;
         };
+        let now = Instant::now();
+        if let Some(last) = self.last_pump.replace(now) {
+            self.stats.longest_gap = self.stats.longest_gap.max(now - last);
+        }
 
         loop {
             let (chunk, eof) = transfer.peek_until_eof();
@@ -481,13 +681,27 @@ impl Camera {
             // descriptors before it gave them back, the DMA would have no free
             // descriptors during that time.
             let take = available.min(STREAM_CHUNK_BYTES);
+            if self.aligning {
+                // The rest of the frame that was on its way when the
+                // stream started: not a frame.
+                transfer.consume(take);
+                if eof && take == available {
+                    self.aligning = false;
+                    self.filled = 0;
+                    self.copying = !self.on_demand || core::mem::take(&mut self.wanted);
+                }
+                continue;
+            }
             let copy_len = take.min(FRAME_BYTES.saturating_sub(self.filled));
             // After a missed VSYNC, the frame is longer than the buffer. Such
             // bytes are only counted, so the frame is reported as too long and
-            // dropped.
-            if copy_len != 0 {
+            // dropped. The bytes of a frame that nobody asked for are only
+            // counted too.
+            if self.copying && copy_len != 0 {
+                let started = Instant::now();
                 self.capture_buffer[self.filled..self.filled + copy_len]
                     .copy_from_slice(&chunk[..copy_len]);
+                self.stats.copy_time += started.elapsed();
             }
             self.filled = self.filled.saturating_add(take);
             // `consume(0)` is still necessary: it gives an empty descriptor
@@ -497,21 +711,75 @@ impl Camera {
                 // The frame ended. A whole frame moves to the ready buffer.
                 // A frame with the wrong length is dropped. In both cases,
                 // capture continues with the next frame.
-                if self.filled == FRAME_BYTES {
-                    core::mem::swap(&mut self.capture_buffer, &mut self.ready_buffer);
-                    self.ready = true;
-                } else {
-                    self.short_frame = Some(self.filled);
+                if self.copying {
+                    if self.filled == FRAME_BYTES {
+                        core::mem::swap(&mut self.capture_buffer, &mut self.ready_buffer);
+                        self.ready = true;
+                        self.stats.frames_copied += 1;
+                    } else {
+                        self.short_frame = Some(self.filled);
+                        // The frame that was asked for is lost: the next
+                        // one takes its place.
+                        self.wanted = true;
+                    }
                 }
                 self.filled = 0;
+                // The next frame begins here: is it wanted?
+                self.copying = !self.on_demand || core::mem::take(&mut self.wanted);
             }
         }
 
         if transfer.is_done() {
             // The ring overflowed and the DMA transfer stopped.
             // `finish_capture` reports it, and the next `begin_frame` starts
-            // a new capture.
+            // a new capture; or `service` does both. A frame that was asked
+            // for and on its way is lost: the next one takes its place.
+            if self.copying && !self.aligning {
+                self.wanted = true;
+            }
             self.stop_stream();
+            self.overflowed = true;
+            self.last_pump = None;
+        }
+    }
+
+    /// Start the DMA transfer, without waiting for the sensor: the bytes
+    /// up to the next frame boundary are thrown away as they come. After an
+    /// error the stream stays stopped, and the next [`Camera::service`]
+    /// tries again.
+    fn start_stream(&mut self) {
+        self.stop_stream();
+        let Some(Stream::Stopped { driver, buffer }) = self.stream.take() else {
+            unreachable!("stream was stopped above");
+        };
+        self.stream = Some(match driver.receive(buffer) {
+            Ok(transfer) => {
+                self.aligning = true;
+                self.filled = 0;
+                self.last_pump = None;
+                Stream::Running(transfer)
+            }
+            Err((error, driver, buffer)) => {
+                warn!("Camera DMA start failed: {:?}", error);
+                self.report_bad_frame(CaptureError::DmaStart);
+                Stream::Stopped { driver, buffer }
+            }
+        });
+    }
+
+    /// Make the frame in the ready buffer the current one. When a frame
+    /// with the wrong length came before it, log that frame now.
+    fn show_ready_frame(&mut self) {
+        self.ready = false;
+        core::mem::swap(&mut self.display_buffer, &mut self.ready_buffer);
+        self.display_ready = true;
+        self.display_whole = true;
+        if let Some(bytes) = self.short_frame.take() {
+            // Logging blocks for milliseconds, and the sensor continues to
+            // send data during that time. So the log message can cost the
+            // frame in progress. Only some bad frames are logged, so this
+            // happens rarely.
+            self.report_bad_frame(CaptureError::BadLength(bytes));
         }
     }
 
@@ -530,16 +798,7 @@ impl Camera {
         let deadline = Instant::now() + FRAME_TIMEOUT;
         loop {
             if self.ready {
-                self.ready = false;
-                core::mem::swap(&mut self.display_buffer, &mut self.ready_buffer);
-                self.display_ready = true;
-                if let Some(bytes) = self.short_frame.take() {
-                    // Logging blocks for milliseconds, and the sensor
-                    // continues to send data during that time. So the log
-                    // message can cost the frame in progress. Only some bad
-                    // frames are logged, so this happens rarely.
-                    self.report_bad_frame(CaptureError::BadLength(bytes));
-                }
+                self.show_ready_frame();
                 return Ok(());
             }
             let failure = if self.is_stopped() {
@@ -552,10 +811,14 @@ impl Camera {
             };
             if let Some(error) = failure {
                 self.display_ready = false;
+                self.display_whole = false;
+                self.overflowed = false;
                 self.filled = 0;
                 self.short_frame = None;
                 return Err(error);
             }
+            // The caller waits for a frame, so it wants one.
+            self.wanted = true;
             self.pump_capture();
             core::hint::spin_loop();
         }
@@ -577,6 +840,9 @@ impl Camera {
         self.filled = 0;
         self.short_frame = None;
         self.start_stream_aligned()?;
+        // The stream now stands at the beginning of a frame, and the
+        // caller waits for it.
+        self.copying = true;
         self.finish_capture()
     }
 

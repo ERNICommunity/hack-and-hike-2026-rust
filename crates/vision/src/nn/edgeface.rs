@@ -70,7 +70,7 @@ const MAX_HIDDEN: usize = 28 * 28 * 96;
 /// The largest attention matrix: 4 heads of 42x42 in stage 3.
 pub(super) const MAX_ATTENTION: usize = HEADS * 42 * 42;
 /// The channel counts of the four stages.
-const STAGE_CHANNELS: [usize; 4] = [24, 48, 88, 168];
+pub(super) const STAGE_CHANNELS: [usize; 4] = [24, 48, 88, 168];
 /// The depthwise kernel size of the ConvBlocks of each stage.
 pub(super) const STAGE_KERNELS: [usize; 4] = [3, 5, 7, 9];
 /// The number of ConvBlocks in each stage before its SplitTransposeBlock

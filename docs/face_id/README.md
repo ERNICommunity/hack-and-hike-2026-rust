@@ -103,7 +103,7 @@ depends on them.
   stage 2, 42x4 in stage 3. The exported split-conv weights confirm it
   (`convs.0.weight` is `[3, 3, 30]` in stage 2).
 - **Scratch memory of the `f32` reference**: `SCRATCH_LEN` = 4 x 18,816
-  + 75,264 + 7,056 values = 632 KB. That is the host reference; the
+  + 75,264 + 7,056 values = 630 KB. That is the host reference; the
   integer version of Step 6 shrinks it, and the widest tensor (28x28x96
   in the stage-0 MLP) is the one to fuse per pixel so it never exists.
 - **The `f32` reference of YuNet matches tract at every node.**
@@ -206,9 +206,13 @@ fixture face.
   landmarks are within 0.2 px of the `f32` ones (detector pixels, a
   quarter of frame pixels); on the 64 calibration frames it finds the same
   face on every frame, within 2.2 px centre and 3.2 px landmark at worst.
+  The same holds since its backbone and neck run on the lane kernels
+  (`faceid-12`, see [`performance.md`](performance.md)).
 - **File sizes**: `edgeface_xxs.int8.fkb` 1.37 MB, `yunet.int8.fkb` 92 KB.
 - **Scratch memory**: the recognizer 472 KB and the detector 359 KB, both
-  in PSRAM, plus the GELU table (64 KB) in internal RAM.
+  in PSRAM, plus the GELU table (15 KB) and a strip of the recognizer's
+  MLP hidden tensor (36 KB) in internal RAM. The compiled recognizer
+  also keeps its early layers' weights as `i16` (123 KB in PSRAM).
 
 ## Findings from Step 7
 
@@ -254,6 +258,18 @@ The question this step answers is the one the golden vectors cannot: not
 - **Averaging three frames is worth about 1.3 points**: at the threshold
   where no stranger at all gets in, one frame recognizes 98.7 percent and
   three frames 100 percent.
+- **A sure face needs one frame** (`gallery::SureSteps`, measured by
+  `facekit calibrate` with the firmware's own `gallery::Decider`). The
+  highest score of a stranger was 0.430 on one frame (22,920 attempts),
+  0.369 on two frames averaged (11,400) and 0.401 on three (7,560). A
+  decision is sure from 0.55 on one frame, 0.50 on two and 0.45 on
+  three: 0.20, 0.15 and 0.10 above the accept threshold, and at least
+  0.05 above every stranger. Over 223 visits of five frames by an
+  enrolled person, the name appeared after the first frame in 95.5
+  percent of them and after the second in 98.7 percent. The rule without
+  the shortcut named 97.3 percent, after five frames. Of 27,480 visits by
+  strangers, both rules named the same five. Steps of 0.15, 0.10 and 0.05
+  named three of those five sooner, and one stranger more.
 - **The margin rule did not earn its keep on this data.** Sweeping it
   freely, including negative values that switch it off, the optimum was
   always at or below zero, and raising it to 0.10 cost two points of
@@ -267,10 +283,20 @@ The question this step answers is the one the golden vectors cannot: not
 ## Step 8 onward: on the board
 
 Both networks compute on the board exactly what they compute on the
-computer, bit for bit. The recognizer takes 0.73 s per face and the
-detector 0.33 s per frame. The first run took 8.8 s and 1.6 s; how that
-became the present numbers, what the board taught on the way, and what
-is left to gain is in [`performance.md`](performance.md).
+computer, bit for bit. Alone on CPU0 the recognizer takes 0.39 s per
+face and the detector 0.10 s per frame (build `faceid-13`); in the
+application a cycle without a face takes 0.17 s and one that recognizes
+0.86 s. The first run took 8.8 s and 1.6 s for the two networks; how
+that became the present numbers, what the board taught on the way, and
+what is left to gain is in [`performance.md`](performance.md).
+
+`crates/vision/tests/fingerprints.rs` pins the numbers of the whole path
+on the fixture photo, from the scaled-down frame to the embedding. A
+change that is meant to keep the numbers must leave it alone. The same
+file pins the outputs of both networks on made-up inputs (`nn::check`),
+and the application checks those on the board when it starts: its log
+says whether the board computes what the computer computes, and how long
+each network takes alone.
 
 ## The application (`src/bin/face_id.rs`)
 
@@ -280,35 +306,86 @@ the screen belong to a task on an interrupt executor of CPU0 (on the
 board's spare software interrupt, `FROM_CPU_INTR2`). It interrupts the
 networks every 2 ms to empty the camera's buffer, and draws the live
 preview at up to 10 frames per second with the box and landmarks of the
-newest detection. The main task's cycle asks it for a copy of the newest
-frame and works on the copy: detector on the 4x scaled-down frame, gates
-(framing, pose, sharpness), then, when the face passes the gates and
-there is a reason, the recognizer on the face cut out of the 2x
+newest detection. The main task's cycle asks it for the newest frame and
+gets the frame's buffer in exchange for its own (`Frame::take`), without
+a copy. It works on that frame: detector on the 4x scaled-down frame,
+gates (framing, pose, sharpness), then, when the face passes the gates
+and there is a reason, the recognizer on the face cut out of the 2x
 scaled-down frame. It hands its panel canvas to the same task to show.
-About three cycles per second while scanning, one per second while
-recognizing, before the preview's share of CPU0 (each preview frame is
-about 18 ms of SPI transfer); the log's `cycle:` line reports the
-preview's frame rate next to the network timings.
+
+The stream task never waits while it has CPU0: it is an interrupt
+handler, and while it runs, the main task and the timer interrupt of
+both cores stand still. After an overflow of the camera's buffer it
+starts the capture again without waiting for the sensor
+(`Camera::service`), and the preview and the panel sleep while their
+pixels are on the bus (`Surface::render_from_async`,
+`Canvas::show_async`). And it takes as little of CPU0 as it can:
+
+- The camera copies a frame out of its buffer only when the task asked
+  for one (`Camera::capture_on_demand`): when the frame before was drawn
+  or handed over. That is about ten frames per second, not every frame
+  the sensor sends.
+- The copy of the screen for the live feed is made only while a computer
+  watches the feed (`logging::mirror_only_when_watched`), and then from
+  every fourth preview (`Surface::without_mirror`): the feed shows two to
+  three camera frames per second anyway.
+
+The log's `cycle:` line reports the whole cycle and its steps in
+milliseconds, and the preview's frame rate:
+
+```text
+cycle: <all> ms: capture <ms>, scale <ms>, detect <ms>, align <ms>, embed <ms>, decide <ms>; stream <ms> ms (copies of <frames> frames <ms> ms), preview <rate> fps, dropped <frames>, longest pump gap <ms> ms; <the face>, <the hint>
+```
+
+`scale` is the scaling down of the frame for the detector, `align` the
+cutting out of the face for the recognizer, `decide` the comparison with
+the gallery and the bank. A step that did not run is 0. `stream` is the
+time CPU0 spent in the stream task during the cycle, and `copies` the
+part of it that went into copying camera frames into PSRAM. `dropped`
+counts the camera frames lost, and `longest pump gap` is the longest
+time between two times the camera's ring buffer was emptied: it
+overflows at about 5 ms.
+A cycle that cuts a face out also logs its steps:
+
+```text
+align: <columns>x<rows> of 160x120 scaled in <us> us, warp <us> us, sharpness <us> us, input <us> us
+```
 
 Enrollment records six embeddings while the panel asks for small turns
-of the head; people are `person 1` to `person 4`. Recognition fuses
-three consecutive embeddings and votes over the last decisions, with
-the Step 7 thresholds (accept 0.35, adjustable with **-** and **+**;
-margin 0). After two cycles without a usable face the banner returns to
-scanning. Every hint, decision, score and timing goes to the log as
-well.
+of the head; people are `person 1` to `person 4`. Recognition goes
+through `gallery::Decider` with the Step 7 thresholds (accept 0.35,
+adjustable with **-** and **+**; margin 0):
+
+- A person whose score is sure is named at once: from 0.55 on the first
+  embedding, from 0.50 on the average of two, from 0.45 on the average
+  of three. Most known faces are named after one cycle.
+- Every other decision waits for the average of three embeddings. The
+  first one is shown at once when it says "unknown". Every other change
+  of the banner waits until three decisions in a row agree.
+
+After a second without a usable face the banner returns to scanning.
+Every hint, decision, score and timing goes to the log as well. The
+panel draws only the lines that changed, and the timings at most once
+per second.
 
 At start the app copies both weights files into PSRAM, one tensor at a
 time with a pause after each (so the tasks on CPU1, which run from the
 same flash, keep their share of it), with the linear and convolution
 weights grouped by eight output channels as the vector kernels read
-them (`nn::pack`).
+them (`nn::pack`). Then it compiles both networks
+(`edgeface::int8::Model::compile`, `yunet::int8::Model::compile`): it
+looks every tensor up by its name and makes every plan, once. A cycle
+only computes. The log says how long both took. Last, before the camera
+starts, it runs the self-test (`nn::check`); the panel's terminal says
+`self-test ok`, or that it failed.
 
 ### Enrollments in flash
 
 The gallery lives in the last 128 KB of the 4 MB flash chip (from offset
 `0x3E0000`), above the application image, so flashing a new firmware
-keeps it. Sector 0 is a header (magic, version, the number of people,
+keeps it: `cargo dist` writes an image that ends with the application
+(`--skip-padding`). Up to `faceid-13` the image was padded to the whole
+flash, and every flash through autoflash erased the gallery. Sector 0 is a header (magic, version, the number of people,
 each slot's name and template count); sectors 1 onward hold one 24 KB
 block per slot, twelve embeddings of 512 `f32` values. The app loads it
 at boot and writes it when an enrollment completes (six samples) and

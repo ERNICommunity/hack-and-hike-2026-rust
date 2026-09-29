@@ -14,6 +14,14 @@
 //! The downscaling functions shrink a 320x240 frame to the size a neural
 //! network expects, for example 80x60 with a factor of 4. They average each
 //! block of source pixels (a box filter), which also removes some noise.
+//!
+//! The application scales every frame down, 76,800 pixels each time, so
+//! [`downscale_to_rgb`] has a fast path for the factors up to 4: it looks
+//! the two bytes of a pixel up in two tables and adds the three colours
+//! of a pixel with one addition (see `PackedRgb`). It gives the same
+//! bytes as the plain loop, which the tests check.
+
+use core::ops::Range;
 
 use crate::pixel::{self, BYTES_PER_PIXEL};
 
@@ -267,7 +275,8 @@ impl<'a, const CHANNELS: usize> ImageMut<'a, CHANNELS> {
 
 /// Shrink `src` by `factor` in both directions into `dst`, with `convert`
 /// turning each source pixel into the destination's channels first. Each
-/// destination pixel is the rounded mean of a `factor x factor` block.
+/// destination pixel in `columns` and `rows` is the rounded mean of a
+/// `factor x factor` block; the others are left as they are.
 ///
 /// The sums are per destination pixel: the loop visits the `factor` source
 /// rows and `factor` source columns of one block, then moves on. That needs
@@ -281,28 +290,17 @@ fn downscale<const CHANNELS: usize>(
     src: &impl Rgb565Source,
     factor: usize,
     dst: &mut ImageMut<'_, CHANNELS>,
+    columns: Range<usize>,
+    rows: Range<usize>,
     convert: impl Fn([u8; BYTES_PER_PIXEL]) -> [u8; CHANNELS],
 ) {
     assert!(factor >= 1, "downscale factor is at least 1");
-    assert!(
-        src.width().is_multiple_of(factor) && src.height().is_multiple_of(factor),
-        "source size {}x{} is a multiple of the factor {factor}",
-        src.width(),
-        src.height()
-    );
-    assert!(
-        dst.width() == src.width() / factor && dst.height() == src.height() / factor,
-        "destination size {}x{} is the source size {}x{} divided by {factor}",
-        dst.width(),
-        dst.height(),
-        src.width(),
-        src.height()
-    );
+    check_sizes(src, factor, dst.width(), dst.height());
     // Number of source pixels in one block. `factor` is tiny, so the cast
     // cannot overflow.
     let count = (factor * factor) as u32;
-    for dst_y in 0..dst.height() {
-        for dst_x in 0..dst.width() {
+    for dst_y in clip(rows, dst.height()) {
+        for dst_x in clip(columns.clone(), dst.width()) {
             let mut sums = [0u32; CHANNELS];
             for src_y in dst_y * factor..(dst_y + 1) * factor {
                 let row = src.row(src_y);
@@ -325,6 +323,34 @@ fn downscale<const CHANNELS: usize>(
     }
 }
 
+/// Check that a destination of `width` x `height` is `src` shrunk by
+/// `factor`.
+///
+/// # Panics
+///
+/// See [`downscale_to_gray`].
+fn check_sizes(src: &impl Rgb565Source, factor: usize, width: usize, height: usize) {
+    assert!(
+        src.width().is_multiple_of(factor) && src.height().is_multiple_of(factor),
+        "source size {}x{} is a multiple of the factor {factor}",
+        src.width(),
+        src.height()
+    );
+    assert!(
+        width == src.width() / factor && height == src.height() / factor,
+        "destination size {width}x{height} is the source size {}x{} divided by {factor}",
+        src.width(),
+        src.height()
+    );
+}
+
+/// The part of `range` below `len`; an empty range when there is none,
+/// also when `range` runs backwards.
+fn clip(range: Range<usize>, len: usize) -> Range<usize> {
+    let start = range.start.min(len);
+    start..range.end.min(len).max(start)
+}
+
 /// Shrink an RGB565 frame by `factor` in both directions into a gray image.
 ///
 /// Every source pixel is converted to gray first. Then each destination
@@ -338,7 +364,10 @@ fn downscale<const CHANNELS: usize>(
 /// - When the source width or height is not a multiple of `factor`.
 /// - When `dst` is not exactly `width / factor` by `height / factor`.
 pub fn downscale_to_gray(src: &impl Rgb565Source, factor: usize, dst: &mut GrayImageMut<'_>) {
-    downscale(src, factor, dst, |bytes| [pixel::rgb565_be_to_gray(bytes)]);
+    let (width, height) = (dst.width(), dst.height());
+    downscale(src, factor, dst, 0..width, 0..height, |bytes| {
+        [pixel::rgb565_be_to_gray(bytes)]
+    });
 }
 
 /// Shrink an RGB565 frame by `factor` in both directions into an RGB image.
@@ -350,7 +379,154 @@ pub fn downscale_to_gray(src: &impl Rgb565Source, factor: usize, dst: &mut GrayI
 ///
 /// The same as [`downscale_to_gray`].
 pub fn downscale_to_rgb(src: &impl Rgb565Source, factor: usize, dst: &mut RgbImageMut<'_>) {
-    downscale(src, factor, dst, pixel::rgb565_be_to_rgb888);
+    let (width, height) = (dst.width(), dst.height());
+    downscale_to_rgb_within(src, factor, dst, 0..width, 0..height);
+}
+
+/// [`downscale_to_rgb`] for the destination pixels in `columns` and `rows`
+/// only; the others are left as they are. Each pixel it writes has the
+/// value `downscale_to_rgb` gives it.
+///
+/// For a computation that reads a part of the scaled-down image, such as
+/// the face alignment (`align::source_region` says which part).
+///
+/// # Panics
+///
+/// The same as [`downscale_to_gray`].
+pub fn downscale_to_rgb_within(
+    src: &impl Rgb565Source,
+    factor: usize,
+    dst: &mut RgbImageMut<'_>,
+    columns: Range<usize>,
+    rows: Range<usize>,
+) {
+    match factor {
+        1 => downscale_to_rgb_packed::<1>(src, dst, columns, rows),
+        2 => downscale_to_rgb_packed::<2>(src, dst, columns, rows),
+        3 => downscale_to_rgb_packed::<3>(src, dst, columns, rows),
+        4 => downscale_to_rgb_packed::<4>(src, dst, columns, rows),
+        _ => downscale(src, factor, dst, columns, rows, pixel::rgb565_be_to_rgb888),
+    }
+}
+
+/// [`downscale_to_rgb`] as a plain loop over the pixels, for any factor:
+/// what the fast path is checked against.
+///
+/// # Panics
+///
+/// The same as [`downscale_to_gray`].
+pub fn downscale_to_rgb_plain(src: &impl Rgb565Source, factor: usize, dst: &mut RgbImageMut<'_>) {
+    let (width, height) = (dst.width(), dst.height());
+    downscale(
+        src,
+        factor,
+        dst,
+        0..width,
+        0..height,
+        pixel::rgb565_be_to_rgb888,
+    );
+}
+
+/// The three colours of an RGB565 pixel as 8-bit values, side by side in
+/// one `u32`, from two table lookups.
+///
+/// A packed value holds red in bits 20 to 29, green in bits 10 to 19 and
+/// blue in bits 0 to 9: ten bits each. Adding packed values adds the
+/// three colours at once, and ten bits hold the sum of up to four 8-bit
+/// values (4 x 255 = 1020), so the sums never run into each other.
+///
+/// The first byte of a pixel holds red and the upper three bits of green,
+/// the second byte the lower three bits of green and blue (see
+/// [`pixel`]). The 8-bit green is the 6-bit value shifted left by two,
+/// plus its top two bits: the shifted part is the sum of what each byte
+/// contributes, and the top two bits come from the first byte alone. So
+/// the pixel's packed value is `high[first] + low[second]`.
+struct PackedRgb {
+    /// What the first byte of a pixel contributes.
+    high: [u32; 256],
+    /// What the second byte contributes.
+    low: [u32; 256],
+}
+
+impl PackedRgb {
+    /// Bits per colour in a packed value.
+    const BITS: u32 = 10;
+    /// The mask of one colour.
+    const MASK: u32 = (1 << Self::BITS) - 1;
+    /// The most pixels whose packed values may be added.
+    const MAX_SUM: usize = 4;
+
+    /// Build the two tables: about 500 short steps, against the 76,800
+    /// pixels of a frame.
+    fn new() -> Self {
+        let mut tables = Self {
+            high: [0; 256],
+            low: [0; 256],
+        };
+        for byte in 0..=255u8 {
+            // The byte as the first of a pixel whose second byte is zero,
+            // and the other way round: each colour is the sum of the two.
+            let [red, green_high, _] = pixel::rgb565_be_to_rgb888([byte, 0]);
+            let [_, green_low, blue] = pixel::rgb565_be_to_rgb888([0, byte]);
+            tables.high[usize::from(byte)] =
+                (u32::from(red) << (2 * Self::BITS)) | (u32::from(green_high) << Self::BITS);
+            tables.low[usize::from(byte)] = (u32::from(green_low) << Self::BITS) | u32::from(blue);
+        }
+        tables
+    }
+
+    /// The sum of the packed values of the pixels in `bytes`, at most
+    /// [`PackedRgb::MAX_SUM`] of them.
+    #[inline(always)]
+    fn sum(&self, bytes: &[u8]) -> u32 {
+        let mut sum = 0;
+        for pixel in bytes.chunks_exact(BYTES_PER_PIXEL) {
+            sum += self.high[usize::from(pixel[0])] + self.low[usize::from(pixel[1])];
+        }
+        sum
+    }
+}
+
+/// [`downscale_to_rgb_within`] for a factor of at most 4, known when the
+/// code is compiled: the division by the pixel count is by a constant (a
+/// shift for 1, 2 and 4), and the loops over a block have a fixed length.
+///
+/// # Panics
+///
+/// The same as [`downscale_to_gray`].
+fn downscale_to_rgb_packed<const FACTOR: usize>(
+    src: &impl Rgb565Source,
+    dst: &mut RgbImageMut<'_>,
+    columns: Range<usize>,
+    rows: Range<usize>,
+) {
+    const {
+        assert!(FACTOR >= 1 && FACTOR <= PackedRgb::MAX_SUM);
+    }
+    check_sizes(src, FACTOR, dst.width(), dst.height());
+    let columns = clip(columns, dst.width());
+    let tables = PackedRgb::new();
+    let count = (FACTOR * FACTOR) as u32;
+    let block_bytes = FACTOR * BYTES_PER_PIXEL;
+    for dst_y in clip(rows, dst.height()) {
+        let rows: [&[u8]; FACTOR] = core::array::from_fn(|row| src.row(dst_y * FACTOR + row));
+        let out_row = &mut dst.row_mut(dst_y)[columns.start * 3..columns.end * 3];
+        for (dst_x, out) in columns.clone().zip(out_row.chunks_exact_mut(3)) {
+            let (mut red, mut green, mut blue) = (0u32, 0u32, 0u32);
+            for row in rows {
+                // One row of the block: at most four pixels, so their
+                // packed sum fits.
+                let sum = tables.sum(&row[dst_x * block_bytes..(dst_x + 1) * block_bytes]);
+                red += sum >> (2 * PackedRgb::BITS);
+                green += (sum >> PackedRgb::BITS) & PackedRgb::MASK;
+                blue += sum & PackedRgb::MASK;
+            }
+            // The sums are at most `count * 255`, so the means fit a byte.
+            out[0] = ((red + count / 2) / count) as u8;
+            out[1] = ((green + count / 2) / count) as u8;
+            out[2] = ((blue + count / 2) / count) as u8;
+        }
+    }
 }
 
 /// Convert an RGB image to gray, pixel by pixel (`pixel::rgb888_to_gray`).
@@ -364,13 +540,7 @@ pub fn rgb_to_gray(src: &RgbImage<'_>, dst: &mut GrayImageMut<'_>) {
         (dst.width(), dst.height()),
         "rgb_to_gray sizes"
     );
-    for y in 0..src.height() {
-        for (x, rgb) in src.row(y).chunks_exact(3).enumerate() {
-            dst.set_pixel(
-                x,
-                y,
-                [crate::pixel::rgb888_to_gray([rgb[0], rgb[1], rgb[2]])],
-            );
-        }
+    for (gray, rgb) in dst.data.iter_mut().zip(src.data.chunks_exact(3)) {
+        *gray = pixel::rgb888_to_gray([rgb[0], rgb[1], rgb[2]]);
     }
 }

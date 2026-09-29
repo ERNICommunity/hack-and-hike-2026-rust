@@ -605,7 +605,7 @@ const BLOCK: usize = 4;
 /// first `input.len()` weights of each are used.
 ///
 /// The sums are `i32`; the caller keeps the input short enough for them
-/// (see [`WIDE_CHUNK`] and [`WIDE_PRODUCTS`]).
+/// (see [`WIDE_PRODUCTS`]).
 #[inline(always)]
 fn dot4<T: Lane>(input: &[T], zero: i32, rows: [&[i8]; BLOCK]) -> [i32; BLOCK] {
     let len = input.len();
@@ -886,7 +886,7 @@ fn conv2d_blocked<T: Lane>(
     out
 }
 
-/// A full convolution on `i16` input; see [`conv2d`].
+/// A full convolution on `i16` input; see [`conv2d`](super::conv2d).
 ///
 /// The sum is `i32`: an output here has at most `kernel * kernel * in
 /// channels` products, and the largest such count in the two models is
@@ -896,7 +896,7 @@ fn conv2d_blocked<T: Lane>(
 /// # Panics
 ///
 /// When the slices do not match the shapes, or the kernel has more than
-/// [`WIDE_PRODUCTS`] products per output.
+/// `WIDE_PRODUCTS` products per output.
 #[allow(clippy::too_many_arguments)]
 pub fn conv2d_16(
     input: &[i16],
@@ -1127,9 +1127,9 @@ fn depthwise_blocked<T: Lane>(
 }
 
 /// A depthwise convolution on `i16` input with one mapping for the whole
-/// tensor; see [`depthwise`]. The sum is `i32`: at most `kernel * kernel`
+/// tensor; see [`depthwise`](super::depthwise). The sum is `i32`: at most `kernel * kernel`
 /// products per output, 121 at most, far inside the bound of
-/// [`WIDE_PRODUCTS`].
+/// `WIDE_PRODUCTS`.
 ///
 /// # Panics
 ///

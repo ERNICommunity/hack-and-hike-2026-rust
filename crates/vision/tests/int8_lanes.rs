@@ -144,6 +144,7 @@ fn the_lane_linear_matches_the_float_one() {
         plan_groups(&scales, &bias, in_step, out_step, in_features, &mut plans);
         let weight = LaneWeight {
             data: &packed,
+            wide: None,
             per_output: in_features,
             plans: &plans,
         };
@@ -217,6 +218,7 @@ fn the_lane_convolution_matches_the_float_one() {
         plan_groups(&scales, &bias, in_step, out_step, taps, &mut plans);
         let weight = LaneWeight {
             data: &packed,
+            wide: None,
             per_output: taps,
             plans: &plans,
         };
@@ -365,4 +367,117 @@ fn the_gelu_table_matches_the_function() {
     let snr = snr(&expected, &values, GELU_STEP);
     println!("gelu table: {snr:.1} dB");
     assert!(snr > 60.0, "{snr} dB");
+}
+
+#[test]
+fn the_short_gelu_table_gives_the_rounded_function_for_every_value() {
+    let mut storage = vec![0i16; GeluTable::LEN];
+    let table = GeluTable::build(&mut storage);
+    // Every `i16`: the store clamps to -16384..=16384, where the earlier
+    // table of 64 KB held the same formula.
+    let mut values: Vec<i16> = (i16::MIN..=i16::MAX).collect();
+    table.apply(&mut values);
+    for (x, got) in (i32::from(i16::MIN)..).zip(values) {
+        assert_eq!(got, GeluTable::rounded(x), "gelu at {x}");
+    }
+    // The ends of the table are where the formula stops changing.
+    assert_eq!(GeluTable::rounded(GeluTable::LOW), 0);
+    assert_ne!(GeluTable::rounded(GeluTable::LOW + 1), 0);
+    assert_eq!(GeluTable::rounded(GeluTable::HIGH), GeluTable::HIGH as i16);
+    assert_ne!(
+        GeluTable::rounded(GeluTable::HIGH - 1),
+        (GeluTable::HIGH - 1) as i16
+    );
+}
+
+#[test]
+fn the_norm_constants_from_row_sums_are_those_of_the_row() {
+    let mut state = 7u32;
+    let mut next = move || {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        state
+    };
+    for case in 0..2000 {
+        let len = 1 + next() as usize % 256;
+        let row: Vec<i16> = match case % 4 {
+            0 => (0..len).map(|_| (next() >> 16) as i16).collect(),
+            1 => (0..len).map(|_| ((next() >> 16) as i16) >> 6).collect(),
+            2 => vec![if case % 8 == 2 { i16::MAX } else { i16::MIN }; len],
+            _ => (0..len)
+                .map(|i| if i % 2 == 0 { i16::MAX } else { i16::MIN })
+                .collect(),
+        };
+        let step = 1e-3 * (1 + next() % 1000) as f32;
+        let (sum, squares) = model::row_sums(&row);
+        assert_eq!(
+            model::norm_constants(len, sum, squares, step, 1e-6),
+            model::norm_row(&row, step, 1e-6),
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn wide_rows_and_16_bit_weights_give_the_same_numbers() {
+    // Rows so wide that a layer's groups run in chunks of one or two (the
+    // weights a chunk may hold in the cache), with a short last chunk;
+    // the weights also as `i16`, which the kernels read as they are.
+    let mut storage = vec![0i16; GeluTable::LEN];
+    let gelu = GeluTable::build(&mut storage);
+    let mut random = Random(5);
+    for in_features in [352, 672] {
+        let outputs = 8 * 21;
+        let rows = 3;
+        let input: Vec<f32> = (0..rows * in_features)
+            .map(|_| random.signed() * 3.0)
+            .collect();
+        let weight: Vec<f32> = (0..outputs * in_features)
+            .map(|_| random.signed() * 0.5)
+            .collect();
+        let bias: Vec<f32> = (0..outputs).map(|_| random.signed()).collect();
+        let mut expected = vec![0.0f32; rows * outputs];
+        linear(
+            &input,
+            in_features,
+            &weight,
+            Some(&bias),
+            outputs,
+            Activation::None,
+            &mut expected,
+        );
+        let in_step = 3.0 / 32767.0;
+        let input_q = quantize(&input, in_step);
+        let (data, scales) = quantize_rows(&weight, in_features);
+        let mut packed = vec![0i8; data.len()];
+        lanes::pack_weight(&data, outputs, in_features, &mut packed);
+        let wide: Vec<i16> = packed.iter().map(|&w| i16::from(w)).collect();
+        let largest = expected.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let out_step = largest / 32767.0;
+        let mut plans = vec![GroupPlan::ZERO; outputs / LANES];
+        plan_groups(&scales, &bias, in_step, out_step, in_features, &mut plans);
+        let narrow = LaneWeight {
+            data: &packed,
+            wide: None,
+            per_output: in_features,
+            plans: &plans,
+        };
+        let widened = LaneWeight {
+            wide: Some(&wide),
+            ..narrow
+        };
+        let stream: Vec<i16> = (0..rows * outputs)
+            .map(|_| random.below(20000) as i16 - 10000)
+            .collect();
+        for store in [Store::Write, Store::Add, Store::Gelu(&gelu)] {
+            let mut from_narrow = stream.clone();
+            lanes::linear(&input_q, in_features, &narrow, store, &mut from_narrow);
+            let mut from_wide = stream.clone();
+            lanes::linear(&input_q, in_features, &widened, store, &mut from_wide);
+            assert_eq!(from_narrow, from_wide, "{in_features} inputs");
+            if matches!(store, Store::Write) {
+                let snr = snr(&expected, &from_narrow, out_step);
+                assert!(snr > 40.0, "{in_features} inputs: {snr} dB");
+            }
+        }
+    }
 }

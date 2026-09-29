@@ -295,7 +295,7 @@ flowchart LR
     DMA --> LCD["LCD"]
 ```
 
-There are two ways to draw:
+There are three ways to draw:
 
 - `surface.render_scanlines(|y, row| ...)` gives you one row of `Rgb565`
   pixels at a time to fill. It is cheap and simple for plain fills. The
@@ -304,14 +304,31 @@ There are two ways to draw:
   These rows are already RGB565 bytes, for example a camera frame. While the
   DMA sends one batch, the source's `while_transferring` callback runs and
   can do useful work. The camera uses it to capture its next frame.
+- `surface.render_from_async(&mut source).await` draws the same picture,
+  but sleeps while a batch is on the bus. Use it in a task on an interrupt
+  executor: the task that it interrupts, for example a long computation,
+  then runs during the transfer. The Face ID application draws its camera
+  preview this way, and its panel with `canvas.show_async`.
+
+A task on an interrupt executor must never wait while it has the CPU: it
+runs as an interrupt handler, so the task it interrupted stands still,
+and so does the timer interrupt of both cores when the handler's
+priority is the timer's. The IMU on CPU1 then loses samples.
+
+`surface.without_mirror()` draws without the copy for the live screen
+feed (see below): for an area that changes many times per second, such
+as a camera preview, when every few frames in the feed are enough.
 
 RGB565 is the pixel format of the display and the camera: 16 bits per
 pixel, with 5 bits for red, 6 for green and 5 for blue.
 
-Both ways use the same pipeline:
+All three use the same pipeline:
 
 1. The display sets a drawing window on the panel controller (ILI9342C).
-2. Rows go to the panel in batches of seven rows.
+2. Rows go to the panel in batches of seven full-width rows.
+   `render_from_async` puts as many rows into a batch as fit, for example
+   12 rows of Face ID's 184-pixel-wide preview, so its task wakes up less
+   often.
 3. Two DMA buffers take turns. The CPU fills the next batch while the
    previous batch is still being sent.
 
@@ -511,12 +528,17 @@ flowchart LR
 ```
 
 - **The hook.** Every pixel that reaches the panel passes through
-  `Transport::render` in the display capability. Right before it sends a
-  batch of rows, it calls `logging::mirror::record` with the batch. The
-  canvas, the navigation rail and the camera all use this path.
+  `Transport::render` or `Transport::render_async` in the display
+  capability. Right before it sends a batch of rows, it calls
+  `logging::mirror::record` with the batch. The canvas, the navigation
+  rail and the camera all use this path. Two things skip the copy: a
+  surface from `surface.without_mirror()`, and, after
+  `logging::mirror_only_when_watched(true)`, the time when no program on
+  the computer reads the port.
 - **The shadow copy.** `record` copies the pixels into a 320x240 copy of the
   panel in PSRAM. For each row, it widens a *dirty span* (also in PSRAM): the first and the
-  last changed column. A full camera frame costs CPU0 about 3 to 4 ms.
+  last changed column. Face ID's camera preview of 184x240 pixels costs
+  CPU0 about 6 ms.
 - **The encoder.** Every 40 ms, the encoder task takes the dirty spans and
   clears them. Rows next to each other with the same span form one
   rectangle. It reads the pixels from the shadow copy and writes them as
@@ -532,6 +554,14 @@ flowchart LR
   terminal. A packet starts and ends with a `0x00` byte, which text never
   contains, and has a CRC (checksum). `crates/core/src/screen.rs` describes
   it.
+- **Only while somebody watches.** The copy costs CPU0 time for every
+  pixel. An application that draws many pixels and computes a lot calls
+  `logging::mirror_only_when_watched(true)`. Then `record` copies only from
+  a refresh request until the computer stops reading the port for two
+  seconds. What the application drew before is not in the copy, so it
+  draws everything again when `logging::mirror_refreshes()` changes. The
+  Face ID application does this. Without the call, the copy is always
+  made.
 - **Refresh.** Any byte from the computer asks for the whole screen. The
   encoder then sends a Hello packet (the screen size) and all rows. The
   autoflash page asks each time it opens the port.
@@ -667,6 +697,21 @@ Errors do not stop the camera:
 - A dropped frame is logged as a warning: the first one, then every 32nd.
 
 A camera application should use this path and not copy frames.
+
+More functions are for an application that computes for a long time
+between frames, such as Face ID:
+
+- `camera.service()`, `camera.advance()` and `camera.current()` do what
+  `begin_frame` and `finish` do, but never wait for the sensor: after an
+  overflow, `service` starts the capture again and returns at once. A task
+  on an interrupt executor must use these.
+- `camera.capture_on_demand(true)` makes the camera copy a frame out of the
+  ring only after `camera.request_frame()`. The bytes of the other frames
+  leave the ring without a copy. A copy costs CPU0 about 10 ms per frame,
+  and the sensor sends more frames than such an application shows.
+- `frame.take(spare)` hands the frame's buffer over and takes a spare
+  buffer in exchange. The application works on the frame for as long as it
+  likes, and nothing is copied.
 
 ## The network protocol
 

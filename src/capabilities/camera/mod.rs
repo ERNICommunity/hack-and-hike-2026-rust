@@ -27,6 +27,15 @@
 //! [`Camera::pump`] there, and it should not sleep. The private `capture`
 //! module explains the buffers.
 //!
+//! `begin_frame` and `finish` wait for the sensor when they have to: at
+//! the start, and after the ring buffer overflowed, for up to two frame
+//! periods (half a second when the sensor sends nothing). A task on an interrupt executor must not wait: it would hold up
+//! the task it interrupted, and the timer of both CPU cores. Such a task
+//! uses [`Camera::service`] (empty the buffer, and start the capture again
+//! when it stopped), [`Camera::advance`] (move on to the newest whole
+//! frame) and [`Camera::current`] (the frame to use) instead. None of them
+//! waits; an overflow then costs the frames on their way, and no time.
+//!
 //! The camera is optional, like the light and proximity sensor.
 //! `Board::init` returns `None` for it when no sensor answers, and does not
 //! panic.
@@ -40,7 +49,7 @@ use log::{info, warn};
 use crate::board::{i2c, io_expander, power};
 
 pub(crate) use capture::Resources;
-pub use capture::{Camera, Frame, HEIGHT, WIDTH};
+pub use capture::{Camera, CaptureStats, Frame, HEIGHT, WIDTH};
 
 /// Milliseconds to wait after the camera power rails turn on, before the
 /// reset pulse. The voltages need this time to become stable.
@@ -60,7 +69,7 @@ enum BringUpError<E> {
 ///
 /// Return `None` and log a warning when an I2C transfer fails or the sensor
 /// is not a GC0308. Capturing starts later, with the first
-/// [`Camera::begin_frame`].
+/// [`Camera::begin_frame`] or [`Camera::service`].
 ///
 /// The sensor's control bus uses the same pins as the board's system I2C
 /// bus, but at 100 kHz instead of 400 kHz. So this function borrows the bus

@@ -14,9 +14,16 @@
 //! - repeat for many people and put all the attempts together.
 //!
 //! The report is the trade-off: for each false-accept rate, the highest
-//! true-accept rate and the thresholds that reach it, once for a single
-//! frame and once for three frames averaged (`gallery::Fusion`), which is
-//! what the application does.
+//! true-accept rate and the thresholds that reach it, for one frame and
+//! for two and three frames averaged (`gallery::Fusion`).
+//!
+//! The application shows a name at once when the decision is *sure*: the
+//! score is above the accept threshold by a step that depends on the
+//! number of frames (`gallery::SureSteps`). The second part of the
+//! report measures those steps: where the strangers' scores end for each
+//! number of frames, and, for several sets of steps, how many frames the
+//! application (`gallery::Decider`, the firmware's own code) needs to
+//! name a person and how often it names a stranger.
 //!
 //! LFW photos of one person come from different occasions, so this is a
 //! harder test than enrolling and recognizing in one sitting in front of
@@ -30,7 +37,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use hack_and_hike_vision::{
     blob::Blob,
-    gallery::{Embedding, Fusion, Gallery, ImpostorBank, MAX_TEMPLATES, Thresholds},
+    gallery::{
+        Decider, Embedding, FUSION_FRAMES, Fusion, Gallery, ImpostorBank, MAX_TEMPLATES, SureSteps,
+        Thresholds,
+    },
 };
 
 use crate::{
@@ -54,6 +64,18 @@ const MARGIN_RANGE: (f32, f32) = (-0.32, 0.32);
 /// The false-accept rates the report picks operating points for. The
 /// last one is "no impostor at all got in".
 const TARGET_RATES: [f32; 4] = [1e-2, 3e-3, 1e-3, 0.0];
+/// The frames of one visit to the device in the play of the application:
+/// as many embeddings as the rule without a shortcut needs for a name.
+const VISIT_FRAMES: usize = 5;
+/// The sets of sure steps the play is run with, besides the firmware's
+/// own and "never sure".
+const CANDIDATE_STEPS: [[f32; FUSION_FRAMES]; 5] = [
+    [0.05, 0.05, 0.05],
+    [0.10, 0.05, 0.05],
+    [0.15, 0.10, 0.05],
+    [0.20, 0.15, 0.10],
+    [0.25, 0.20, 0.15],
+];
 
 /// The embedding the board would use: the integer one when integer
 /// weights were given, otherwise the `f32` one.
@@ -159,9 +181,11 @@ pub fn run(
     let stranger_probes: Vec<Embedding> = strangers.iter().filter_map(vector).collect();
 
     let mut single = Vec::new();
+    let mut paired = Vec::new();
     let mut fused = Vec::new();
+    let mut visits = Visits::default();
     let mut enrollments = 0;
-    for (folder, shots) in &chosen {
+    for (_, shots) in &chosen {
         let mut person_templates: Vec<Embedding> =
             shots[..templates].iter().filter_map(vector).collect();
         person_templates.truncate(MAX_TEMPLATES);
@@ -185,39 +209,235 @@ pub fn run(
                     genuine,
                 });
             }
-            // Three frames averaged, as the application does. For a
-            // stranger the three frames are three different people,
-            // which is the worst case for the average.
-            for window in probes.chunks(3).filter(|window| window.len() == 3) {
-                let mut fusion = Fusion::new();
-                for probe in window {
-                    fusion.push(*probe);
-                }
-                if let Some(probe) = fusion.fused() {
-                    let score = best(&probe);
-                    fused.push(Attempt {
-                        score,
-                        margin: score - bank.best_similarity(&probe),
-                        genuine,
-                    });
+            // Two and three frames averaged, as the application does.
+            // For a stranger the frames are different people.
+            for (frames, attempts) in [(2, &mut paired), (3, &mut fused)] {
+                for window in probes
+                    .chunks(frames)
+                    .filter(|window| window.len() == frames)
+                {
+                    let mut fusion = Fusion::new();
+                    for probe in window {
+                        fusion.push(*probe);
+                    }
+                    if let Some(probe) = fusion.fused_so_far() {
+                        let score = best(&probe);
+                        attempts.push(Attempt {
+                            score,
+                            margin: score - bank.best_similarity(&probe),
+                            genuine,
+                        });
+                    }
                 }
             }
         }
-        let _ = folder;
+        visits.play(&person_templates, &genuine_probes, &stranger_probes, &bank);
     }
     println!(
-        "{enrollments} enrollments: {} single-frame attempts ({} genuine), {} three-frame attempts ({} genuine)",
+        "{enrollments} enrollments: {} single-frame attempts ({} genuine), {} two-frame attempts ({} genuine), {} three-frame attempts ({} genuine)",
         single.len(),
         single.iter().filter(|a| a.genuine).count(),
+        paired.len(),
+        paired.iter().filter(|a| a.genuine).count(),
         fused.len(),
         fused.iter().filter(|a| a.genuine).count()
     );
     check_against_the_firmware(&chosen, &embedded, templates, &bank, &stranger_probes)?;
 
-    for (label, attempts) in [("one frame", &single), ("three frames averaged", &fused)] {
+    for (label, attempts) in [
+        ("one frame", &single),
+        ("two frames averaged", &paired),
+        ("three frames averaged", &fused),
+    ] {
         report(label, attempts);
     }
+    println!("== the sure steps ==");
+    for (label, attempts) in [
+        ("one frame", &single),
+        ("two frames averaged", &paired),
+        ("three frames averaged", &fused),
+    ] {
+        report_sure(label, attempts);
+    }
+    visits.report();
     Ok(())
+}
+
+/// Where the strangers' scores end, and what a limit above that costs.
+fn report_sure(label: &str, attempts: &[Attempt]) {
+    let margin = Thresholds::DEFAULT.margin;
+    let genuine = attempts.iter().filter(|a| a.genuine).count();
+    let impostor = attempts.len() - genuine;
+    if genuine == 0 || impostor == 0 {
+        return;
+    }
+    // A stranger that fails the margin rule is refused whatever the
+    // score, so only the others count.
+    let mut scores: Vec<f32> = attempts
+        .iter()
+        .filter(|a| !a.genuine && a.margin >= margin)
+        .map(|a| a.score)
+        .collect();
+    scores.sort_by(|a, b| b.total_cmp(a));
+    let highest = scores.first().copied().unwrap_or(-1.0);
+    println!(
+        "  {label}: {impostor} strangers, the highest scores {:.3?}",
+        &scores[..scores.len().min(5)]
+    );
+    for step in [0.0f32, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30] {
+        let limit = Thresholds::DEFAULT.accept + step;
+        let recognized = attempts
+            .iter()
+            .filter(|a| a.genuine && a.accepted(limit, margin))
+            .count();
+        let let_in = attempts
+            .iter()
+            .filter(|a| !a.genuine && a.accepted(limit, margin))
+            .count();
+        println!(
+            "    step {step:.2} (limit {limit:.2}): {:>6.2} % recognized, {let_in} of {impostor} strangers ({:.4} %), {:+.3} above the highest stranger",
+            100.0 * recognized as f32 / genuine as f32,
+            100.0 * let_in as f32 / impostor as f32,
+            limit - highest
+        );
+    }
+}
+
+/// The play of the application with the firmware's own [`Decider`]:
+/// visits of [`VISIT_FRAMES`] frames by the enrolled person and by
+/// strangers, for several sets of sure steps.
+#[derive(Default)]
+struct Visits {
+    /// One tally per set of steps.
+    tallies: Vec<Tally>,
+}
+
+/// What one set of sure steps did over all visits.
+struct Tally {
+    /// The steps.
+    steps: SureSteps,
+    /// What they are called in the report.
+    label: String,
+    /// Visits by the enrolled person.
+    genuine: usize,
+    /// How many of them were named after 1, 2, ... [`VISIT_FRAMES`]
+    /// frames.
+    named_after: [usize; VISIT_FRAMES],
+    /// Visits by strangers whose frames are different people.
+    mixed: usize,
+    /// How many of them were named.
+    mixed_named: usize,
+    /// Visits by one stranger whose frames are all the same photo.
+    still: usize,
+    /// How many of them were named, after 1, 2, ... frames.
+    still_named_after: [usize; VISIT_FRAMES],
+}
+
+impl Visits {
+    /// Play the visits to one enrolled person.
+    fn play(
+        &mut self,
+        templates: &[Embedding],
+        genuine: &[Embedding],
+        strangers: &[Embedding],
+        bank: &ImpostorBank<'_>,
+    ) {
+        if self.tallies.is_empty() {
+            let mut sets = vec![
+                ("never sure (the rule before)".to_string(), SureSteps::NEVER),
+                ("the firmware's steps".to_string(), SureSteps::DEFAULT),
+            ];
+            sets.extend(
+                CANDIDATE_STEPS.map(|steps| (format!("steps {steps:.2?}"), SureSteps { steps })),
+            );
+            self.tallies = sets
+                .into_iter()
+                .map(|(label, steps)| Tally {
+                    steps,
+                    label,
+                    genuine: 0,
+                    named_after: [0; VISIT_FRAMES],
+                    mixed: 0,
+                    mixed_named: 0,
+                    still: 0,
+                    still_named_after: [0; VISIT_FRAMES],
+                })
+                .collect();
+        }
+        let mut gallery = Gallery::new();
+        let Some(person) = gallery.enroll("person") else {
+            return;
+        };
+        for template in templates {
+            person.add_template(*template);
+        }
+        // The frame after which the screen shows a name, if it does.
+        let visit = |frames: &[Embedding], steps: &SureSteps| {
+            let mut decider = Decider::new();
+            frames.iter().position(|frame| {
+                let decision = decider.push(*frame, &gallery, bank, &Thresholds::DEFAULT, steps);
+                matches!(decision.shown, Some(Some(_)))
+            })
+        };
+        for tally in &mut self.tallies {
+            for frames in genuine.chunks(VISIT_FRAMES) {
+                if frames.len() < VISIT_FRAMES {
+                    continue;
+                }
+                tally.genuine += 1;
+                if let Some(frame) = visit(frames, &tally.steps) {
+                    tally.named_after[frame] += 1;
+                }
+            }
+            for frames in strangers.chunks(VISIT_FRAMES) {
+                if frames.len() < VISIT_FRAMES {
+                    continue;
+                }
+                tally.mixed += 1;
+                if visit(frames, &tally.steps).is_some() {
+                    tally.mixed_named += 1;
+                }
+            }
+            for stranger in strangers {
+                tally.still += 1;
+                if let Some(frame) = visit(&[*stranger; VISIT_FRAMES], &tally.steps) {
+                    tally.still_named_after[frame] += 1;
+                }
+            }
+        }
+    }
+
+    /// Print what every set of steps did.
+    fn report(&self) {
+        println!("\n== the application, visits of {VISIT_FRAMES} frames ==");
+        for tally in &self.tallies {
+            println!("  {}:", tally.label);
+            let mut named = 0;
+            print!("    the person is named after");
+            for (frame, count) in tally.named_after.iter().enumerate() {
+                named += count;
+                print!(
+                    " {} frames: {:.1} %,",
+                    frame + 1,
+                    100.0 * named as f32 / tally.genuine.max(1) as f32
+                );
+            }
+            println!(" of {} visits", tally.genuine);
+            println!(
+                "    strangers named: {} of {} visits of different people ({:.4} %)",
+                tally.mixed_named,
+                tally.mixed,
+                100.0 * tally.mixed_named as f32 / tally.mixed.max(1) as f32
+            );
+            let still: usize = tally.still_named_after.iter().sum();
+            println!(
+                "    strangers named: {still} of {} visits of one still photo ({:.4} %), after 1, 2, ... frames: {:?}",
+                tally.still,
+                100.0 * still as f32 / tally.still.max(1) as f32,
+                tally.still_named_after
+            );
+        }
+    }
 }
 
 /// The people of `images` with more than `templates` photos, sorted.

@@ -9,6 +9,7 @@
 
 use core::convert::Infallible;
 
+use arrayvec::ArrayVec;
 use embedded_graphics::{
     Pixel,
     pixelcolor::{Rgb565, raw::RawU16},
@@ -28,6 +29,10 @@ use crate::{
 /// direct memory access, sends the bytes without the CPU.) Sending a few
 /// unchanged rows costs less than that.
 const MAX_GAP_ROWS: i32 = 4;
+/// The most windows one `show` sends. With [`MAX_GAP_ROWS`], a canvas as
+/// tall as the screen has at most 40; the rows of any more go into the
+/// last window.
+const MAX_WINDOWS: usize = 48;
 
 /// A rectangle of pixels in PSRAM to draw on with `embedded-graphics`.
 ///
@@ -180,19 +185,58 @@ impl Canvas {
     ///
     /// When `surface` does not have the same size as the canvas.
     pub fn show_while(&mut self, surface: &mut Surface<'_>, mut while_waiting: impl FnMut()) {
+        for window in self.changed_windows(surface, &mut while_waiting) {
+            self.send(surface, window, &mut while_waiting);
+        }
+        self.panel_known = true;
+    }
+
+    /// [`Canvas::show_while`] for a task that can wait: the same pixels
+    /// reach the panel, but while they are on their way the CPU is free
+    /// for other work (see
+    /// [`Surface::render_from_async`](crate::capabilities::display::Surface::render_from_async)).
+    /// `while_waiting` runs at least once per batch of rows, and once per
+    /// row while the canvas looks for changed rows.
+    ///
+    /// Await it to the end: a future dropped halfway forgets the changes
+    /// it has not sent, and the panel keeps the old pixels there until
+    /// they change again.
+    ///
+    /// # Panics
+    ///
+    /// When `surface` does not have the same size as the canvas.
+    pub async fn show_async(&mut self, surface: &mut Surface<'_>, mut while_waiting: impl FnMut()) {
+        for window in self.changed_windows(surface, &mut while_waiting) {
+            self.send_async(surface, window, &mut while_waiting).await;
+        }
+        self.panel_known = true;
+    }
+
+    /// The windows that the next `show` sends, top to bottom, and forget
+    /// the changes: every candidate row is compared with the panel.
+    /// Changed rows go into one window when at most [`MAX_GAP_ROWS`]
+    /// unchanged rows lie between them. A window is as wide as the widest
+    /// change in its rows.
+    ///
+    /// # Panics
+    ///
+    /// When `surface` does not have the same size as the canvas.
+    fn changed_windows(
+        &mut self,
+        surface: &Surface<'_>,
+        while_waiting: &mut impl FnMut(),
+    ) -> ArrayVec<Bounds, MAX_WINDOWS> {
         assert_eq!(
             surface.size(),
             self.size,
             "the surface must be the size of the canvas"
         );
+        let mut windows = ArrayVec::new();
         let Some(candidates) = self.changed.rectangle() else {
-            return;
+            return windows;
         };
         self.changed = Bounds::EMPTY;
 
-        // Check each candidate row. Changed rows go into one window when at
-        // most `MAX_GAP_ROWS` unchanged rows lie between them. The window is
-        // as wide as the widest change in its rows.
         let mut window = Bounds::EMPTY;
         let mut last_changed_row = i32::MIN;
         for y in candidates.rows() {
@@ -200,8 +244,8 @@ impl Canvas {
             let Some((left, right)) = self.changed_columns(y, candidates.columns()) else {
                 continue;
             };
-            if !window.is_empty() && y - last_changed_row > MAX_GAP_ROWS + 1 {
-                self.send(surface, window, &mut while_waiting);
+            if !window.is_empty() && y - last_changed_row > MAX_GAP_ROWS + 1 && !windows.is_full() {
+                windows.push(window);
                 window = Bounds::EMPTY;
             }
             window.include_point(Point::new(left, y));
@@ -209,9 +253,17 @@ impl Canvas {
             last_changed_row = y;
         }
         if !window.is_empty() {
-            self.send(surface, window, &mut while_waiting);
+            let full = windows.is_full();
+            match windows.last_mut() {
+                // No room for another window: its rows join the last one.
+                Some(last) if full => {
+                    last.include_point(window.min);
+                    last.include_point(window.max);
+                }
+                _ => windows.push(window),
+            }
         }
-        self.panel_known = true;
+        windows
     }
 
     /// Forget what the panel shows, so the next `show` sends the whole
@@ -264,6 +316,26 @@ impl Canvas {
         let first = drawn.iter().zip(shown).position(differs)?;
         let last = drawn.iter().zip(shown).rposition(differs)?;
         Some((columns.start + first as i32, columns.start + last as i32))
+    }
+
+    /// [`Canvas::send`], sleeping while the rows are on their way.
+    async fn send_async(
+        &mut self,
+        surface: &mut Surface<'_>,
+        window: Bounds,
+        while_waiting: &mut impl FnMut(),
+    ) {
+        let Some(area) = window.rectangle() else {
+            return;
+        };
+        let start = self.index(area.top_left);
+        let mut rows = Rows {
+            pixels: &self.pixels[start..],
+            shown: &mut self.shown[start..],
+            canvas_width: self.size.width as usize,
+            while_waiting,
+        };
+        surface.subsurface(area).render_from_async(&mut rows).await;
     }
 
     /// Send one window of the canvas and remember it as shown. Call

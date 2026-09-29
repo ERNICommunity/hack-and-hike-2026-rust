@@ -144,8 +144,9 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         count: usize,
     },
-    /// Measure where to put the two thresholds of the decision, by
-    /// playing the application over a folder of labelled photos.
+    /// Measure where to put the two thresholds of the decision and the
+    /// steps above them from which a decision is sure, by playing the
+    /// application over a folder of labelled photos.
     Calibrate {
         /// The YuNet ONNX file (the dynamic-size variant).
         detector: PathBuf,

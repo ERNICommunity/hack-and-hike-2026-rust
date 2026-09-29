@@ -1,9 +1,12 @@
 //! Image views and box downscaling on small hand-made frames.
 
+use std::ops::Range;
+
 use hack_and_hike_vision::image::{
     GrayImageMut, Image, ImageMut, Rgb565Frame, Rgb565Source, RgbImageMut, downscale_to_gray,
-    downscale_to_rgb,
+    downscale_to_rgb, downscale_to_rgb_plain, downscale_to_rgb_within,
 };
+use hack_and_hike_vision::pixel::rgb565_be_to_rgb888;
 
 /// Big-endian RGB565 bytes with a 5-bit red value, no green and no blue.
 fn red_pixel(red5: u8) -> [u8; 2] {
@@ -83,6 +86,102 @@ fn downscale_by_one_is_a_conversion() {
     let mut dst = RgbImageMut::new(&mut out, 4, 1);
     downscale_to_rgb(&src, 1, &mut dst);
     assert_eq!(out, [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]);
+}
+
+/// Bytes that look random and are the same on every run.
+fn noise(len: usize, seed: u32) -> Vec<u8> {
+    let mut state = seed;
+    (0..len)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect()
+}
+
+#[test]
+fn the_fast_downscale_gives_the_bytes_of_the_plain_loop() {
+    // 24x12 is a multiple of every factor with a fast path, and of 6,
+    // which has none.
+    let (width, height) = (24, 12);
+    for seed in 1..=8 {
+        // Noise, and the brightest frame: every sum at its largest.
+        for frame in [
+            noise(width * height * 2, seed),
+            solid_frame([0xFF, 0xFF], width, height),
+        ] {
+            let src = Rgb565Frame::new(&frame, width, height);
+            for factor in [1, 2, 3, 4, 6] {
+                let (w, h) = (width / factor, height / factor);
+                let mut fast = vec![0u8; w * h * 3];
+                let mut plain = vec![0u8; w * h * 3];
+                downscale_to_rgb(&src, factor, &mut RgbImageMut::new(&mut fast, w, h));
+                downscale_to_rgb_plain(&src, factor, &mut RgbImageMut::new(&mut plain, w, h));
+                assert_eq!(fast, plain, "factor {factor}, seed {seed}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_partial_downscale_writes_only_its_pixels() {
+    let (width, height) = (24, 12);
+    let frame = noise(width * height * 2, 99);
+    let src = Rgb565Frame::new(&frame, width, height);
+    for factor in [2, 3, 4, 6] {
+        let (w, h) = (width / factor, height / factor);
+        let mut full = vec![0u8; w * h * 3];
+        downscale_to_rgb(&src, factor, &mut RgbImageMut::new(&mut full, w, h));
+        // Columns 1..3 and rows 1..2, ranges that reach past the image,
+        // and ranges that are empty or run backwards.
+        for (columns, rows) in [
+            (1..3, 1..2),
+            (0..w, 0..h),
+            (w - 1..w + 5, 0..h + 9),
+            (2..2, 0..h),
+            (Range { start: 3, end: 1 }, 0..h),
+            (0..w, Range { start: 2, end: 1 }),
+        ] {
+            let mut part = vec![0xEEu8; w * h * 3];
+            downscale_to_rgb_within(
+                &src,
+                factor,
+                &mut RgbImageMut::new(&mut part, w, h),
+                columns.clone(),
+                rows.clone(),
+            );
+            for y in 0..h {
+                for x in 0..w {
+                    let at = (y * w + x) * 3..(y * w + x + 1) * 3;
+                    let expected: &[u8] = if columns.contains(&x) && rows.contains(&y) {
+                        &full[at.clone()]
+                    } else {
+                        &[0xEE; 3]
+                    };
+                    assert_eq!(
+                        &part[at], expected,
+                        "factor {factor}, pixel ({x}, {y}), {columns:?} x {rows:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_fast_downscale_converts_every_pixel_value() {
+    // All 65,536 pixel values, one per pixel of a 256x256 frame.
+    let frame: Vec<u8> = (0..=u16::MAX).flat_map(u16::to_be_bytes).collect();
+    let src = Rgb565Frame::new(&frame, 256, 256);
+    let mut out = vec![0u8; 256 * 256 * 3];
+    downscale_to_rgb(&src, 1, &mut RgbImageMut::new(&mut out, 256, 256));
+    for (value, rgb) in (0..=u16::MAX).zip(out.chunks_exact(3)) {
+        assert_eq!(
+            rgb,
+            rgb565_be_to_rgb888(value.to_be_bytes()),
+            "pixel value {value:#06x}"
+        );
+    }
 }
 
 #[test]

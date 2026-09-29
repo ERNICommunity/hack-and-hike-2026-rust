@@ -15,7 +15,9 @@
 //! so any serial terminal still shows them. The screen packets start and end
 //! with a `0x00` byte, which never occurs in the text. See
 //! [`hack_and_hike_core::screen`] for the format. The feed needs no
-//! application code: the display reports every pixel it sends.
+//! application code: the display reports every pixel it sends. An
+//! application that draws a lot can switch the copy of the panel off while
+//! nobody watches the feed: see [`mirror_only_when_watched`].
 //!
 //! - `serial`: the text queue, the packet channel and the USB tasks.
 //! - `mirror`: the copy of the panel in PSRAM and the packet encoder.
@@ -48,6 +50,7 @@ use hack_and_hike_core::lines::LineHistory;
 use crate::board::psram;
 
 pub use hack_and_hike_core::lines::{LINE_BYTES, LINES, Line};
+pub use mirror::{only_when_watched as mirror_only_when_watched, refreshes as mirror_refreshes};
 
 /// Longest record printed in full on the serial port.
 const RECORD_BYTES: usize = 512;

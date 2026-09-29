@@ -22,8 +22,19 @@
 //!
 //! The transport reports every batch to the screen mirror in `logging`,
 //! right before it sends the batch. So the live screen feed over USB sees
-//! every pixel that reaches the panel, whoever drew it.
+//! every pixel that reaches the panel, whoever drew it, unless the caller
+//! drew without the mirror (`Surface::without_mirror`).
+//!
+//! # Waiting without the CPU
+//!
+//! [`Transport::render`] keeps the CPU while the bytes leave the bus: it
+//! calls the source's callback again and again until the batch is gone.
+//! [`Transport::render_async`] gives the CPU away instead: it sleeps for
+//! the time the batch takes. A task on an interrupt executor that draws
+//! this way lets the task it interrupted go on during the transfer, which
+//! is most of the time of a drawing.
 
+use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::primitives::Rectangle;
 use embedded_hal::spi::SpiBus as _;
 use esp_hal::{
@@ -55,6 +66,14 @@ const BATCH_LINES: usize = 7;
 const BATCH_BYTES: usize = WIDTH * BYTES_PER_PIXEL * BATCH_LINES;
 /// Size of the DMA buffers that `mipidsi` uses for the setup commands.
 const CONTROL_DMA_BYTES: usize = 256;
+/// How long [`Transport::render_async`] sleeps between two looks at a
+/// batch that should have left the bus already.
+const LATE_BATCH_POLL: Duration = Duration::from_micros(100);
+
+/// How long `bytes` take on the bus.
+fn time_on_bus(bytes: usize) -> Duration {
+    Duration::from_micros((bytes * 8) as u64 / u64::from(SPI_MHZ))
+}
 
 // MIPI DCS commands that are used after the setup.
 /// Set the first and last column of the drawing window.
@@ -95,6 +114,8 @@ enum Pipeline {
         /// The buffer that is not being sent. The CPU fills it with the next
         /// batch.
         free: DmaTxBuf,
+        /// When the batch has left the bus, by its length.
+        done_at: Instant,
     },
 }
 
@@ -108,7 +129,7 @@ impl Pipeline {
     fn drain(self, mut while_transferring: impl FnMut()) -> (DisplaySpiDma, DmaTxBuf, DmaTxBuf) {
         match self {
             Self::Idle { spi, free, spare } => (spi, free, spare),
-            Self::InFlight { transfer, free } => {
+            Self::InFlight { transfer, free, .. } => {
                 // A busy wait on purpose. A full batch takes only about 1 ms
                 // at 40 MHz, and the callback does useful work during it.
                 while !transfer.is_done() {
@@ -185,7 +206,12 @@ impl Transport {
     ///
     /// When a corner of `area` has a negative coordinate, or an SPI command
     /// or a DMA transfer fails.
-    pub(super) fn render(&mut self, area: Rectangle, source: &mut impl ScanlineSource) {
+    pub(super) fn render(
+        &mut self,
+        area: Rectangle,
+        mirrored: bool,
+        source: &mut impl ScanlineSource,
+    ) {
         let Some(bottom_right) = area.bottom_right() else {
             return;
         };
@@ -206,16 +232,108 @@ impl Transport {
             {
                 source.fill_row(first_row + offset, row);
             }
-            crate::logging::mirror::record(
-                area.top_left.x as usize,
-                area.top_left.y as usize + first_row,
-                width,
-                rows,
-                &buffer[..rows * row_bytes],
-            );
+            if mirrored {
+                crate::logging::mirror::record(
+                    area.top_left.x as usize,
+                    area.top_left.y as usize + first_row,
+                    width,
+                    rows,
+                    &buffer[..rows * row_bytes],
+                );
+            }
             self.send(rows * row_bytes, || source.while_transferring());
         }
         self.finish(|| source.while_transferring());
+    }
+
+    /// [`Transport::render`] for a task that can wait: the same picture on
+    /// the panel, but while a batch is on the bus this function sleeps and
+    /// the CPU does other work. It calls the source's `while_transferring`
+    /// once per batch and once before each sleep, not again and again.
+    ///
+    /// A narrow area goes out in batches of more rows than
+    /// [`BATCH_LINES`], as many as fit the buffer, so the task wakes up
+    /// less often.
+    ///
+    /// When the caller drops the future before it is done, the panel keeps
+    /// the rows it has got, and the next drawing starts a new window.
+    ///
+    /// # Panics
+    ///
+    /// When a corner of `area` has a negative coordinate, or an SPI command
+    /// or a DMA transfer fails.
+    pub(super) async fn render_async(
+        &mut self,
+        area: Rectangle,
+        mirrored: bool,
+        source: &mut impl ScanlineSource,
+    ) {
+        let Some(bottom_right) = area.bottom_right() else {
+            return;
+        };
+        let width = area.size.width as usize;
+        let height = area.size.height as usize;
+        let row_bytes = width * BYTES_PER_PIXEL;
+        let batch_rows = (BATCH_BYTES / row_bytes).max(1);
+
+        self.until_idle(|| source.while_transferring()).await;
+        self.begin_window(
+            [area.top_left.x, area.top_left.y].map(panel_coordinate),
+            [bottom_right.x, bottom_right.y].map(panel_coordinate),
+        );
+        for first_row in (0..height).step_by(batch_rows) {
+            let rows = (height - first_row).min(batch_rows);
+            let buffer = self.prepare();
+            for (offset, row) in buffer[..rows * row_bytes]
+                .chunks_exact_mut(row_bytes)
+                .enumerate()
+            {
+                source.fill_row(first_row + offset, row);
+            }
+            if mirrored {
+                crate::logging::mirror::record(
+                    area.top_left.x as usize,
+                    area.top_left.y as usize + first_row,
+                    width,
+                    rows,
+                    &buffer[..rows * row_bytes],
+                );
+            }
+            // At least once per batch, also when the rows took longer to
+            // fill than the batch before them took on the bus.
+            if !self.until_idle(|| source.while_transferring()).await {
+                source.while_transferring();
+            }
+            // The bus is free, so this starts the batch at once.
+            self.send(rows * row_bytes, || {});
+        }
+        self.until_idle(|| source.while_transferring()).await;
+        self.finish(|| {});
+    }
+
+    /// Sleep until no batch is on the bus. Call `while_transferring` once
+    /// before each sleep. Returns whether it slept.
+    ///
+    /// The pipeline stays in its place during the sleep, so nothing is
+    /// lost when the caller drops the future.
+    async fn until_idle(&mut self, mut while_transferring: impl FnMut()) -> bool {
+        let mut slept = false;
+        loop {
+            let done_at = match self.pipeline.as_ref() {
+                Some(Pipeline::InFlight {
+                    transfer, done_at, ..
+                }) if !transfer.is_done() => *done_at,
+                _ => return slept,
+            };
+            slept = true;
+            while_transferring();
+            let now = Instant::now();
+            if done_at > now {
+                Timer::at(done_at).await;
+            } else {
+                Timer::after(LATE_BATCH_POLL).await;
+            }
+        }
     }
 
     /// Take the pipeline out of `self.pipeline`. Every caller puts it back
@@ -318,7 +436,11 @@ impl Transport {
             Ok(transfer) => transfer,
             Err((error, _, _)) => panic!("LCD pixel DMA start failed: {:?}", error),
         };
-        self.pipeline = Some(Pipeline::InFlight { transfer, free });
+        self.pipeline = Some(Pipeline::InFlight {
+            transfer,
+            free,
+            done_at: Instant::now() + time_on_bus(byte_len),
+        });
     }
 
     /// Wait until the last batch of the current window has reached the panel,

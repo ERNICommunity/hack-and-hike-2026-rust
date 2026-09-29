@@ -15,8 +15,8 @@
 //!
 //! The copy is a valid FKB1 file of the same size: every entry keeps its
 //! name, type, shape and place, and a packed tensor's layout string gets
-//! the suffix [`PACKED_SUFFIX`] (`OI/8`, `OHWI/8`). [`BlobWeights`] reports
-//! the suffix through [`Weights::packed`], and the kernels index the
+//! the suffix [`PACKED_SUFFIX`] (`OI/8`, `OHWI/8`). [`BlobWeights`](super::BlobWeights) reports
+//! the suffix through [`Weights::packed`](super::Weights::packed), and the kernels index the
 //! weights accordingly.
 
 use crate::blob::{Blob, DataType, ENTRY_LEN, Entry, HEADER_LEN, LAYOUT_LEN};

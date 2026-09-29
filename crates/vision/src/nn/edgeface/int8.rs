@@ -16,14 +16,27 @@
 //!   from the file (`q.<name>`) or fixed (the hidden tensor: units of
 //!   `2^-10`, since GELU runs from a table in those units).
 //! - Weights are `i8`, packed by eight output channels
-//!   ([`pack`](super::super::pack)); the file's LayerNorm scale and shift
+//!   ([`pack`]); the file's LayerNorm scale and shift
 //!   are folded into the layer that follows, so the LayerNorm here only
-//!   standardizes.
+//!   standardizes. The stem's and stages 0 and 1's are also kept as
+//!   `i16` in the compiled model (`WIDE_STAGES`): the same values,
+//!   a shorter inner loop.
 //! - The attention's matrix products are exact integer dot products; its
 //!   softmax is `f32` on `per_head x per_head` values.
 //!
 //! The computer runs the same integer arithmetic in scalar code, bit for
 //! bit, so `facekit` measures what the board computes.
+//!
+//! # Compile once, run many times
+//!
+//! Finding a tensor by its name walks the file's table of contents, and
+//! the plan of a group of eight channels takes some forty divisions
+//! (software routines on the board). One pass needs 277 tensors and 1,004
+//! plans, and none of them depends on the image. So [`Model::compile`]
+//! looks every tensor up and makes every plan once, into memory the
+//! caller lends ([`ModelStorage`]), and [`Model::forward`] only computes.
+//! The numbers are the same as when every pass made its own plans: the
+//! same functions make them, from the same values.
 //!
 //! # Names in the weights file
 //!
@@ -49,7 +62,8 @@
 
 use super::{
     BlockName, EMBEDDING_LEN, HEADS, INPUT_SIZE, LAYER_NORM_EPSILON, MAX_ACTIVATION,
-    NORMALIZE_EPSILON, Name, STAGE_CONV_BLOCKS, STAGE_KERNELS, STAGE_SPLIT_CONVS, weight,
+    NORMALIZE_EPSILON, Name, STAGE_CHANNELS, STAGE_CONV_BLOCKS, STAGE_KERNELS, STAGE_SPLIT_CONVS,
+    weight,
 };
 use crate::nn::{
     Shape, Weights,
@@ -84,21 +98,42 @@ const MAX_HEAD_TOKENS: usize = 12 * 200;
 const MAX_CHAIN: usize = 196 * 32;
 /// The most groups of eight output channels of one layer: `fc1` of
 /// stage 3, 672 outputs.
-pub const MAX_GROUPS: usize = 672 / LANES;
-/// The most LayerNorm groups: 168 channels.
-pub const MAX_NORM_GROUPS: usize = MAX_CHANNELS / LANES;
+const MAX_GROUPS: usize = 672 / LANES;
 /// The stem's input channels.
 const STEM_CHANNELS: usize = 3;
 /// The stem's input channels once padded for the vector unit.
 const STEM_PADDED: usize = 8;
 /// The stem's kernel (and stride).
 const STEM_KERNEL: usize = 4;
+/// The stem's taps: the pixels one output reads.
+const STEM_TAPS: usize = STEM_KERNEL * STEM_KERNEL;
 /// The stem's output channels.
 const STEM_FILTERS: usize = 24;
+/// The stem's weights once padded to [`STEM_PADDED`] channels.
+const STEM_WEIGHTS: usize = STEM_FILTERS * STEM_TAPS * STEM_PADDED;
 /// The largest attention matrix: 42 x 42 in stage 3.
 const MAX_ATTENTION: usize = MAX_PER_HEAD * MAX_PER_HEAD;
+/// The most ConvBlocks of one stage.
+const MAX_CONV_BLOCKS: usize = 5;
+/// The most split convolutions of one SplitTransposeBlock.
+const MAX_SPLIT_CONVS: usize = 3;
+/// The taps of a split convolution: 3 x 3.
+const SPLIT_TAPS: usize = 9;
+/// The positional encoding of stage 1: 14 x 14 tokens of 48 channels.
+const POSITIONAL_LEN: usize = 14 * 14 * 48;
+/// Every piece of a model's `i8` storage starts on a multiple of this, so
+/// the vector unit's loads find it aligned.
+const PIECE_ALIGN: usize = 16;
+/// The stages whose linear and convolution weights the model also keeps
+/// as `i16` (with the stem's): 0 and 1. The kernels then skip the
+/// widening of every weight, which is most of their inner loop; these
+/// weights are small (123 KB as `i16`) and each runs over 196 or 784
+/// pixels, the later stages' are larger and run over 49 or 9.
+const WIDE_STAGES: usize = 2;
 
-/// The `i16` scratch one forward pass needs, in values.
+/// The `i16` scratch one forward pass needs, in values. It includes the
+/// widest MLP hidden tensor (`MAX_HIDDEN`, 147 KB), which goes unused when
+/// [`Scratch::with_hidden`] lends a strip instead.
 pub const SCRATCH_I16_LEN: usize = 4 * MAX_ACTIVATION
     + MAX_HIDDEN
     + MAX_QKV
@@ -108,10 +143,191 @@ pub const SCRATCH_I16_LEN: usize = 4 * MAX_ACTIVATION
 /// The `f32` scratch one forward pass needs, in values: the attention
 /// matrix and, when tracing, a dequantized copy of a block's output.
 pub const SCRATCH_F32_LEN: usize = MAX_ATTENTION + MAX_ACTIVATION;
-/// The group plans one forward pass needs.
-pub const SCRATCH_PLANS: usize = MAX_GROUPS;
-/// The LayerNorm plans one forward pass needs.
-pub const SCRATCH_NORM_PLANS: usize = MAX_NORM_GROUPS;
+
+/// What a compiled model needs of each kind of storage.
+struct Needs {
+    /// Group plans.
+    plans: usize,
+    /// LayerNorm plans.
+    norm_plans: usize,
+    /// Bytes of padded weights.
+    weights: usize,
+    /// `i16` weights of the wide layers.
+    wide: usize,
+}
+
+/// A split-convolution chunk of `stage`, padded to a multiple of eight
+/// channels.
+const fn padded_chunk(stage: usize) -> usize {
+    let chunk = STAGE_CHANNELS[stage].div_ceil(STAGE_SPLIT_CONVS[stage - 1] + 1);
+    chunk.div_ceil(LANES) * LANES
+}
+
+/// Count what [`Model::compile`] takes from its storage, layer by layer
+/// in the order of the graph.
+const fn needs() -> Needs {
+    // The stem and the head.
+    let mut plans = STEM_FILTERS / LANES + EMBEDDING_LEN / LANES;
+    let mut norm_plans = STEM_FILTERS / LANES + STAGE_CHANNELS[3] / LANES;
+    let mut weights = STEM_WEIGHTS.div_ceil(PIECE_ALIGN) * PIECE_ALIGN;
+    let mut wide = STEM_WEIGHTS;
+    let mut stage = 0;
+    while stage < STAGE_CHANNELS.len() {
+        let groups = STAGE_CHANNELS[stage] / LANES;
+        if stage < WIDE_STAGES {
+            // `fc1` and `fc2` of each ConvBlock; the downsample, `qkv`,
+            // the projection and the MLP of the SplitTransposeBlock.
+            let c = STAGE_CHANNELS[stage];
+            wide += STAGE_CONV_BLOCKS[stage] * 2 * 4 * c * c;
+            if stage > 0 {
+                wide += 4 * STAGE_CHANNELS[stage - 1] * c + (3 + 1 + 2 * 4) * c * c;
+            }
+        }
+        // A ConvBlock: the depthwise convolution, `fc1` (four times as
+        // wide) and `fc2`, and one LayerNorm.
+        plans += STAGE_CONV_BLOCKS[stage] * (1 + 4 + 1) * groups;
+        norm_plans += STAGE_CONV_BLOCKS[stage] * groups;
+        if stage > 0 {
+            // The downsample: a LayerNorm of the stage before, one
+            // convolution.
+            plans += groups;
+            norm_plans += STAGE_CHANNELS[stage - 1] / LANES;
+            // The SplitTransposeBlock: the split convolutions, `qkv`
+            // (three times as wide), the projection, `fc1` and `fc2`, and
+            // two LayerNorms.
+            let convs = STAGE_SPLIT_CONVS[stage - 1];
+            let padded = padded_chunk(stage);
+            plans += convs * padded / LANES + (3 + 1 + 4 + 1) * groups;
+            norm_plans += 2 * groups;
+            weights += convs * (SPLIT_TAPS * padded).div_ceil(PIECE_ALIGN) * PIECE_ALIGN;
+        }
+        stage += 1;
+    }
+    Needs {
+        plans,
+        norm_plans,
+        weights,
+        wide,
+    }
+}
+
+/// The group plans a compiled model holds: 1,004.
+pub const MODEL_PLANS: usize = needs().plans;
+/// The LayerNorm plans a compiled model holds: 208.
+pub const MODEL_NORM_PLANS: usize = needs().norm_plans;
+/// The bytes of padded weights a compiled model holds: the stem's and
+/// the split convolutions'.
+pub const MODEL_WEIGHTS_LEN: usize = needs().weights;
+/// The `i16` constants a compiled model holds: the positional encoding
+/// of stage 1 in the mapping of its tokens.
+pub const MODEL_CONSTANTS_LEN: usize = POSITIONAL_LEN;
+/// The `i16` weights a compiled model holds: the stem's and those of
+/// stages 0 and 1, widened (62,976 values).
+pub const MODEL_WIDE_LEN: usize = needs().wide;
+
+/// The memory of a compiled model, lent by the caller for as long as the
+/// model lives. The board keeps it in PSRAM.
+pub struct ModelStorage<'m> {
+    /// [`MODEL_PLANS`] group plans, with any values.
+    pub plans: &'m mut [GroupPlan],
+    /// [`MODEL_NORM_PLANS`] LayerNorm plans, with any values.
+    pub norm_plans: &'m mut [NormPlan],
+    /// [`MODEL_WEIGHTS_LEN`] bytes on a 16-byte boundary.
+    pub weights: &'m mut [i8],
+    /// [`MODEL_CONSTANTS_LEN`] values on a 16-byte boundary.
+    pub constants: &'m mut [i16],
+    /// [`MODEL_WIDE_LEN`] values on a 16-byte boundary.
+    pub wide: &'m mut [i16],
+}
+
+impl<'m> ModelStorage<'m> {
+    /// Check the lengths and the alignment.
+    ///
+    /// # Panics
+    ///
+    /// When a slice is too short or misaligned.
+    fn check(&self) {
+        assert!(self.plans.len() >= MODEL_PLANS, "EdgeFace model plans");
+        assert!(
+            self.norm_plans.len() >= MODEL_NORM_PLANS,
+            "EdgeFace model norm plans"
+        );
+        assert!(
+            self.weights.len() >= MODEL_WEIGHTS_LEN,
+            "EdgeFace model weights"
+        );
+        assert!(
+            self.constants.len() >= MODEL_CONSTANTS_LEN,
+            "EdgeFace model constants"
+        );
+        assert!(self.wide.len() >= MODEL_WIDE_LEN, "EdgeFace model wide");
+        assert!(
+            simd::aligned16(self.weights)
+                && simd::aligned16(self.constants)
+                && simd::aligned16(self.wide),
+            "EdgeFace model storage alignment"
+        );
+    }
+
+    /// What is left of each kind of storage: plans, LayerNorm plans,
+    /// weight bytes, constants and wide weights.
+    fn lengths(&self) -> [usize; 5] {
+        [
+            self.plans.len(),
+            self.norm_plans.len(),
+            self.weights.len(),
+            self.constants.len(),
+            self.wide.len(),
+        ]
+    }
+
+    /// Cut `count` group plans off the front.
+    fn take_plans(&mut self, count: usize) -> &'m mut [GroupPlan] {
+        take(&mut self.plans, count)
+    }
+
+    /// Cut `count` LayerNorm plans off the front.
+    fn take_norm_plans(&mut self, count: usize) -> &'m mut [NormPlan] {
+        take(&mut self.norm_plans, count)
+    }
+
+    /// Cut `len` bytes off the front, and what is left up to the next
+    /// 16-byte boundary with them, so the next piece is aligned too.
+    fn take_weights(&mut self, len: usize) -> &'m mut [i8] {
+        let piece = take(&mut self.weights, len.div_ceil(PIECE_ALIGN) * PIECE_ALIGN);
+        &mut piece[..len]
+    }
+
+    /// Cut `len` values off the front.
+    fn take_constants(&mut self, len: usize) -> &'m mut [i16] {
+        take(&mut self.constants, len)
+    }
+
+    /// Cut off room for `narrow` widened to `i16` and fill it. Every wide
+    /// weight is a multiple of eight values long, so the next one starts
+    /// on a 16-byte boundary too.
+    fn take_wide(&mut self, narrow: &[i8]) -> &'m [i16] {
+        debug_assert!(narrow.len().is_multiple_of(LANES));
+        let wide = take(&mut self.wide, narrow.len());
+        for (w, &n) in wide.iter_mut().zip(narrow) {
+            *w = i16::from(n);
+        }
+        wide
+    }
+}
+
+/// Cut the first `len` values off `rest`.
+///
+/// # Panics
+///
+/// When `rest` is shorter: the counts of [`needs`] and of
+/// [`Model::compile`] disagree.
+fn take<'a, T>(rest: &mut &'a mut [T], len: usize) -> &'a mut [T] {
+    assert!(len <= rest.len(), "EdgeFace model storage used up");
+    let (front, back) = core::mem::take(rest).split_at_mut(len);
+    *rest = back;
+    front
+}
 
 /// The working buffers of a forward pass, borrowed from the caller. The
 /// `i16` slice must start on a 16-byte boundary.
@@ -124,7 +340,7 @@ pub struct Scratch<'a> {
     b: &'a mut [i16],
     /// The token stream of a split-transpose block.
     tokens: &'a mut [i16],
-    /// The MLP hidden tensor.
+    /// The MLP hidden tensor, or a strip of it.
     hidden: &'a mut [i16],
     /// The packed queries, keys and values, token-major.
     qkv: &'a mut [i16],
@@ -136,10 +352,6 @@ pub struct Scratch<'a> {
     chain: (&'a mut [i16], &'a mut [i16]),
     /// The attention matrix of one head; a traced block's values.
     f32s: &'a mut [f32],
-    /// The group plans of the current layer.
-    plans: &'a mut [GroupPlan],
-    /// The LayerNorm plans of the current layer.
-    norm_plans: &'a mut [NormPlan],
 }
 
 impl<'a> Scratch<'a> {
@@ -148,20 +360,10 @@ impl<'a> Scratch<'a> {
     /// # Panics
     ///
     /// When a slice is too short or `i16s` is misaligned.
-    pub fn new(
-        i16s: &'a mut [i16],
-        f32s: &'a mut [f32],
-        plans: &'a mut [GroupPlan],
-        norm_plans: &'a mut [NormPlan],
-    ) -> Self {
+    pub fn new(i16s: &'a mut [i16], f32s: &'a mut [f32]) -> Self {
         assert!(i16s.len() >= SCRATCH_I16_LEN, "EdgeFace i16 scratch");
         assert!(simd::aligned16(i16s), "EdgeFace i16 scratch alignment");
         assert!(f32s.len() >= SCRATCH_F32_LEN, "EdgeFace f32 scratch");
-        assert!(plans.len() >= SCRATCH_PLANS, "EdgeFace plans");
-        assert!(
-            norm_plans.len() >= SCRATCH_NORM_PLANS,
-            "EdgeFace norm plans"
-        );
         let (x, rest) = i16s.split_at_mut(MAX_ACTIVATION);
         let (a, rest) = rest.split_at_mut(MAX_ACTIVATION);
         let (b, rest) = rest.split_at_mut(MAX_ACTIVATION);
@@ -183,11 +385,34 @@ impl<'a> Scratch<'a> {
             mixed,
             chain: (chain0, chain1),
             f32s,
-            plans,
-            norm_plans,
         }
     }
+
+    /// The same scratch with `hidden` for the MLP's hidden tensor: at
+    /// least [`MIN_HIDDEN_LEN`] values on a 16-byte boundary. A shorter
+    /// buffer than the widest tensor (`MAX_HIDDEN` values) is used for
+    /// strips of rows, one after the other, with the same results. The
+    /// board lends [`HIDDEN_STRIP_LEN`] values of internal RAM, where
+    /// the kernels write and read the tensor without going to PSRAM.
+    ///
+    /// # Panics
+    ///
+    /// When `hidden` is too short or misaligned.
+    pub fn with_hidden(self, hidden: &'a mut [i16]) -> Self {
+        assert!(hidden.len() >= MIN_HIDDEN_LEN, "EdgeFace hidden strip");
+        assert!(simd::aligned16(hidden), "EdgeFace hidden strip alignment");
+        Self { hidden, ..self }
+    }
 }
+
+/// The shortest buffer for [`Scratch::with_hidden`]: one row of the
+/// widest MLP (672 values), which also holds the embedding.
+pub const MIN_HIDDEN_LEN: usize = MAX_GROUPS * LANES;
+
+/// The strip of the MLP's hidden tensor the board keeps in internal RAM
+/// (36 KB): the whole tensor of stages 2 and 3, a third of stage 1's and a
+/// fifth of stage 0's.
+pub const HIDDEN_STRIP_LEN: usize = 18 * 1024;
 
 /// The step of the 16-bit mapping `q.<name>`.
 fn step(weights: &impl Weights, name: &str) -> f32 {
@@ -231,22 +456,25 @@ fn packed<'w>(weights: &'w impl Weights, prefix: &str, suffix: &str) -> Packed<'
 }
 
 /// The lane weight of a packed linear or convolution weight, with its
-/// plans made into `plans`: `in_step` the input's step, `out_step` the
+/// plans made into `storage`: `in_step` the input's step, `out_step` the
 /// output's, `gamma` an optional per-channel factor applied after the
 /// layer (a block's layer scale) with the layer's own output range
-/// before it, `per_output` the weights per output channel.
-fn lane_weight<'p>(
-    packed: &Packed<'p>,
+/// before it, `per_output` the weights per output channel, `wide` whether
+/// to keep an `i16` copy of the weights (`WIDE_STAGES`).
+#[allow(clippy::too_many_arguments)]
+fn lane_weight<'m>(
+    packed: &Packed<'m>,
     in_step: f32,
     out_step: f32,
     gamma: Option<(&[f32], f32)>,
     per_output: usize,
-    plans: &'p mut [GroupPlan],
-) -> LaneWeight<'p> {
+    wide: bool,
+    storage: &mut ModelStorage<'m>,
+) -> LaneWeight<'m> {
     let outputs = packed.scales.len();
     let groups = outputs / LANES;
     assert_eq!(groups * LANES, outputs, "a multiple of eight outputs");
-    let plans = &mut plans[..groups];
+    let plans = storage.take_plans(groups);
     match gamma {
         None => plan_groups(
             packed.scales,
@@ -278,61 +506,427 @@ fn lane_weight<'p>(
             }
         }
     }
+    let data = &packed.data[..outputs * per_output];
     LaneWeight {
-        data: packed.data,
+        data,
+        wide: wide.then(|| storage.take_wide(data)),
         per_output,
         plans,
     }
 }
 
-/// The plans of a plain standardization: gain 1, bias 0, into
-/// `out_step`.
-fn norm_plans(channels: usize, out_step: f32, plans: &mut [NormPlan]) -> &[NormPlan] {
-    let groups = channels / LANES;
-    let plans = &mut plans[..groups];
-    for plan in plans.iter_mut() {
-        *plan = NormPlan::new(&[1.0; LANES], &[0.0; LANES], &[out_step; LANES]);
+/// A LayerNorm: the step of the tensor it reads, and the plans that
+/// write the standardized values.
+#[derive(Clone, Copy)]
+struct Norm<'m> {
+    /// The step of the input.
+    input_step: f32,
+    /// One plan per eight channels.
+    plans: &'m [NormPlan],
+}
+
+impl<'m> Norm<'m> {
+    /// A plain standardization of `channels` values of step `input_step`
+    /// into `out_step`: gain 1, bias 0.
+    fn plain(
+        channels: usize,
+        input_step: f32,
+        out_step: f32,
+        storage: &mut ModelStorage<'m>,
+    ) -> Self {
+        let plans = storage.take_norm_plans(channels / LANES);
+        for plan in plans.iter_mut() {
+            *plan = NormPlan::new(&[1.0; LANES], &[0.0; LANES], &[out_step; LANES]);
+        }
+        Self { input_step, plans }
     }
-    plans
+
+    /// Standardize every row of `input` into `output`.
+    fn run(&self, input: &[i16], channels: usize, output: &mut [i16]) {
+        lanes::layer_norm(
+            input,
+            channels,
+            self.input_step,
+            LAYER_NORM_EPSILON,
+            self.plans,
+            output,
+        );
+    }
 }
 
-/// Run the recognizer on `input` (112x112x3, R, G, B, quantized with
-/// [`INPUT_QUANT`]) and write the 512 raw embedding values. `gelu` is the
-/// table built once by [`GeluTable::build`].
-///
-/// # Panics
-///
-/// When a buffer has the wrong size.
-pub fn forward(
-    weights: &impl Weights,
-    gelu: &GeluTable<'_>,
-    input: &[i8],
-    scratch: Scratch<'_>,
-    embedding: &mut [f32],
-) {
-    run(
-        weights,
-        gelu,
-        input,
-        scratch,
-        embedding,
-        None::<fn(&str, Shape, &[f32])>,
-    );
+/// The stem: Conv 4x4 stride 4, then LayerNorm with its own scale and
+/// shift.
+struct Stem<'m> {
+    /// The convolution, its weights padded to eight input channels.
+    conv: LaneWeight<'m>,
+    /// The LayerNorm into the stream of stage 0.
+    norm: Norm<'m>,
 }
 
-/// [`forward`], calling `trace` after every block like the `f32`
-/// version's `forward_traced`, with the same names and shapes (except the
-/// head's LayerNorm output, which is folded away), each dequantized.
-pub fn forward_traced(
-    weights: &impl Weights,
-    gelu: &GeluTable<'_>,
-    input: &[i8],
-    scratch: Scratch<'_>,
-    embedding: &mut [f32],
-    trace: impl FnMut(&str, Shape, &[f32]),
-) {
-    run(weights, gelu, input, scratch, embedding, Some(trace));
+/// An MLP: `fc1` with GELU, then `fc2` times the block's `gamma`, added
+/// to the stream.
+struct Mlp<'m> {
+    /// The first layer, into the GELU table's units.
+    fc1: LaneWeight<'m>,
+    /// The second layer, into the stream's mapping.
+    fc2: LaneWeight<'m>,
+    /// The channels of the input and of the stream.
+    channels: usize,
+    /// The width of the hidden tensor.
+    widened: usize,
 }
+
+/// A ConvBlock.
+struct ConvBlock<'m> {
+    /// The depthwise weights, `[tap][channel]`.
+    depthwise: &'m [i8],
+    /// The depthwise plans, from the stream's mapping into its own.
+    depthwise_plans: &'m [GroupPlan],
+    /// The depthwise kernel.
+    kernel: usize,
+    /// The LayerNorm of the depthwise output.
+    norm: Norm<'m>,
+    /// The MLP.
+    mlp: Mlp<'m>,
+}
+
+/// The downsample before a stage: LayerNorm, then Conv 2x2 stride 2.
+struct Downsample<'m> {
+    /// The LayerNorm of the stream of the stage before.
+    norm: Norm<'m>,
+    /// The convolution into the stream of this stage.
+    conv: LaneWeight<'m>,
+}
+
+/// One convolution of a split-convolution chain.
+#[derive(Clone, Copy)]
+struct SplitConv<'m> {
+    /// The weights, `[tap][channel]`, padded to a multiple of eight
+    /// channels.
+    weights: &'m [i8],
+    /// The plans, inside the chain's mapping.
+    plans: &'m [GroupPlan],
+}
+
+/// A factor and a shift that take a tensor from one mapping to another
+/// (`lanes::rescale_plan`).
+type Rescale = (i16, u32);
+
+/// A SplitTransposeBlock.
+struct AttentionBlock<'m> {
+    /// The split convolutions, in order.
+    convs: [Option<SplitConv<'m>>; MAX_SPLIT_CONVS],
+    /// The channels of one chunk of the stream.
+    chunk: usize,
+    /// A chunk padded to a multiple of eight channels.
+    padded: usize,
+    /// The step of the chain's mapping.
+    chain_step: f32,
+    /// The step of the tokens' mapping.
+    tokens_step: f32,
+    /// From the stream's mapping to the chain's.
+    to_chain: Rescale,
+    /// From the chain's mapping to the tokens'.
+    to_tokens: Rescale,
+    /// From the stream's mapping to the tokens'.
+    stream_to_tokens: Rescale,
+    /// The positional encoding in the tokens' mapping (stage 1 only).
+    positional: Option<&'m [i16]>,
+    /// The LayerNorm before the attention.
+    norm_xca: Norm<'m>,
+    /// The layer that makes the queries, keys and values.
+    qkv: LaneWeight<'m>,
+    /// The step of the queries, keys and values.
+    qkv_step: f32,
+    /// The step of the attention's output.
+    mixed_step: f32,
+    /// The temperature of each head.
+    temperature: &'m [f32],
+    /// The projection, times `gamma_xca`, added to the tokens.
+    proj: LaneWeight<'m>,
+    /// The LayerNorm before the MLP.
+    norm: Norm<'m>,
+    /// The MLP.
+    mlp: Mlp<'m>,
+}
+
+/// One stage.
+struct Stage<'m> {
+    /// The step of the residual stream inside the stage.
+    stream_step: f32,
+    /// The downsample before the stage; stage 0 has none.
+    downsample: Option<Downsample<'m>>,
+    /// The ConvBlocks, in order.
+    blocks: [Option<ConvBlock<'m>>; MAX_CONV_BLOCKS],
+    /// The SplitTransposeBlock after them; stage 0 has none.
+    attention: Option<AttentionBlock<'m>>,
+}
+
+/// The head: the mean over the pixels, LayerNorm, the folded linear
+/// layer.
+struct Head<'m> {
+    /// The LayerNorm of the pooled vector.
+    norm: Norm<'m>,
+    /// The linear layer.
+    fc: LaneWeight<'m>,
+    /// The step of the embedding.
+    embedding_step: f32,
+}
+
+/// EdgeFace-XXS with every tensor found and every plan made: what
+/// [`Model::forward`] needs besides the image.
+///
+/// Compile it once, when the application starts, and keep it. It borrows
+/// the weights and the storage, so both must live as long as it does.
+pub struct Model<'m> {
+    /// The stem.
+    stem: Stem<'m>,
+    /// The four stages.
+    stages: [Stage<'m>; 4],
+    /// The head.
+    head: Head<'m>,
+}
+
+impl<'m> Model<'m> {
+    /// Look up every tensor of `weights` and make every plan, into
+    /// `storage`.
+    ///
+    /// # Panics
+    ///
+    /// When a tensor is missing, a linear or convolution weight is not
+    /// packed by eight channels (`nn::pack`), or `storage` is too small
+    /// or misaligned.
+    pub fn compile(weights: &'m impl Weights, mut storage: ModelStorage<'m>) -> Self {
+        storage.check();
+        let lent = storage.lengths();
+        let stem = compile_stem(weights, &mut storage);
+        let mut stream_step = step(weights, "stages.0.stream");
+        let stages = core::array::from_fn(|stage| {
+            let mut downsample = None;
+            if stage > 0 {
+                let name = BlockName::downsample(stage);
+                let next_step = step(weights, BlockName::stream(stage).as_str());
+                downsample = Some(compile_downsample(
+                    weights,
+                    name.as_str(),
+                    STAGE_CHANNELS[stage - 1],
+                    stream_step,
+                    next_step,
+                    stage < WIDE_STAGES,
+                    &mut storage,
+                ));
+                stream_step = next_step;
+            }
+            let blocks = core::array::from_fn(|block| {
+                (block < STAGE_CONV_BLOCKS[stage]).then(|| {
+                    compile_conv_block(
+                        weights,
+                        BlockName::block(stage, block).as_str(),
+                        STAGE_KERNELS[stage],
+                        STAGE_CHANNELS[stage],
+                        stream_step,
+                        stage < WIDE_STAGES,
+                        &mut storage,
+                    )
+                })
+            });
+            let attention = (stage > 0).then(|| {
+                compile_attention_block(
+                    weights,
+                    BlockName::block(stage, STAGE_CONV_BLOCKS[stage]).as_str(),
+                    STAGE_SPLIT_CONVS[stage - 1],
+                    stage == 1,
+                    Shape::new(
+                        STAGE_SIDES[stage],
+                        STAGE_SIDES[stage],
+                        STAGE_CHANNELS[stage],
+                    ),
+                    stream_step,
+                    stage < WIDE_STAGES,
+                    &mut storage,
+                )
+            });
+            Stage {
+                stream_step,
+                downsample,
+                blocks,
+                attention,
+            }
+        });
+        let head = compile_head(weights, STAGE_CHANNELS[3], stream_step, &mut storage);
+        let left = storage.lengths();
+        debug_assert_eq!(
+            core::array::from_fn::<usize, 5, _>(|kind| lent[kind] - left[kind]),
+            [
+                MODEL_PLANS,
+                MODEL_NORM_PLANS,
+                MODEL_WEIGHTS_LEN,
+                MODEL_CONSTANTS_LEN,
+                MODEL_WIDE_LEN
+            ],
+            "`needs` and Model::compile count different storage"
+        );
+        Self { stem, stages, head }
+    }
+
+    /// Run the recognizer on `input` (112x112x3, R, G, B, quantized with
+    /// [`INPUT_QUANT`]) and write the 512 raw embedding values. `gelu` is
+    /// the table built once by [`GeluTable::build`].
+    ///
+    /// # Panics
+    ///
+    /// When a buffer has the wrong size.
+    pub fn forward(
+        &self,
+        gelu: &GeluTable<'_>,
+        input: &[i8],
+        scratch: Scratch<'_>,
+        embedding: &mut [f32],
+    ) {
+        self.run(
+            gelu,
+            input,
+            scratch,
+            embedding,
+            None::<fn(&str, Shape, &[f32])>,
+        );
+    }
+
+    /// [`Model::forward`], calling `trace` after every block like the
+    /// `f32` version's `forward_traced`, with the same names and shapes
+    /// (except the head's LayerNorm output, which is folded away), each
+    /// dequantized.
+    pub fn forward_traced(
+        &self,
+        gelu: &GeluTable<'_>,
+        input: &[i8],
+        scratch: Scratch<'_>,
+        embedding: &mut [f32],
+        trace: impl FnMut(&str, Shape, &[f32]),
+    ) {
+        self.run(gelu, input, scratch, embedding, Some(trace));
+    }
+
+    /// The forward pass.
+    fn run(
+        &self,
+        gelu: &GeluTable<'_>,
+        input: &[i8],
+        mut scratch: Scratch<'_>,
+        embedding: &mut [f32],
+        mut trace: Option<impl FnMut(&str, Shape, &[f32])>,
+    ) {
+        assert_eq!(
+            input.len(),
+            INPUT_SIZE * INPUT_SIZE * STEM_CHANNELS,
+            "EdgeFace input"
+        );
+        assert!(
+            embedding.len() >= EMBEDDING_LEN,
+            "EdgeFace embedding buffer"
+        );
+        let f32s = core::mem::take(&mut scratch.f32s);
+        let (attention, trace_buffer) = f32s.split_at_mut(MAX_ATTENTION);
+
+        // Stem: Conv 4x4 stride 4 into `a`, then LayerNorm (with its own
+        // scale and shift) into the stream.
+        let mut shape = run_stem(&self.stem, input, scratch.a, scratch.b);
+        self.stem.norm.run(
+            &scratch.a[..shape.len()],
+            shape.channels,
+            &mut scratch.x[..shape.len()],
+        );
+        emit(
+            &mut trace,
+            trace_buffer,
+            "stem.1.Transpose_1",
+            shape,
+            scratch.x,
+            self.stages[0].stream_step,
+        );
+
+        for (index, stage) in self.stages.iter().enumerate() {
+            if let Some(downsample) = &stage.downsample {
+                shape = run_downsample(downsample, shape, &mut scratch);
+                emit(
+                    &mut trace,
+                    trace_buffer,
+                    Name::join(BlockName::downsample(index).as_str(), "1.Conv").as_str(),
+                    shape,
+                    scratch.x,
+                    stage.stream_step,
+                );
+            }
+            for (block, conv_block) in stage.blocks.iter().flatten().enumerate() {
+                run_conv_block(conv_block, gelu, shape, &mut scratch);
+                emit(
+                    &mut trace,
+                    trace_buffer,
+                    Name::join(BlockName::block(index, block).as_str(), "Add").as_str(),
+                    shape,
+                    scratch.x,
+                    stage.stream_step,
+                );
+            }
+            if let Some(block) = &stage.attention {
+                run_attention_block(
+                    block,
+                    gelu,
+                    BlockName::block(index, STAGE_CONV_BLOCKS[index]).as_str(),
+                    shape,
+                    stage.stream_step,
+                    &mut scratch,
+                    attention,
+                    &mut trace,
+                    trace_buffer,
+                );
+            }
+        }
+
+        // Head: mean over the pixels (exact), standardize, folded linear.
+        let stream_step = self.stages[3].stream_step;
+        let channels = shape.channels;
+        let pooled = &mut scratch.a[..channels];
+        {
+            let pixels = shape.pixels() as i64;
+            let mut sums = [0i64; MAX_CHANNELS];
+            for pixel in scratch.x[..shape.len()].chunks_exact(channels) {
+                for (sum, &v) in sums.iter_mut().zip(pixel) {
+                    *sum += i64::from(v);
+                }
+            }
+            for (q, &sum) in pooled.iter_mut().zip(&sums[..channels]) {
+                *q = model::sat16((2 * sum + pixels).div_euclid(2 * pixels));
+            }
+        }
+        emit(
+            &mut trace,
+            trace_buffer,
+            "head.global_pool.pool.GlobalAveragePool",
+            Shape::new(1, 1, channels),
+            pooled,
+            stream_step,
+        );
+        let normed = &mut scratch.b[..channels];
+        self.head.norm.run(pooled, channels, normed);
+        let out = &mut scratch.hidden[..EMBEDDING_LEN];
+        lanes::linear(normed, channels, &self.head.fc, Store::Write, out);
+        for (real, &q) in embedding[..EMBEDDING_LEN].iter_mut().zip(out.iter()) {
+            *real = f32::from(q) * self.head.embedding_step;
+        }
+        if let Some(trace) = &mut trace {
+            trace(
+                "embedding",
+                Shape::new(1, 1, EMBEDDING_LEN),
+                &embedding[..EMBEDDING_LEN],
+            );
+        }
+    }
+}
+
+/// The rows (and columns) of the map of each stage: 112 / 4, then halved
+/// by each downsample (rounded down).
+const STAGE_SIDES: [usize; 4] = [28, 14, 7, 3];
 
 /// Dequantize `data` (step `step`) into the trace buffer and hand it to
 /// `trace`, if there is one.
@@ -354,231 +948,78 @@ fn emit(
     trace(name, shape, values);
 }
 
-/// The forward pass.
-fn run(
-    weights: &impl Weights,
-    gelu: &GeluTable<'_>,
-    input: &[i8],
-    mut scratch: Scratch<'_>,
-    embedding: &mut [f32],
-    mut trace: Option<impl FnMut(&str, Shape, &[f32])>,
-) {
+/// The stem's convolution with its weights padded to eight input
+/// channels and packed, and its LayerNorm, which has its own scale and
+/// shift.
+fn compile_stem<'m>(weights: &'m impl Weights, storage: &mut ModelStorage<'m>) -> Stem<'m> {
+    let narrow = weights.get_i8("stem.0.weight");
+    let narrow_packed = weights.packed("stem.0.weight");
     assert_eq!(
-        input.len(),
-        INPUT_SIZE * INPUT_SIZE * STEM_CHANNELS,
-        "EdgeFace input"
+        narrow.len(),
+        STEM_FILTERS * STEM_TAPS * STEM_CHANNELS,
+        "stem weight"
     );
-    assert!(
-        embedding.len() >= EMBEDDING_LEN,
-        "EdgeFace embedding buffer"
-    );
-    let f32s = core::mem::take(&mut scratch.f32s);
-    let (attention, trace_buffer) = f32s.split_at_mut(MAX_ATTENTION);
-
-    // Stem: Conv 4x4 stride 4 into `a`, then LayerNorm (with its own
-    // scale and shift) into the stream.
-    let mut stream_step = step(weights, "stages.0.stream");
-    let mut shape = stem(weights, input, scratch.a, scratch.b, scratch.plans);
-    {
-        let plans = &mut scratch.norm_plans[..STEM_FILTERS / LANES];
-        let gain = weights.get("stem.1.weight");
-        let bias = weights.get("stem.1.bias");
-        for (g, plan) in plans.iter_mut().enumerate() {
-            let mut gains = [0.0f32; LANES];
-            let mut biases = [0.0f32; LANES];
-            for j in 0..LANES {
-                gains[j] = gain[g * LANES + j];
-                biases[j] = bias[g * LANES + j];
-            }
-            *plan = NormPlan::new(&gains, &biases, &[stream_step; LANES]);
+    let at = |o: usize, k: usize| {
+        if narrow_packed {
+            narrow[pack::packed_index(o, k, STEM_TAPS * STEM_CHANNELS)]
+        } else {
+            narrow[o * STEM_TAPS * STEM_CHANNELS + k]
         }
-        lanes::layer_norm(
-            &scratch.a[..shape.len()],
-            shape.channels,
-            step(weights, "stem.0"),
-            LAYER_NORM_EPSILON,
-            plans,
-            &mut scratch.x[..shape.len()],
-        );
-    }
-    emit(
-        &mut trace,
-        trace_buffer,
-        "stem.1.Transpose_1",
-        shape,
-        scratch.x,
-        stream_step,
-    );
-
-    for stage in 0..4 {
-        if stage > 0 {
-            let name = BlockName::downsample(stage);
-            let next_step = step(weights, BlockName::stream(stage).as_str());
-            shape = downsample(
-                weights,
-                name.as_str(),
-                shape,
-                stream_step,
-                next_step,
-                &mut scratch,
-            );
-            stream_step = next_step;
-            emit(
-                &mut trace,
-                trace_buffer,
-                Name::join(name.as_str(), "1.Conv").as_str(),
-                shape,
-                scratch.x,
-                stream_step,
-            );
-        }
-        for block in 0..STAGE_CONV_BLOCKS[stage] {
-            let name = BlockName::block(stage, block);
-            conv_block(
-                weights,
-                gelu,
-                name.as_str(),
-                STAGE_KERNELS[stage],
-                shape,
-                stream_step,
-                &mut scratch,
-            );
-            emit(
-                &mut trace,
-                trace_buffer,
-                Name::join(name.as_str(), "Add").as_str(),
-                shape,
-                scratch.x,
-                stream_step,
-            );
-        }
-        if stage > 0 {
-            let name = BlockName::block(stage, STAGE_CONV_BLOCKS[stage]);
-            split_transpose_block(
-                weights,
-                gelu,
-                name.as_str(),
-                STAGE_SPLIT_CONVS[stage - 1],
-                stage == 1,
-                shape,
-                stream_step,
-                &mut scratch,
-                attention,
-                &mut trace,
-                trace_buffer,
-            );
-        }
-    }
-
-    // Head: mean over the pixels (exact), standardize, folded linear.
-    let channels = shape.channels;
-    let pooled = &mut scratch.a[..channels];
-    {
-        let pixels = shape.pixels() as i64;
-        let mut sums = [0i64; MAX_CHANNELS];
-        for pixel in scratch.x[..shape.len()].chunks_exact(channels) {
-            for (sum, &v) in sums.iter_mut().zip(pixel) {
-                *sum += i64::from(v);
+    };
+    // Padded rows, then packed.
+    let mut rows = [0i8; STEM_WEIGHTS];
+    for o in 0..STEM_FILTERS {
+        for tap in 0..STEM_TAPS {
+            for c in 0..STEM_CHANNELS {
+                rows[(o * STEM_TAPS + tap) * STEM_PADDED + c] = at(o, tap * STEM_CHANNELS + c);
             }
         }
-        for (q, &sum) in pooled.iter_mut().zip(&sums[..channels]) {
-            *q = model::sat16((2 * sum + pixels).div_euclid(2 * pixels));
+    }
+    let packed_rows = storage.take_weights(STEM_WEIGHTS);
+    lanes::pack_weight(&rows, STEM_FILTERS, STEM_TAPS * STEM_PADDED, packed_rows);
+    let conv_step = step(weights, "stem.0");
+    let plans = storage.take_plans(STEM_FILTERS / LANES);
+    plan_groups(
+        weights.get("stem.0.scales"),
+        weights.get("stem.0.bias"),
+        INPUT_QUANT.scale,
+        conv_step,
+        STEM_TAPS * STEM_PADDED,
+        plans,
+    );
+    let conv = LaneWeight {
+        data: packed_rows,
+        wide: Some(storage.take_wide(packed_rows)),
+        per_output: STEM_TAPS * STEM_PADDED,
+        plans,
+    };
+
+    let stream_step = step(weights, "stages.0.stream");
+    let norm_plans = storage.take_norm_plans(STEM_FILTERS / LANES);
+    let gain = weights.get("stem.1.weight");
+    let bias = weights.get("stem.1.bias");
+    for (g, plan) in norm_plans.iter_mut().enumerate() {
+        let mut gains = [0.0f32; LANES];
+        let mut biases = [0.0f32; LANES];
+        for j in 0..LANES {
+            gains[j] = gain[g * LANES + j];
+            biases[j] = bias[g * LANES + j];
         }
+        *plan = NormPlan::new(&gains, &biases, &[stream_step; LANES]);
     }
-    emit(
-        &mut trace,
-        trace_buffer,
-        "head.global_pool.pool.GlobalAveragePool",
-        Shape::new(1, 1, channels),
-        pooled,
-        stream_step,
-    );
-    let norm_step = step(weights, "head.norm");
-    let normed = &mut scratch.b[..channels];
-    lanes::layer_norm(
-        pooled,
-        channels,
-        stream_step,
-        LAYER_NORM_EPSILON,
-        norm_plans(channels, norm_step, scratch.norm_plans),
-        normed,
-    );
-    let embedding_step = step(weights, "embedding");
-    let head = packed(weights, "head", "fc");
-    let head = lane_weight(
-        &head,
-        norm_step,
-        embedding_step,
-        None,
-        channels,
-        scratch.plans,
-    );
-    let out = &mut scratch.hidden[..EMBEDDING_LEN];
-    lanes::linear(normed, channels, &head, Store::Write, out);
-    for (real, &q) in embedding[..EMBEDDING_LEN].iter_mut().zip(out.iter()) {
-        *real = f32::from(q) * embedding_step;
-    }
-    if let Some(trace) = &mut trace {
-        trace(
-            "embedding",
-            Shape::new(1, 1, EMBEDDING_LEN),
-            &embedding[..EMBEDDING_LEN],
-        );
+    Stem {
+        conv,
+        norm: Norm {
+            input_step: conv_step,
+            plans: norm_plans,
+        },
     }
 }
 
 /// The stem convolution (4x4, stride 4, 3 -> 24 channels) into `out`, in
 /// the `stem.0` mapping: the input widened to eight `i16` channels four
-/// rows at a time (`band`), and the weights padded and packed to match.
-fn stem(
-    weights: &impl Weights,
-    input: &[i8],
-    out: &mut [i16],
-    band: &mut [i16],
-    plans: &mut [GroupPlan],
-) -> Shape {
-    const TAPS: usize = STEM_KERNEL * STEM_KERNEL;
-    let narrow = weights.get_i8("stem.0.weight");
-    let narrow_packed = weights.packed("stem.0.weight");
-    assert_eq!(
-        narrow.len(),
-        STEM_FILTERS * TAPS * STEM_CHANNELS,
-        "stem weight"
-    );
-    let at = |o: usize, k: usize| {
-        if narrow_packed {
-            narrow[pack::packed_index(o, k, TAPS * STEM_CHANNELS)]
-        } else {
-            narrow[o * TAPS * STEM_CHANNELS + k]
-        }
-    };
-    // Padded rows, then packed.
-    let mut rows = [0i8; STEM_FILTERS * TAPS * STEM_PADDED];
-    for o in 0..STEM_FILTERS {
-        for tap in 0..TAPS {
-            for c in 0..STEM_CHANNELS {
-                rows[(o * TAPS + tap) * STEM_PADDED + c] = at(o, tap * STEM_CHANNELS + c);
-            }
-        }
-    }
-    let mut packed_rows = simd::Aligned([0i8; STEM_FILTERS * TAPS * STEM_PADDED]);
-    lanes::pack_weight(&rows, STEM_FILTERS, TAPS * STEM_PADDED, &mut packed_rows.0);
-    let out_step = step(weights, "stem.0");
-    let plans = &mut plans[..STEM_FILTERS / LANES];
-    plan_groups(
-        weights.get("stem.0.scales"),
-        weights.get("stem.0.bias"),
-        INPUT_QUANT.scale,
-        out_step,
-        TAPS * STEM_PADDED,
-        plans,
-    );
-    let weight = LaneWeight {
-        data: &packed_rows.0,
-        per_output: TAPS * STEM_PADDED,
-        plans,
-    };
-
+/// rows at a time (`band`).
+fn run_stem(stem: &Stem<'_>, input: &[i8], out: &mut [i16], band: &mut [i16]) -> Shape {
     let shape = Shape::new(
         INPUT_SIZE / STEM_KERNEL,
         INPUT_SIZE / STEM_KERNEL,
@@ -601,7 +1042,7 @@ fn stem(
         let produced = lanes::conv2d(
             band,
             band_shape,
-            &weight,
+            &stem.conv,
             STEM_KERNEL,
             STEM_KERNEL,
             0,
@@ -613,128 +1054,140 @@ fn stem(
     shape
 }
 
-/// Standardize the stream, then Conv 2x2 stride 2 with the folded
-/// weights into the next stage's stream mapping. The result replaces
-/// `scratch.x`.
-fn downsample(
-    weights: &impl Weights,
+/// The downsample `prefix` from `channels` values of step `stream_step`
+/// into the next stage's stream mapping; `wide` as for [`lane_weight`].
+fn compile_downsample<'m>(
+    weights: &'m impl Weights,
     prefix: &str,
-    shape: Shape,
+    channels: usize,
     stream_step: f32,
     next_step: f32,
-    scratch: &mut Scratch<'_>,
-) -> Shape {
+    wide: bool,
+    storage: &mut ModelStorage<'m>,
+) -> Downsample<'m> {
     let norm_step = step_of(weights, prefix, "0");
-    let normed = &mut scratch.a[..shape.len()];
-    lanes::layer_norm(
-        &scratch.x[..shape.len()],
-        shape.channels,
-        stream_step,
-        LAYER_NORM_EPSILON,
-        norm_plans(shape.channels, norm_step, scratch.norm_plans),
-        normed,
-    );
+    let norm = Norm::plain(channels, stream_step, norm_step, storage);
     let conv = packed(weights, prefix, "1");
     let conv = lane_weight(
         &conv,
         norm_step,
         next_step,
         None,
-        4 * shape.channels,
-        scratch.plans,
+        4 * channels,
+        wide,
+        storage,
     );
-    lanes::conv2d(normed, shape, &conv, 2, 2, 0, Store::Write, scratch.x)
+    Downsample { norm, conv }
+}
+
+/// Standardize the stream, then Conv 2x2 stride 2 with the folded
+/// weights into the next stage's stream mapping. The result replaces
+/// `scratch.x`.
+fn run_downsample(downsample: &Downsample<'_>, shape: Shape, scratch: &mut Scratch<'_>) -> Shape {
+    let normed = &mut scratch.a[..shape.len()];
+    downsample
+        .norm
+        .run(&scratch.x[..shape.len()], shape.channels, normed);
+    lanes::conv2d(
+        normed,
+        shape,
+        &downsample.conv,
+        2,
+        2,
+        0,
+        Store::Write,
+        scratch.x,
+    )
+}
+
+/// The ConvBlock `prefix` of `channels` channels on a stream of step
+/// `stream_step`; `wide` as for [`lane_weight`].
+fn compile_conv_block<'m>(
+    weights: &'m impl Weights,
+    prefix: &str,
+    kernel: usize,
+    channels: usize,
+    stream_step: f32,
+    wide: bool,
+    storage: &mut ModelStorage<'m>,
+) -> ConvBlock<'m> {
+    // The depthwise convolution reads the stream and writes its own
+    // mapping.
+    let dw_step = step_of(weights, prefix, "conv_dw");
+    let dw = Name::join(prefix, "conv_dw");
+    let depthwise = weights.get_i8(Name::join(dw.as_str(), "weight").as_str());
+    let depthwise_plans = storage.take_plans(channels / LANES);
+    plan_channels(
+        weights.get(Name::join(dw.as_str(), "scales").as_str()),
+        weights.get(Name::join(dw.as_str(), "bias").as_str()),
+        &[stream_step],
+        dw_step,
+        kernel * kernel,
+        depthwise_plans,
+    );
+    let norm_step = step_of(weights, prefix, "norm");
+    let norm = Norm::plain(channels, dw_step, norm_step, storage);
+    let mlp = compile_mlp(weights, prefix, norm_step, stream_step, wide, storage);
+    ConvBlock {
+        depthwise,
+        depthwise_plans,
+        kernel,
+        norm,
+        mlp,
+    }
 }
 
 /// `x += gamma * fc2(gelu(fc1(norm(depthwise(x)))))`.
-#[allow(clippy::too_many_arguments)]
-fn conv_block(
-    weights: &impl Weights,
+fn run_conv_block(
+    block: &ConvBlock<'_>,
     gelu: &GeluTable<'_>,
-    prefix: &str,
-    kernel: usize,
     shape: Shape,
-    stream_step: f32,
     scratch: &mut Scratch<'_>,
 ) {
     let len = shape.len();
-    let channels = shape.channels;
     // The depthwise convolution reads the stream and writes `a` in its
     // own mapping.
-    let dw_step = step_of(weights, prefix, "conv_dw");
-    let dw = Name::join(prefix, "conv_dw");
-    let dw_weight = weights.get_i8(Name::join(dw.as_str(), "weight").as_str());
-    {
-        let plans = &mut scratch.plans[..channels / LANES];
-        plan_channels(
-            weights.get(Name::join(dw.as_str(), "scales").as_str()),
-            weights.get(Name::join(dw.as_str(), "bias").as_str()),
-            &[stream_step],
-            dw_step,
-            kernel * kernel,
-            plans,
-        );
-        lanes::depthwise(
-            &scratch.x[..len],
-            shape,
-            dw_weight,
-            plans,
-            kernel,
-            1,
-            kernel / 2,
-            Store::Write,
-            &mut scratch.a[..len],
-        );
-    }
-    // LayerNorm into `b`, then the MLP into the stream.
-    let norm_step = step_of(weights, prefix, "norm");
-    lanes::layer_norm(
-        &scratch.a[..len],
-        channels,
-        dw_step,
-        LAYER_NORM_EPSILON,
-        norm_plans(channels, norm_step, scratch.norm_plans),
-        &mut scratch.b[..len],
+    lanes::depthwise(
+        &scratch.x[..len],
+        shape,
+        block.depthwise,
+        block.depthwise_plans,
+        block.kernel,
+        1,
+        block.kernel / 2,
+        Store::Write,
+        &mut scratch.a[..len],
     );
-    mlp(
-        weights,
+    // LayerNorm into `b`, then the MLP into the stream.
+    block
+        .norm
+        .run(&scratch.a[..len], shape.channels, &mut scratch.b[..len]);
+    run_mlp(
+        &block.mlp,
         gelu,
-        prefix,
         &scratch.b[..len],
-        norm_step,
-        stream_step,
         &mut scratch.x[..len],
         scratch.hidden,
-        scratch.plans,
     );
 }
 
-/// `stream += gamma * fc2(gelu(fc1(normed)))`: `normed` is the
-/// standardized input (step `normed_step`) of the block `prefix`,
-/// `stream` the tensor the result is added to (step `stream_step`).
-#[allow(clippy::too_many_arguments)]
-fn mlp(
-    weights: &impl Weights,
-    gelu: &GeluTable<'_>,
+/// The MLP of the block `prefix`: its input is standardized with step
+/// `normed_step`, its result is added to a tensor of step `stream_step`;
+/// `wide` as for [`lane_weight`].
+fn compile_mlp<'m>(
+    weights: &'m impl Weights,
     prefix: &str,
-    normed: &[i16],
     normed_step: f32,
     stream_step: f32,
-    stream: &mut [i16],
-    hidden: &mut [i16],
-    plans: &mut [GroupPlan],
-) {
+    wide: bool,
+    storage: &mut ModelStorage<'m>,
+) -> Mlp<'m> {
     let fc1 = packed(weights, prefix, "mlp.fc1");
     let fc2 = packed(weights, prefix, "mlp.fc2");
     let channels = fc2.bias.len();
     let widened = fc1.bias.len();
-    let rows = normed.len() / channels;
     let gamma = weight(weights, prefix, "gamma");
-    let hidden = &mut hidden[..rows * widened];
-    {
-        let fc1 = lane_weight(&fc1, normed_step, GELU_STEP, None, channels, plans);
-        lanes::linear(normed, channels, &fc1, Store::Gelu(gelu), hidden);
-    }
+    let fc1 = lane_weight(&fc1, normed_step, GELU_STEP, None, channels, wide, storage);
     let fc2_range = step_of(weights, prefix, "mlp.fc2") * 32767.0;
     let fc2 = lane_weight(
         &fc2,
@@ -742,20 +1195,176 @@ fn mlp(
         stream_step,
         Some((gamma, fc2_range)),
         widened,
-        plans,
+        wide,
+        storage,
     );
-    lanes::linear(hidden, widened, &fc2, Store::Add, stream);
+    Mlp {
+        fc1,
+        fc2,
+        channels,
+        widened,
+    }
+}
+
+/// `stream += gamma * fc2(gelu(fc1(normed)))`: `normed` is the
+/// standardized input of the block, `stream` the tensor the result is
+/// added to. Each row is its own: when `hidden` cannot hold the whole
+/// hidden tensor, strips of rows of about equal size go through both
+/// layers one after the other.
+fn run_mlp(
+    mlp: &Mlp<'_>,
+    gelu: &GeluTable<'_>,
+    normed: &[i16],
+    stream: &mut [i16],
+    hidden: &mut [i16],
+) {
+    let rows = normed.len() / mlp.channels;
+    let strips = rows.div_ceil((hidden.len() / mlp.widened).max(1));
+    let strip_rows = rows.div_ceil(strips.max(1));
+    for (normed, stream) in normed
+        .chunks(strip_rows * mlp.channels)
+        .zip(stream.chunks_mut(strip_rows * mlp.channels))
+    {
+        let hidden = &mut hidden[..normed.len() / mlp.channels * mlp.widened];
+        lanes::linear(normed, mlp.channels, &mlp.fc1, Store::Gelu(gelu), hidden);
+        lanes::linear(hidden, mlp.widened, &mlp.fc2, Store::Add, stream);
+    }
+}
+
+/// The SplitTransposeBlock `prefix` on a stream of `shape` and step
+/// `stream_step`, `wide` as for [`lane_weight`]; see the `f32` version
+/// for the structure.
+#[allow(clippy::too_many_arguments)]
+fn compile_attention_block<'m>(
+    weights: &'m impl Weights,
+    prefix: &str,
+    convs: usize,
+    positional: bool,
+    shape: Shape,
+    stream_step: f32,
+    wide: bool,
+    storage: &mut ModelStorage<'m>,
+) -> AttentionBlock<'m> {
+    const CONV_NAMES: [&str; MAX_SPLIT_CONVS] = ["0", "1", "2"];
+    let channels = shape.channels;
+    let chunk = channels.div_ceil(convs + 1);
+    let padded = chunk.div_ceil(LANES) * LANES;
+    let tokens_step = step_of(weights, prefix, "tokens");
+
+    // The chain, in one mapping wide enough for every sum and
+    // convolution output in it, padded to a multiple of eight channels.
+    let mut chain_step = stream_step;
+    for name in &CONV_NAMES[..convs] {
+        let conv = Name::join("convs", name);
+        let full = Name::join(prefix, conv.as_str());
+        chain_step = chain_step
+            .max(step_of(weights, full.as_str(), "input"))
+            .max(step(weights, full.as_str()));
+    }
+    let split_convs = core::array::from_fn(|index| {
+        (index < convs).then(|| {
+            // The convolution, weights padded to the chunk.
+            let conv = Name::join("convs", CONV_NAMES[index]);
+            let full = Name::join(prefix, conv.as_str());
+            let dw_weight = weights.get_i8(Name::join(full.as_str(), "weight").as_str());
+            let dw_scales = weights.get(Name::join(full.as_str(), "scales").as_str());
+            let dw_bias = weights.get(Name::join(full.as_str(), "bias").as_str());
+            let padded_weight = storage.take_weights(SPLIT_TAPS * padded);
+            padded_weight.fill(0);
+            let mut padded_scales = [1.0f32; 48];
+            let mut padded_bias = [0.0f32; 48];
+            for tap in 0..SPLIT_TAPS {
+                for c in 0..chunk {
+                    padded_weight[tap * padded + c] = dw_weight[tap * chunk + c];
+                }
+            }
+            padded_scales[..chunk].copy_from_slice(&dw_scales[..chunk]);
+            padded_bias[..chunk].copy_from_slice(&dw_bias[..chunk]);
+            let plans = storage.take_plans(padded / LANES);
+            plan_channels(
+                &padded_scales[..padded],
+                &padded_bias[..padded],
+                &[chain_step],
+                chain_step,
+                SPLIT_TAPS,
+                plans,
+            );
+            SplitConv {
+                weights: padded_weight,
+                plans,
+            }
+        })
+    });
+
+    let positional = positional.then(|| {
+        // The positional constant, quantized into the tokens' mapping.
+        let constant = weight(weights, prefix, "pos_embd.constant");
+        let quantized = storage.take_constants(shape.len());
+        let inverse = 1.0 / tokens_step;
+        for (q, &value) in quantized.iter_mut().zip(constant) {
+            *q = Quant {
+                scale: tokens_step,
+                zero_point: 0,
+            }
+            .quantize16_with(inverse, value);
+        }
+        &*quantized
+    });
+
+    // Attention: standardize, qkv, the attention itself, the projection
+    // added to the tokens.
+    let norm_step = step_of(weights, prefix, "norm_xca");
+    let norm_xca = Norm::plain(channels, tokens_step, norm_step, storage);
+    let qkv_step = step_of(weights, prefix, "xca.qkv");
+    let qkv = packed(weights, prefix, "xca.qkv");
+    let qkv = lane_weight(&qkv, norm_step, qkv_step, None, channels, wide, storage);
+    let mixed_step = step_of(weights, prefix, "xca.mixed");
+    let temperature = weight(weights, prefix, "xca.temperature");
+    let proj = packed(weights, prefix, "xca.proj");
+    let proj_range = step_of(weights, prefix, "xca.proj") * 32767.0;
+    let proj = lane_weight(
+        &proj,
+        mixed_step,
+        tokens_step,
+        Some((weight(weights, prefix, "gamma_xca"), proj_range)),
+        channels,
+        wide,
+        storage,
+    );
+
+    // The MLP on the tokens, added to the block's input.
+    let mlp_norm_step = step_of(weights, prefix, "norm");
+    let norm = Norm::plain(channels, tokens_step, mlp_norm_step, storage);
+    let mlp = compile_mlp(weights, prefix, mlp_norm_step, stream_step, wide, storage);
+
+    AttentionBlock {
+        convs: split_convs,
+        chunk,
+        padded,
+        chain_step,
+        tokens_step,
+        to_chain: lanes::rescale_plan(stream_step, chain_step),
+        to_tokens: lanes::rescale_plan(chain_step, tokens_step),
+        stream_to_tokens: lanes::rescale_plan(stream_step, tokens_step),
+        positional,
+        norm_xca,
+        qkv,
+        qkv_step,
+        mixed_step,
+        temperature,
+        proj,
+        norm,
+        mlp,
+    }
 }
 
 /// The split-convolution chain, the attention and the MLP of a
 /// SplitTransposeBlock; see the `f32` version for the structure.
 #[allow(clippy::too_many_arguments)]
-fn split_transpose_block(
-    weights: &impl Weights,
+fn run_attention_block(
+    block: &AttentionBlock<'_>,
     gelu: &GeluTable<'_>,
     prefix: &str,
-    convs: usize,
-    positional: bool,
     shape: Shape,
     stream_step: f32,
     scratch: &mut Scratch<'_>,
@@ -766,33 +1375,23 @@ fn split_transpose_block(
     let channels = shape.channels;
     let pixels = shape.pixels();
     let len = shape.len();
-    let chunk = channels.div_ceil(convs + 1);
-    let padded = chunk.div_ceil(LANES) * LANES;
+    let (chunk, padded) = (block.chunk, block.padded);
     let chunk_shape = Shape::new(shape.height, shape.width, padded);
     let mut adds = 0;
     let add_name = |adds: usize| {
         const NAMES: [&str; 5] = ["Add", "Add_1", "Add_2", "Add_3", "Add_4"];
         NAMES[adds]
     };
-    let tokens_step = step_of(weights, prefix, "tokens");
 
-    // The chain, in one mapping wide enough for every sum and
-    // convolution output in it, padded to a multiple of eight channels.
-    let mut chain_step = stream_step;
-    for index in 0..convs {
-        let conv = Name::join("convs", ["0", "1", "2"][index]);
-        let full = Name::join(prefix, conv.as_str());
-        chain_step = chain_step
-            .max(step_of(weights, full.as_str(), "input"))
-            .max(step(weights, full.as_str()));
-    }
     let (mut running, mut filtered) = (&mut *scratch.chain.0, &mut *scratch.chain.1);
-    let (to_chain, to_chain_shift) = lanes::rescale_plan(stream_step, chain_step);
-    let (to_tokens, to_tokens_shift) = lanes::rescale_plan(chain_step, tokens_step);
-    let (stream_to_tokens, stream_to_tokens_shift) = lanes::rescale_plan(stream_step, tokens_step);
+    let (to_chain, to_chain_shift) = block.to_chain;
+    let (to_tokens, to_tokens_shift) = block.to_tokens;
+    let (stream_to_tokens, stream_to_tokens_shift) = block.stream_to_tokens;
     let x = &scratch.x[..len];
     let tokens = &mut scratch.tokens[..len];
-    for index in 0..convs {
+    let mut convs = 0;
+    for (index, conv) in block.convs.iter().flatten().enumerate() {
+        convs += 1;
         let range = index * chunk..(index + 1) * chunk;
         // The chunk of the stream, rescaled into the chain's mapping,
         // added to the running sum (or starting it).
@@ -823,39 +1422,14 @@ fn split_transpose_block(
                 chunk,
                 padded,
                 &running[..pixels * padded],
-                chain_step,
+                block.chain_step,
             );
         }
-        // The convolution, weights padded to the chunk.
-        let conv = Name::join("convs", ["0", "1", "2"][index]);
-        let full = Name::join(prefix, conv.as_str());
-        let dw_weight = weights.get_i8(Name::join(full.as_str(), "weight").as_str());
-        let dw_scales = weights.get(Name::join(full.as_str(), "scales").as_str());
-        let dw_bias = weights.get(Name::join(full.as_str(), "bias").as_str());
-        let mut padded_weight = simd::Aligned([0i8; 9 * 48]);
-        let mut padded_scales = [1.0f32; 48];
-        let mut padded_bias = [0.0f32; 48];
-        for tap in 0..9 {
-            for c in 0..chunk {
-                padded_weight.0[tap * padded + c] = dw_weight[tap * chunk + c];
-            }
-        }
-        padded_scales[..chunk].copy_from_slice(&dw_scales[..chunk]);
-        padded_bias[..chunk].copy_from_slice(&dw_bias[..chunk]);
-        let plans = &mut scratch.plans[..padded / LANES];
-        plan_channels(
-            &padded_scales[..padded],
-            &padded_bias[..padded],
-            &[chain_step],
-            chain_step,
-            9,
-            plans,
-        );
         lanes::depthwise(
             &running[..pixels * padded],
             chunk_shape,
-            &padded_weight.0[..9 * padded],
-            plans,
+            conv.weights,
+            conv.plans,
             3,
             1,
             1,
@@ -883,19 +1457,8 @@ fn split_transpose_block(
         }
     }
 
-    if positional {
-        // The positional constant, quantized into the tokens' mapping.
-        let constant = weight(weights, prefix, "pos_embd.constant");
-        let quantized = &mut scratch.b[..len];
-        let inverse = 1.0 / tokens_step;
-        for (q, &value) in quantized.iter_mut().zip(constant) {
-            *q = Quant {
-                scale: tokens_step,
-                zero_point: 0,
-            }
-            .quantize16_with(inverse, value);
-        }
-        lanes::add(tokens, quantized);
+    if let Some(positional) = block.positional {
+        lanes::add(tokens, positional);
         adds += 1;
         emit(
             trace,
@@ -903,63 +1466,30 @@ fn split_transpose_block(
             Name::join(prefix, add_name(adds)).as_str(),
             shape,
             tokens,
-            tokens_step,
+            block.tokens_step,
         );
     }
 
     // Attention: standardize into `a`, qkv, the attention itself, the
     // projection added to the tokens.
-    let norm_step = step_of(weights, prefix, "norm_xca");
     let normed = &mut scratch.a[..len];
-    lanes::layer_norm(
-        tokens,
-        channels,
-        tokens_step,
-        LAYER_NORM_EPSILON,
-        norm_plans(channels, norm_step, scratch.norm_plans),
-        normed,
-    );
-    let qkv_step = step_of(weights, prefix, "xca.qkv");
+    block.norm_xca.run(tokens, channels, normed);
     let packed_width = 3 * channels;
     let qkv = &mut scratch.qkv[..pixels * packed_width];
-    {
-        let qkv_weight = packed(weights, prefix, "xca.qkv");
-        let qkv_weight = lane_weight(
-            &qkv_weight,
-            norm_step,
-            qkv_step,
-            None,
-            channels,
-            scratch.plans,
-        );
-        lanes::linear(normed, channels, &qkv_weight, Store::Write, qkv);
-    }
-    let mixed_step = step_of(weights, prefix, "xca.mixed");
+    lanes::linear(normed, channels, &block.qkv, Store::Write, qkv);
     let mixed = &mut scratch.b[..len];
     cross_covariance_attention(
-        weight(weights, prefix, "xca.temperature"),
+        block.temperature,
         shape,
         qkv,
-        qkv_step,
+        block.qkv_step,
         scratch.heads,
         scratch.mixed,
         attention,
-        mixed_step,
+        block.mixed_step,
         mixed,
     );
-    {
-        let proj = packed(weights, prefix, "xca.proj");
-        let proj_range = step_of(weights, prefix, "xca.proj") * 32767.0;
-        let proj = lane_weight(
-            &proj,
-            mixed_step,
-            tokens_step,
-            Some((weight(weights, prefix, "gamma_xca"), proj_range)),
-            channels,
-            scratch.plans,
-        );
-        lanes::linear(mixed, channels, &proj, Store::Add, tokens);
-    }
+    lanes::linear(mixed, channels, &block.proj, Store::Add, tokens);
     adds += 1;
     emit(
         trace,
@@ -967,30 +1497,18 @@ fn split_transpose_block(
         Name::join(prefix, add_name(adds)).as_str(),
         shape,
         tokens,
-        tokens_step,
+        block.tokens_step,
     );
 
     // The MLP on the tokens, added to the block's input.
-    let mlp_norm_step = step_of(weights, prefix, "norm");
     let normed = &mut scratch.a[..len];
-    lanes::layer_norm(
-        tokens,
-        channels,
-        tokens_step,
-        LAYER_NORM_EPSILON,
-        norm_plans(channels, mlp_norm_step, scratch.norm_plans),
-        normed,
-    );
-    mlp(
-        weights,
+    block.norm.run(tokens, channels, normed);
+    run_mlp(
+        &block.mlp,
         gelu,
-        prefix,
         normed,
-        mlp_norm_step,
-        stream_step,
         &mut scratch.x[..len],
         scratch.hidden,
-        scratch.plans,
     );
     adds += 1;
     emit(
@@ -1001,6 +1519,33 @@ fn split_transpose_block(
         scratch.x,
         stream_step,
     );
+}
+
+/// The head on `channels` pooled values of step `stream_step`.
+fn compile_head<'m>(
+    weights: &'m impl Weights,
+    channels: usize,
+    stream_step: f32,
+    storage: &mut ModelStorage<'m>,
+) -> Head<'m> {
+    let norm_step = step(weights, "head.norm");
+    let norm = Norm::plain(channels, stream_step, norm_step, storage);
+    let embedding_step = step(weights, "embedding");
+    let fc = packed(weights, "head", "fc");
+    let fc = lane_weight(
+        &fc,
+        norm_step,
+        embedding_step,
+        None,
+        channels,
+        false,
+        storage,
+    );
+    Head {
+        norm,
+        fc,
+        embedding_step,
+    }
 }
 
 /// Trace a padded chain tensor: only its first `chunk` of `padded`

@@ -49,9 +49,18 @@
 //!   name on the screen does not flicker between two people or blink to
 //!   "unknown" for one bad frame.
 //!
+//! Both cost time: three embeddings for the first average, then three
+//! decisions that agree, so five embeddings before a name appears, each a
+//! second of work on the board. Most faces do not need that much care. A
+//! score far above the limit is as safe on one frame as a score just
+//! above it is on three, so [`Decider`] puts the two filters together
+//! with a shortcut: a decision that is *sure* ([`SureSteps`]) is shown at
+//! once, and only the others wait for the filters.
+//!
 //! Nothing here allocates: every buffer is a fixed-size array inside a type
-//! or a slice the caller lends us. [`Thresholds::DEFAULT`] holds placeholder
-//! numbers until Step 7 calibrates them on the device.
+//! or a slice the caller lends us. [`Thresholds::DEFAULT`] and
+//! [`SureSteps::DEFAULT`] are the numbers `facekit calibrate` chose on
+//! Labeled Faces in the Wild.
 
 use libm::sqrtf;
 
@@ -599,14 +608,31 @@ impl Fusion {
         if !self.is_ready() {
             return None;
         }
+        self.fused_so_far()
+    }
+
+    /// How many embeddings the average is made of, at most
+    /// [`FUSION_FRAMES`].
+    pub fn frames(&self) -> usize {
+        self.count
+    }
+
+    /// The normalized average of the embeddings that have arrived, at
+    /// most the last [`FUSION_FRAMES`]; `None` before the first. With
+    /// [`FUSION_FRAMES`] of them this is [`fused`](Self::fused).
+    pub fn fused_so_far(&self) -> Option<Embedding> {
+        if self.count == 0 {
+            return None;
+        }
+        // The slots without an embedding hold zeros, which add nothing.
+        // `from_raw` divides by the length, so the division by the number
+        // of frames that makes it an average is not needed.
         let mut sum = [0.0f32; EMBEDDING_LEN];
         for frame in &self.frames {
             for (total, value) in sum.iter_mut().zip(frame.values()) {
                 *total += value;
             }
         }
-        // `from_raw` divides by the length, so the division by
-        // `FUSION_FRAMES` that makes it an average is not needed.
         Some(Embedding::from_raw(&sum))
     }
 
@@ -720,6 +746,18 @@ impl Vote {
         self.decided
     }
 
+    /// Hold `decision` from now on, without waiting for an agreement, and
+    /// forget the decisions before it: a change away from it needs
+    /// [`VOTE_AGREEMENT`] new decisions that agree. Returns whether the
+    /// held value changed.
+    pub fn settle(&mut self, decision: Option<u8>) -> bool {
+        let changed = !self.decided || self.stable != decision;
+        *self = Self::new();
+        self.stable = decision;
+        self.decided = true;
+        changed
+    }
+
     /// Forget the decisions and go back to an undecided "unknown".
     pub fn clear(&mut self) {
         *self = Self::new();
@@ -727,6 +765,186 @@ impl Vote {
 }
 
 impl Default for Vote {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How far above [`Thresholds::accept`] the score of a probe must be for
+/// the decision to be *sure*: shown at once, without the vote, and on
+/// fewer than [`FUSION_FRAMES`] frames.
+///
+/// One step for each number of frames the probe is averaged from. The
+/// fewer frames, the noisier the probe, so the larger the step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SureSteps {
+    /// The step for a probe of one frame, of two frames, and so on up to
+    /// [`FUSION_FRAMES`].
+    pub steps: [f32; FUSION_FRAMES],
+}
+
+impl SureSteps {
+    /// Never sure: a person is named only after [`FUSION_FRAMES`] frames
+    /// and the vote, as before there was a shortcut.
+    pub const NEVER: Self = Self {
+        steps: [f32::INFINITY; FUSION_FRAMES],
+    };
+
+    /// The steps `facekit calibrate` chose on Labeled Faces in the Wild,
+    /// with [`Thresholds::DEFAULT`]: sure from 0.55 on one frame, 0.50
+    /// on two and 0.45 on three.
+    ///
+    /// The highest score of a stranger was 0.430 on one frame (22,920
+    /// attempts), 0.369 on two frames averaged (11,400) and 0.401 on
+    /// three (7,560), so every limit is 0.049 or more above all of them.
+    /// In the play of the application (223 visits of five frames by an
+    /// enrolled person, 27,480 by strangers) the person was named after
+    /// the first frame in 95.5 percent of the visits, after the second in
+    /// 98.7 percent, and the shortcut named no stranger that the rule
+    /// without it did not name. Smaller steps named three of them sooner
+    /// and one more.
+    pub const DEFAULT: Self = Self {
+        steps: [0.20, 0.15, 0.10],
+    };
+
+    /// The smallest sure score of a probe averaged from `frames` frames,
+    /// with the limit `accept`.
+    pub fn limit(&self, accept: f32, frames: usize) -> f32 {
+        accept + self.steps[frames.clamp(1, FUSION_FRAMES) - 1]
+    }
+}
+
+impl Default for SureSteps {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// What [`Decider::push`] made of one more embedding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Decision {
+    /// The best score of any enrolled person against the averaged probe.
+    pub score: f32,
+    /// How many frames the probe was averaged from.
+    pub frames: usize,
+    /// Who the probe is: `Some(Some(index))` a person of
+    /// [`Gallery::people`], `Some(None)` unknown, `None` when it is too
+    /// early to say (fewer than [`FUSION_FRAMES`] frames, and not sure).
+    pub verdict: Option<Option<u8>>,
+    /// Whether the verdict is sure: a person, by a score above the limit
+    /// of [`SureSteps`].
+    pub sure: bool,
+    /// What the screen should show from now on, when that changes:
+    /// `Some(index)` a person, `None` unknown.
+    pub shown: Option<Option<u8>>,
+}
+
+/// From embeddings to the name on the screen: [`Fusion`] and [`Vote`]
+/// with a shortcut for the decisions that are sure.
+///
+/// Every embedding of the face in front of the camera goes to
+/// [`push`](Self::push). The probe is the average of the embeddings so
+/// far, at most the last [`FUSION_FRAMES`]. Then:
+///
+/// 1. A person whose score reaches the sure limit of that many frames is
+///    shown at once. This is what makes a known face fast: one embedding
+///    is enough for most of them.
+/// 2. Before [`FUSION_FRAMES`] frames, nothing else is decided.
+/// 3. From then on every embedding gives a decision by the plain limits
+///    ([`Gallery::match_probe`]). While nothing is shown yet, "unknown"
+///    is shown at once, which no stranger gains anything from; every
+///    other change waits for the [`Vote`].
+///
+/// A sure decision lets a stranger in as rarely as three agreeing plain
+/// ones, which is what `facekit calibrate` measures the steps for.
+#[derive(Clone, Copy, Debug)]
+pub struct Decider {
+    /// The last embeddings.
+    fusion: Fusion,
+    /// The last decisions, and what is shown.
+    vote: Vote,
+}
+
+impl Decider {
+    /// A decider that has seen nothing.
+    pub fn new() -> Self {
+        Self {
+            fusion: Fusion::new(),
+            vote: Vote::new(),
+        }
+    }
+
+    /// Add one embedding of the face in front of the camera and decide.
+    pub fn push(
+        &mut self,
+        embedding: Embedding,
+        gallery: &Gallery,
+        bank: &ImpostorBank<'_>,
+        thresholds: &Thresholds,
+        sure: &SureSteps,
+    ) -> Decision {
+        self.fusion.push(embedding);
+        let frames = self.fusion.frames();
+        let probe = self
+            .fusion
+            .fused_so_far()
+            .expect("the embedding just pushed");
+        let outcome = gallery.match_probe(&probe, bank, thresholds);
+        let score = outcome.score();
+        let person = match outcome {
+            Match::Known { person, .. } => gallery
+                .people()
+                .iter()
+                .position(|candidate| core::ptr::eq(candidate, person))
+                .map(|index| index as u8),
+            Match::Unknown { .. } => None,
+        };
+        let is_sure = person.is_some() && score >= sure.limit(thresholds.accept, frames);
+
+        let (verdict, shown) = if is_sure {
+            let changed = self.vote.settle(person);
+            (Some(person), changed.then_some(person))
+        } else if frames < FUSION_FRAMES {
+            (None, None)
+        } else if person.is_none() && !self.vote.has_decided() {
+            self.vote.settle(None);
+            (Some(None), Some(None))
+        } else {
+            (Some(person), self.vote.push(person))
+        };
+        Decision {
+            score,
+            frames,
+            verdict,
+            sure: is_sure,
+            shown,
+        }
+    }
+
+    /// What the screen shows: `Some(Some(index))` a person, `Some(None)`
+    /// unknown, `None` nothing yet.
+    pub fn shown(&self) -> Option<Option<u8>> {
+        self.vote.has_decided().then(|| self.vote.stable())
+    }
+
+    /// Forget the embeddings but keep what is shown: the face was not
+    /// usable for a moment, and the next average must not mix frames
+    /// from before with new ones.
+    ///
+    /// The decisions of the vote stay too, also those that have not
+    /// decided anything yet. When the face is gone for good, call
+    /// [`clear`](Self::clear), or the next face starts from them.
+    pub fn pause(&mut self) {
+        self.fusion.clear();
+    }
+
+    /// Forget everything: the face is gone, or the gallery changed.
+    pub fn clear(&mut self) {
+        *self = Self::new();
+    }
+}
+
+impl Default for Decider {
     fn default() -> Self {
         Self::new()
     }

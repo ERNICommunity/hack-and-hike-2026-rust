@@ -252,11 +252,17 @@ pub fn detector_input_i8(frame: &RgbImage<'_>, input: &mut [i8]) {
     );
     let input = &mut input[..shape.len()];
     input.fill(-128);
-    for y in 0..frame.height() {
-        for x in 0..frame.width() {
-            let [r, g, b] = frame.pixel(x, y);
-            let slot = &mut input[shape.offset(x, y)..shape.offset(x, y) + 3];
-            slot.copy_from_slice(&[b, g, r].map(|byte| (i16::from(byte) - 128) as i8));
+    let row_len = shape.width * shape.channels;
+    for (y, row) in input
+        .chunks_exact_mut(row_len)
+        .take(frame.height())
+        .enumerate()
+    {
+        for (slot, rgb) in row.chunks_exact_mut(3).zip(frame.row(y).chunks_exact(3)) {
+            // `byte - 128` is the byte with its top bit flipped.
+            slot[0] = (rgb[2] ^ 0x80) as i8;
+            slot[1] = (rgb[1] ^ 0x80) as i8;
+            slot[2] = (rgb[0] ^ 0x80) as i8;
         }
     }
 }

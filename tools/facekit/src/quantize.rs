@@ -30,6 +30,7 @@ use hack_and_hike_vision::{
     image::{Rgb565Frame, RgbImage, RgbImageMut, downscale_to_rgb},
     nn::{
         Shape, edgeface,
+        lanes::GroupPlan,
         quant::{Granularity, Quant, quantize_weight_channels, quantize_weight_rows, snr_db},
         yunet,
     },
@@ -639,8 +640,17 @@ fn report_edgeface(f32s: &Tensors, i8s: &Tensors, samples: &[Sample]) {
 /// Compare the integer detector with the `f32` one on every sample.
 fn report_yunet(f32s: &Tensors, i8s: &Tensors, samples: &[Sample]) {
     let mut scratch = vec![0.0f32; yunet::SCRATCH_LEN];
-    let mut scratch_i16 = vec![0i16; yunet::int8::SCRATCH_I16_LEN];
+    let mut scratch_i16 = vec![0i16; yunet::int8::SCRATCH_I16_LEN + 8];
     let mut scratch_f32 = vec![0.0f32; yunet::int8::F32_SCRATCH_LEN];
+    let mut padded = vec![0i8; yunet::int8::MODEL_WEIGHTS_LEN + 16];
+    let mut plans = vec![GroupPlan::ZERO; yunet::int8::MODEL_PLANS];
+    let model = yunet::int8::Model::compile(
+        i8s,
+        yunet::int8::ModelStorage {
+            weights: crate::recognizer::aligned(&mut padded),
+            plans: &mut plans,
+        },
+    );
     let mut table = SnrTable::new();
     let (mut worst_centre, mut worst_size, mut worst_landmark, mut worst_score) =
         (0.0f32, 0.0f32, 0.0f32, 0.0f32);
@@ -651,10 +661,12 @@ fn report_yunet(f32s: &Tensors, i8s: &Tensors, samples: &[Sample]) {
             traced.push((name.to_string(), values.to_vec()));
         });
         let reference = decode(&heads, DEFAULT_SCORE_THRESHOLD, DEFAULT_NMS_THRESHOLD);
-        let heads = yunet::int8::forward_traced(
-            i8s,
+        let heads = model.forward_traced(
             &sample.i8s,
-            yunet::int8::Scratch::new(&mut scratch_i16, &mut scratch_f32),
+            yunet::int8::Scratch::new(
+                crate::recognizer::aligned(&mut scratch_i16),
+                &mut scratch_f32,
+            ),
             |name, _, values| {
                 if let Some(index) = traced.iter().position(|(expected, _)| expected == name) {
                     table.record(index, name, snr_db(&traced[index].1, values));

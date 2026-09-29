@@ -30,13 +30,11 @@ says where they come from and under which licences.
 | `inspect <model.onnx> [--strict] [--input-shape ...]` | 1 | Lists operators, weights and shapes; checks every operator against the list the firmware implements; loads the model through tract. The results for the two models are in [`docs/face_id/`](../../docs/face_id/). |
 | `export <model.onnx> <out.fkb> --input-shape ...` | 3 | Writes every weight as an FKB1 file in the layouts the firmware's kernels want (`src/export.rs` has the table), renames unnamed weights after their module path, folds run-time constants (EdgeFace's positional encoding), and writes a `.txt` listing next to the file. |
 | `golden <edgeface\|yunet> <model.onnx> <out.fkb> [--image photo.jpg] [--source face\|noise]` | 3 | Runs the model in tract on a photo or a synthetic image and writes the input, every block boundary and the outputs as an FKB1 file, for the firmware tests. |
-
 | `crops <yunet.onnx> <photos> <out>` | 6 | Finds the faces in a folder of photos (YuNet in tract at the photo's size, then the firmware's own decoding and alignment) and writes `out/crops/` (112x112 aligned crops) and `out/frames/` (320x240 frames with the face filling the height). |
 | `quantize <edgeface\|yunet> <f32.fkb> <samples> <out.fkb> [--limit N]` | 6 | Calibrates on the samples (crops or frames), quantizes the weights, folds the LayerNorms, writes the integer file, and reports the accuracy cost tensor by tensor, block by block, and end to end. |
-
 | `eval <detector.onnx> <f32.fkb> <images> <pairs.txt> [--int8 ...] [--pick ...]` | 7 | Runs the pipeline over a pair protocol such as LFW and reports the ten-fold accuracy and the true-accept rates, for the `f32` and the integer recognizer side by side. |
 | `bank <detector.onnx> <f32.fkb> <images> <out.fkb> [--int8 ...] [--count N]` | 7 | Embeds one photo each of N people into the impostor bank the firmware carries. |
-| `calibrate <detector.onnx> <f32.fkb> <images> <bank.fkb> [--int8 ...]` | 7 | Plays the application many times over a folder of labelled photos and reports where to put the two thresholds. |
+| `calibrate <detector.onnx> <f32.fkb> <images> <bank.fkb> [--int8 ...] [--templates N] [--people N] [--impostors N]` | 7 | Enrolls `--people` people (120) with `--templates` photos each (5) and lets `--impostors` strangers (400) try to pass as each of them. Reports where to put the two thresholds, the scores of one, two and three frames averaged with the steps above the limit from which a decision is sure, and a play of the application in visits of five frames: how soon a person is named, and whether a stranger is. |
 
 The last three need a folder with one subfolder of photos per person:
 `data/lfw/lfw_funneled` is one.
@@ -53,6 +51,10 @@ page. The other commands, the tests and the firmware do not need them.
 
 | Module | Contents |
 | --- | --- |
+| `src/main.rs` | the command line: one subcommand per step |
+| `src/inspect.rs` | `inspect`: operators, weights and shapes of an ONNX model, checked against what the firmware implements |
+| `src/export.rs` | `export`: a model's weights as one FKB1 file, in the layouts of the firmware's kernels |
+| `src/golden.rs` | `golden`: reference inputs, block outputs and outputs from tract, for the tests |
 | `src/blob.rs` | writes FKB1 files; the reader is `hack_and_hike_vision::blob` |
 | `src/names.rs` | the firmware names of tensors and nodes, derived from the PyTorch module paths |
 | `src/onnx.rs` | reading the ONNX protobuf; running a model in tract with chosen intermediate outputs |
@@ -65,4 +67,4 @@ page. The other commands, the tests and the firmware do not need them.
 | `src/embed.rs` | photos to embeddings with the firmware's own pipeline, on many threads |
 | `src/eval.rs` | the pair protocol: ten-fold accuracy and true-accept rates |
 | `src/bank.rs` | the impostor bank |
-| `src/calibrate.rs` | the two thresholds of the decision |
+| `src/calibrate.rs` | the two thresholds of the decision, and the sure steps |

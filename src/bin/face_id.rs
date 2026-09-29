@@ -16,24 +16,40 @@
 //!   counts as the same person. The panel shows every decision's score
 //!   next to the limit.
 //!
-//! Recognition fuses three embeddings, and a vote over the last decisions
-//! keeps the name from flickering. Everything shown on the panel also goes
-//! to the log.
+//! A face that scores far above the limit is named on its first
+//! embedding. A face that scores just above it waits for the average of
+//! three embeddings and for a vote over the last decisions, which keeps
+//! the name from flickering (`gallery::Decider`). Everything shown on the
+//! panel also goes to the log.
 //!
 //! # How a cycle runs
 //!
-//! The detector takes a third of a second per frame and the recognizer
-//! three quarters of a second per face, and the camera's buffer overflows
-//! within a few milliseconds if nobody empties it. So the camera and the
-//! screen belong to a task on an interrupt executor (see [`stream`]): it
+//! The detector takes about 150 ms and the recognizer about 600, and the
+//! camera's buffer overflows within a few milliseconds if nobody empties
+//! it. So the camera and the screen belong to a task on an interrupt
+//! executor (see [`stream`]): it
 //! interrupts the networks every few milliseconds to empty the camera's
 //! buffer, and shows the live image about ten times per second, with the
 //! box of the newest detection drawn on top.
 //!
-//! A cycle of the main task asks that task for a copy of the newest frame,
-//! then works on the copy: the detector on a 4x scaled-down version, the
-//! recognizer on the face cut out of a 2x version. The box on the preview
-//! is therefore up to one cycle old, while the image is live.
+//! A cycle of the main task asks that task for the newest frame and gets
+//! the frame's buffer in exchange for its own, without a copy. It works
+//! on that frame: the detector on a 4x scaled-down version, the recognizer
+//! on the face cut out of a 2x version. The box on the preview is
+//! therefore up to one cycle old, while the image is live.
+//!
+//! # What keeps the cycle short
+//!
+//! - Both networks are compiled when the app starts: every tensor found,
+//!   every plan made (`Model::compile`). A cycle only computes.
+//! - The camera copies a frame out of its buffer only when the preview or
+//!   the main task will use it, about ten times per second.
+//! - While a preview is on its way to the screen, the stream task sleeps
+//!   and the networks go on.
+//! - The panel draws only the lines that changed, and the timings at most
+//!   once per second.
+//! - The copy of the screen for the live feed is made only while a
+//!   computer watches the feed.
 //!
 //! # What is kept
 //!
@@ -52,6 +68,8 @@ use core::{
     ops::Range,
     sync::atomic::{AtomicU32, Ordering},
 };
+
+use alloc::boxed::Box;
 
 use arrayvec::{ArrayString, ArrayVec};
 use embassy_executor::Spawner;
@@ -74,25 +92,26 @@ use hack_and_hike::{
         display::{BYTES_PER_PIXEL, Display, SCREEN, SIZE, ScanlineSource},
         touch::TouchEvent,
     },
-    psram,
+    logging, psram,
     ui::{Canvas, common, theme},
 };
 use hack_and_hike_vision::{
-    align::{CROP_SIZE, align_face, recognizer_input_i8},
+    align::{CROP_SIZE, align_face, recognizer_input_i8, source_region},
     blob::Blob,
     detect::{
         CONTENT_HEIGHT, CONTENT_WIDTH, DEFAULT_NMS_THRESHOLD, DEFAULT_SCORE_THRESHOLD, DOWNSCALE,
         Face, decode, detector_input_i8,
     },
-    gallery::{
-        Embedding, FUSION_FRAMES, Fusion, Gallery, ImpostorBank, MAX_PEOPLE, Thresholds, Vote,
-    },
+    gallery::{Decider, Embedding, Gallery, ImpostorBank, MAX_PEOPLE, SureSteps, Thresholds},
     gates::{self, Framing, Limits},
-    image::{GrayImageMut, Rgb565Frame, RgbImageMut, downscale_to_rgb, rgb_to_gray},
+    image::{
+        GrayImageMut, Rgb565Frame, RgbImageMut, downscale_to_rgb, downscale_to_rgb_within,
+        rgb_to_gray,
+    },
     include_fkb,
     nn::{
-        BlobWeights, edgeface,
-        lanes::{GeluTable, GroupPlan, NormPlan},
+        BlobWeights, check, edgeface,
+        lanes::{self, GeluTable, GroupPlan, NormPlan},
         pack, yunet,
     },
     quality::laplacian_variance,
@@ -103,7 +122,7 @@ use static_cell::StaticCell;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// Which build this is, in the log and on the screen at start-up.
-const BUILD_ID: &str = "faceid-9";
+const BUILD_ID: &str = "faceid-14";
 
 /// The recognizer's integer weights, in flash.
 static EDGEFACE: &[u8] = include_fkb!("../../assets/models/edgeface_xxs.int8.fkb");
@@ -123,24 +142,29 @@ const ENROLL_PROMPTS: [&str; ENROLL_SAMPLES] = [
     "chin down a bit",
     "straight again",
 ];
-/// How much one tap on **-** or **+** changes the accept limit.
-const THRESHOLD_STEP: f32 = 0.02;
-/// Cycles without a usable face after which the banner goes back to
-/// scanning: about a second.
-const IDLE_CYCLES_TO_RESET: u8 = 2;
+/// How much one tap on **-** or **+** changes the accept limit, in
+/// hundredths.
+const THRESHOLD_STEP: i16 = 2;
+/// How long without a usable face until the banner goes back to
+/// scanning.
+const IDLE_RESET: Duration = Duration::from_secs(1);
+/// How often the panel shows new timings at most. They change with every
+/// cycle, and every change costs a drawing.
+const TIMING_PERIOD: Duration = Duration::from_secs(1);
 /// The recognizer's scaled-down source: half the camera frame.
 const SOURCE_SCALE: usize = 2;
 /// Width of the recognizer's source image.
 const SOURCE_WIDTH: usize = camera::WIDTH / SOURCE_SCALE;
 /// Height of the recognizer's source image.
 const SOURCE_HEIGHT: usize = camera::HEIGHT / SOURCE_SCALE;
-/// Bytes of one camera row.
-const SCANLINE_BYTES: usize = camera::WIDTH * BYTES_PER_PIXEL;
-/// Rows copied between two pumps of the camera's buffer.
-const COPY_ROWS_PER_PUMP: usize = 8;
-/// How often the live preview is drawn at most. Each drawing keeps CPU0
-/// busy for about 18 ms (the SPI transfer), time the networks lose.
+/// How often the live preview is drawn at most. A drawing takes about
+/// 18 ms (the SPI transfer). The stream task sleeps while a batch of rows
+/// is on the bus, but filling the batches still costs CPU0 about 14 ms
+/// per preview.
 const PREVIEW_PERIOD: Duration = Duration::from_millis(100);
+/// Every how many previews one goes to the live screen feed. The feed shows
+/// two to three camera frames per second, whatever the preview draws.
+const MIRRORED_PREVIEWS: u32 = 4;
 /// How often the stream task empties the camera's buffer. The buffer holds
 /// 40 rows, about 5 ms of the sensor's data.
 const PUMP_PERIOD: Duration = Duration::from_millis(2);
@@ -177,19 +201,22 @@ const MARGIN: i32 = 4;
 const BANNER: Rectangle = Rectangle::new(Point::new(MARGIN, 24), Size::new(128, 30));
 /// Top of the status lines.
 const STATUS_TOP: i32 = 60;
+/// The status lines: the score, the hint, the timings, the people.
+const STATUS_LINES: i32 = 4;
 /// The terminal: the newest events, one per line.
 const TERMINAL: Rectangle = Rectangle::new(Point::new(MARGIN, 112), Size::new(128, 76));
 /// Lines in the terminal.
 const TERMINAL_ROWS: usize = 6;
-/// Characters per terminal line, including the `> ` prompt.
+/// Characters per terminal line, including the `> ` prompt: a message
+/// has 19.
 const TERMINAL_COLUMNS: usize = 21;
 /// The button that starts an enrollment.
 const ENROLL_BUTTON: Rectangle = Rectangle::new(Point::new(MARGIN, 196), Size::new(58, 40));
 /// The button that empties the gallery.
 const FORGET_BUTTON: Rectangle = Rectangle::new(Point::new(66, 196), Size::new(34, 40));
-/// The button that lowers the limit: stricter.
+/// The button that lowers the limit: more tolerant.
 const MINUS_BUTTON: Rectangle = Rectangle::new(Point::new(104, 196), Size::new(14, 40));
-/// The button that raises the limit: more tolerant.
+/// The button that raises the limit: stricter.
 const PLUS_BUTTON: Rectangle = Rectangle::new(Point::new(120, 196), Size::new(14, 40));
 
 // Colours that the theme does not have.
@@ -205,7 +232,7 @@ const BLACK: Rgb565 = theme::rgb(0x000000);
 /// The terminal's text.
 const TERMINAL_GREEN: Rgb565 = theme::rgb(0x33FF66);
 
-/// The large buffers, all in PSRAM.
+/// The large buffers, all in PSRAM but one.
 struct Buffers {
     /// One whole camera frame, big-endian RGB565.
     frame: &'static mut [u8],
@@ -229,10 +256,10 @@ struct Buffers {
     recognizer_i16: &'static mut [i16],
     /// The recognizer's `f32` scratch.
     recognizer_f32: &'static mut [f32],
-    /// The recognizer's group plans.
-    plans: &'static mut [GroupPlan],
-    /// The recognizer's LayerNorm plans.
-    norm_plans: &'static mut [NormPlan],
+    /// A strip of the recognizer's MLP hidden tensor, in internal RAM:
+    /// the kernels write each value once and read it once, which costs
+    /// about 36 cycles per value in PSRAM (`Scratch::with_hidden`).
+    hidden: &'static mut [i16],
     /// The raw embedding.
     embedding: &'static mut [f32],
 }
@@ -252,25 +279,19 @@ impl Buffers {
             recognizer_input: psram::leaked_slice(CROP_SIZE * CROP_SIZE * 3, 0),
             recognizer_i16: aligned_psram(edgeface::int8::SCRATCH_I16_LEN, 0),
             recognizer_f32: aligned_psram(edgeface::int8::SCRATCH_F32_LEN, 0.0),
-            plans: psram::leaked_slice(edgeface::int8::SCRATCH_PLANS, GroupPlan::ZERO),
-            norm_plans: psram::leaked_slice(
-                edgeface::int8::SCRATCH_NORM_PLANS,
-                NormPlan::new(&[1.0; 8], &[0.0; 8], &[1.0; 8]),
-            ),
+            hidden: aligned_internal(edgeface::int8::HIDDEN_STRIP_LEN),
             embedding: psram::leaked_slice(edgeface::EMBEDDING_LEN, 0.0),
         }
     }
 }
 
-/// A PSRAM slice of `len` values that starts on a 16-byte boundary, as
-/// the vector unit's loads need.
 /// A copy of a weights file in PSRAM with its linear and convolution
 /// weights grouped by eight output channels, the layout the vector unit
 /// reads (`nn::pack`); PSRAM also delivers about four times flash's
 /// bandwidth. Built one tensor at a time with a pause after each, so the
 /// tasks on CPU1, which run from the same flash, keep their share of it:
 /// a continuous copy starves them.
-async fn packed_copy(file: &'static [u8]) -> &'static [u8] {
+async fn packed_copy(file: &'static [u8]) -> &'static BlobWeights<'static> {
     let source = Blob::parse(file).expect("a valid weights file");
     let copy = aligned_psram::<u8>(pack::packed_len(&source), 0);
     let start = Instant::now();
@@ -284,12 +305,78 @@ async fn packed_copy(file: &'static [u8]) -> &'static [u8] {
         copy.len() / 1024,
         start.elapsed().as_millis()
     );
+    Box::leak(Box::new(
+        BlobWeights::new(copy).expect("the packed weights are a valid file"),
+    ))
+}
+
+/// A copy of the impostor bank in PSRAM, which the decision reads four
+/// times as fast as flash; in pieces with a pause after each, like the
+/// weights.
+async fn bank_copy() -> &'static [u8] {
+    const PIECE: usize = 16 * 1024;
+    let copy = aligned_psram::<u8>(IMPOSTORS.len(), 0);
+    for (target, source) in copy.chunks_mut(PIECE).zip(IMPOSTORS.chunks(PIECE)) {
+        target.copy_from_slice(source);
+        Timer::after(Duration::from_millis(2)).await;
+    }
     copy
 }
 
+/// The recognizer with every tensor found and every plan made. The model
+/// and its plans are in PSRAM: in the main task they would take internal
+/// RAM from the stack.
+fn compile_recognizer(
+    weights: &'static BlobWeights<'static>,
+) -> &'static edgeface::int8::Model<'static> {
+    let start = Instant::now();
+    let storage = edgeface::int8::ModelStorage {
+        plans: psram::leaked_slice(edgeface::int8::MODEL_PLANS, GroupPlan::ZERO),
+        norm_plans: psram::leaked_slice(
+            edgeface::int8::MODEL_NORM_PLANS,
+            NormPlan::new(&[1.0; 8], &[0.0; 8], &[1.0; 8]),
+        ),
+        weights: aligned_psram(edgeface::int8::MODEL_WEIGHTS_LEN, 0),
+        constants: aligned_psram(edgeface::int8::MODEL_CONSTANTS_LEN, 0),
+        wide: aligned_psram(edgeface::int8::MODEL_WIDE_LEN, 0),
+    };
+    let model = psram::leaked_value(|| edgeface::int8::Model::compile(weights, storage));
+    info!(
+        "compiled the recognizer in {} ms",
+        start.elapsed().as_millis()
+    );
+    model
+}
+
+/// The detector with every tensor found, in PSRAM like the recognizer.
+fn compile_detector(
+    weights: &'static BlobWeights<'static>,
+) -> &'static yunet::int8::Model<'static> {
+    let start = Instant::now();
+    let storage = yunet::int8::ModelStorage {
+        weights: aligned_psram(yunet::int8::MODEL_WEIGHTS_LEN, 0),
+        plans: psram::leaked_slice(yunet::int8::MODEL_PLANS, GroupPlan::ZERO),
+    };
+    let model = psram::leaked_value(|| yunet::int8::Model::compile(weights, storage));
+    info!(
+        "compiled the detector in {} ms",
+        start.elapsed().as_millis()
+    );
+    model
+}
+
+/// A PSRAM slice of `len` values that starts on a 16-byte boundary, as
+/// the vector unit's loads need.
 fn aligned_psram<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
     let spare = 16 / core::mem::size_of::<T>().max(1);
     let raw = psram::leaked_slice::<T>(len + spare, value);
+    let skip = raw.as_ptr().align_offset(16);
+    &mut raw[skip..skip + len]
+}
+
+/// [`aligned_psram`] in internal RAM, for `i16` values.
+fn aligned_internal(len: usize) -> &'static mut [i16] {
+    let raw = alloc::vec![0i16; len + 8].leak();
     let skip = raw.as_ptr().align_offset(16);
     &mut raw[skip..skip + len]
 }
@@ -330,36 +417,47 @@ async fn main(_spawner: Spawner) -> ! {
         Ok(people) => info!("flash: {people} people loaded"),
         Err(error) => warn!("flash: could not read the enrollments: {error:?}"),
     }
-    let recognizer = BlobWeights::new(packed_copy(EDGEFACE).await)
-        .expect("the packed recognizer weights are a valid file");
-    let detector = BlobWeights::new(packed_copy(YUNET).await)
-        .expect("the packed detector weights are a valid file");
-    let impostors = Blob::parse(IMPOSTORS).expect("the impostor bank is a valid file");
+    let recognizer = compile_recognizer(packed_copy(EDGEFACE).await);
+    let detector = compile_detector(packed_copy(YUNET).await);
+    let impostors = Blob::parse(bank_copy().await).expect("the impostor bank is a valid file");
     let impostors = impostors.get("impostors").expect("the impostors tensor");
     let bank = ImpostorBank::from_i8(impostors.i8_slice(), impostors.scale);
-    // The GELU table (64 KB), built once in internal RAM: its reads are
-    // random, and in PSRAM half of them would miss the cache.
+    // The GELU table (15 KB), built once in internal RAM: its reads are
+    // random, and internal RAM needs no cache (in PSRAM, the 64 KB table
+    // of earlier builds missed the cache on half of them).
     let gelu = GeluTable::build(alloc::vec![0i16; GeluTable::LEN].leak());
-    hack_and_hike::logging::report_memory("face id ready");
+    logging::report_memory("face id ready");
+    // Before the camera starts: the networks alone on CPU0.
+    let checked = check_networks(detector, recognizer, &gelu, &mut buffers);
 
     let mut app = App {
         thresholds: Thresholds::DEFAULT,
+        sure: SureSteps::DEFAULT,
         limits: Limits::DEFAULT,
         mode: Mode::Scanning,
-        fusion: Fusion::new(),
-        vote: Vote::new(),
-        shown_name: None,
+        decider: Decider::new(),
         last_score: None,
         hint: Hint::NoFace,
         timing: Timing::default(),
-        idle_cycles: 0,
+        shown_timing: Timing::default(),
+        timing_shown_at: Instant::now(),
+        last_usable: Instant::now(),
         terminal: Terminal::new(),
     };
     app.terminal.say_fmt(format_args!("face id {BUILD_ID}"));
+    app.terminal.say(if checked {
+        "self-test ok"
+    } else {
+        "SELF-TEST FAILED"
+    });
     app.terminal.say("tap ENROLL to start");
 
     let mut canvas: &'static mut Canvas = psram::leaked_value(|| Canvas::new(PANEL.size));
-    let mut shown = None;
+    let mut shown: Option<Status> = None;
+    // The copy of the screen for the live feed costs 6 ms per preview:
+    // only while a computer watches.
+    logging::mirror_only_when_watched(true);
+    let mut feed_refreshes = logging::mirror_refreshes();
 
     // From here on, the camera and the screen belong to the stream task.
     static EXECUTOR: StaticCell<InterruptExecutor<2>> = StaticCell::new();
@@ -375,17 +473,23 @@ async fn main(_spawner: Spawner) -> ! {
             }
         }
 
-        // 1. A copy of the newest frame, from the stream task.
+        // 1. The newest frame, from the stream task, for the buffer of the
+        // frame before.
         let cycle_started = Instant::now();
         let previews_before = PREVIEWS_SHOWN.load(Ordering::Relaxed);
+        let stream_before = STREAM_BUSY_US.load(Ordering::Relaxed);
+        let dropped_before = BAD_FRAMES.load(Ordering::Relaxed);
+        let copied_before = FRAMES_COPIED.load(Ordering::Relaxed);
+        let copy_before = COPY_US.load(Ordering::Relaxed);
         FRAME_WANTED.signal(core::mem::take(&mut buffers.frame));
-        buffers.frame = FRAME_COPIED.wait().await;
-        app.timing.capture_ms = cycle_started.elapsed().as_millis() as u32;
+        buffers.frame = FRAME_TAKEN.wait().await;
+        app.timing = Timing {
+            capture_ms: cycle_started.elapsed().as_millis() as u32,
+            ..Timing::default()
+        };
 
         // 2. Detect.
-        let started = Instant::now();
-        let face = detect(&detector, &mut buffers);
-        app.timing.detect_ms = started.elapsed().as_millis() as u32;
+        let face = detect(detector, &mut buffers, &mut app.timing);
         let judged = face.map(|face| app.judge(&face));
 
         // 3. The box and the landmarks on the live preview.
@@ -405,41 +509,65 @@ async fn main(_spawner: Spawner) -> ! {
             && judged.hint == Hint::Good
             && (app.mode.is_enrolling() || !gallery.is_empty())
         {
-            let started = Instant::now();
-            let embedding = embed(&recognizer, &gelu, &judged.face, &mut buffers, &app.limits);
-            app.timing.embed_ms = started.elapsed().as_millis() as u32;
+            let embedding = embed(
+                recognizer,
+                &gelu,
+                &judged.face,
+                &mut buffers,
+                &app.limits,
+                &mut app.timing,
+            );
             match embedding {
                 Some(embedding) => {
                     embedded = true;
+                    let started = Instant::now();
                     app.on_embedding(embedding, gallery, &bank, &mut store);
+                    app.timing.decide_ms = started.elapsed().as_millis() as u32;
                 }
                 None => app.hint = Hint::Blurred,
             }
         }
         if embedded {
-            app.idle_cycles = 0;
+            app.last_usable = Instant::now();
         } else if !app.mode.is_enrolling() {
-            // No embedding this cycle: the fusion must not mix faces from
-            // long ago with new ones, and after a moment without a face
-            // the banner goes back to scanning.
-            app.fusion.clear();
-            app.idle_cycles = app.idle_cycles.saturating_add(1);
-            if app.idle_cycles == IDLE_CYCLES_TO_RESET && app.shown_name.is_some() {
-                app.vote.clear();
-                app.shown_name = None;
-                app.last_score = None;
-                app.terminal.say("face gone");
+            // No embedding this cycle: the next average must not mix
+            // faces from long ago with new ones, and after a moment
+            // without a face the banner goes back to scanning.
+            app.decider.pause();
+            if app.last_usable.elapsed() >= IDLE_RESET {
+                // Also when nothing is shown: the vote's decisions so far
+                // must not count for the next face.
+                if app.decider.shown().is_some() {
+                    app.last_score = None;
+                    app.terminal.say("face gone");
+                }
+                app.decider.clear();
             }
         }
         let cycle_ms = cycle_started.elapsed().as_millis().max(1) as u32;
         let previews = PREVIEWS_SHOWN
             .load(Ordering::Relaxed)
             .wrapping_sub(previews_before);
+        let stream_ms = STREAM_BUSY_US
+            .load(Ordering::Relaxed)
+            .wrapping_sub(stream_before)
+            / 1000;
+        let dropped = BAD_FRAMES
+            .load(Ordering::Relaxed)
+            .wrapping_sub(dropped_before);
+        let longest_gap_ms = LONGEST_PUMP_GAP_US.swap(0, Ordering::Relaxed) / 1000;
+        let copied = FRAMES_COPIED
+            .load(Ordering::Relaxed)
+            .wrapping_sub(copied_before);
+        let copy_ms = COPY_US.load(Ordering::Relaxed).wrapping_sub(copy_before) / 1000;
         info!(
-            "cycle: capture {} ms, detect {} ms, embed {} ms, preview {:.1} fps, {}, {}",
+            "cycle: {cycle_ms} ms: capture {}, scale {}, detect {}, align {}, embed {}, decide {}; stream {stream_ms} ms (copies of {copied} frames {copy_ms} ms), preview {:.1} fps, dropped {dropped}, longest pump gap {longest_gap_ms} ms; {}, {}",
             app.timing.capture_ms,
+            app.timing.scale_ms,
             app.timing.detect_ms,
-            if embedded { app.timing.embed_ms } else { 0 },
+            app.timing.align_ms,
+            app.timing.embed_ms,
+            app.timing.decide_ms,
             previews as f32 * 1000.0 / cycle_ms as f32,
             match &judged {
                 Some(judged) => judged.describe(),
@@ -448,11 +576,18 @@ async fn main(_spawner: Spawner) -> ! {
             app.hint.text()
         );
 
-        // 5. The panel, when something changed.
+        // 5. The panel, when something changed: only what changed. A new
+        // viewer of the live feed has none of it, so it gets all of it.
+        let refreshes = logging::mirror_refreshes();
+        if refreshes != feed_refreshes {
+            feed_refreshes = refreshes;
+            canvas.invalidate();
+            shown = None;
+        }
         let status = app.status(gallery);
         if shown != Some(status) {
+            app.draw_panel(canvas, &status, shown.as_ref(), gallery);
             shown = Some(status);
-            app.draw_panel(canvas, &status, gallery);
             PANEL_WANTED.signal(canvas);
             canvas = PANEL_SHOWN.wait().await;
         }
@@ -460,10 +595,11 @@ async fn main(_spawner: Spawner) -> ! {
     }
 }
 
-/// The main task's empty frame buffer, for the stream task to fill.
+/// The main task's frame buffer, with the frame it has worked on: the
+/// stream task gives it to the camera in exchange for the newest frame.
 static FRAME_WANTED: Signal<CriticalSectionRawMutex, &'static mut [u8]> = Signal::new();
-/// The same buffer back, holding the newest camera frame.
-static FRAME_COPIED: Signal<CriticalSectionRawMutex, &'static mut [u8]> = Signal::new();
+/// The buffer with the newest camera frame, for the main task.
+static FRAME_TAKEN: Signal<CriticalSectionRawMutex, &'static mut [u8]> = Signal::new();
 /// The drawn panel, for the stream task to show.
 static PANEL_WANTED: Signal<CriticalSectionRawMutex, &'static mut Canvas> = Signal::new();
 /// The same canvas back, once it is on the screen.
@@ -473,6 +609,20 @@ static OVERLAY: Mutex<CriticalSectionRawMutex, Cell<Option<(Face, Rgb565)>>> =
     Mutex::new(Cell::new(None));
 /// Preview frames drawn so far, for the frame rate in the log.
 static PREVIEWS_SHOWN: AtomicU32 = AtomicU32::new(0);
+/// The time CPU0 spent in the stream task so far, in microseconds: the
+/// share of CPU0 that the networks do not get.
+static STREAM_BUSY_US: AtomicU32 = AtomicU32::new(0);
+/// Camera frames dropped so far.
+static BAD_FRAMES: AtomicU32 = AtomicU32::new(0);
+/// The longest time between two times the camera's buffer was emptied
+/// since the main task last looked, in microseconds. The buffer overflows
+/// at about 5 ms.
+static LONGEST_PUMP_GAP_US: AtomicU32 = AtomicU32::new(0);
+/// Camera frames copied out of the camera's buffer into PSRAM so far.
+static FRAMES_COPIED: AtomicU32 = AtomicU32::new(0);
+/// The time those copies took, in microseconds: a part of
+/// [`STREAM_BUSY_US`].
+static COPY_US: AtomicU32 = AtomicU32::new(0);
 
 /// The camera and the screen, on an interrupt executor of CPU0.
 ///
@@ -480,119 +630,362 @@ static PREVIEWS_SHOWN: AtomicU32 = AtomicU32::new(0);
 /// pause. This task interrupts it every [`PUMP_PERIOD`] to empty the
 /// camera's buffer, so the camera never stops, and draws the newest frame
 /// with the [`OVERLAY`] every [`PREVIEW_PERIOD`]. It also serves the main
-/// task: it copies the newest frame into [`FRAME_WANTED`]'s buffer and
+/// task: it hands the newest frame over for [`FRAME_WANTED`]'s buffer and
 /// shows [`PANEL_WANTED`]'s canvas.
 ///
-/// Nothing here waits for the sensor, except the start of the capture after
-/// start-up or a dropped frame (at most two frame periods).
+/// It never waits while it has CPU0. An interrupt handler that waits holds
+/// up the task it interrupted, and the timer of both cores too, which has
+/// the same priority: `faceid-10` waited for the camera after every
+/// overflow of its buffer, 50 to 100 ms each time, and the IMU on CPU1
+/// lost its samples. So the camera is started again without waiting
+/// (`Camera::service`), and the preview and the panel sleep while their
+/// pixels are on the bus.
+///
+/// It also takes as little of CPU0 as it can. The camera copies a frame
+/// only when this task has a use for it: when the frame before was drawn
+/// or handed over. Only every [`MIRRORED_PREVIEWS`]th preview goes to the
+/// live screen feed. The time it takes is in [`STREAM_BUSY_US`].
 #[embassy_executor::task]
-async fn stream(mut camera: Camera, mut display: Display) -> ! {
+async fn stream(camera: Camera, display: Display) -> ! {
+    let mut body = core::pin::pin!(stream_loop(camera, display));
+    core::future::poll_fn(|context| {
+        let started = Instant::now();
+        let poll = body.as_mut().poll(context);
+        STREAM_BUSY_US.fetch_add(started.elapsed().as_micros() as u32, Ordering::Relaxed);
+        poll
+    })
+    .await
+}
+
+/// The work of [`stream`].
+async fn stream_loop(mut camera: Camera, mut display: Display) -> ! {
+    camera.capture_on_demand(true);
     let mut next_preview = Instant::now();
-    // Whether the newest frame is not drawn yet.
+    // Whether the camera's frame is new: neither drawn nor handed over.
     let mut fresh = false;
+    let mut previews = 0u32;
     let mut frame_target = None;
     loop {
-        camera.pump();
-        // Move on to the newest whole frame, without waiting for one. After
-        // an overflow of the camera's buffer, `finish` ends the stopped
-        // capture, and the next `begin_frame` starts it again.
-        if let Some(frame) = camera.begin_frame()
-            && frame.can_finish()
-        {
-            frame.finish();
+        camera.service();
+        if camera.advance() {
             fresh = true;
+        }
+        if !fresh {
+            // The frame is used up: a newer one is wanted. The camera
+            // copies one frame for any number of requests.
+            camera.request_frame();
+        }
+        BAD_FRAMES.store(camera.bad_frames(), Ordering::Relaxed);
+        let stats = camera.take_stats();
+        LONGEST_PUMP_GAP_US.fetch_max(stats.longest_gap.as_micros() as u32, Ordering::Relaxed);
+        FRAMES_COPIED.fetch_add(stats.frames_copied, Ordering::Relaxed);
+        COPY_US.fetch_add(stats.copy_time.as_micros() as u32, Ordering::Relaxed);
+        if fresh && Instant::now() >= next_preview {
+            // The drawing takes as long as the sensor needs for half a
+            // frame: the frame it begins in that time is wanted already.
+            camera.request_frame();
+            if let Some(frame) = camera.current() {
+                fresh = false;
+                next_preview = Instant::now() + PREVIEW_PERIOD;
+                previews = previews.wrapping_add(1);
+                let face = OVERLAY.lock(Cell::get);
+                let surface = display.surface(PREVIEW);
+                let mut surface = if previews.is_multiple_of(MIRRORED_PREVIEWS) {
+                    surface
+                } else {
+                    surface.without_mirror()
+                };
+                surface
+                    .render_from_async(&mut Preview { frame, face })
+                    .await;
+                PREVIEWS_SHOWN.fetch_add(1, Ordering::Relaxed);
+            }
         }
         if frame_target.is_none() {
             frame_target = FRAME_WANTED.try_take();
         }
-        if let Some(mut frame) = camera.begin_frame() {
-            if let Some(target) = frame_target.take() {
-                copy_frame(&mut frame, target);
-                FRAME_COPIED.signal(target);
-            }
-            if fresh && Instant::now() >= next_preview {
-                fresh = false;
-                next_preview = Instant::now() + PREVIEW_PERIOD;
-                let face = OVERLAY.lock(Cell::get);
-                display
-                    .surface(PREVIEW)
-                    .render_from(&mut Preview { frame, face });
-                PREVIEWS_SHOWN.fetch_add(1, Ordering::Relaxed);
+        if let Some(target) = frame_target.take() {
+            match camera.current() {
+                Some(frame) => {
+                    FRAME_TAKEN.signal(frame.take(target));
+                    fresh = false;
+                }
+                None => frame_target = Some(target),
             }
         }
         if let Some(canvas) = PANEL_WANTED.try_take() {
-            canvas.show_while(&mut display.surface(PANEL), || camera.pump());
+            canvas
+                .show_async(&mut display.surface(PANEL), || camera.service())
+                .await;
             PANEL_SHOWN.signal(canvas);
         }
         Timer::after(PUMP_PERIOD).await;
     }
 }
 
-/// Copy the frame into `target`, emptying the camera's buffer every few
-/// rows so that the capture of the next frame does not overflow.
-fn copy_frame(frame: &mut Frame<'_>, target: &mut [u8]) {
-    for y in 0..camera::HEIGHT {
-        target[y * SCANLINE_BYTES..(y + 1) * SCANLINE_BYTES].copy_from_slice(frame.scanline(y));
-        if y % COPY_ROWS_PER_PUMP == COPY_ROWS_PER_PUMP - 1 {
-            frame.pump();
+/// Run both networks once on the made-up inputs of `nn::check` and
+/// compare their outputs with what the computer computes: `true` when
+/// both agree bit for bit. Call it before the camera starts, so the log's
+/// times are those of each network alone on CPU0.
+fn check_networks(
+    detector: &yunet::int8::Model<'_>,
+    recognizer: &edgeface::int8::Model<'_>,
+    gelu: &GeluTable<'_>,
+    buffers: &mut Buffers,
+) -> bool {
+    check::noise(check::DETECTOR_SEED, buffers.detector_input);
+    let started = Instant::now();
+    let heads = detector.forward(
+        buffers.detector_input,
+        yunet::int8::Scratch::new(buffers.detector_i16, buffers.detector_f32),
+    );
+    let detector_ms = started.elapsed().as_millis();
+    let detector_print = check::fingerprint(
+        heads
+            .iter()
+            .flat_map(|head| [head.cls, head.obj, head.bbox, head.kps])
+            .flatten()
+            .copied(),
+    );
+
+    check::noise(check::RECOGNIZER_SEED, buffers.recognizer_input);
+    let started = Instant::now();
+    recognizer.forward(
+        gelu,
+        buffers.recognizer_input,
+        edgeface::int8::Scratch::new(buffers.recognizer_i16, buffers.recognizer_f32)
+            .with_hidden(buffers.hidden),
+        buffers.embedding,
+    );
+    let recognizer_ms = started.elapsed().as_millis();
+    let recognizer_print = check::fingerprint(buffers.embedding.iter().copied());
+    profile_recognizer(recognizer, gelu, buffers);
+
+    let same = detector_print == check::DETECTOR && recognizer_print == check::RECOGNIZER;
+    // Lane kernel calls that did not run on the vector unit: none is
+    // expected. (The detector's heads and its upsampling run on the
+    // kernels of `quant`, and are not counted here.)
+    let fallbacks = lanes::fallbacks();
+    if same {
+        info!(
+            "self-test: detector {detector_ms} ms, recognizer {recognizer_ms} ms alone, {fallbacks} scalar fallbacks; both compute what the computer computes"
+        );
+    } else {
+        warn!(
+            "self-test: detector {detector_ms} ms, recognizer {recognizer_ms} ms alone, {fallbacks} scalar fallbacks; NOT what the computer computes: detector {detector_print:#018x} (computer {:#018x}), recognizer {recognizer_print:#018x} (computer {:#018x})",
+            check::DETECTOR,
+            check::RECOGNIZER
+        );
+    }
+    same
+}
+
+/// Where the recognizer's time goes, from a pass with a trace: the time
+/// between two trace calls is booked to the part the second one ends.
+/// Each part includes the copy of its output to `f32` for the trace, so
+/// the parts add up to a little more than a pass without one.
+#[derive(Default)]
+struct Profile {
+    /// The stem, in microseconds.
+    stem: u64,
+    /// Each stage.
+    stages: [StageProfile; 4],
+    /// The head: pooling, LayerNorm, linear layer.
+    head: u64,
+}
+
+/// The parts of one stage of a [`Profile`], in microseconds.
+#[derive(Default)]
+struct StageProfile {
+    /// The downsample; stage 0 has none.
+    downsample: u64,
+    /// Each ConvBlock.
+    blocks: ArrayVec<u64, 5>,
+    /// The SplitTransposeBlock up to its attention's projection: the
+    /// split convolutions, the positional encoding, the attention.
+    attention: u64,
+    /// The SplitTransposeBlock's MLP.
+    mlp: u64,
+}
+
+impl Profile {
+    /// Book `micros` to the part that the trace `name` ends (the names of
+    /// `edgeface::int8::Model::forward_traced`).
+    fn book(&mut self, name: &str, micros: u64) {
+        if let Some(rest) = name.strip_prefix("stages.") {
+            let Some(part) = rest
+                .bytes()
+                .next()
+                .and_then(|digit| digit.checked_sub(b'0'))
+                .and_then(|stage| self.stages.get_mut(usize::from(stage)))
+            else {
+                return;
+            };
+            if rest.contains(".downsample") {
+                part.downsample += micros;
+            } else if rest.ends_with(".Add") {
+                let _ = part.blocks.try_push(micros);
+            } else {
+                // One of the SplitTransposeBlock's adds (`Add_1`, ...):
+                // the last is its MLP's.
+                part.attention += part.mlp;
+                part.mlp = micros;
+            }
+        } else if name.starts_with("stem") {
+            self.stem += micros;
+        } else {
+            self.head += micros;
         }
     }
 }
 
-/// Run the detector on the copied frame: the best face, in frame pixels.
-fn detect(weights: &BlobWeights<'_>, buffers: &mut Buffers) -> Option<Face> {
+/// Milliseconds with one decimal, from microseconds.
+struct Millis(u64);
+
+impl core::fmt::Display for Millis {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}.{}", self.0 / 1000, self.0 % 1000 / 100)
+    }
+}
+
+/// Run the recognizer once more with a trace and log where its time goes,
+/// one line per stage.
+fn profile_recognizer(
+    recognizer: &edgeface::int8::Model<'_>,
+    gelu: &GeluTable<'_>,
+    buffers: &mut Buffers,
+) {
+    let mut profile = Profile::default();
+    let started = Instant::now();
+    let mut last = started;
+    recognizer.forward_traced(
+        gelu,
+        buffers.recognizer_input,
+        edgeface::int8::Scratch::new(buffers.recognizer_i16, buffers.recognizer_f32)
+            .with_hidden(buffers.hidden),
+        buffers.embedding,
+        |name, _, _| {
+            let now = Instant::now();
+            profile.book(name, (now - last).as_micros());
+            last = now;
+        },
+    );
+    info!(
+        "profile: recognizer {} ms traced; stem {} ms, head {} ms",
+        Millis(started.elapsed().as_micros()),
+        Millis(profile.stem),
+        Millis(profile.head)
+    );
+    for (index, stage) in profile.stages.iter().enumerate() {
+        let mut blocks = ArrayString::<64>::new();
+        for (block, &micros) in stage.blocks.iter().enumerate() {
+            let separator = if block == 0 { "" } else { " + " };
+            let _ = write!(blocks, "{separator}{}", Millis(micros));
+        }
+        let total =
+            stage.downsample + stage.blocks.iter().sum::<u64>() + stage.attention + stage.mlp;
+        info!(
+            "profile: stage {index} {} ms: downsample {}, conv blocks {blocks}, attention {}, mlp {}",
+            Millis(total),
+            Millis(stage.downsample),
+            Millis(stage.attention),
+            Millis(stage.mlp)
+        );
+    }
+}
+
+/// Run the detector on the frame: the best face, in frame pixels.
+fn detect(
+    model: &yunet::int8::Model<'_>,
+    buffers: &mut Buffers,
+    timing: &mut Timing,
+) -> Option<Face> {
+    let started = Instant::now();
     let source = Rgb565Frame::new(buffers.frame, camera::WIDTH, camera::HEIGHT);
     let mut small = RgbImageMut::new(buffers.small, CONTENT_WIDTH, CONTENT_HEIGHT);
     downscale_to_rgb(&source, DOWNSCALE, &mut small);
     detector_input_i8(&small.as_image(), buffers.detector_input);
-    let heads = yunet::int8::forward(
-        weights,
+    timing.scale_ms = started.elapsed().as_millis() as u32;
+
+    let started = Instant::now();
+    let heads = model.forward(
         buffers.detector_input,
         yunet::int8::Scratch::new(buffers.detector_i16, buffers.detector_f32),
     );
     let faces = decode(&heads, DEFAULT_SCORE_THRESHOLD, DEFAULT_NMS_THRESHOLD);
+    timing.detect_ms = started.elapsed().as_millis() as u32;
     faces.best().map(|face| face.scaled(DOWNSCALE as f32))
 }
 
-/// Cut the face out of the copied frame, check its sharpness and run the
+/// Cut the face out of the frame, check its sharpness and run the
 /// recognizer. `None` when the crop is blurred or the landmarks are
 /// degenerate.
 fn embed(
-    weights: &BlobWeights<'_>,
+    model: &edgeface::int8::Model<'_>,
     gelu: &GeluTable<'_>,
     face: &Face,
     buffers: &mut Buffers,
     limits: &Limits,
+    timing: &mut Timing,
 ) -> Option<Embedding> {
-    let source = Rgb565Frame::new(buffers.frame, camera::WIDTH, camera::HEIGHT);
-    let mut half = RgbImageMut::new(buffers.source, SOURCE_WIDTH, SOURCE_HEIGHT);
-    downscale_to_rgb(&source, SOURCE_SCALE, &mut half);
+    let started = Instant::now();
+    let cut = cut_out(face, buffers, limits);
+    timing.align_ms = started.elapsed().as_millis() as u32;
+    cut?;
+
+    let started = Instant::now();
+    model.forward(
+        gelu,
+        buffers.recognizer_input,
+        edgeface::int8::Scratch::new(buffers.recognizer_i16, buffers.recognizer_f32)
+            .with_hidden(buffers.hidden),
+        buffers.embedding,
+    );
+    timing.embed_ms = started.elapsed().as_millis() as u32;
+    Some(Embedding::from_raw(buffers.embedding))
+}
+
+/// The recognizer's input: the face cut out of the frame, aligned by its
+/// landmarks. `None` when the crop is blurred or the landmarks are
+/// degenerate.
+///
+/// Only the part of the 2x scaled-down frame that the alignment reads is
+/// scaled down (`align::source_region`); the rest of the buffer keeps an
+/// older frame and is not read. The log gets the time of each step.
+fn cut_out(face: &Face, buffers: &mut Buffers, limits: &Limits) -> Option<()> {
+    let started = Instant::now();
     let landmarks = face
         .landmarks
         .map(|[x, y]| [x / SOURCE_SCALE as f32, y / SOURCE_SCALE as f32]);
+    let (columns, rows) = source_region(&landmarks, SOURCE_WIDTH, SOURCE_HEIGHT)?;
+    let region = (columns.len(), rows.len());
+    let source = Rgb565Frame::new(buffers.frame, camera::WIDTH, camera::HEIGHT);
+    let mut half = RgbImageMut::new(buffers.source, SOURCE_WIDTH, SOURCE_HEIGHT);
+    downscale_to_rgb_within(&source, SOURCE_SCALE, &mut half, columns, rows);
+    let scaled = started.elapsed();
     let mut crop = RgbImageMut::new(buffers.crop, CROP_SIZE, CROP_SIZE);
     align_face(&landmarks, &half.as_image(), &mut crop)?;
+    let warped = started.elapsed();
     let mut gray = GrayImageMut::new(buffers.crop_gray, CROP_SIZE, CROP_SIZE);
     rgb_to_gray(&crop.as_image(), &mut gray);
     let sharpness = laplacian_variance(&gray.as_image());
+    let judged = started.elapsed();
     if sharpness < limits.min_sharpness {
         info!("crop too blurred: sharpness {sharpness:.0}");
         return None;
     }
     recognizer_input_i8(&crop.as_image(), buffers.recognizer_input);
-    edgeface::int8::forward(
-        weights,
-        gelu,
-        buffers.recognizer_input,
-        edgeface::int8::Scratch::new(
-            buffers.recognizer_i16,
-            buffers.recognizer_f32,
-            buffers.plans,
-            buffers.norm_plans,
-        ),
-        buffers.embedding,
+    let done = started.elapsed();
+    info!(
+        "align: {}x{} of {SOURCE_WIDTH}x{SOURCE_HEIGHT} scaled in {} us, warp {} us, sharpness {} us, input {} us",
+        region.0,
+        region.1,
+        scaled.as_micros(),
+        (warped - scaled).as_micros(),
+        (judged - warped).as_micros(),
+        (done - judged).as_micros()
     );
-    Some(Embedding::from_raw(buffers.embedding))
+    Some(())
 }
 
 /// What the app is doing.
@@ -671,40 +1064,50 @@ impl Judged {
     }
 }
 
-/// How long the steps of the last cycle took.
+/// How long the steps of a cycle took; 0 for a step that did not run.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Timing {
-    /// Waiting for and copying the frame.
+    /// Waiting for the frame.
     capture_ms: u32,
-    /// The detector.
+    /// Scaling the frame down for the detector.
+    scale_ms: u32,
+    /// The detector, with the decoding of its outputs.
     detect_ms: u32,
-    /// The recognizer, of the last cycle that ran it.
+    /// Cutting the face out: scaling down, alignment, sharpness, and the
+    /// recognizer's input.
+    align_ms: u32,
+    /// The recognizer.
     embed_ms: u32,
+    /// The decision.
+    decide_ms: u32,
 }
 
 /// The application's state.
 struct App {
     /// The decision's limits.
     thresholds: Thresholds,
+    /// How far above the limit a score is sure.
+    sure: SureSteps,
     /// The gates' limits.
     limits: Limits,
     /// What the app is doing.
     mode: Mode,
-    /// The last embeddings of the face in front of the camera.
-    fusion: Fusion,
-    /// The last decisions.
-    vote: Vote,
-    /// The person the vote settled on: their gallery index, or `None`
-    /// for unknown; `None` as well before any decision.
-    shown_name: Option<Option<u8>>,
+    /// From the embeddings of the face in front of the camera to the name
+    /// on the banner.
+    decider: Decider,
     /// The score of the last decision, in hundredths.
     last_score: Option<i16>,
     /// What the user should do.
     hint: Hint,
     /// The last cycle's timing.
     timing: Timing,
-    /// Cycles in a row without a usable face.
-    idle_cycles: u8,
+    /// The timing on the panel: the detector's and the recognizer's of
+    /// the last cycles that ran them.
+    shown_timing: Timing,
+    /// When the panel's timing was brought up to date.
+    timing_shown_at: Instant,
+    /// When the last embedding was made.
+    last_usable: Instant,
     /// The newest events.
     terminal: Terminal,
 }
@@ -724,26 +1127,30 @@ impl App {
                 gallery.forget(name);
             }
             self.mode = Mode::Scanning;
-            self.fusion.clear();
-            self.vote.clear();
-            self.shown_name = None;
+            self.decider.clear();
             self.last_score = None;
             match store.save(gallery) {
-                Ok(()) => self.terminal.say("gallery emptied, flash too"),
+                Ok(()) => self.terminal.say("gallery emptied"),
                 Err(error) => {
                     warn!("flash: could not save: {error:?}");
-                    self.terminal.say("gallery emptied (flash failed)");
+                    self.terminal.say("flash save failed");
                 }
             }
         } else if MINUS_BUTTON.contains(point) {
-            self.thresholds.accept = (self.thresholds.accept - THRESHOLD_STEP).max(0.0);
-            self.terminal
-                .say_fmt(format_args!("limit {:.2}", self.thresholds.accept));
+            self.step_limit(-THRESHOLD_STEP);
         } else if PLUS_BUTTON.contains(point) {
-            self.thresholds.accept = (self.thresholds.accept + THRESHOLD_STEP).min(1.0);
-            self.terminal
-                .say_fmt(format_args!("limit {:.2}", self.thresholds.accept));
+            self.step_limit(THRESHOLD_STEP);
         }
+    }
+
+    /// Move the accept limit by `step` hundredths, within 0 and 1. The
+    /// limit stays a whole number of hundredths, as the panel shows it, so
+    /// many taps add up to no error.
+    fn step_limit(&mut self, step: i16) {
+        let limit = (hundredths(self.thresholds.accept) + step).clamp(0, 100);
+        self.thresholds.accept = f32::from(limit) / 100.0;
+        self.terminal
+            .say_fmt(format_args!("limit {:.2}", self.thresholds.accept));
     }
 
     /// Add a person and start recording them.
@@ -766,13 +1173,11 @@ impl App {
             }
         }
         let Some(index) = index else {
-            self.terminal.say("gallery full: FORGET");
+            self.terminal.say("gallery full: DEL");
             return;
         };
         self.mode = Mode::Enrolling { index, samples: 0 };
-        self.fusion.clear();
-        self.vote.clear();
-        self.shown_name = None;
+        self.decider.clear();
         self.terminal.say_fmt(format_args!("enrolling {name}"));
         self.terminal.say(ENROLL_PROMPTS[0]);
     }
@@ -843,8 +1248,7 @@ impl App {
                 self.terminal
                     .say_fmt(format_args!("{} enrolled", person.name()));
                 self.mode = Mode::Scanning;
-                self.vote.clear();
-                self.shown_name = None;
+                self.decider.clear();
                 match store.save(gallery) {
                     Ok(()) => self.terminal.say("saved to flash"),
                     Err(error) => {
@@ -859,158 +1263,180 @@ impl App {
             return;
         }
 
-        self.fusion.push(embedding);
-        let Some(fused) = self.fusion.fused() else {
-            return;
+        let decision = self
+            .decider
+            .push(embedding, gallery, bank, &self.thresholds, &self.sure);
+        self.last_score = Some(hundredths(decision.score));
+        let name = |index: Option<u8>| {
+            index
+                .and_then(|index| gallery.people().get(usize::from(index)))
+                .map_or("unknown", |person| person.name())
         };
-        let verdict = gallery.match_probe(&fused, bank, &self.thresholds);
-        self.last_score = Some((verdict.score() * 100.0) as i16);
-        let decision = verdict.name().and_then(|name| {
-            gallery
-                .people()
-                .iter()
-                .position(|person| person.name() == name)
-                .map(|index| index as u8)
-        });
         info!(
-            "decision: {} score {:.2} (limit {:.2}), fused over {FUSION_FRAMES} frames",
-            verdict.name().unwrap_or("unknown"),
-            verdict.score(),
-            self.thresholds.accept
+            "decision: {}{} score {:.2} on {} frames (limit {:.2}, sure from {:.2})",
+            decision.verdict.map_or("not yet", name),
+            if decision.sure { ", sure," } else { "" },
+            decision.score,
+            decision.frames,
+            self.thresholds.accept,
+            self.sure.limit(self.thresholds.accept, decision.frames)
         );
-        if let Some(settled) = self.vote.push(decision) {
-            self.shown_name = Some(settled);
-            match settled.and_then(|index| gallery.people().get(usize::from(index))) {
-                Some(person) => self
-                    .terminal
-                    .say_fmt(format_args!("hello {}", person.name())),
+        if let Some(shown) = decision.shown {
+            match shown {
+                Some(_) => self.terminal.say_fmt(format_args!("hello {}", name(shown))),
                 None => self.terminal.say("unknown face"),
             }
         }
     }
 
-    /// Everything the panel shows.
-    fn status(&self, gallery: &Gallery) -> Status {
+    /// Everything the panel shows. The timings follow the cycles at most
+    /// every [`TIMING_PERIOD`].
+    fn status(&mut self, gallery: &Gallery) -> Status {
+        if self.timing_shown_at.elapsed() >= TIMING_PERIOD {
+            self.timing_shown_at = Instant::now();
+            self.shown_timing.detect_ms = self.timing.scale_ms + self.timing.detect_ms;
+            // The recognizer does not run in every cycle: its last time
+            // stays.
+            if self.timing.embed_ms != 0 {
+                self.shown_timing.embed_ms = self.timing.align_ms + self.timing.embed_ms;
+            }
+        }
         Status {
             mode: self.mode,
             people: gallery.len() as u8,
-            shown_name: self.shown_name,
+            shown_name: self.decider.shown(),
             last_score: self.last_score,
-            accept: (self.thresholds.accept * 100.0) as i16,
+            accept: hundredths(self.thresholds.accept),
             hint: self.hint,
-            timing: self.timing,
+            detect_ms: self.shown_timing.detect_ms,
+            embed_ms: self.shown_timing.embed_ms,
             terminal: self.terminal.revision,
         }
     }
 
-    /// Draw the whole panel onto `canvas`.
-    fn draw_panel(&self, canvas: &mut Canvas, status: &Status, gallery: &Gallery) {
-        canvas.clear(theme::CHARCOAL);
-        common::text(
-            canvas,
-            "FACE ID",
-            Point::new(MARGIN, 6),
-            common::TITLE_FONT,
-            theme::WHITE,
-        );
+    /// Draw the panel onto `canvas`: all of it when `previous` is `None`,
+    /// otherwise the parts whose content differs from `previous`. A part
+    /// paints its whole area, so nothing of what it showed before stays.
+    fn draw_panel(
+        &self,
+        canvas: &mut Canvas,
+        status: &Status,
+        previous: Option<&Status>,
+        gallery: &Gallery,
+    ) {
+        if previous.is_none() {
+            canvas.clear(theme::CHARCOAL);
+            common::text(
+                canvas,
+                "FACE ID",
+                Point::new(MARGIN, 6),
+                common::TITLE_FONT,
+                theme::WHITE,
+            );
+            button(canvas, ENROLL_BUTTON, "ENROLL", theme::LIGHT_BLUE);
+            button(canvas, FORGET_BUTTON, "DEL", theme::DARK_GRAY);
+            button(canvas, MINUS_BUTTON, "-", theme::DARK_GRAY);
+            button(canvas, PLUS_BUTTON, "+", theme::DARK_GRAY);
+        }
 
-        let mut label = ArrayString::<24>::new();
-        let color = match (status.mode, status.shown_name) {
-            (Mode::Enrolling { samples, .. }, _) => {
-                let _ = write!(label, "ENROLL {samples}/{ENROLL_SAMPLES}");
-                theme::LIGHT_BLUE
-            }
-            (Mode::Scanning, _) if status.people == 0 => {
-                label.push_str("NOBODY ENROLLED");
-                theme::DARK_GRAY
-            }
-            (Mode::Scanning, Some(Some(index))) => {
-                let name = gallery
-                    .people()
-                    .get(usize::from(index))
-                    .map_or("?", |person| person.name());
-                let _ = write!(label, "{}", name.to_ascii_uppercase_array());
-                GREEN
-            }
-            (Mode::Scanning, Some(None)) => {
-                label.push_str("UNKNOWN");
-                RED
-            }
-            (Mode::Scanning, None) => {
-                label.push_str("SCANNING");
-                theme::DARK_GRAY
-            }
-        };
-        let Ok(()) = BANNER
-            .into_styled(PrimitiveStyle::with_fill(color))
-            .draw(canvas);
-        common::centered_text(canvas, BANNER, &label, common::TITLE_FONT, theme::WHITE);
+        if status.differs(previous, |s| (s.mode, s.shown_name, s.people)) {
+            let mut label = ArrayString::<24>::new();
+            let color = match (status.mode, status.shown_name) {
+                (Mode::Enrolling { samples, .. }, _) => {
+                    let _ = write!(label, "ENROLL {samples}/{ENROLL_SAMPLES}");
+                    theme::LIGHT_BLUE
+                }
+                (Mode::Scanning, _) if status.people == 0 => {
+                    label.push_str("NOBODY ENROLLED");
+                    theme::DARK_GRAY
+                }
+                (Mode::Scanning, Some(Some(index))) => {
+                    let name = gallery
+                        .people()
+                        .get(usize::from(index))
+                        .map_or("?", |person| person.name());
+                    let _ = write!(label, "{}", name.to_ascii_uppercase_array());
+                    GREEN
+                }
+                (Mode::Scanning, Some(None)) => {
+                    label.push_str("UNKNOWN");
+                    RED
+                }
+                (Mode::Scanning, None) => {
+                    label.push_str("SCANNING");
+                    theme::DARK_GRAY
+                }
+            };
+            let Ok(()) = BANNER
+                .into_styled(PrimitiveStyle::with_fill(color))
+                .draw(canvas);
+            common::centered_text(canvas, BANNER, &label, common::TITLE_FONT, theme::WHITE);
+        }
 
         let mut line = ArrayString::<TERMINAL_COLUMNS>::new();
-        let _ = match status.last_score {
-            Some(score) => write!(line, "score {} ", Fixed(score)),
-            None => write!(line, "score --   "),
-        };
-        let _ = write!(line, "lim {}", Fixed(status.accept));
-        common::text(
-            canvas,
-            &line,
-            Point::new(MARGIN, STATUS_TOP),
-            common::DENSE_FONT,
-            theme::WHITE,
-        );
-        common::text(
-            canvas,
-            status.hint.text(),
-            Point::new(MARGIN, STATUS_TOP + common::DENSE_LINE_HEIGHT),
-            common::DENSE_FONT,
-            if status.hint == Hint::Good {
+        if status.differs(previous, |s| (s.last_score, s.accept)) {
+            let _ = match status.last_score {
+                Some(score) => write!(line, "score {} ", Fixed(score)),
+                None => write!(line, "score --   "),
+            };
+            let _ = write!(line, "lim {}", Fixed(status.accept));
+            status_line(canvas, 0, &line, theme::WHITE);
+        }
+        if status.differs(previous, |s| s.hint) {
+            let color = if status.hint == Hint::Good {
                 GREEN
             } else {
                 theme::LIGHT_GRAY
-            },
-        );
-        line.clear();
-        let _ = write!(
-            line,
-            "det {}ms rec {}ms",
-            status.timing.detect_ms, status.timing.embed_ms
-        );
-        common::text(
-            canvas,
-            &line,
-            Point::new(MARGIN, STATUS_TOP + 2 * common::DENSE_LINE_HEIGHT),
-            common::DENSE_FONT,
-            theme::LIGHT_GRAY,
-        );
-        line.clear();
-        let _ = write!(line, "{} of {MAX_PEOPLE} enrolled", status.people);
-        common::text(
-            canvas,
-            &line,
-            Point::new(MARGIN, STATUS_TOP + 3 * common::DENSE_LINE_HEIGHT),
-            common::DENSE_FONT,
-            theme::LIGHT_GRAY,
-        );
-
-        let Ok(()) = TERMINAL
-            .into_styled(PrimitiveStyle::with_fill(BLACK))
-            .draw(canvas);
-        for (row, text) in self.terminal.lines.iter().enumerate() {
-            common::text(
-                canvas,
-                text,
-                TERMINAL.top_left + Point::new(2, 2 + row as i32 * common::DENSE_LINE_HEIGHT),
-                common::DENSE_FONT,
-                TERMINAL_GREEN,
-            );
+            };
+            status_line(canvas, 1, status.hint.text(), color);
+        }
+        if status.differs(previous, |s| (s.detect_ms, s.embed_ms)) {
+            line.clear();
+            let _ = write!(line, "det {}ms rec {}ms", status.detect_ms, status.embed_ms);
+            status_line(canvas, 2, &line, theme::LIGHT_GRAY);
+        }
+        if status.differs(previous, |s| s.people) {
+            line.clear();
+            let _ = write!(line, "{} of {MAX_PEOPLE} enrolled", status.people);
+            status_line(canvas, 3, &line, theme::LIGHT_GRAY);
         }
 
-        button(canvas, ENROLL_BUTTON, "ENROLL", theme::LIGHT_BLUE);
-        button(canvas, FORGET_BUTTON, "DEL", theme::DARK_GRAY);
-        button(canvas, MINUS_BUTTON, "-", theme::DARK_GRAY);
-        button(canvas, PLUS_BUTTON, "+", theme::DARK_GRAY);
+        if status.differs(previous, |s| s.terminal) {
+            let Ok(()) = TERMINAL
+                .into_styled(PrimitiveStyle::with_fill(BLACK))
+                .draw(canvas);
+            for (row, text) in self.terminal.lines.iter().enumerate() {
+                common::text(
+                    canvas,
+                    text,
+                    TERMINAL.top_left + Point::new(2, 2 + row as i32 * common::DENSE_LINE_HEIGHT),
+                    common::DENSE_FONT,
+                    TERMINAL_GREEN,
+                );
+            }
+        }
     }
+}
+
+/// Draw status line `row` (0 is the top one): its background over the
+/// panel's whole width, then `text`.
+fn status_line(canvas: &mut Canvas, row: i32, text: &str, color: Rgb565) {
+    debug_assert!(row < STATUS_LINES);
+    let top = STATUS_TOP + row * common::DENSE_LINE_HEIGHT;
+    canvas.fill(
+        Rectangle::new(
+            Point::new(0, top),
+            Size::new(PANEL.size.width, common::DENSE_LINE_HEIGHT as u32),
+        ),
+        theme::CHARCOAL,
+    );
+    common::text(
+        canvas,
+        text,
+        Point::new(MARGIN, top),
+        common::DENSE_FONT,
+        color,
+    );
 }
 
 /// Upper-case a name for the banner.
@@ -1030,14 +1456,15 @@ impl UpperCase for str {
 }
 
 /// Everything the panel shows. The panel is drawn again only when this
-/// changes.
+/// changes, and only the parts that changed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Status {
     /// What the app is doing.
     mode: Mode,
     /// People enrolled.
     people: u8,
-    /// The settled decision.
+    /// The person on the banner: their gallery index, or `None` for
+    /// unknown; `None` as well before any decision.
     shown_name: Option<Option<u8>>,
     /// The last score, in hundredths.
     last_score: Option<i16>,
@@ -1045,10 +1472,20 @@ struct Status {
     accept: i16,
     /// What the user should do.
     hint: Hint,
-    /// The last cycle's timing.
-    timing: Timing,
+    /// The detector's time, with the scaling of the frame.
+    detect_ms: u32,
+    /// The recognizer's time, with the cutting out of the face.
+    embed_ms: u32,
     /// The terminal's revision.
     terminal: u32,
+}
+
+impl Status {
+    /// Whether `part` of this status differs from the same part of
+    /// `previous`; always when there is no `previous`.
+    fn differs<T: PartialEq>(&self, previous: Option<&Self>, part: impl Fn(&Self) -> T) -> bool {
+        previous.is_none_or(|previous| part(previous) != part(self))
+    }
 }
 
 /// Draw a button: a filled box with a centred label.
@@ -1070,6 +1507,12 @@ impl core::fmt::Display for Fixed {
     }
 }
 
+/// `value` in hundredths, rounded: how the panel shows the scores and
+/// the limit.
+fn hundredths(value: f32) -> i16 {
+    libm::roundf(value * 100.0) as i16
+}
+
 /// The newest events, as lines of a small terminal on the panel.
 struct Terminal {
     /// The lines, oldest first, each with a `> ` prompt.
@@ -1087,7 +1530,8 @@ impl Terminal {
         }
     }
 
-    /// Log `text` and add it as the newest line.
+    /// Log `text` and add it as the newest line. The screen shows 19
+    /// characters of it.
     fn say(&mut self, text: &str) {
         self.say_fmt(format_args!("{text}"));
     }
@@ -1173,8 +1617,10 @@ fn paint(row: &mut [u8], columns: Range<i32>, color: [u8; 2]) {
 /// The enrollments in the flash chip.
 ///
 /// The last 128 KB of the 4 MB flash lie above the application image
-/// (2.4 MB from offset 64 KB), so a new firmware does not touch them. The
-/// layout, in 4 KB sectors:
+/// (2.4 MB from offset 64 KB), so a new firmware does not touch them:
+/// `cargo dist` writes an image that ends with the application
+/// (`--skip-padding`), and autoflash writes only that. An image padded to
+/// the size of the flash would erase them. The layout, in 4 KB sectors:
 ///
 /// - sector 0: a header: the magic `FACE`, the format version, the
 ///   number of people, and for each of the four slots the name (its
@@ -1207,8 +1653,9 @@ mod store {
     /// count.
     const SLOT_HEADER: usize = 4 + MAX_NAME + 4;
 
-    /// A sector-sized buffer on a word boundary, in internal RAM: the ROM
-    /// routines read and write it while the cache is off.
+    /// A sector-sized buffer on a word boundary, for the header and the
+    /// embeddings on their way to and from the flash. `esp-storage`
+    /// copies it through a buffer of its own for the ROM routines.
     #[repr(C, align(4))]
     struct Sector([u8; SECTOR]);
 

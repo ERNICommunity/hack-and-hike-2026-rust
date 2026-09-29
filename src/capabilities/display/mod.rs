@@ -8,6 +8,8 @@
 //!   at a time to fill. Use it for plain fills and patterns.
 //! - [`Surface::render_from`] sends ready-made rows from a
 //!   [`ScanlineSource`], such as a camera [`Frame`](super::camera::Frame).
+//!   [`Surface::render_from_async`] does the same and sleeps while the
+//!   pixels are on their way.
 //!
 //! For text and shapes, draw into a [`Canvas`](crate::ui::Canvas). The canvas
 //! sends only the pixels that changed.
@@ -103,6 +105,9 @@ pub struct Surface<'a> {
     display: &'a mut Display,
     /// The rectangle this surface covers, in panel coordinates.
     area: Rectangle,
+    /// Whether the live screen feed gets a copy of what is drawn; see
+    /// [`Surface::without_mirror`].
+    mirrored: bool,
 }
 
 /// A source of pixel rows as big-endian RGB565 bytes, ready to send.
@@ -117,9 +122,11 @@ pub trait ScanlineSource {
     /// for each pixel of the surface's width.
     fn fill_row(&mut self, y: usize, row: &mut [u8]);
 
-    /// Called again and again while the panel still receives the previous
-    /// rows. Use it for work that can run during the transfer, such as
-    /// capturing the next camera frame. By default, it does nothing.
+    /// Called while the panel still receives the previous rows: again and
+    /// again by [`Surface::render_from`], and at least once per batch of
+    /// rows by [`Surface::render_from_async`]. Use it for work that can run
+    /// during the transfer, such as capturing the next camera frame. By
+    /// default, it does nothing.
     fn while_transferring(&mut self) {}
 }
 
@@ -154,6 +161,7 @@ impl Display {
         Surface {
             display: self,
             area,
+            mirrored: true,
         }
     }
 }
@@ -174,6 +182,18 @@ impl Surface<'_> {
         self.area.size.height as usize
     }
 
+    /// The same surface, but what it draws does not go to the live screen
+    /// feed (see `logging`): the feed keeps what it had there.
+    ///
+    /// Copying the pixels for the feed costs CPU0 time, and the feed shows
+    /// only a few frames per second of an area that changes all the time.
+    /// A camera preview drawn ten times per second can send every fourth
+    /// frame to the feed and draw the others without it.
+    pub fn without_mirror(mut self) -> Self {
+        self.mirrored = false;
+        self
+    }
+
     /// Borrow a smaller surface inside this one. `area` is relative to this
     /// surface.
     ///
@@ -191,6 +211,7 @@ impl Surface<'_> {
         Surface {
             display: &mut *self.display,
             area: Rectangle::new(self.area.top_left + area.top_left, area.size),
+            mirrored: self.mirrored,
         }
     }
 
@@ -208,12 +229,16 @@ impl Surface<'_> {
     /// ```
     pub fn render_scanlines(&mut self, render_row: impl FnMut(usize, &mut [Rgb565])) {
         let width = self.width();
-        let Surface { display, area } = self;
+        let Surface {
+            display,
+            area,
+            mirrored,
+        } = self;
         let mut rows = ComputedRows {
             render_row,
             pixels: &mut display.line_buffer[..width],
         };
-        display.transport.render(*area, &mut rows);
+        display.transport.render(*area, *mirrored, &mut rows);
     }
 
     /// Draw the whole surface from rows that are already big-endian RGB565
@@ -223,7 +248,24 @@ impl Surface<'_> {
     /// `source` is asked for [`height()`](Self::height) rows of
     /// [`width()`](Self::width) pixels each.
     pub fn render_from(&mut self, source: &mut impl ScanlineSource) {
-        self.display.transport.render(self.area, source);
+        self.display
+            .transport
+            .render(self.area, self.mirrored, source);
+    }
+
+    /// [`Surface::render_from`] for a task that can wait: the same picture,
+    /// but the CPU is free for other work while the pixels are on their
+    /// way to the panel, which is most of the time of a drawing.
+    ///
+    /// Use it in a task on an interrupt executor, so that the task it
+    /// interrupts (a long computation) goes on during the transfer. The
+    /// source's `while_transferring` runs at least once per batch of rows,
+    /// about once per millisecond.
+    pub async fn render_from_async(&mut self, source: &mut impl ScanlineSource) {
+        self.display
+            .transport
+            .render_async(self.area, self.mirrored, source)
+            .await;
     }
 }
 

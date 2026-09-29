@@ -18,4 +18,8 @@ ESP_BACKTRACE_CONFIG_BACKTRACE_FRAMES = "20"
 build-std = ["core", "alloc"]
 
 [alias]
-dist = "espflash save-image --chip esp32s3 --release --merge firmware.bin"
+# A merged image for address 0x0 that ends with the application. Without
+# `--skip-padding` it would be padded to the whole 4 MB flash, and flashing
+# it would erase what applications keep above their image (Face ID's
+# enrollments in the last 128 KB).
+dist = "espflash save-image --chip esp32s3 --release --merge --skip-padding firmware.bin"

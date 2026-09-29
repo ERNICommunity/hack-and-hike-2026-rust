@@ -15,19 +15,32 @@
 //!
 //! When the computer asks for a refresh, the encoder sends Hello and marks
 //! the whole screen dirty.
+//!
+//! # Only while somebody watches
+//!
+//! The copy costs CPU0 time and PSRAM traffic for every pixel that goes to
+//! the panel: about 6 ms for a camera preview of 184x240 pixels. An
+//! application that draws many pixels and computes a lot can switch the
+//! copy off while nobody watches ([`only_when_watched`]). Somebody watches
+//! from start-up and from a refresh request, until the computer stops
+//! reading the port for [`UNWATCHED_AFTER`]. At start-up because a page
+//! that stays connected while the board restarts sends no refresh
+//! request. The copy of the panel is out of date when the next viewer
+//! comes, so the application draws everything again when [`refreshes`]
+//! changes.
 
 use core::{
     cell::{Cell, RefCell},
-    sync::atomic::{AtomicU16, Ordering},
+    sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering},
 };
 
 use allocator_api2::vec::Vec;
 use critical_section::Mutex;
 use embassy_futures::select::{Either, select};
-use embassy_time::{Duration, Ticker};
+use embassy_time::{Duration, Ticker, with_timeout};
 use hack_and_hike_core::screen::{self, MAX_RECT_PIXELS, Rect};
 
-use super::serial::{PacketSender, REFRESH};
+use super::serial::{PacketSender, REFRESH, Slot};
 use crate::{
     board::psram,
     capabilities::display::{HEIGHT, WIDTH},
@@ -35,6 +48,34 @@ use crate::{
 
 /// Time between two encoder runs.
 const TICK: Duration = Duration::from_millis(40);
+/// A packet that waits this long for the serial port means that no program
+/// on the computer reads the port: nobody watches.
+const UNWATCHED_AFTER: Duration = Duration::from_secs(2);
+
+/// Whether [`record`] copies pixels only while somebody watches.
+static ONLY_WHEN_WATCHED: AtomicBool = AtomicBool::new(false);
+/// Whether somebody watches: since start-up or a refresh request, the
+/// computer has read the port.
+static WATCHED: AtomicBool = AtomicBool::new(true);
+/// The refresh requests so far.
+static REFRESHES: AtomicU32 = AtomicU32::new(0);
+
+/// Copy the panel for the screen feed only while somebody watches it
+/// (`true`), or always (`false`, as after start-up).
+///
+/// An application that switches this on must draw its whole screen again
+/// when [`mirror_refreshes`](crate::logging::mirror_refreshes) changes:
+/// what it drew while nobody watched is not in the copy. For a [`Canvas`](crate::ui::Canvas), call
+/// [`invalidate`](crate::ui::Canvas::invalidate) before the next `show`.
+pub fn only_when_watched(enabled: bool) {
+    ONLY_WHEN_WATCHED.store(enabled, Ordering::Relaxed);
+}
+
+/// How often a program on the computer has asked for the whole screen. It
+/// asks when it starts to watch, so a change means a new viewer.
+pub fn refreshes() -> u32 {
+    REFRESHES.load(Ordering::Relaxed)
+}
 
 /// The dirty columns of one row, from `min` to `max`, both included. The
 /// span is empty when `min > max`.
@@ -123,6 +164,9 @@ pub(crate) fn enable() {
 /// RGB565, row after row. Pixels outside the panel are ignored. Before
 /// [`enable`], this function does nothing.
 pub(crate) fn record(x: usize, y: usize, width: usize, rows: usize, bytes: &[u8]) {
+    if ONLY_WHEN_WATCHED.load(Ordering::Relaxed) && !WATCHED.load(Ordering::Relaxed) {
+        return;
+    }
     let Some(shadow) = shadow() else {
         return;
     };
@@ -168,6 +212,10 @@ pub(super) async fn encoder_task(mut packets: PacketSender) {
     let mut ticker = Ticker::every(TICK);
     loop {
         if let Either::Second(()) = select(ticker.next(), REFRESH.wait()).await {
+            // Somebody watches from now on. Count the request after that,
+            // so an application that sees the count draws into the copy.
+            WATCHED.store(true, Ordering::Relaxed);
+            REFRESHES.fetch_add(1, Ordering::Relaxed);
             send_hello(&mut packets).await;
             with_dirty(|spans| spans.fill(Span::FULL));
         }
@@ -182,9 +230,18 @@ pub(super) async fn encoder_task(mut packets: PacketSender) {
     }
 }
 
+/// Wait for a free packet slot. When that takes [`UNWATCHED_AFTER`], the
+/// computer does not read the port, so nobody watches any more.
+async fn free_slot(packets: &mut PacketSender) -> &mut Slot {
+    if with_timeout(UNWATCHED_AFTER, packets.send()).await.is_err() {
+        WATCHED.store(false, Ordering::Relaxed);
+    }
+    packets.send().await
+}
+
 /// Send a Hello packet with the screen size.
 async fn send_hello(packets: &mut PacketSender) {
-    let slot = packets.send().await;
+    let slot = free_slot(packets).await;
     if screen::write_hello(WIDTH as u16, HEIGHT as u16, slot).is_some() {
         packets.send_done();
     }
@@ -220,7 +277,7 @@ async fn send_dirty(packets: &mut PacketSender, shadow: &[AtomicU16], spans: &[S
             let pixel = |index: usize| {
                 shadow[(top + index / width) * WIDTH + left + index % width].load(Ordering::Relaxed)
             };
-            let slot = packets.send().await;
+            let slot = free_slot(packets).await;
             // A slot always fits `MAX_RECT_PIXELS` pixels, so this never
             // fails. If it did, the slot would stay free for the next packet.
             if screen::write_rect(rect, pixel, slot).is_some() {

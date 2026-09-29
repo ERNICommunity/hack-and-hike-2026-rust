@@ -1,7 +1,9 @@
 //! The arithmetic of the lane kernels in scalar code: exactly what the
 //! vector unit computes, so the computer and the board agree bit for
-//! bit. A board test checks each assembly primitive against these
-//! (`docs/face_id/performance.md` says how).
+//! bit. The application's self-test checks both networks built from
+//! these on the board against the computer ([`check`](crate::nn::check));
+//! `docs/face_id/performance.md` says how to check each assembly
+//! primitive on its own again.
 
 use super::{GroupPlan, LANES, LaneWeight, NormPlan, Run, Store, Tap, decode_lanes};
 
@@ -67,6 +69,10 @@ pub fn scale16(value: i16, factor: i16, shift: u32) -> i16 {
 /// units), and the factor and shift that take `value - mean` to the
 /// standardized value in units of `2^-11`: `1 / sqrt(variance +
 /// epsilon)` with `step` folded in.
+///
+/// The definition, from the squares about the mean. The kernels compute
+/// the same constants from the sums of a row ([`norm_constants`]); the
+/// tests check that both agree.
 pub fn norm_row(row: &[i16], step: f32, epsilon: f32) -> (i16, i16, u32) {
     let n = row.len() as i64;
     let sum: i64 = row.iter().map(|&v| i64::from(v)).sum();
@@ -76,9 +82,47 @@ pub fn norm_row(row: &[i16], step: f32, epsilon: f32) -> (i16, i16, u32) {
         let d = i64::from(v) - i64::from(mean);
         squares += d * d;
     }
+    norm_scale(n, mean, squares, step, epsilon)
+}
+
+/// The sum of a row's values and the sum of their squares, exact.
+pub fn row_sums(row: &[i16]) -> (i64, i64) {
+    row.iter().fold((0, 0), |(sum, squares), &v| {
+        let v = i64::from(v);
+        (sum + v, squares + v * v)
+    })
+}
+
+/// [`norm_row`] from the sums of [`row_sums`] of a row of `len` values:
+/// the same constants. The squares about the mean are `squares - 2 *
+/// mean * sum + len * mean^2`, exact in integers, and the mean's division
+/// runs in 32 bits (a 64-bit division is a software routine on the
+/// board); a row's sum is far inside `i32`.
+pub fn norm_constants(
+    len: usize,
+    sum: i64,
+    squares: i64,
+    step: f32,
+    epsilon: f32,
+) -> (i16, i16, u32) {
+    let n = len as i64;
+    let mean = match (i32::try_from(2 * sum + n), i32::try_from(2 * n)) {
+        (Ok(twice), Ok(divisor)) => sat16(i64::from(twice.div_euclid(divisor))),
+        _ => sat16((2 * sum + n).div_euclid(2 * n)),
+    };
+    let m = i64::from(mean);
+    let centred = squares - 2 * m * sum + n * m * m;
+    norm_scale(n, mean, centred, step, epsilon)
+}
+
+/// The rest of [`norm_row`]: from the squares about the mean to the
+/// factor and the shift.
+fn norm_scale(n: i64, mean: i16, squares: i64, step: f32, epsilon: f32) -> (i16, i16, u32) {
     // In real units: variance = squares / n * step^2 (`squares` is below
-    // 2^38, exact enough as f32 for a standard deviation).
-    let variance = squares as f32 / n as f32 * step * step;
+    // 2^38, exact enough as f32 for a standard deviation). The 32-bit
+    // conversion when it fits: the 64-bit one is a software routine on
+    // the board, and both give the nearest `f32`.
+    let variance = crate::nn::quant::sum_to_f32(squares) / n as f32 * step * step;
     let rstd = 1.0 / libm::sqrtf(variance + epsilon);
     // value - mean (input units) times step * rstd gives the standardized
     // value; in units of 2^-11 that is times step * rstd * 2^11.
@@ -88,8 +132,8 @@ pub fn norm_row(row: &[i16], step: f32, epsilon: f32) -> (i16, i16, u32) {
     (mean, factor, shift)
 }
 
-/// Apply a LayerNorm row with the constants of [`norm_row`] through the
-/// plans.
+/// Apply a LayerNorm row with the constants of [`norm_constants`]
+/// through the plans.
 pub fn norm_apply(
     row: &[i16],
     mean: i16,
@@ -127,8 +171,18 @@ pub fn groups(
             let values = &input[run.input..run.input + run.len];
             for (k, &v) in values.iter().enumerate() {
                 let base = ((first + g) * weight.per_output + run.weight + k) * LANES;
-                for (sum, &w) in sums.iter_mut().zip(&weight.data[base..base + LANES]) {
-                    *sum += i64::from(v) * i64::from(w);
+                // The 16-bit copy when there is one: the board reads that.
+                match weight.wide {
+                    Some(wide) => {
+                        for (sum, &w) in sums.iter_mut().zip(&wide[base..base + LANES]) {
+                            *sum += i64::from(v) * i64::from(w);
+                        }
+                    }
+                    None => {
+                        for (sum, &w) in sums.iter_mut().zip(&weight.data[base..base + LANES]) {
+                            *sum += i64::from(v) * i64::from(w);
+                        }
+                    }
                 }
             }
         }

@@ -1,7 +1,7 @@
 //! Similarity fitting and bilinear warping on synthetic images.
 
 use hack_and_hike_vision::image::{GrayImage, GrayImageMut, RgbImage, RgbImageMut};
-use hack_and_hike_vision::warp::{ARCFACE_TEMPLATE_112, Similarity, fit, warp};
+use hack_and_hike_vision::warp::{ARCFACE_TEMPLATE_112, Similarity, fit, footprint, warp};
 
 /// A similarity that rotates by `degrees`, scales by `scale` and then moves
 /// by `(tx, ty)`.
@@ -222,4 +222,74 @@ fn warp_keeps_the_channels_apart() {
     warp(&src, &shifted, &mut dst);
     assert_eq!(dst.pixel(3, 5), [4, 5, 7]);
     assert_eq!(dst.pixel(31, 5), [0, 0, 0]);
+}
+
+#[test]
+fn the_footprint_holds_every_pixel_the_warp_reads() {
+    // A 64x48 RGB source of values that look random. For each transform,
+    // a second source keeps the footprint and has every other pixel
+    // replaced by garbage: the warps of the two must be equal byte for
+    // byte. Rotations, scales and shifts that put the crop inside the
+    // source, across its edges and outside it.
+    let (width, height) = (64usize, 48usize);
+    let mut state = 12_345u32;
+    let source: Vec<u8> = (0..width * height * 3)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    let mut checked = 0;
+    for degrees in [-37.0f32, -8.0, 0.0, 3.5, 21.0, 90.0, 180.0] {
+        for scale in [0.35f32, 0.5, 0.71, 1.0, 1.9] {
+            for (tx, ty) in [(5.0f32, 3.0f32), (20.3, 11.7), (50.0, 40.0), (-9.0, 30.0)] {
+                let transform = similarity(degrees, scale, tx, ty);
+                let (columns, rows) =
+                    footprint(&transform, 28, 28, width, height).expect("a finite transform");
+                assert!(columns.end <= width && rows.end <= height);
+                let mut poisoned = vec![0xA5u8; source.len()];
+                for y in rows.clone() {
+                    let range = (y * width + columns.start) * 3..(y * width + columns.end) * 3;
+                    poisoned[range.clone()].copy_from_slice(&source[range]);
+                }
+                let mut expected = vec![0u8; 28 * 28 * 3];
+                let mut actual = vec![0u8; 28 * 28 * 3];
+                warp(
+                    &RgbImage::new(&source, width, height),
+                    &transform,
+                    &mut RgbImageMut::new(&mut expected, 28, 28),
+                );
+                warp(
+                    &RgbImage::new(&poisoned, width, height),
+                    &transform,
+                    &mut RgbImageMut::new(&mut actual, 28, 28),
+                );
+                assert_eq!(
+                    actual, expected,
+                    "{degrees} degrees, scale {scale}, shift ({tx}, {ty})"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 7 * 5 * 4);
+}
+
+#[test]
+fn a_transform_that_is_not_finite_has_no_footprint() {
+    let broken = Similarity {
+        a: f32::NAN,
+        ..Similarity::IDENTITY
+    };
+    assert_eq!(footprint(&broken, 4, 4, 10, 10), None);
+    assert_eq!(
+        footprint(&Similarity::IDENTITY, 0, 4, 10, 10),
+        Some((0..0, 0..0))
+    );
+    // The identity reads the destination's own pixels, and one more on
+    // every side that is inside the source.
+    assert_eq!(
+        footprint(&Similarity::IDENTITY, 4, 3, 10, 10),
+        Some((0..6, 0..5))
+    );
 }

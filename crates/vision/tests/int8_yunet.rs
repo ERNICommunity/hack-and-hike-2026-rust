@@ -10,7 +10,7 @@
 
 mod common;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use common::Tensors;
 use hack_and_hike_vision::{
@@ -21,6 +21,8 @@ use hack_and_hike_vision::{
     image::RgbImage,
     nn::{
         Shape, Weights,
+        lanes::GroupPlan,
+        pack,
         quant::{self, Granularity, Quant},
         yunet::{self, INPUT_SHAPE, int8},
     },
@@ -48,12 +50,16 @@ const MAX_SCORE_DIFFERENCE: f32 = 0.005;
 type Ranges = HashMap<String, (Granularity, Vec<(f32, f32)>)>;
 
 /// An integer weights file built in memory: `f32` tensors (biases,
-/// scales, activation mappings) and `i8` tensors (weights), by name.
+/// scales, activation mappings) and `i8` tensors (weights), by name. The
+/// weights with a multiple of eight output channels are grouped by eight
+/// (`nn::pack`), as the board groups them in its copy of the file.
 struct Quantized {
     /// The `f32` tensors.
     f32s: HashMap<String, Vec<f32>>,
     /// The `i8` tensors.
     i8s: HashMap<String, Vec<i8>>,
+    /// The names of the grouped `i8` tensors.
+    packed: HashSet<String>,
 }
 
 impl Weights for Quantized {
@@ -68,6 +74,10 @@ impl Weights for Quantized {
             .get(name)
             .unwrap_or_else(|| panic!("no i8 tensor called {name}"))
     }
+
+    fn packed(&self, name: &str) -> bool {
+        self.packed.contains(name)
+    }
 }
 
 /// What `facekit quantize` does: every `<name>.weight` becomes `i8` data
@@ -79,6 +89,7 @@ fn quantize_model(weights: &Tensors, ranges: &Ranges) -> Quantized {
     let mut out = Quantized {
         f32s: HashMap::new(),
         i8s: HashMap::new(),
+        packed: HashSet::new(),
     };
     for name in weights.names() {
         let (shape, values) = weights.tensor(name);
@@ -105,6 +116,13 @@ fn quantize_model(weights: &Tensors, ranges: &Ranges) -> Quantized {
                     &mut data,
                     &mut scales,
                 );
+                if channels.is_multiple_of(pack::GROUP) {
+                    let rows: Vec<u8> = data.iter().map(|&w| w as u8).collect();
+                    let mut packed = vec![0u8; rows.len()];
+                    pack::pack_rows(&rows, channels, rows.len() / channels, &mut packed);
+                    data = packed.iter().map(|&w| w as i8).collect();
+                    out.packed.insert(name.to_string());
+                }
             }
             other => panic!("{name}: unexpected weight layout {other}"),
         }
@@ -182,13 +200,21 @@ fn every_stage_is_within_the_quantization_noise() {
     let input = golden_input(&golden);
     let (reference, quantized) = calibrate(&weights, &input);
 
-    let mut i16s = vec![0i16; int8::SCRATCH_I16_LEN];
+    let mut i16s = vec![0i16; int8::SCRATCH_I16_LEN + 8];
     let mut f32s = vec![0.0f32; int8::F32_SCRATCH_LEN];
-    let mut actual = Trace::new();
-    let heads = int8::forward_traced(
+    let mut padded = vec![0i8; int8::MODEL_WEIGHTS_LEN + 16];
+    let mut plans = vec![GroupPlan::ZERO; int8::MODEL_PLANS];
+    let model = int8::Model::compile(
         &quantized,
+        int8::ModelStorage {
+            weights: common::aligned(&mut padded),
+            plans: &mut plans,
+        },
+    );
+    let mut actual = Trace::new();
+    let heads = model.forward_traced(
         &input_i8(&input),
-        int8::Scratch::new(&mut i16s, &mut f32s),
+        int8::Scratch::new(common::aligned(&mut i16s), &mut f32s),
         |node, shape, values| actual.push((node.to_string(), shape, values.to_vec())),
     );
 
@@ -257,12 +283,20 @@ fn decodes_the_same_face_as_the_f32_pass() {
     let heads = yunet::forward(&weights, &input, &mut scratch);
     let expected = decode(&heads, DEFAULT_SCORE_THRESHOLD, DEFAULT_NMS_THRESHOLD);
 
-    let mut i16s = vec![0i16; int8::SCRATCH_I16_LEN];
+    let mut i16s = vec![0i16; int8::SCRATCH_I16_LEN + 8];
     let mut f32s = vec![0.0f32; int8::F32_SCRATCH_LEN];
-    let heads = int8::forward(
+    let mut padded = vec![0i8; int8::MODEL_WEIGHTS_LEN + 16];
+    let mut plans = vec![GroupPlan::ZERO; int8::MODEL_PLANS];
+    let model = int8::Model::compile(
         &quantized,
+        int8::ModelStorage {
+            weights: common::aligned(&mut padded),
+            plans: &mut plans,
+        },
+    );
+    let heads = model.forward(
         &input_i8(&input),
-        int8::Scratch::new(&mut i16s, &mut f32s),
+        int8::Scratch::new(common::aligned(&mut i16s), &mut f32s),
     );
     let actual = decode(&heads, DEFAULT_SCORE_THRESHOLD, DEFAULT_NMS_THRESHOLD);
 

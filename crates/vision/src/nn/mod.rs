@@ -9,7 +9,13 @@
 //! - [`edgeface`]: the face recognizer, convolutions, layer normalization,
 //!   small matrix products and attention,
 //! - [`quant`]: the integer versions of the expensive kernels, and how
-//!   tensors move between `f32` and `i8`.
+//!   tensors move between `f32` and `i8`,
+//! - [`lanes`]: the integer pipeline of the vector unit, which both
+//!   networks run on the board (`yunet::int8`, `edgeface::int8`),
+//! - [`pack`]: the weights grouped by eight output channels, the layout
+//!   the vector unit reads,
+//! - [`check`]: a check of both networks on the board against the
+//!   computer.
 //!
 //! Everything here is the `f32` reference: plain loops, written for
 //! clarity and checked against the models' original outputs (see the
@@ -31,6 +37,7 @@
 //! The task stacks on the board are small, so callers keep these buffers
 //! in the heap or in PSRAM, never on the stack.
 
+pub mod check;
 pub mod edgeface;
 pub mod lanes;
 pub mod pack;

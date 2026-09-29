@@ -1,6 +1,6 @@
-//! The assembly of the lane kernels. Vector registers `q0`..`q7`, `QACC`
-//! and `SAR` are used freely: nothing the compiler generates touches
-//! them. Every function checks its operands and returns `false` when
+//! The assembly of the lane kernels. Vector registers `q0`..`q7`,
+//! `QACC`, `ACCX` and `SAR` are used freely: nothing the compiler
+//! generates touches them. Every function checks its operands and returns `false` when
 //! they do not fit the instructions' alignment rules, so the caller can
 //! fall back to the scalar model.
 #![allow(unsafe_code)]
@@ -20,7 +20,8 @@ fn aligned8<T>(slice: &[T]) -> bool {
 }
 
 /// `count` groups from `first` over `runs` with their epilogues into
-/// `out`; see `groups_epilogue`.
+/// `out`; see `groups_epilogue`. From the 16-bit weights when the weight
+/// has them, else from the 8-bit ones.
 pub fn groups(
     input: &[i16],
     weight: &LaneWeight<'_>,
@@ -31,7 +32,7 @@ pub fn groups(
     out: &mut [i16],
 ) -> bool {
     let per_output = weight.per_output;
-    let usable = count > 0
+    let fits_operands = count > 0
         && !runs.is_empty()
         && runs.iter().all(|run| {
             run.len >= 2
@@ -45,21 +46,20 @@ pub fn groups(
                     .checked_add(run.len)
                     .is_some_and(|end| end <= per_output)
         })
-        && (first + count)
-            .checked_mul(per_output * LANES)
-            .is_some_and(|end| end <= weight.data.len())
         && first + count <= weight.plans.len()
-        && aligned8(weight.data)
         && aligned16(out)
         && out.len() == count * LANES;
-    if !usable {
+    if !fits_operands {
         return false;
     }
+    let end = (first + count).checked_mul(per_output * LANES);
+    let fits = |len: usize| end.is_some_and(|end| end <= len);
+    let start = first * per_output * LANES;
     let limit = Constants([GELU_LIMIT; 8]);
-    let args = GroupArgs {
+    let mut args = GroupArgs {
         input: input.as_ptr(),
-        weights: weight.data[first * per_output * LANES..].as_ptr(),
-        stride: per_output * LANES,
+        weights: core::ptr::null(),
+        stride: 0,
         runs: runs.as_ptr().cast(),
         run_count: runs.len(),
         plans: weight.plans[first..].as_ptr(),
@@ -67,18 +67,42 @@ pub fn groups(
         out: out.as_mut_ptr(),
         limit: limit.0.as_ptr(),
     };
-    // SAFETY: every run lies inside the input and the filters, the groups
-    // inside the weights and the plans; `out` is aligned with room for
-    // the groups; only registers the compiler does not use are written.
-    unsafe {
-        match store {
-            Store::Write => qacc_groups::<0>(&args),
-            Store::Add => qacc_groups::<1>(&args),
-            Store::Relu => qacc_groups::<2>(&args),
-            Store::Gelu(_) => qacc_groups::<3>(&args),
+    match weight.wide {
+        Some(wide) if fits(wide.len()) && aligned16(wide) => {
+            args.weights = wide[start..].as_ptr().cast();
+            args.stride = per_output * LANES * 2;
+            // SAFETY: every run lies inside the input and the filters, the
+            // groups inside the weights and the plans; the weights and
+            // `out` are aligned, `out` has room for the groups; only
+            // registers the compiler does not use are written.
+            unsafe {
+                match store {
+                    Store::Write => qacc_groups::<0, true>(&args),
+                    Store::Add => qacc_groups::<1, true>(&args),
+                    Store::Relu => qacc_groups::<2, true>(&args),
+                    Store::Gelu(_) => qacc_groups::<3, true>(&args),
+                }
+            }
+            true
         }
+        // Also when the 16-bit copy does not fit the rules: the same
+        // values.
+        _ if fits(weight.data.len()) && aligned8(weight.data) => {
+            args.weights = weight.data[start..].as_ptr();
+            args.stride = per_output * LANES;
+            // SAFETY: as above, with the 8-bit weights.
+            unsafe {
+                match store {
+                    Store::Write => qacc_groups::<0, false>(&args),
+                    Store::Add => qacc_groups::<1, false>(&args),
+                    Store::Relu => qacc_groups::<2, false>(&args),
+                    Store::Gelu(_) => qacc_groups::<3, false>(&args),
+                }
+            }
+            true
+        }
+        _ => false,
     }
-    true
 }
 
 /// The largest GELU input, in units of `2^-10`: 16.
@@ -90,7 +114,7 @@ const GELU_LIMIT: i16 = 16384;
 struct GroupArgs {
     /// The input values (offset 0).
     input: *const i16,
-    /// The first group's weights (4).
+    /// The first group's weights, `i8` or `i16` (4).
     weights: *const i8,
     /// Bytes per group of weights (8).
     stride: usize,
@@ -159,15 +183,46 @@ macro_rules! store_mode {
     };
 }
 
+/// The address of a run's weights in `{w}` from its offset in inputs:
+/// eight weights per input, of one byte or of two.
+macro_rules! run_weights {
+    (false) => {
+        "addx8 {w}, {w}, {wg}"
+    };
+    (true) => {
+        concat!("slli {w}, {w}, 4\n", "add {w}, {w}, {wg}")
+    };
+}
+
+/// The weights of the next two inputs into `q2` and `q4`, as 16 bits:
+/// widened from 8 (the sign of each byte from a compare with the zero in
+/// `q7`, zipped in) or loaded as they are.
+macro_rules! load_pair {
+    (false) => {
+        concat!(
+            "ee.vld.l.64.ip q2, {w}, 8\n",
+            "ee.vld.l.64.ip q4, {w}, 8\n",
+            "ee.vcmp.lt.s8 q3, q2, q7\n",
+            "ee.vcmp.lt.s8 q5, q4, q7\n",
+            "ee.vzip.8 q2, q3\n",
+            "ee.vzip.8 q4, q5",
+        )
+    };
+    (true) => {
+        concat!("ee.vld.128.ip q2, {w}, 16\n", "ee.vld.128.ip q4, {w}, 16",)
+    };
+}
+
 /// `count` groups over `runs` into `out`, `MODE` 0 write, 1 add, 2 relu,
-/// 3 clamp to the GELU range. Per group: load the bias image into the
-/// accumulator, accumulate every run (two inputs per iteration: the
-/// eight weights at each input widened from 8 to 16 bits, the input
-/// broadcast by the multiply-accumulate's own load), then the epilogue.
+/// 3 clamp to the GELU range, from 16-bit weights when `WIDE`. Per group:
+/// load the bias image into the accumulator, accumulate every run (two
+/// inputs per iteration: the eight weights at each input as 16 bits, the
+/// input broadcast by the multiply-accumulate's own load), then the
+/// epilogue.
 #[inline]
-unsafe fn qacc_groups<const MODE: u8>(args: &GroupArgs) {
+unsafe fn qacc_groups<const MODE: u8, const WIDE: bool>(args: &GroupArgs) {
     macro_rules! body {
-        ($store:expr) => {
+        ($store:expr, $wide:tt) => {
             asm!(
                 "ee.zero.q q7",
                 "l32i {t}, {args}, 32",
@@ -192,29 +247,19 @@ unsafe fn qacc_groups<const MODE: u8>(args: &GroupArgs) {
                 "addi {r}, {r}, 12",
                 "l32i {t}, {args}, 0",
                 "addx2 {inp}, {inp}, {t}",
-                "addx8 {w}, {w}, {wg}",
+                run_weights!($wide),
                 "srli {n}, {n}, 1",
                 "addi {n}, {n}, -1",
                 "ee.vldbc.16.ip q0, {inp}, 2",
                 "beqz {n}, 2f",
                 "1:",
-                "ee.vld.l.64.ip q2, {w}, 8",
-                "ee.vld.l.64.ip q4, {w}, 8",
-                "ee.vcmp.lt.s8 q3, q2, q7",
-                "ee.vcmp.lt.s8 q5, q4, q7",
-                "ee.vzip.8 q2, q3",
-                "ee.vzip.8 q4, q5",
+                load_pair!($wide),
                 "ee.vmulas.s16.qacc.ldbc.incp q0, {inp}, q0, q2",
                 "ee.vmulas.s16.qacc.ldbc.incp q0, {inp}, q0, q4",
                 "addi {n}, {n}, -1",
                 "bnez {n}, 1b",
                 "2:",
-                "ee.vld.l.64.ip q2, {w}, 8",
-                "ee.vld.l.64.ip q4, {w}, 8",
-                "ee.vcmp.lt.s8 q3, q2, q7",
-                "ee.vcmp.lt.s8 q5, q4, q7",
-                "ee.vzip.8 q2, q3",
-                "ee.vzip.8 q4, q5",
+                load_pair!($wide),
                 "ee.vmulas.s16.qacc.ldbc.incp q0, {inp}, q0, q2",
                 "ee.vmulas.s16.qacc q0, q4",
                 "addi {rc}, {rc}, -1",
@@ -244,11 +289,15 @@ unsafe fn qacc_groups<const MODE: u8>(args: &GroupArgs) {
     }
     // SAFETY: the caller checked the operands.
     unsafe {
-        match MODE {
-            0 => body!(store_mode!(0)),
-            1 => body!(store_mode!(1)),
-            2 => body!(store_mode!(2)),
-            _ => body!(store_mode!(3)),
+        match (MODE, WIDE) {
+            (0, false) => body!(store_mode!(0), false),
+            (1, false) => body!(store_mode!(1), false),
+            (2, false) => body!(store_mode!(2), false),
+            (_, false) => body!(store_mode!(3), false),
+            (0, true) => body!(store_mode!(0), true),
+            (1, true) => body!(store_mode!(1), true),
+            (2, true) => body!(store_mode!(2), true),
+            (_, true) => body!(store_mode!(3), true),
         }
     }
 }
@@ -451,11 +500,20 @@ pub fn norm_row(
 #[repr(C, align(16))]
 struct Constants([i16; 8]);
 
+/// The length from which [`dot`] could overflow `ACCX`: 512 products of
+/// `2^30` are `2^39`, one more than its largest value.
+const MAX_DOT: usize = 512;
+
 /// The exact dot product of two aligned `i16` rows of a multiple of
-/// eight values, through the 40-bit `ACCX`.
+/// eight values, through the 40-bit `ACCX`. A product is at most `2^30`,
+/// so 511 of them fit and 512 may not: longer rows return `None`.
 pub fn dot(a: &[i16], b: &[i16]) -> Option<i64> {
     let len = a.len();
-    if len < LANES || !len.is_multiple_of(LANES) || !aligned16(a) || !aligned16(b) {
+    if !(LANES..MAX_DOT).contains(&len)
+        || !len.is_multiple_of(LANES)
+        || !aligned16(a)
+        || !aligned16(b)
+    {
         return None;
     }
     let (low, high): (u32, u32);

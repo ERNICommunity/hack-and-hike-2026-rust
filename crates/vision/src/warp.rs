@@ -17,6 +17,8 @@
 //! the source-to-destination direction; use [`Similarity::inverse`] between
 //! the two.
 
+use core::ops::Range;
+
 use crate::image::{Image, ImageMut};
 
 /// A similarity transform: rotation, uniform scale and translation.
@@ -189,9 +191,8 @@ fn floor_to_i32(value: f32) -> i32 {
     }
 }
 
-/// Sample `src` at the fractional position `(sx, sy)` with bilinear
-/// interpolation, or `None` when a needed source pixel is outside the image
-/// or the position is not finite.
+/// The four source pixels around a position and their weights: what a
+/// bilinear sample is mixed from.
 ///
 /// The value is a weighted mean of the four pixels around the position,
 /// where the weights are the areas of the opposite rectangles:
@@ -204,53 +205,93 @@ fn floor_to_i32(value: f32) -> i32 {
 /// fraction is exactly 0, the pixels on the far side have weight 0 and are
 /// not needed, so positions on the last row or column are still inside.
 /// This keeps the identity transform an exact copy.
-fn sample_bilinear<const CHANNELS: usize>(
-    src: &Image<'_, CHANNELS>,
-    sx: f32,
-    sy: f32,
-) -> Option<[u8; CHANNELS]> {
-    // The image is empty, or the position is outside. `contains` is false
-    // for NaN too. After this check the floors are between 0 and the last
-    // index, so the casts below cannot fail or overflow.
-    if src.width() == 0 || src.height() == 0 {
+struct Footprint {
+    /// Where the four pixels start in the image's bytes: `p00`, `p10`,
+    /// `p01`, `p11`.
+    offsets: [usize; 4],
+    /// Their weights, in the same order.
+    weights: [f32; 4],
+}
+
+impl Footprint {
+    /// The footprint of the position `(sx, sy)` in an image of `width` by
+    /// `height` pixels of `channels` bytes, or `None` when a needed pixel
+    /// is outside the image or the position is not finite.
+    #[inline(always)]
+    fn at(sx: f32, sy: f32, width: usize, height: usize, channels: usize) -> Option<Self> {
+        // The image is empty, or the position is outside. `contains` is
+        // false for NaN too. After this check the floors are between 0
+        // and the last index, so the casts below cannot fail or overflow.
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let max_x = (width - 1) as f32;
+        let max_y = (height - 1) as f32;
+        if !(0.0..=max_x).contains(&sx) || !(0.0..=max_y).contains(&sy) {
+            return None;
+        }
+        let x0 = floor_to_i32(sx);
+        let y0 = floor_to_i32(sy);
+        let fx = sx - x0 as f32;
+        let fy = sy - y0 as f32;
+        let x0 = usize::try_from(x0).ok()?;
+        let y0 = usize::try_from(y0).ok()?;
+        // The far column and row, or the near one when its weight is zero.
+        let x1 = if fx > 0.0 { x0 + 1 } else { x0 };
+        let y1 = if fy > 0.0 { y0 + 1 } else { y0 };
+        if x1 >= width || y1 >= height {
+            return None;
+        }
+        let at = |x: usize, y: usize| (y * width + x) * channels;
+        Some(Self {
+            offsets: [at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1)],
+            weights: [
+                (1.0 - fx) * (1.0 - fy),
+                fx * (1.0 - fy),
+                (1.0 - fx) * fy,
+                fx * fy,
+            ],
+        })
+    }
+}
+
+/// The source pixels that [`warp`] reads when it draws a destination of
+/// `width` x `height` pixels through `dst_to_src` from a source of
+/// `src_width` x `src_height`: a range of columns and a range of rows,
+/// inside the source. `None` when the transform is not finite.
+///
+/// The positions of the destination pixels lie inside the quadrilateral of
+/// its four corners, and a bilinear sample reads the pixel at the floor of
+/// a position and the one after it. One more pixel on every side covers
+/// the rounding of the transform, so the ranges hold every pixel `warp`
+/// reads: the pixels outside them may hold anything.
+pub fn footprint(
+    dst_to_src: &Similarity,
+    width: usize,
+    height: usize,
+    src_width: usize,
+    src_height: usize,
+) -> Option<(Range<usize>, Range<usize>)> {
+    if width == 0 || height == 0 {
+        return Some((0..0, 0..0));
+    }
+    let (right, bottom) = ((width - 1) as f32, (height - 1) as f32);
+    let corners = [[0.0, 0.0], [right, 0.0], [0.0, bottom], [right, bottom]]
+        .map(|corner| dst_to_src.apply(corner));
+    if corners.iter().flatten().any(|value| !value.is_finite()) {
         return None;
     }
-    let max_x = (src.width() - 1) as f32;
-    let max_y = (src.height() - 1) as f32;
-    if !(0.0..=max_x).contains(&sx) || !(0.0..=max_y).contains(&sy) {
-        return None;
-    }
-    let x0 = floor_to_i32(sx);
-    let y0 = floor_to_i32(sy);
-    let fx = sx - x0 as f32;
-    let fy = sy - y0 as f32;
-    let x0 = usize::try_from(x0).ok()?;
-    let y0 = usize::try_from(y0).ok()?;
-    // The far column and row, or the near one when its weight is zero.
-    let x1 = if fx > 0.0 { x0 + 1 } else { x0 };
-    let y1 = if fy > 0.0 { y0 + 1 } else { y0 };
-    if x1 >= src.width() || y1 >= src.height() {
-        return None;
-    }
-    let p00 = src.pixel(x0, y0);
-    let p10 = src.pixel(x1, y0);
-    let p01 = src.pixel(x0, y1);
-    let p11 = src.pixel(x1, y1);
-    let w00 = (1.0 - fx) * (1.0 - fy);
-    let w10 = fx * (1.0 - fy);
-    let w01 = (1.0 - fx) * fy;
-    let w11 = fx * fy;
-    let mut values = [0u8; CHANNELS];
-    for (channel, value) in values.iter_mut().enumerate() {
-        let mixed = w00 * f32::from(p00[channel])
-            + w10 * f32::from(p10[channel])
-            + w01 * f32::from(p01[channel])
-            + w11 * f32::from(p11[channel]);
-        // `mixed` is a weighted mean of bytes, so it is between 0 and 255.
-        // Adding 0.5 and truncating rounds to the nearest value.
-        *value = (mixed + 0.5) as u8;
-    }
-    Some(values)
+    let span = |axis: usize, len: usize| {
+        let (low, high) = corners
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), corner| {
+                (low.min(corner[axis]), high.max(corner[axis]))
+            });
+        let start = (i64::from(floor_to_i32(low)) - 1).clamp(0, len as i64) as usize;
+        let end = (i64::from(floor_to_i32(high)) + 3).clamp(0, len as i64) as usize;
+        start..end.max(start)
+    };
+    Some((span(0, src_width), span(1, src_height)))
 }
 
 /// Draw `dst` by sampling `src` through `dst_to_src`.
@@ -258,23 +299,52 @@ fn sample_bilinear<const CHANNELS: usize>(
 /// For every destination pixel `(x, y)`, taken at its integer coordinates
 /// with no half-pixel offset (like OpenCV's `warpAffine`), the transform
 /// gives a position in the source. The pixel gets the bilinear sample at
-/// that position, rounded to the nearest value per channel. Where any of the
-/// needed source pixels lies outside the source, the pixel is 0 in every
-/// channel: a black border.
+/// that position (see `Footprint`), rounded to the nearest value per
+/// channel. Where any of the needed source pixels lies outside the
+/// source, the pixel is 0 in every channel: a black border.
 ///
 /// `dst` can have any size; it is the crop's size. Both images have the same
 /// number of channels, so a gray source gives a gray crop and an RGB source
 /// an RGB crop.
+///
+/// The loop works on the images' bytes directly and keeps what belongs
+/// to a row out of the loop over its pixels. The arithmetic of a pixel is
+/// the one of [`Similarity::apply`] and of the formula above, operation
+/// for operation, so the crop does not depend on how the loop is written.
 pub fn warp<const CHANNELS: usize>(
     src: &Image<'_, CHANNELS>,
     dst_to_src: &Similarity,
     dst: &mut ImageMut<'_, CHANNELS>,
 ) {
+    let (width, height) = (src.width(), src.height());
+    let source = src.data();
+    let Similarity { a, b, tx, ty } = *dst_to_src;
     for y in 0..dst.height() {
-        for x in 0..dst.width() {
-            let [sx, sy] = dst_to_src.apply([x as f32, y as f32]);
-            let values = sample_bilinear(src, sx, sy).unwrap_or([0; CHANNELS]);
-            dst.set_pixel(x, y, values);
+        // `apply` computes `a*x - b*y + tx` and `b*x + a*y + ty`, from
+        // the left: the products with `y` are the same for the whole row.
+        let by = b * y as f32;
+        let ay = a * y as f32;
+        for (x, out) in dst.row_mut(y).chunks_exact_mut(CHANNELS).enumerate() {
+            let sx = a * x as f32 - by + tx;
+            let sy = b * x as f32 + ay + ty;
+            let Some(footprint) = Footprint::at(sx, sy, width, height, CHANNELS) else {
+                out.fill(0);
+                continue;
+            };
+            let [p00, p10, p01, p11] = footprint
+                .offsets
+                .map(|offset| &source[offset..offset + CHANNELS]);
+            let [w00, w10, w01, w11] = footprint.weights;
+            for (channel, value) in out.iter_mut().enumerate() {
+                let mixed = w00 * f32::from(p00[channel])
+                    + w10 * f32::from(p10[channel])
+                    + w01 * f32::from(p01[channel])
+                    + w11 * f32::from(p11[channel]);
+                // `mixed` is a weighted mean of bytes, so it is between 0
+                // and 255. Adding 0.5 and truncating rounds to the
+                // nearest value.
+                *value = (mixed + 0.5) as u8;
+            }
         }
     }
 }
@@ -293,15 +363,27 @@ mod tests {
         assert_eq!(floor_to_i32(-1.2), -2);
     }
 
+    /// The bilinear sample of a one-channel image at `(sx, sy)`, or
+    /// `None` outside.
+    fn sample(data: &[u8], width: usize, height: usize, sx: f32, sy: f32) -> Option<u8> {
+        let footprint = Footprint::at(sx, sy, width, height, 1)?;
+        let mixed: f32 = footprint
+            .offsets
+            .iter()
+            .zip(footprint.weights)
+            .map(|(&offset, weight)| weight * f32::from(data[offset]))
+            .sum();
+        Some((mixed + 0.5) as u8)
+    }
+
     #[test]
     fn sampling_between_two_pixels_mixes_them() {
         let data = [0u8, 100, 200, 44];
-        let image = Image::<1>::new(&data, 2, 2);
-        assert_eq!(sample_bilinear(&image, 0.5, 0.0), Some([50]));
-        assert_eq!(sample_bilinear(&image, 0.0, 0.5), Some([100]));
-        assert_eq!(sample_bilinear(&image, 1.0, 1.0), Some([44]));
-        assert_eq!(sample_bilinear(&image, 1.01, 1.0), None);
-        assert_eq!(sample_bilinear(&image, -0.01, 0.0), None);
-        assert_eq!(sample_bilinear(&image, f32::NAN, 0.0), None);
+        assert_eq!(sample(&data, 2, 2, 0.5, 0.0), Some(50));
+        assert_eq!(sample(&data, 2, 2, 0.0, 0.5), Some(100));
+        assert_eq!(sample(&data, 2, 2, 1.0, 1.0), Some(44));
+        assert_eq!(sample(&data, 2, 2, 1.01, 1.0), None);
+        assert_eq!(sample(&data, 2, 2, -0.01, 0.0), None);
+        assert_eq!(sample(&data, 2, 2, f32::NAN, 0.0), None);
     }
 }

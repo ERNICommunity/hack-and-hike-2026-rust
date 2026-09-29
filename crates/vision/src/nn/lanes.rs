@@ -12,7 +12,8 @@
 //!    bias of each channel in units of one product, plus half a unit of
 //!    the shift that follows, so the shift rounds instead of truncating.
 //! 2. The products are accumulated (16-bit inputs, 8-bit weights
-//!    widened in the registers, or 16-bit weights for the attention).
+//!    widened in the registers, or 16-bit weights: the attention's own
+//!    tensors, and the layers kept in both forms, see below).
 //! 3. `ee.srcmb.s16.qacc` shifts the eight sums right by `s1` (one shift
 //!    per group, chosen so the largest lane fits) and saturates them to
 //!    16 bits.
@@ -31,7 +32,14 @@
 //!
 //! What stays scalar: the GELU lookup (a table indexed by the 16-bit
 //! value), the softmax of the attention (a few hundred values), and the
-//! per-pixel inverse square root of the LayerNorm.
+//! per-row inverse square root of the LayerNorm. The LayerNorm's sums of
+//! a row and of its squares run on the vector unit.
+//!
+//! A weight can come in two forms: the `i8` values, which the multiply
+//! instruction needs widened to 16 bits in the registers (three of the
+//! four instructions per eight products), or the same values stored as
+//! `i16` ([`LaneWeight::wide`]), twice the memory and a loop without the
+//! widening. The recognizer keeps its small, early layers wide.
 
 use super::{Shape, output_size, pack};
 
@@ -256,6 +264,10 @@ pub enum Store<'t> {
 pub struct LaneWeight<'a> {
     /// The `i8` weights, `[group][input][8]`.
     pub data: &'a [i8],
+    /// The same weights as `i16`, in the same order, on a 16-byte
+    /// boundary, or `None`. With them the kernels skip the widening of
+    /// every weight to 16 bits; the results are the same.
+    pub wide: Option<&'a [i16]>,
     /// Weights per output channel.
     pub per_output: usize,
     /// One plan per group of eight output channels.
@@ -283,6 +295,25 @@ pub const MAX_RUNS: usize = 32;
 /// Whether the vector unit is present.
 pub const fn available() -> bool {
     cfg!(target_arch = "xtensa")
+}
+
+/// Kernel calls that ran the scalar model on a board that has the vector
+/// unit, because an operand did not fit the instructions' rules (most
+/// often a buffer off a 16-byte boundary). The results are the same, but
+/// the scalar model is many times slower: the application logs this
+/// count.
+static FALLBACKS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// How many kernel calls fell back to the scalar model on the board; see
+/// `FALLBACKS`.
+pub fn fallbacks() -> usize {
+    FALLBACKS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Count one fallback; called only where the vector unit exists.
+#[cfg(target_arch = "xtensa")]
+fn note_fallback() {
+    FALLBACKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// A linear layer on every row of `input` (`in_features` values each):
@@ -317,6 +348,12 @@ pub fn linear(
         weight.data.len() >= out_features * in_features,
         "lanes::linear weight data"
     );
+    assert!(
+        weight
+            .wide
+            .is_none_or(|wide| wide.len() >= out_features * in_features),
+        "lanes::linear wide weight data"
+    );
     assert!(output.len() >= rows * out_features, "lanes::linear output");
     let run = [Run {
         input: 0,
@@ -325,7 +362,8 @@ pub fn linear(
     }];
     // Groups of filters a chunk at a time, every row against the chunk,
     // so the chunk's weights come from the cache after the first row.
-    let chunk = (CACHED_WEIGHT_BYTES / (in_features * LANES)).clamp(1, GROUP_BATCH);
+    let weight_bytes = if weight.wide.is_some() { 2 } else { 1 };
+    let chunk = (CACHED_WEIGHT_BYTES / (in_features * LANES * weight_bytes)).clamp(1, GROUP_BATCH);
     for first in (0..groups).step_by(chunk) {
         let count = (groups - first).min(chunk);
         for (row, source) in input.chunks_exact(in_features).enumerate() {
@@ -340,8 +378,10 @@ pub fn linear(
 /// cache while every row is run against it.
 const CACHED_WEIGHT_BYTES: usize = 12 * 1024;
 
-/// The most groups one assembly call handles.
-pub const GROUP_BATCH: usize = 8;
+/// The most groups one assembly call handles. The assembly has no limit
+/// of its own, but every call costs its operand checks in Rust: a whole
+/// row of a layer goes in one call when its weights fit the cache.
+pub const GROUP_BATCH: usize = 128;
 
 /// A full convolution (square `kernel`, `stride`, symmetric `padding`
 /// with zeros outside) on the channels-last `i16` input of `shape`; the
@@ -377,6 +417,12 @@ pub fn conv2d(
     assert!(
         weight.data.len() >= out_channels * taps,
         "lanes::conv2d weight data"
+    );
+    assert!(
+        weight
+            .wide
+            .is_none_or(|wide| wide.len() >= out_channels * taps),
+        "lanes::conv2d wide weight data"
     );
     assert!(output.len() >= out.len(), "lanes::conv2d output");
     assert!(kernel * kernel <= MAX_RUNS, "lanes::conv2d kernel");
@@ -469,6 +515,7 @@ fn groups_epilogue(
             }
             return;
         }
+        note_fallback();
     }
     model::groups(input, weight, first, count, runs, store, out);
     if let Store::Gelu(table) = store {
@@ -540,6 +587,7 @@ pub fn depthwise(
                     }
                     continue;
                 }
+                note_fallback();
             }
             model::depthwise_pixel(input, weights, plans, taps, store, out);
             if let Store::Gelu(table) = store {
@@ -663,15 +711,48 @@ pub fn layer_norm(
         .chunks_exact(channels)
         .zip(output.chunks_exact_mut(channels))
     {
-        let (mean, scale, shift) = model::norm_row(row, step, epsilon);
+        let (sum, squares) = row_sums(row);
+        let (mean, scale, shift) = model::norm_constants(row.len(), sum, squares, step, epsilon);
         #[cfg(target_arch = "xtensa")]
         {
             if arch::norm_row(row, mean, scale, shift, plans, out) {
                 continue;
             }
+            note_fallback();
         }
         model::norm_apply(row, mean, scale, shift, plans, out);
     }
+}
+
+/// The most values of a row that [`row_sums`] sums on the vector unit.
+/// The rows of the recognizer's LayerNorms have at most 168; 256 squares
+/// of at most `2^30` stay far inside the 40 bits of `ACCX`.
+const MAX_ROW_SUMS: usize = 256;
+
+/// Eight ones per register, for the sum of a row as a dot product.
+#[repr(C, align(16))]
+struct Ones([i16; MAX_ROW_SUMS]);
+
+/// The ones of [`row_sums`].
+static ONES: Ones = Ones([1; MAX_ROW_SUMS]);
+
+/// The sum of a row's values and the sum of their squares, exact: two dot
+/// products on the vector unit, where the scalar loops cost some thirty
+/// instructions per value.
+fn row_sums(row: &[i16]) -> (i64, i64) {
+    #[cfg(target_arch = "xtensa")]
+    {
+        if row.len() <= MAX_ROW_SUMS
+            && let Some(sum) = arch::dot(row, &ONES.0[..row.len()])
+            && let Some(squares) = arch::dot(row, row)
+        {
+            return (sum, squares);
+        }
+        note_fallback();
+    }
+    #[cfg(not(target_arch = "xtensa"))]
+    let _ = &ONES;
+    model::row_sums(row)
 }
 
 /// `target[i] = sat(target[i] + source[i])` on `i16`, in place.
@@ -686,6 +767,7 @@ pub fn add(target: &mut [i16], source: &[i16]) {
         if arch::add(target, source) {
             return;
         }
+        note_fallback();
     }
     model::add(target, source);
 }
@@ -703,6 +785,7 @@ pub fn rescale(input: &[i16], factor: i16, shift: u32, output: &mut [i16]) {
         if arch::rescale(input, factor, shift, output) {
             return;
         }
+        note_fallback();
     }
     model::rescale(input, factor, shift, output);
 }
@@ -741,6 +824,7 @@ pub fn max_pool_2x2(input: &[i16], shape: Shape, output: &mut [i16]) -> Shape {
                 if arch::max4(top, bottom, target) {
                     continue;
                 }
+                note_fallback();
             }
             model::max4(top, bottom, target);
         }
@@ -748,7 +832,9 @@ pub fn max_pool_2x2(input: &[i16], shape: Shape, output: &mut [i16]) -> Shape {
     out
 }
 
-/// The dot product of two `i16` rows, exact.
+/// The dot product of two `i16` rows, exact. The vector unit sums in the
+/// 40 bits of `ACCX`, which hold any 511 products; longer rows run in
+/// the scalar model.
 ///
 /// # Panics
 ///
@@ -760,6 +846,7 @@ pub fn dot(a: &[i16], b: &[i16]) -> i64 {
         if let Some(sum) = arch::dot(a, b) {
             return sum;
         }
+        note_fallback();
     }
     model::dot(a, b)
 }
@@ -785,22 +872,39 @@ pub fn mix(rows: &[i16], width: usize, weights: &[i16], factor: i16, shift: u32,
         if arch::mix(rows, width, weights, factor, shift, out) {
             return;
         }
+        note_fallback();
     }
     model::mix(rows, width, weights, factor, shift, out);
 }
 
-/// The GELU lookup: `gelu(x)` for `x` in units of `2^-10`, clamped to
-/// `-16..16`, in units of `2^-10`. Built once; 64 KB.
+/// The GELU lookup: `gelu(x)` for `x` in units of `2^-10`, in units of
+/// `2^-10`, rounded. Built once; 15 KB.
+///
+/// Rounded to that unit, GELU is exactly 0 up to `x = -3732` and exactly
+/// `x` from `3732` on, so the table holds only what lies between
+/// ([`GeluTable::LOW`] to [`GeluTable::HIGH`]); an earlier table spanned
+/// `-16..16` in 64 KB, with the same values (`tests/int8_lanes.rs` checks
+/// every input against the formula).
 pub struct GeluTable<'a> {
-    /// `gelu(x)` at `x = (i - 16384) / 1024`.
-    table: &'a [i16],
+    /// `gelu(x)` at `x = LOW + i`, in units of `2^-10`.
+    table: &'a [i16; GELU_LEN],
 }
+
+/// [`GeluTable::LEN`], for the table's type.
+const GELU_LEN: usize = (GeluTable::HIGH - GeluTable::LOW + 1) as usize;
 
 impl<'a> GeluTable<'a> {
     /// Fraction bits of the input and the output.
     pub const UNIT_BITS: u32 = 10;
-    /// Entries: `x` from -16 to 16, both included.
-    pub const LEN: usize = (32 << Self::UNIT_BITS) + 1;
+    /// The largest input whose GELU rounds to 0; every smaller one does
+    /// too.
+    pub const LOW: i32 = -3732;
+    /// The smallest input whose GELU rounds to the input itself; every
+    /// larger one does too.
+    pub const HIGH: i32 = 3732;
+    /// Entries: from [`GeluTable::LOW`] to [`GeluTable::HIGH`], both
+    /// included.
+    pub const LEN: usize = GELU_LEN;
 
     /// A table built earlier into `storage` (see [`GeluTable::build`]).
     ///
@@ -810,7 +914,9 @@ impl<'a> GeluTable<'a> {
     pub fn borrow(storage: &'a [i16]) -> Self {
         assert!(storage.len() >= Self::LEN, "GELU table storage");
         Self {
-            table: &storage[..Self::LEN],
+            table: storage[..Self::LEN]
+                .try_into()
+                .expect("a slice of the table's length"),
         }
     }
 
@@ -827,28 +933,35 @@ impl<'a> GeluTable<'a> {
     /// When `storage` is too short.
     pub fn build(storage: &'a mut [i16]) -> Self {
         assert!(storage.len() >= Self::LEN, "GELU table storage");
-        let table = &mut storage[..Self::LEN];
-        let unit = (1u32 << Self::UNIT_BITS) as f32;
-        for (i, slot) in table.iter_mut().enumerate() {
-            let x = (i as f32 - (16 << Self::UNIT_BITS) as f32) / unit;
-            let gelu = x * 0.5 * (1.0 + libm::erff(x * core::f32::consts::FRAC_1_SQRT_2));
-            *slot = libm::roundf(gelu * unit).clamp(-32768.0, 32767.0) as i16;
+        let table: &mut [i16; GELU_LEN] = (&mut storage[..Self::LEN])
+            .try_into()
+            .expect("a slice of the table's length");
+        for (value, slot) in (Self::LOW..).zip(table.iter_mut()) {
+            *slot = Self::rounded(value);
         }
         Self { table }
     }
 
-    /// Apply the table to every value of `data`, in place. The values
-    /// must lie in `-16384..=16384` (the [`Store::Gelu`] store clamps
-    /// them so).
-    ///
-    /// # Panics
-    ///
-    /// When a value is outside the table.
+    /// `gelu(x)` for `x = value / 1024`, in units of `2^-10`, rounded:
+    /// the exact form `x * 0.5 * (1 + erf(x / sqrt 2))` in `f32`.
+    pub fn rounded(value: i32) -> i16 {
+        let unit = (1u32 << Self::UNIT_BITS) as f32;
+        let x = value as f32 / unit;
+        let gelu = x * 0.5 * (1.0 + libm::erff(x * core::f32::consts::FRAC_1_SQRT_2));
+        libm::roundf(gelu * unit).clamp(-32768.0, 32767.0) as i16
+    }
+
+    /// Apply GELU to every value of `data`, in place: 0 below the table,
+    /// the value itself above it, the table between. Any `i16` is a valid
+    /// input; the [`Store::Gelu`] store clamps to `-16384..=16384`.
     #[inline]
     pub fn apply(&self, data: &mut [i16]) {
-        let half = 16 << Self::UNIT_BITS;
         for value in data.iter_mut() {
-            *value = self.table[(i32::from(*value) + half) as usize];
+            let v = i32::from(*value);
+            // The clamp keeps the index inside the table, so the lookup
+            // needs no check; below the table its first entry is 0.
+            let looked = self.table[(v.clamp(Self::LOW, Self::HIGH) - Self::LOW) as usize];
+            *value = if v > Self::HIGH { *value } else { looked };
         }
     }
 }
