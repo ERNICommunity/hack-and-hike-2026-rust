@@ -1,0 +1,13 @@
+[package]
+name = "low_byte"
+version = "0.1.0"
+edition = "2021"
+
+# Not part of the surrounding workspace.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[profile.release]
+panic = "abort"
