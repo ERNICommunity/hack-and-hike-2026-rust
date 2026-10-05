@@ -1,0 +1,74 @@
+<div class="eyebrow">02 · Neural networks</div>
+<h1 class="t">A face becomes 512 numbers</h1>
+<p class="sub">The recognizer was trained so that two photos of the same person give nearly the same 512 numbers. <b>Comparing faces becomes comparing lists of numbers:</b> the score says how alike two lists are, from 0 to 1.</p>
+
+<!-- Sketch: faces on a map -->
+<div class="abs" style="left:54px; top:440px; width:820px; height:536px; background:var(--mist)">
+  <div class="abs label" style="left:28px; top:24px">Sketch: 512 dimensions squeezed onto a page</div>
+  <svg class="abs" width="820" height="536" viewBox="0 0 820 536" style="left:0; top:0" aria-label="Sketch: similar faces land close together">
+    <!-- strangers (the bank of 200) -->
+    <g fill="#B1B0B1">
+      <circle cx="96" cy="120" r="7"/><circle cx="300" cy="190" r="7"/><circle cx="300" cy="90" r="7"/><circle cx="470" cy="420" r="7"/><circle cx="700" cy="470" r="7"/>
+      <circle cx="760" cy="300" r="7"/><circle cx="90" cy="300" r="7"/><circle cx="380" cy="250" r="7"/><circle cx="250" cy="380" r="7"/><circle cx="540" cy="420" r="7"/>
+      <circle cx="660" cy="90" r="7"/><circle cx="470" cy="110" r="7"/><circle cx="130" cy="210" r="7"/><circle cx="700" cy="250" r="7"/><circle cx="600" cy="500" r="7"/>
+      <circle cx="770" cy="170" r="7"/><circle cx="60" cy="420" r="7"/><circle cx="440" cy="340" r="7"/><circle cx="210" cy="140" r="7"/><circle cx="740" cy="400" r="7"/>
+    </g>
+    <!-- person 2 -->
+    <circle cx="220" cy="270" r="62" fill="#E6EBF2"/>
+    <g fill="#515455"><circle cx="205" cy="255" r="8"/><circle cx="238" cy="262" r="8"/><circle cx="214" cy="290" r="8"/><circle cx="244" cy="292" r="8"/><circle cx="190" cy="281" r="8"/><circle cx="226" cy="238" r="8"/></g>
+    <text x="220" y="362" text-anchor="middle" font-size="22" fill="#515455" font-weight="600">Person 2</text>
+    <!-- person 1 -->
+    <circle cx="580" cy="230" r="78" fill="#BFEAF6"/>
+    <g fill="#033778"><circle cx="560" cy="210" r="9"/><circle cx="600" cy="220" r="9"/><circle cx="570" cy="252" r="9"/><circle cx="610" cy="256" r="9"/><circle cx="545" cy="240" r="9"/><circle cx="588" cy="190" r="9"/></g>
+    <text x="580" y="140" text-anchor="middle" font-size="22" fill="#033778" font-weight="600">Person 1 · 6 samples</text>
+    <!-- new photo of person 1 -->
+    <circle cx="630" cy="282" r="13" fill="#fff" stroke="#00AADB" stroke-width="5"/>
+    <path d="M644 292 L 700 340" stroke="#033778" stroke-width="2"/>
+    <text x="704" y="360" font-size="22" fill="#033778" font-weight="600">new photo</text>
+    <text x="704" y="386" font-size="22" fill="#3C3C3B">close: Person 1</text>
+    <!-- new photo of a stranger -->
+    <circle cx="360" cy="420" r="13" fill="#fff" stroke="#00AADB" stroke-width="5"/>
+    <path d="M348 428 L 318 446" stroke="#033778" stroke-width="2"/>
+    <text x="54" y="468" font-size="22" fill="#033778" font-weight="600">new photo</text>
+    <text x="160" y="468" font-size="22" fill="#3C3C3B">far from all: unknown</text>
+    <text x="28" y="500" font-size="19" fill="#515455">Grey: 200 strangers stored on the board. A new photo only gets a name</text><text x="28" y="523" font-size="19" fill="#515455">if it is closer to that person than to every one of these strangers.</text>
+  </svg>
+</div>
+
+<!-- The score line -->
+<div class="abs" style="left:976px; top:440px; width:890px">
+  <div class="label">How sure is sure? The score of a new photo</div>
+  <svg width="890" height="352" viewBox="0 0 890 352" style="margin-top:14px" aria-label="Score scale with the decision zones">
+    <!-- markers above (axis: 0..1 over 860 px) -->
+    <path d="M376.7 54 V 120" stroke="#515455" stroke-width="2.5" stroke-dasharray="5 5"/>
+    <text x="376.7" y="20" text-anchor="middle" font-size="22" font-weight="600" fill="#515455">0.44</text>
+    <text x="376.7" y="44" text-anchor="middle" font-size="20" fill="#515455">best stranger in 22,920 tries</text>
+    <rect x="799.8" y="84" width="17.2" height="10" fill="#033778"/>
+    <path d="M808.4 94 V 120" stroke="#033778" stroke-width="2.5"/>
+    <text x="860" y="44" text-anchor="end" font-size="22" font-weight="600" fill="#033778">0.93–0.95</text>
+    <text x="860" y="70" text-anchor="end" font-size="20" fill="#033778">enrolled person, real board</text>
+    <!-- zones -->
+    <rect x="0" y="120" width="344" height="84" fill="#E6EBF2"/>
+    <rect x="344" y="120" width="86" height="84" fill="#BFEAF6"/>
+    <rect x="430" y="120" width="430" height="84" fill="#033778"/>
+    <text x="22" y="170" font-size="26" font-weight="600" fill="#033778">Unknown</text>
+    <text x="387" y="156" text-anchor="middle" font-size="22" font-weight="600" fill="#033778">Look</text>
+    <text x="387" y="182" text-anchor="middle" font-size="22" font-weight="600" fill="#033778">again</text>
+    <text x="452" y="170" font-size="26" font-weight="600" fill="#fff">Sure: show the name</text>
+    <!-- axis -->
+    <g font-size="22" fill="#3C3C3B">
+      <text x="0" y="236">0</text>
+      <text x="344" y="236" text-anchor="middle">0.40</text>
+      <text x="430" y="236" text-anchor="middle">0.50</text>
+      <text x="860" y="236" text-anchor="end">1</text>
+    </g>
+    <text x="0" y="280" font-size="22" fill="#515455">A name needs a score of at least 0.40, and higher than for any of the</text>
+    <text x="0" y="308" font-size="22" fill="#515455">200 stored strangers. Below 0.50 the board averages up to three looks.</text>
+    <text x="0" y="336" font-size="22" fill="#515455">A stranger who looks enough like an enrolled person can still pass.</text>
+  </svg>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:28px; margin-top:8px">
+    <div style="border-top:2px solid var(--blue); padding-top:12px"><div class="big num" style="font-size:64px">98.7&nbsp;%</div><div class="b1" style="font-size:22px; margin-top:6px">of simulated visits by enrolled people named at the first look, all of them by the second</div></div>
+    <div style="border-top:2px solid var(--blue); padding-top:12px"><div class="big num" style="font-size:64px">5 of 22,920</div><div class="b1" style="font-size:22px; margin-top:6px">stranger photos got a name: about 1 in 4,600. Fine for a greeting, not for a door lock.</div></div>
+  </div>
+</div>
+<div class="note"><b class="blue">How we tested:</b> on the laptop, with public photos (LFW) and the board’s own decision code. 120 rounds: enrol one person from five photos, then show photos of that person and of 191 strangers.</div>

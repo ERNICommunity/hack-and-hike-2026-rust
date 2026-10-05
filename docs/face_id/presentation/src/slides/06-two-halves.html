@@ -1,0 +1,56 @@
+<div class="eyebrow">01 · Architecture</div>
+<h1 class="t">The laptop prepares, the board performs</h1>
+<p class="sub">A Rust toolkit on the laptop converts, tests and tunes the models. The board only runs them. <b>Both use the same library, so both compute the very same numbers.</b></p>
+
+<!-- Laptop -->
+<div class="abs" style="left:54px; top:440px; width:700px; height:476px; background:var(--mist); padding:30px 36px">
+  <div class="label">On the laptop</div>
+  <div class="h2" style="margin-top:4px"><span class="mono" style="font-size:38px">facekit</span></div>
+  <div style="margin-top:18px">
+    <div class="b1" style="display:grid; grid-template-columns:44px 1fr; padding:9px 0; border-top:1px solid var(--rule)"><span class="semi blue">1</span><span><b class="blue">Import</b> the two published models</span></div>
+    <div class="b1" style="display:grid; grid-template-columns:44px 1fr; padding:9px 0; border-top:1px solid var(--rule)"><span class="semi blue">2</span><span><b class="blue">Shrink</b> the detector to small whole numbers</span></div>
+    <div class="b1" style="display:grid; grid-template-columns:44px 1fr; padding:9px 0; border-top:1px solid var(--rule)"><span class="semi blue">3</span><span><b class="blue">Test</b> on 6,000 photo pairs of 5,749 people</span></div>
+    <div class="b1" style="display:grid; grid-template-columns:44px 1fr; padding:9px 0; border-top:1px solid var(--rule)"><span class="semi blue">4</span><span><b class="blue">Tune</b> the limits: 24,271 test attempts, 22,920 of them by strangers</span></div>
+    <div class="b1" style="display:grid; grid-template-columns:44px 1fr; padding:9px 0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule)"><span class="semi blue">5</span><span><b class="blue">Collect</b> 200 stranger faces for comparison</span></div>
+  </div>
+</div>
+
+<!-- Middle: shared library + model files -->
+<div class="abs" style="left:790px; top:440px; width:340px; height:476px">
+  <div style="background:var(--blue10); border-top:4px solid var(--sky); padding:22px 24px; margin-top:0">
+    <div class="label" style="color:var(--blue)">Shared Rust library</div>
+    <div class="mono blue" style="font-size:24px; margin-top:6px">crates/vision</div>
+    <div class="b1" style="font-size:22px; margin-top:8px">Image processing, both networks, the gallery and the decision</div>
+  </div>
+  <svg width="340" height="210" viewBox="0 0 340 210" style="margin-top:0" aria-hidden="true">
+    <g stroke="#033778" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M150 22 H -30"/><path d="M-20 12 l-10 10 l10 10"/>
+      <path d="M190 22 H 370"/><path d="M360 12 l10 10 l-10 10"/>
+    </g>
+    <text x="170" y="60" text-anchor="middle" font-size="20" fill="#515455">used by both</text>
+    <path d="M-36 120 H 356" stroke="#00AADB" stroke-width="6"/>
+    <path d="M346 108 l16 12 l-16 12" fill="none" stroke="#00AADB" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>
+    <rect x="40" y="94" width="260" height="52" fill="#fff" stroke="#00AADB" stroke-width="3"/>
+    <text x="170" y="129" text-anchor="middle" font-size="24" font-weight="600" fill="#033778">3 files · 1.45 MB</text>
+    <text x="170" y="180" text-anchor="middle" font-size="20" fill="#515455">2 networks + 200 stranger</text><text x="170" y="204" text-anchor="middle" font-size="20" fill="#515455">faces, built into the firmware</text>
+  </svg>
+</div>
+
+<!-- Board -->
+<div class="abs" style="left:1166px; top:440px; width:700px; height:476px; background:var(--blue); color:#fff; padding:30px 36px">
+  <div class="label" style="color:rgba(255,255,255,.8)">On the board</div>
+  <div class="h2" style="margin-top:4px; color:#fff"><span class="mono" style="font-size:38px">face_id</span> firmware</div>
+  <div style="margin-top:18px">
+    <div class="b1" style="padding:9px 0; border-top:1px solid rgba(255,255,255,.25)">Camera and live preview on the screen</div>
+    <div class="b1" style="padding:9px 0; border-top:1px solid rgba(255,255,255,.25)">Network 1: the detector <span style="opacity:.75">(YuNet)</span></div>
+    <div class="b1" style="padding:9px 0; border-top:1px solid rgba(255,255,255,.25)">Network 2: the recognizer <span style="opacity:.75">(MFN_S8_V1)</span></div>
+    <div class="b1" style="padding:9px 0; border-top:1px solid rgba(255,255,255,.25)">The decision: known person or stranger?</div>
+    <div class="b1" style="padding:9px 0; border-top:1px solid rgba(255,255,255,.25); border-bottom:1px solid rgba(255,255,255,.25)">Up to 4 people: six face descriptions each, saved in flash, so they survive restarts and new firmware</div>
+  </div>
+</div>
+
+<!-- Proof strip -->
+<div class="abs" style="left:54px; top:940px; width:1812px; display:flex; align-items:center; gap:18px">
+  <svg width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="#00AADB"/><path d="M11 20.5 l6 6 l12 -12" fill="none" stroke="#033778" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <div class="b1"><b class="blue">Tested on both machines:</b> at every start the board runs both networks on test inputs and compares the result with the laptop’s. It matches bit for bit.</div>
+</div>

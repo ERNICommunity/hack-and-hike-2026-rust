@@ -1,0 +1,135 @@
+/* ERNI brand tokens (Brandbook v.04): primary dark blue + dark grey,
+   secondary light blue + light grey, text 90 % black, Source Sans. */
+@font-face { font-family: 'Source Sans 3'; src: url(assets/SourceSans3.woff2) format('woff2'); font-weight: 200 900; font-style: normal; }
+@font-face { font-family: 'Source Sans 3'; src: url(assets/SourceSans3-Italic.woff2) format('woff2'); font-weight: 200 900; font-style: italic; }
+@font-face { font-family: 'Source Code Pro'; src: url(assets/SourceCodePro.woff2) format('woff2'); font-weight: 400 700; }
+
+:root {
+  --blue: #033778;      /* primary: dark blue */
+  --grey: #515455;      /* primary: dark grey */
+  --sky: #00AADB;       /* secondary: light blue */
+  --silver: #B1B0B1;    /* secondary: light grey */
+  --ink: #3C3C3B;       /* text: 90 % black */
+  --paper: #FFFFFF;
+  --mist: #F3F5F8;      /* tint of dark blue for quiet surfaces */
+  --blue10: #E6EBF2;
+  --sky10: #E5F6FB;
+  --sky25: #BFEAF6;
+  --rule: #D7D9DC;
+  --deep: #022A5C;      /* shade of dark blue for depth on dark slides */
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+@page { size: 1920px 1080px; margin: 0; }
+html { background: #E4E7EB; }
+body {
+  font-family: 'Source Sans 3', Calibri, sans-serif;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+  font-kerning: normal;
+}
+@media screen {
+  body { padding: 24px 0; }
+  .slide { zoom: var(--z, .5); margin: 0 auto 32px; box-shadow: 0 8px 40px rgba(3,55,120,.12); }
+}
+@media print { html, body { background: none; } }
+
+.slide {
+  width: 1920px; height: 1080px; position: relative; overflow: hidden;
+  background: var(--paper); break-after: page; page-break-after: always;
+}
+.slide.dark { background: var(--blue); color: #fff; }
+.slide.sky { background: var(--sky); color: var(--blue); }
+
+/* ---------- Row 1 of the grid: tagline, deck title, page number ---------- */
+.top {
+  position: absolute; top: 58px; left: 54px; right: 54px; height: 28px;
+  font-size: 18px; line-height: 28px; color: var(--grey); letter-spacing: .01em;
+}
+.top .tag { position: absolute; left: 0; }
+.top .tag .ba { color: var(--blue); }
+.top .deck { position: absolute; left: 922px; }
+.top .pg { position: absolute; right: 0; font-variant-numeric: tabular-nums; }
+.top::after { content: ''; position: absolute; left: 0; right: 0; top: 40px; height: 1px; background: var(--rule); }
+.dark .top, .dark .top .tag .ba { color: rgba(255,255,255,.78); }
+.dark .top::after { background: rgba(255,255,255,.22); }
+.sky .top, .sky .top .tag .ba { color: var(--blue); }
+.sky .top::after { background: rgba(255,255,255,.7); }
+
+/* ---------- Row 2: headline left, subtitle right ---------- */
+.eyebrow {
+  position: absolute; top: 176px; left: 54px;
+  font-size: 18px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--blue);
+  display: flex; align-items: center; gap: 14px;
+}
+.eyebrow::before { content: ''; width: 40px; height: 4px; background: var(--sky); }
+h1.t {
+  position: absolute; top: 214px; left: 54px; width: 860px;
+  font-size: 80px; line-height: 1.02; font-weight: 400; color: var(--blue); letter-spacing: -.018em;
+}
+h1.t.wide { width: 1400px; }
+.sub {
+  position: absolute; top: 224px; left: 976px; width: 890px;
+  font-size: 30px; line-height: 1.36; color: var(--grey);
+}
+.sub b { color: var(--blue); font-weight: 600; }
+
+/* ---------- Row 3 and 4: content ---------- */
+.content { position: absolute; left: 54px; right: 54px; top: 440px; bottom: 90px; }
+.abs { position: absolute; }
+svg { display: block; overflow: visible; }
+svg text { font-family: 'Source Sans 3', Calibri, sans-serif; }
+
+.b1 { font-size: 24px; line-height: 1.38; }
+.b2 { font-size: 32px; line-height: 1.3; }
+.h2 { font-size: 44px; line-height: 1.12; font-weight: 400; color: var(--blue); letter-spacing: -.01em; }
+.h3 { font-size: 30px; line-height: 1.2; font-weight: 600; color: var(--blue); }
+.min { font-size: 18px; line-height: 1.4; }
+.grey { color: var(--grey); }
+.blue { color: var(--blue); }
+.semi { font-weight: 600; }
+.mono { font-family: 'Source Code Pro', monospace; }
+.num { font-variant-numeric: tabular-nums lining-nums; }
+.big {
+  font-weight: 300; color: var(--blue); letter-spacing: -.035em; line-height: .92;
+  font-variant-numeric: lining-nums;
+}
+.label {
+  font-size: 18px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--grey);
+}
+.chip {
+  display: inline-block; font-size: 18px; font-weight: 600; letter-spacing: .06em;
+  padding: 5px 12px 6px; background: var(--blue10); color: var(--blue); line-height: 1;
+}
+.chip.solid { background: var(--blue); color: #fff; }
+.chip.sky { background: var(--sky); color: var(--blue); }
+.hr { height: 2px; background: var(--blue); }
+.hr.thin { height: 1px; background: var(--rule); }
+.note {
+  position: absolute; left: 54px; bottom: 44px; right: 54px;
+  font-size: 18px; color: var(--grey); line-height: 1.4;
+}
+.dark .note { color: rgba(255,255,255,.7); }
+
+/* Section pages (brand: big number left, title parallel on the right) */
+.secnum {
+  position: absolute; left: 40px; top: 170px; font-size: 520px; font-weight: 200;
+  line-height: .8; letter-spacing: -.06em; color: var(--sky);
+}
+.sectitle {
+  position: absolute; left: 976px; top: 214px; width: 820px;
+  font-size: 96px; line-height: 1; font-weight: 400; letter-spacing: -.02em; color: #fff;
+}
+.secsub { position: absolute; left: 976px; width: 760px; font-size: 32px; line-height: 1.35; color: rgba(255,255,255,.85); }
+.seclist { position: absolute; left: 976px; width: 820px; }
+.seclist div {
+  display: grid; grid-template-columns: 70px 1fr; align-items: baseline;
+  padding: 18px 0; border-top: 1px solid rgba(255,255,255,.28); font-size: 26px; color: #fff;
+}
+.seclist div span { font-size: 20px; color: var(--sky); font-weight: 600; letter-spacing: .08em; }
+
+/* Index: the left third is an image panel, so row 1 starts beside it */
+.idx .top { left: 830px; }
+.idx .top .deck { display: none; }
+.sky .eyebrow::before { background: #fff; }

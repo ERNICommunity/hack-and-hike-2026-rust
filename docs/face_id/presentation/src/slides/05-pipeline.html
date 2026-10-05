@@ -1,0 +1,90 @@
+<div class="eyebrow">01 · Architecture</div>
+<h1 class="t">Six steps from camera image to name</h1>
+<p class="sub">Every cycle runs the same chain. Two steps are neural networks; the others are classic image processing and bookkeeping.</p>
+
+<div class="abs" style="left:54px; top:430px; width:1812px; display:grid; grid-template-columns:repeat(6, 272px); column-gap:36px">
+  <!-- 1 capture -->
+  <div>
+    <div class="label">Step 1</div>
+    <div class="h3" style="margin:6px 0 16px">Capture</div>
+    <div style="position:relative; width:272px; height:204px; overflow:hidden">
+      <img src="assets/face_320x240.jpg" alt="Camera frame of the test photo" style="width:272px; height:204px; display:block">
+      <div class="abs chip solid" style="left:0; bottom:0">320 × 240</div>
+    </div>
+    <div class="b1" style="font-size:22px; margin-top:16px">The camera delivers 320 × 240 pixels, ten times a second.</div>
+  </div>
+  <!-- 2 detect -->
+  <div>
+    <div class="label" style="color:var(--blue)">Step 2 · Network 1</div>
+    <div class="h3" style="margin:6px 0 16px">Find the face</div>
+    <div style="position:relative; width:272px; height:204px; overflow:hidden">
+      <img src="assets/face_80x60.png" alt="The same frame at 80 x 60 pixels" style="width:272px; height:204px; display:block">
+      <svg class="abs" width="272" height="204" viewBox="0 0 320 240" style="left:0; top:0">
+        <rect x="73.2" y="6.8" width="170.4" height="217.6" fill="none" stroke="#fff" stroke-width="3.5"/>
+        <g fill="#00AADB" stroke="#033778" stroke-width="2"><circle cx="113.6" cy="86.7" r="7"/><circle cx="193.8" cy="86.3" r="7"/><circle cx="151.8" cy="129.7" r="7"/><circle cx="123.5" cy="169.7" r="7"/><circle cx="192.9" cy="164.6" r="7"/></g>
+      </svg>
+      <div class="abs chip solid" style="left:0; bottom:0">80 × 60</div>
+    </div>
+    <div class="b1" style="font-size:22px; margin-top:16px">On a 4× smaller copy: where is a face? Eyes, nose and mouth corners.</div>
+  </div>
+  <!-- 3 check -->
+  <div>
+    <div class="label">Step 3</div>
+    <div class="h3" style="margin:6px 0 16px">Check quality</div>
+    <div style="width:272px; height:204px; background:var(--mist); padding:22px 20px; display:flex; flex-direction:column; justify-content:space-between">
+      <div style="display:flex; gap:14px; align-items:center" class="b1"><svg width="30" height="30" viewBox="0 0 30 30"><circle cx="15" cy="15" r="13" fill="#033778"/><path d="M8.5 15.5 l4.5 4.5 l8.5 -9" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>Big enough</div>
+      <div style="display:flex; gap:14px; align-items:center" class="b1"><svg width="30" height="30" viewBox="0 0 30 30"><circle cx="15" cy="15" r="13" fill="#033778"/><path d="M8.5 15.5 l4.5 4.5 l8.5 -9" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>Looking straight</div>
+      <div style="display:flex; gap:14px; align-items:center" class="b1"><svg width="30" height="30" viewBox="0 0 30 30"><circle cx="15" cy="15" r="13" fill="#033778"/><path d="M8.5 15.5 l4.5 4.5 l8.5 -9" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>Sharp, not blurred</div>
+    </div>
+    <div class="b1" style="font-size:22px; margin-top:16px">If not, the screen gives a hint such as “come closer” or “hold still”.</div>
+  </div>
+  <!-- 4 align -->
+  <div>
+    <div class="label">Step 4</div>
+    <div class="h3" style="margin:6px 0 16px">Cut out</div>
+    <div style="position:relative; width:272px; height:204px; background:var(--mist)">
+      <img class="abs" src="assets/face_112_pixel.png" alt="The face cut out at 112 x 112" style="left:34px; top:0; width:204px; height:204px">
+      <div class="abs chip solid" style="left:34px; bottom:0">112 × 112</div>
+    </div>
+    <div class="b1" style="font-size:22px; margin-top:16px">Cut out and turn the face so that the eyes always land on the same pixels.</div>
+  </div>
+  <!-- 5 embed -->
+  <div>
+    <div class="label" style="color:var(--blue)">Step 5 · Network 2</div>
+    <div class="h3" style="margin:6px 0 16px">Describe</div>
+    <div style="width:272px; height:204px; background:var(--blue); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px">
+      {{ g.barcode({ w: 232, h: 120, pos: '#FFFFFF', neg: C.sky }) }}
+      <div class="min" style="color:#fff; font-weight:600; letter-spacing:.08em">512 NUMBERS</div>
+    </div>
+    <div class="b1" style="font-size:22px; margin-top:16px">Turn the face into 512 numbers: a fingerprint of this face.</div>
+  </div>
+  <!-- 6 decide -->
+  <div>
+    <div class="label">Step 6</div>
+    <div class="h3" style="margin:6px 0 16px">Decide</div>
+    <div style="width:272px; height:204px; background:var(--mist); padding:20px; display:flex; flex-direction:column; justify-content:space-between">
+      <div class="min grey">closest match</div>
+      <div style="background:var(--sky); color:var(--blue); font-weight:700; font-size:30px; letter-spacing:.06em; text-align:center; padding:10px 0">PERSON 1</div>
+      <div class="min grey">score 0.87 (slide 10)</div>
+    </div>
+    <div class="b1" style="font-size:22px; margin-top:16px">Compare with the enrolled people and 200 strangers. Is a person closest? Show the name.</div>
+  </div>
+</div>
+
+<!-- arrows between the visuals -->
+<svg class="abs" width="1812" height="40" viewBox="0 0 1812 40" style="left:54px; top:606px" aria-hidden="true">
+  <g fill="none" stroke="#00AADB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M281 20 h18 m-7 -7 l7 7 l-7 7"/><path d="M589 20 h18 m-7 -7 l7 7 l-7 7"/><path d="M897 20 h18 m-7 -7 l7 7 l-7 7"/><path d="M1205 20 h18 m-7 -7 l7 7 l-7 7"/><path d="M1513 20 h18 m-7 -7 l7 7 l-7 7"/>
+  </g>
+</svg>
+
+<!-- one recognising cycle, to scale (faceid-16): 894–919 ms, recognizer 654–678 ms -->
+<div class="abs" style="left:54px; top:872px; width:1812px">
+  <div class="label">One cycle that recognises a face, to scale: 894–919 ms</div>
+  <div style="display:flex; height:46px; margin-top:10px; color:#fff; font-size:22px; font-weight:600; line-height:46px">
+    <div style="width:480px; background:var(--blue); padding-left:14px">Capture, find, cut out, decide</div>
+    <div style="width:1332px; background:var(--sky); color:var(--blue); padding-left:16px">Describe: the recognizer network · 654–678 ms</div>
+  </div>
+  <div style="margin-top:8px; font-size:22px"><b class="blue">Alone on the core the recognizer needs 432 ms;</b> here it shares the core with camera and screen, so it takes 654–678 ms.</div>
+</div>
+<div class="note">Photo: NASA portrait of astronaut Jessica Watkins (public domain), the project’s test image. Box and dots are the real detector output. Times: measured on the board, build faceid-16.</div>

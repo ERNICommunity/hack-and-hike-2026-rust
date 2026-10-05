@@ -1,0 +1,35 @@
+<img class="abs" src="assets/arms-white.svg" alt="" style="left:-300px; top:560px; height:900px; opacity:.06">
+<div class="abs" style="left:40px; top:150px; font-size:300px; font-weight:200; line-height:.8; letter-spacing:-.06em; color:var(--sky)">04</div>
+<div class="abs" style="left:54px; top:430px; font-size:96px; line-height:1; letter-spacing:-.02em; color:#fff">Results</div>
+<div class="abs b1" style="left:54px; top:560px; width:560px; color:rgba(255,255,255,.85)">Speed measured on the board. Accuracy measured on the laptop with the identical integer maths, which the board reproduces bit for bit.</div>
+
+<div class="abs" style="left:700px; top:210px; width:1166px; display:grid; grid-template-columns:repeat(3, 1fr); column-gap:44px; row-gap:40px; color:#fff">
+  <div style="border-top:2px solid var(--sky); padding-top:16px">
+    <div class="num" style="font-size:112px; font-weight:300; letter-spacing:-.035em; line-height:.95">0.43 s</div>
+    <div class="b1" style="margin-top:12px"><b>recognizer, one face</b><br><span style="opacity:.85">first try 8.8 s, with EdgeFace-XXS; the detector 1.6 s → 0.1 s</span></div>
+  </div>
+  <div style="border-top:2px solid var(--sky); padding-top:16px">
+    <div class="num" style="font-size:112px; font-weight:300; letter-spacing:-.035em; line-height:.95">0.9 s</div>
+    <div class="b1" style="margin-top:12px"><b>from face to name</b><br><span style="opacity:.85">in the full app (894–919 ms), named at the first look</span></div>
+  </div>
+  <div style="border-top:2px solid var(--sky); padding-top:16px">
+    <div class="num" style="font-size:112px; font-weight:300; letter-spacing:-.035em; line-height:.95">99.27&nbsp;%</div>
+    <div class="b1" style="margin-top:12px"><b>correct on LFW</b><br><span style="opacity:.85">6,000 photo pairs; bit for bit what the board computes</span></div>
+  </div>
+  <div style="border-top:2px solid var(--sky); padding-top:16px">
+    <div class="num" style="font-size:112px; font-weight:300; letter-spacing:-.035em; line-height:.95">98.7&nbsp;%</div>
+    <div class="b1" style="margin-top:12px"><b>named at the first look</b><br><span style="opacity:.85">in simulated visits; on the board, too</span></div>
+  </div>
+  <div style="border-top:2px solid var(--sky); padding-top:16px">
+    <div class="num" style="font-size:112px; font-weight:300; letter-spacing:-.035em; line-height:.95">1:4,600</div>
+    <div class="b1" style="margin-top:12px"><b>strangers let in</b><br><span style="opacity:.85">5 of 22,920 simulated attempts</span></div>
+  </div>
+  <div style="border-top:2px solid var(--sky); padding-top:16px">
+    <div class="num" style="font-size:112px; font-weight:300; letter-spacing:-.035em; line-height:.95">0</div>
+    <div class="b1" style="margin-top:12px"><b>servers needed</b><br><span style="opacity:.85">everything runs on the board, offline</span></div>
+  </div>
+</div>
+
+<div class="abs" style="left:700px; top:760px; width:1166px; background:var(--deep); padding:20px 26px; color:#fff">
+  <div class="b1"><b style="color:var(--sky)">Limits, honestly:</b> no liveness check, so a good photo may fool it · up to 4 people · tuned on public photos, not on our office light · a greeting, not a door lock.</div>
+</div>

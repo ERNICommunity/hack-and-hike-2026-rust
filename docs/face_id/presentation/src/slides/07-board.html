@@ -1,0 +1,62 @@
+<div class="eyebrow">01 · Architecture</div>
+<h1 class="t">Two cores, three kinds of memory</h1>
+<p class="sub">One core runs face identification, the other keeps touch, sensors, sound and USB alive. <b>Every piece of data lives in the fastest memory it fits into.</b></p>
+
+<!-- The chip -->
+<div class="abs" style="left:54px; top:440px; width:860px; height:550px; border:3px solid var(--blue); padding:26px 30px">
+  <div style="display:flex; justify-content:space-between; align-items:baseline">
+    <div class="h3">ESP32-S3 chip</div><div class="label">2 cores · 240 MHz</div>
+  </div>
+  <div style="display:grid; grid-template-columns:1.15fr 1fr; gap:24px; margin-top:22px">
+    <div style="background:var(--blue); color:#fff; padding:24px 26px; height:420px">
+      <div class="label" style="color:var(--sky)">CPU0</div>
+      <div class="h3" style="color:#fff; margin-top:4px">Runs face identification</div>
+      <div style="margin-top:20px; padding-top:14px; border-top:1px solid rgba(255,255,255,.3)">
+        <div class="semi b1">Main loop</div>
+        <div class="b1" style="font-size:22px; opacity:.88">find → check → cut out → describe → decide, again and again</div>
+      </div>
+      <div style="margin-top:18px; padding-top:14px; border-top:1px solid rgba(255,255,255,.3)">
+        <div class="semi b1">Stream task</div>
+        <div class="b1" style="font-size:22px; opacity:.88">pauses the main loop briefly every 2 ms to collect the camera’s pixels, and draws the live preview</div>
+      </div>
+    </div>
+    <div style="background:var(--mist); padding:24px 26px; height:420px">
+      <div class="label" style="color:var(--blue)">CPU1</div>
+      <div class="h3" style="margin-top:4px">Keeps the rest alive</div>
+      <div class="b1" style="margin-top:20px; line-height:1.9; border-top:1px solid var(--rule); padding-top:10px">
+        Touch screen<br>Motion and light sensors<br>Microphone, speaker<br>Radio (unused by this app)<br>USB log to the laptop
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Memory ladder -->
+<div class="abs" style="left:976px; top:440px; width:890px">
+  <div style="display:grid; grid-template-columns:300px 1fr; gap:28px; background:var(--blue10); padding:22px 26px; border-left:6px solid var(--blue)">
+    <div>
+      <div class="h3">Internal RAM</div>
+      <div class="b1 grey">512 KB, 144 KB free for data</div>
+      <svg width="120" height="22" viewBox="0 0 120 22" style="margin-top:10px"><rect x="0" y="4" width="36" height="14" fill="#033778"/><rect x="42" y="4" width="36" height="14" fill="#033778"/><rect x="84" y="4" width="36" height="14" fill="#033778"/></svg>
+      <div class="min grey">fastest: a few clock ticks per read</div>
+    </div>
+    <div class="b1" style="font-size:22px"><div class="label" style="margin-bottom:6px">What lives here</div>The recognizer’s work in bands: seven rows of a block’s widest values at a time (69 KB), so they never go out to the slower PSRAM chip</div>
+  </div>
+  <div style="display:grid; grid-template-columns:300px 1fr; gap:28px; background:var(--mist); padding:22px 26px; border-left:6px solid var(--sky); margin-top:16px">
+    <div>
+      <div class="h3">PSRAM</div>
+      <div class="b1 grey">extra chip · 8 MB · 40 MB/s</div>
+      <svg width="120" height="22" viewBox="0 0 120 22" style="margin-top:10px"><rect x="0" y="4" width="36" height="14" fill="#00AADB"/><rect x="42" y="4" width="36" height="14" fill="#00AADB"/><rect x="84" y="4" width="36" height="14" fill="#D7D9DC"/></svg>
+      <div class="min grey">medium</div>
+    </div>
+    <div class="b1" style="font-size:22px"><div class="label" style="margin-bottom:6px">What lives here</div>The networks’ learned numbers (1.35 MB), their working memory (0.8 MB) and the camera images</div>
+  </div>
+  <div style="display:grid; grid-template-columns:300px 1fr; gap:28px; background:var(--mist); padding:22px 26px; border-left:6px solid var(--silver); margin-top:16px">
+    <div>
+      <div class="h3">Flash</div>
+      <div class="b1 grey">4 MB · 10 MB/s</div>
+      <svg width="120" height="22" viewBox="0 0 120 22" style="margin-top:10px"><rect x="0" y="4" width="36" height="14" fill="#515455"/><rect x="42" y="4" width="36" height="14" fill="#D7D9DC"/><rect x="84" y="4" width="36" height="14" fill="#D7D9DC"/></svg>
+      <div class="min grey">slow, but keeps data without power</div>
+    </div>
+    <div class="b1" style="font-size:22px"><div class="label" style="margin-bottom:6px">What lives here</div>The firmware with both models built in, and the enrolled faces (128 KB)</div>
+  </div>
+</div>

@@ -1,0 +1,49 @@
+<div class="eyebrow">02 · Neural networks</div>
+<h1 class="t">Smaller numbers, same answers</h1>
+<p class="sub">Networks are usually trained with 32-bit floating-point numbers, but the chip is much faster with small whole numbers. Espressif publishes MFN_S8_V1 <b>already in 8-bit whole numbers</b>, every tensor with one power-of-two scale. Our job: compute exactly what its file says.</p>
+
+<!-- number formats -->
+<div class="abs" style="left:54px; top:440px; width:860px">
+  <div class="label">Three kinds of numbers (one box = one bit)</div>
+  <svg width="860" height="222" viewBox="0 0 860 222" style="margin-top:16px" aria-label="32, 16 and 8 bit numbers">
+    <g font-size="24">
+      <text x="0" y="32" fill="#3C3C3B" font-weight="600">32-bit float</text>
+      <text x="0" y="112" fill="#3C3C3B" font-weight="600">16-bit whole</text>
+      <text x="0" y="192" fill="#3C3C3B" font-weight="600">8-bit whole</text>
+      <text x="0" y="58" font-size="20" fill="#515455">how networks are trained</text>
+      <text x="0" y="138" font-size="20" fill="#515455">the detector’s values</text>
+      <text x="0" y="218" font-size="20" fill="#515455">all of the recognizer</text>
+    </g>
+    {{ Array.from({length:32},(_, i)=>`<rect x="${230+i*19}" y="12" width="16" height="40" fill="#E6EBF2" stroke="#033778" stroke-width="1.2"/>`).join('') }}
+    {{ Array.from({length:16},(_, i)=>`<rect x="${230+i*19}" y="92" width="16" height="40" fill="#00AADB"/>`).join('') }}
+    {{ Array.from({length:8},(_, i)=>`<rect x="${230+i*19}" y="172" width="16" height="40" fill="#033778"/>`).join('') }}
+  </svg>
+  <div class="label" style="margin-top:14px">Size of all recognizer weights</div>
+  <div style="display:grid; grid-template-columns:230px 1fr; row-gap:10px; margin-top:12px; align-items:center" class="b1">
+    <div class="semi">as 32-bit</div><div style="display:flex; align-items:center; gap:14px"><div style="width:560px; height:30px; background:#E6EBF2; border:1.2px solid var(--blue)"></div><span class="semi blue" style="white-space:nowrap">4.7 MB</span></div>
+    <div class="semi">8-bit</div><div style="display:flex; align-items:center; gap:14px"><div style="width:148px; height:30px; background:var(--blue)"></div><span class="semi blue" style="white-space:nowrap">1.26 MB</span></div>
+  </div>
+  <div class="b1" style="font-size:22px; margin-top:14px">More than the 512 KB of fast memory, so the weights live in PSRAM.</div>
+</div>
+
+<!-- power-of-two scale, then the history -->
+<div class="abs" style="left:976px; top:440px; width:890px">
+  <div class="label">One scale per tensor, a power of two</div>
+  <div style="display:grid; grid-template-columns:auto auto auto auto auto; justify-content:start; gap:18px; align-items:baseline; margin-top:14px">
+    <span class="big num" style="font-size:56px">52</span><span class="b1 grey">×&nbsp;2<sup>−6</sup></span><span class="b1 grey">=</span><span class="big num" style="font-size:56px">0.8125</span><span class="b1 grey">a whole number, in units of 1/64</span>
+  </div>
+  <div class="b1" style="font-size:22px; margin-top:8px">Rescaling a sum is then a shift of its bits: no division, no float. The camera pixels go in the same way: (x − 127.5) / 127.5, in units of 2<sup>−6</sup>.</div>
+
+  <div style="margin-top:34px; background:var(--mist); padding:20px 26px; border-left:6px solid var(--silver)">
+    <div class="label">Before, with our first recognizer, EdgeFace-XXS</div>
+    <div class="b1" style="font-size:22px; margin-top:8px">It came in 32 bits and we shrank it ourselves. <b class="blue">Try 1, 8 bits everywhere, failed:</b> small rounding errors piled up block after block, like copying a copy of a copy (closeness to the original 0.95 on average, worst 0.89). <b class="blue">Try 2</b> kept 16 bits for the values between layers: 0.9972 on average, worst 0.9955.</div>
+  </div>
+  <div class="b1" style="font-size:22px; margin-top:16px">MFN_S8_V1 comes in 8 bits from Espressif, so there was nothing to shrink, only to reproduce.</div>
+</div>
+
+<!-- result -->
+<div class="abs" style="left:54px; top:906px; width:1812px; display:grid; grid-template-columns:420px 420px 1fr; gap:40px; align-items:end; border-top:2px solid var(--blue); padding-top:14px">
+  <div class="b1"><b class="blue">Same answers:</b> our firmware code against an independent interpreter of Espressif’s file</div>
+  <div style="display:flex; align-items:baseline; gap:14px"><span class="big num" style="font-size:56px">7,701</span><span class="b1 blue semi" style="font-size:22px">of 7,701 LFW photos<br>bit for bit</span></div>
+  <div class="b1 grey" style="font-size:22px">The interpreter is part of our laptop toolkit and shares no code with the firmware. Accuracy on LFW: 99.27&nbsp;% (slide 15).</div>
+</div>

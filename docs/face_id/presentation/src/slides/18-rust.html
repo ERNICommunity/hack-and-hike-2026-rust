@@ -1,0 +1,41 @@
+<div class="eyebrow">03 · Performance</div>
+<h1 class="t">Rust without an operating system</h1>
+<p class="sub">No operating system, no threads, no files: just our Rust code on the chip. <b>What the language gave us, and where it pushed back.</b></p>
+
+<div class="abs" style="left:54px; top:440px; width:1812px; display:grid; grid-template-columns:1fr 1fr; column-gap:56px">
+  <div>
+    <div class="label" style="color:var(--blue); padding-bottom:12px; border-bottom:2px solid var(--blue)">What Rust gave us</div>
+    <div style="padding:13px 0; border-bottom:1px solid var(--rule)">
+      <div class="h3">One library, two machines</div>
+      <div class="b1" style="margin-top:6px">The same Rust code runs in the laptop’s tests and on the chip. That is what made the bit-for-bit check possible.</div>
+    </div>
+    <div style="padding:13px 0; border-bottom:1px solid var(--rule)">
+      <div class="h3">async/await, without an OS</div>
+      <div class="b1" style="margin-top:6px">Camera and screen run as an async task that a timer wakes every 2 ms. A small async runtime does it all.</div>
+    </div>
+    <div style="padding:13px 0; border-bottom:1px solid var(--rule)">
+      <div class="h3">Hardware as owned values</div>
+      <div class="b1" style="margin-top:6px">The app owns its camera, screen and touch handles. No other code can use them by accident.</div>
+    </div>
+  </div>
+  <div>
+    <div class="label" style="padding-bottom:12px; border-bottom:2px solid var(--grey)">Where it pushed back</div>
+    <div style="padding:13px 0; border-bottom:1px solid var(--rule)">
+      <div class="h3" style="color:var(--grey)">The fast maths needs assembly</div>
+      <div class="b1" style="margin-top:6px">The vector unit (slide 12) is only reachable through hand-written assembly inside the Rust code.</div>
+    </div>
+    <div style="padding:13px 0; border-bottom:1px solid var(--rule)">
+      <div class="h3" style="color:var(--grey)">A compiler of its own</div>
+      <div class="b1" style="margin-top:6px">The chip needs its vendor’s own Rust toolchain, and the strongest optimisation setting makes that compiler crash.</div>
+    </div>
+    <div style="padding:13px 0; border-bottom:1px solid var(--rule)">
+      <div class="h3" style="color:var(--grey)">64-bit floats are slow here</div>
+      <div class="b1" style="margin-top:6px">Rust compiles them without complaint, but this chip has no hardware for them, so every calculation runs as slow software. One in the wrong place cost 32 ms per block. We use 32-bit floats.</div>
+    </div>
+  </div>
+</div>
+
+<div class="abs" style="left:54px; top:912px; width:1812px; display:grid; grid-template-columns:1fr 1fr; column-gap:56px">
+  <div style="background:#1D2021; color:#E8ECEF; padding:12px 22px"><div class="min" style="color:#9AA3AA; letter-spacing:.1em">ON THE LAPTOP: TEST THE SHARED LIBRARY</div><div class="mono" style="font-size:22px; margin-top:6px">./scripts/test.sh -p hack-and-hike-vision</div></div>
+  <div style="background:#1D2021; color:#E8ECEF; padding:12px 22px"><div class="min" style="color:#9AA3AA; letter-spacing:.1em">FOR THE BOARD: BUILD THE APP ON TOP OF IT</div><div class="mono" style="font-size:22px; margin-top:6px">cargo dist --bin face_id</div></div>
+</div>

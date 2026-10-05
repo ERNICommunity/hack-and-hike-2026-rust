@@ -1,0 +1,56 @@
+<div class="eyebrow">The challenge</div>
+<h1 class="t">A microcontroller is not a laptop</h1>
+<p class="sub">Our two face models are small by design, made for phones and small chips. Even so, the board has only a fraction of a laptop’s memory and speed, and <b>no operating system at all.</b></p>
+
+<!-- Memory to scale: 16 GB vs 8 MB vs 512 KB, areas proportional -->
+<div class="abs" style="left:54px; top:448px; width:820px">
+  <div class="label">Memory, drawn to scale</div>
+  <svg width="820" height="470" viewBox="0 0 820 470" style="margin-top:18px" aria-label="16 GB against 8 MB and 512 KB, areas to scale">
+    <rect x="0" y="0" width="440" height="440" fill="#E6EBF2"/>
+    <text x="24" y="400" font-size="30" fill="#033778">16 GB</text>
+    <text x="24" y="424" font-size="20" fill="#515455">a typical laptop</text>
+    <rect x="0" y="0" width="9.7" height="9.7" fill="#00AADB"/>
+    <rect x="0" y="0" width="2.4" height="2.4" fill="#033778"/>
+    <circle cx="5" cy="5" r="24" fill="none" stroke="#033778" stroke-width="2.5"/>
+    <path d="M26 16 L 484 60" stroke="#033778" stroke-width="1.5" stroke-dasharray="5 5"/>
+    <path d="M22 22 L 484 180" stroke="#033778" stroke-width="1.5" stroke-dasharray="5 5"/>
+    <!-- zoom ×12 -->
+    <rect x="484" y="40" width="160" height="160" fill="#fff" stroke="#033778" stroke-width="2"/>
+    <rect x="500" y="56" width="116" height="116" fill="#00AADB"/>
+    <rect x="500" y="56" width="29" height="29" fill="#033778"/>
+    <text x="484" y="26" font-size="18" font-weight="600" letter-spacing="2" fill="#515455">ZOOMED IN 12×</text>
+    <rect x="484" y="236" width="22" height="22" fill="#033778"/>
+    <text x="516" y="256" font-size="26" font-weight="600" fill="#033778">512 KB</text>
+    <text x="484" y="284" font-size="21" fill="#3C3C3B">fast memory on the chip</text>
+    <rect x="484" y="316" width="22" height="22" fill="#00AADB"/>
+    <text x="516" y="336" font-size="26" font-weight="600" fill="#033778">8 MB</text>
+    <text x="484" y="364" font-size="21" fill="#3C3C3B">extra chip (“PSRAM”):</text>
+    <text x="484" y="390" font-size="21" fill="#3C3C3B">16× larger, much slower</text>
+    <text x="484" y="432" font-size="21" fill="#515455">Fast memory: 32,000× less.</text>
+  </svg>
+</div>
+
+<!-- The models, then the comparison -->
+<div class="abs" style="left:976px; top:448px; width:890px">
+  <div class="label">Our two models, small by design</div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px">
+    <div style="background:var(--mist); padding:14px 20px; border-left:4px solid var(--blue)"><div class="semi blue" style="font-size:24px">YuNet · finds faces</div><div class="b1" style="font-size:22px">53,121 weights · 92 KB</div></div>
+    <div style="background:var(--mist); padding:14px 20px; border-left:4px solid var(--sky)"><div class="semi blue" style="font-size:24px">MFN_S8_V1 · recognises them</div><div class="b1" style="font-size:22px">1.19 million weights · 1.26 MB</div></div>
+  </div>
+  <div style="display:grid; grid-template-columns:200px 1fr 1fr; gap:0 28px; padding:22px 0 8px">
+    <div></div><div class="label">Typical laptop</div><div class="label" style="color:var(--blue)">Our board</div>
+  </div>
+  <div style="display:grid; grid-template-columns:200px 1fr 1fr; gap:0 28px; padding:12px 0; border-top:2px solid var(--blue)" class="b1">
+    <div class="semi grey">Processor</div><div>8+ cores at 3–4 GHz</div><div class="blue semi">2 cores at 240 MHz</div>
+  </div>
+  <div style="display:grid; grid-template-columns:200px 1fr 1fr; gap:0 28px; padding:12px 0; border-top:1px solid var(--rule)" class="b1">
+    <div class="semi grey">Maths hardware</div><div>A graphics card with thousands of multipliers</div><div class="blue semi">One small vector unit: 16 small multiplications at a time</div>
+  </div>
+  <div style="display:grid; grid-template-columns:200px 1fr 1fr; gap:0 28px; padding:12px 0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule)" class="b1">
+    <div class="semi grey">Floating point</div><div>float and double, both in hardware</div><div class="blue semi">float only; double is emulated in slow software</div>
+  </div>
+  <div style="display:grid; grid-template-columns:auto 1fr; gap:30px; align-items:center; margin-top:22px">
+    <div class="big num" style="font-size:80px">8.8 s</div>
+    <div class="b1">The first try on the board, for the recognizer alone (our first one, EdgeFace-XXS).<br>Goal: <b class="blue">under one second from face to name.</b></div>
+  </div>
+</div>

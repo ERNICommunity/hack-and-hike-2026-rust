@@ -1,0 +1,51 @@
+<div class="eyebrow">03 · Performance</div>
+<h1 class="t">The app around the networks</h1>
+<p class="sub">The camera has almost no buffer: its pixels must be collected within about 5 ms or they are lost. A network keeps the core busy for hundreds of ms. <b>Juggling both is like never blocking a UI thread.</b></p>
+
+<!-- Keeping the camera fed -->
+<div class="abs" style="left:54px; top:440px; width:760px">
+  <div class="label">Core 0 over 200 ms</div>
+  <svg width="760" height="300" viewBox="0 0 760 300" style="margin-top:14px" aria-label="Timeline of core 0 before and after the fix">
+    <defs>
+      <pattern id="hatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="10" height="10" fill="#BFEAF6"/><rect width="4" height="10" fill="#00AADB"/>
+      </pattern>
+    </defs>
+    <text x="0" y="22" font-size="22" font-weight="600" fill="#515455">Before</text>
+    <rect x="90" y="0" width="245" height="36" fill="#033778"/>
+    <rect x="335" y="0" width="315" height="36" fill="url(#hatch)"/>
+    <rect x="650" y="0" width="110" height="36" fill="#033778"/>
+    {{ Array.from({length:35},(_, i)=>`<rect x="${90+i*7}" y="0" width="1.6" height="36" fill="#00AADB"/>`).join('') }}
+    {{ Array.from({length:16},(_, i)=>`<rect x="${650+i*7}" y="0" width="1.6" height="36" fill="#00AADB"/>`).join('') }}
+    <text x="492" y="64" text-anchor="middle" font-size="20" font-weight="600" fill="#033778">stuck: waiting for the camera, 50–100 ms</text>
+    <text x="0" y="118" font-size="22" font-weight="600" fill="#033778">Today</text>
+    <rect x="90" y="96" width="670" height="36" fill="#033778"/>
+    {{ Array.from({length:96},(_, i)=>`<rect x="${90+i*7}" y="96" width="1.6" height="36" fill="#00AADB"/>`).join('') }}
+    <text x="90" y="162" font-size="21" fill="#515455">A short slice every 2 ms, never waiting. The slices add up to about</text>
+    <text x="90" y="188" font-size="21" fill="#515455">a quarter of the core, and both cores share one memory cache:</text>
+    <text x="90" y="214" font-size="21" fill="#515455">together, most likely, why a network runs about 1.5× slower in the app.</text>
+    <rect x="90" y="252" width="20" height="20" fill="#033778"/><text x="118" y="269" font-size="20" fill="#3C3C3B">networks, main loop</text>
+    <rect x="330" y="252" width="20" height="20" fill="#00AADB"/><text x="358" y="269" font-size="20" fill="#3C3C3B">stream task: camera, screen</text>
+  </svg>
+
+</div>
+
+<div class="abs" style="left:880px; top:440px; width:986px">
+  <div class="label" style="color:var(--blue)">How we found the stalls</div>
+  <div class="b1" style="display:grid; grid-template-columns:40px 1fr; row-gap:14px; margin-top:14px">
+    <span class="semi blue">1</span><span>The log showed 256 lost camera images in 81 s, and a third of all time gone.</span>
+    <span class="semi blue">2</span><span>At the same moments, the motion sensor on the <i>other</i> core reported gaps. Why would it care?</span>
+    <span class="semi blue">3</span><span>Core 0 also runs the clock that both cores rely on. The camera code waited for the camera at a moment when nothing else may run on core 0, not even that clock, so both cores froze. <b class="blue">The fix: the camera code never waits; it comes back 2 ms later.</b></span>
+  </div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:36px; margin-top:34px">
+    <div style="border-top:2px solid var(--blue); padding-top:12px">
+      <div style="display:flex; align-items:baseline; gap:12px"><span class="big num" style="font-size:52px; color:var(--grey)">1,730</span><span class="b1 grey">→</span><span class="big num" style="font-size:52px">862 ms</span></div>
+      <div class="b1" style="font-size:22px; margin-top:6px">a cycle that recognises a face</div>
+    </div>
+    <div style="border-top:2px solid var(--blue); padding-top:12px">
+      <div style="display:flex; align-items:baseline; gap:12px"><span class="big num" style="font-size:52px; color:var(--grey)">505</span><span class="b1 grey">→</span><span class="big num" style="font-size:52px">173 ms</span></div>
+      <div class="b1" style="font-size:22px; margin-top:6px">a cycle without a face</div>
+    </div>
+  </div>
+  <div class="min grey" style="margin-top:10px">First app build whose cycle was logged, against faceid-13 (EdgeFace-XXS). With MFN_S8_V1 today: 894–919 ms and 144–195 ms.</div>
+</div>

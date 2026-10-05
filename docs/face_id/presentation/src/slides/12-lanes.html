@@ -1,0 +1,60 @@
+<div class="eyebrow">02 · Neural networks</div>
+<h1 class="t">The chip’s secret weapon: the vector unit</h1>
+<p class="sub">Beside its normal core, the chip has a small vector unit: 8 “lanes” for 16-bit numbers, or <b>16 lanes for 8-bit numbers, side by side in one instruction.</b> The maths was cheap. What cost time was carrying values out to memory and back.</p>
+
+<div class="abs" style="left:54px; top:430px">
+  <svg width="1080" height="560" viewBox="0 0 1080 560" aria-label="Input values stream into sixteen lanes; sums are rounded once and passed on">
+    <!-- inputs -->
+    <text x="0" y="18" font-size="18" font-weight="600" letter-spacing="2" fill="#515455">INPUT VALUES, ONE AFTER ANOTHER</text>
+    <rect x="0" y="34" width="64" height="44" fill="#033778"/><text x="32" y="64" text-anchor="middle" font-size="22" font-weight="600" fill="#fff">x1</text>
+    {{ [2,3,4,5,6].map((n,i)=>`<rect x="${76+i*76}" y="34" width="64" height="44" fill="#fff" stroke="#033778" stroke-width="1.5"/><text x="${108+i*76}" y="64" text-anchor="middle" font-size="22" fill="#033778">x${n}</text>`).join('') }}
+    <text x="466" y="64" font-size="26" fill="#033778">…</text>
+    <rect x="510" y="34" width="64" height="44" fill="#fff" stroke="#033778" stroke-width="1.5"/><text x="542" y="64" text-anchor="middle" font-size="22" fill="#033778">x64</text>
+    <text x="600" y="64" font-size="20" fill="#515455">for example the 64 values of one spot</text>
+    <!-- the unit -->
+    <rect x="0" y="108" width="1080" height="344" fill="#F3F5F8"/>
+    <rect x="0" y="108" width="1080" height="6" fill="#00AADB"/>
+    <text x="70" y="146" font-size="18" font-weight="600" letter-spacing="2" fill="#033778">VECTOR UNIT · 16 LANES OF 8 BITS: × WEIGHT, RUNNING SUM</text>
+    <!-- broadcast bus from x1 -->
+    <path d="M32 78 V 96 H 40 V 433" fill="none" stroke="#033778" stroke-width="3"/>
+    {{ Array.from({length:16},(_, i)=>{ const y=162+i*17; const len=[210,260,180,240,300,200,250,220,190,270,230,170,280,210,245,200][i]; return `
+      <path d="M40 ${y+7} H 70" stroke="#033778" stroke-width="1.5"/>
+      <rect x="70" y="${y}" width="150" height="14" fill="#fff" stroke="#033778" stroke-width="1"/>
+      <text x="145" y="${y+11.5}" text-anchor="middle" font-size="12" fill="#033778">× weight ${i+1}</text>
+      <path d="M220 ${y+7} H 244" stroke="#00AADB" stroke-width="2"/>
+      <rect x="244" y="${y}" width="${len}" height="14" fill="#00AADB"/>
+      <path d="M${244+len} ${y+7} H 604" stroke="#00AADB" stroke-width="1.2" stroke-dasharray="3 5"/>
+      <rect x="822" y="${y}" width="80" height="14" fill="#033778"/>
+      <text x="862" y="${y+11.5}" text-anchor="middle" font-size="12" fill="#fff">out ${i+1}</text>`}).join('') }}
+    <rect x="610" y="162" width="190" height="268" fill="#E6EBF2" stroke="#033778" stroke-width="1.5"/>
+    <text x="705" y="276" text-anchor="middle" font-size="22" font-weight="600" fill="#033778">round once,</text>
+    <text x="705" y="304" text-anchor="middle" font-size="22" font-weight="600" fill="#033778">shift back to</text>
+    <text x="705" y="332" text-anchor="middle" font-size="22" font-weight="600" fill="#033778">8 bits</text>
+    <g stroke="#00AADB" stroke-width="2">{{ Array.from({length:16},(_, i)=>`<path d="M800 ${169+i*17} H 822"/>`).join('') }}</g>
+    <path d="M912 296 H 1050" stroke="#00AADB" stroke-width="4"/><path d="M1040 286 l10 10 l-10 10" fill="none" stroke="#00AADB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="920" y="276" font-size="20" fill="#033778" font-weight="600">on to the next</text>
+    <text x="920" y="330" font-size="20" fill="#033778" font-weight="600">layer, in fast RAM</text>
+    <!-- the old round trip -->
+    <path d="M862 452 V 500 H 40 V 452" fill="none" stroke="#B1B0B1" stroke-width="3" stroke-dasharray="8 7"/>
+    <path d="M31 462 l9 -10 l9 10" fill="none" stroke="#B1B0B1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="200" y="484" width="660" height="34" fill="#fff"/>
+    <text x="530" y="508" text-anchor="middle" font-size="20" fill="#515455">first versions: every value left the unit here, 60–100 ticks each</text>
+    <text x="0" y="548" font-size="20" fill="#515455">Why round at all? The values are small whole numbers (slide 11), so the big sums must be scaled back down.</text>
+  </svg>
+</div>
+
+<div class="abs" style="left:1180px; top:430px; width:686px">
+  <div class="label">Clock ticks per multiplication</div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:28px; margin-top:12px">
+    <div style="border-top:2px solid var(--blue); padding-top:10px"><div class="big num" style="font-size:72px">0.40</div><div class="b1" style="font-size:22px; margin-top:6px">in all of the recognizer’s 1×1 layers, loading the numbers included</div></div>
+    <div style="border-top:2px solid var(--grey); padding-top:10px"><div class="big num" style="font-size:72px; color:var(--grey)">60–100</div><div class="b1" style="font-size:22px; margin-top:6px">ticks for one value’s trip out to memory and back, in plain code</div></div>
+  </div>
+  <div style="margin-top:26px; background:var(--blue); color:#fff; padding:22px 26px">
+    <div class="b1" style="font-size:23px">The first versions sent every result out of the unit after each layer. <b>Moving data took far longer than the multiplying.</b> Now results are rounded inside the unit, and each block works on bands of seven rows that stay in the fast internal RAM: the 14 × 14 block takes 41 ms row by row, 31 ms through PSRAM, <b>21 ms in bands of seven.</b></div>
+  </div>
+  <div class="label" style="margin-top:30px">What the 8-bit mode saved</div>
+  <div style="display:grid; grid-template-columns:auto auto auto; justify-content:start; gap:18px; align-items:baseline; margin-top:10px">
+    <span class="big num" style="font-size:64px; color:var(--grey)">~600</span><span class="b1 grey">→</span><span class="big num" style="font-size:64px">345 ms</span>
+  </div>
+  <div class="b1" style="font-size:22px; margin-top:6px">All 1×1 layers of the recognizer: estimated on the 16-bit lanes, measured in the 8-bit mode. Same results, bit for bit.</div>
+</div>

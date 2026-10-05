@@ -1,0 +1,20 @@
+<div class="eyebrow">03 · Performance</div>
+<h1 class="t">Measure, don’t guess: the chip’s price list</h1>
+<p class="sub">Our estimates from reading the source code were <b>2 to 4 times too optimistic, every time.</b> So we timed each operation on the board and read the machine code the compiler produced.</p>
+
+<div class="abs" style="left:54px; top:440px">
+  <div class="label" style="margin-bottom:18px">Measured cost: one square = one clock tick</div>
+  {{ g.price() }}
+</div>
+
+<div class="abs" style="left:1130px; top:440px; width:736px">
+  <div class="label" style="margin-bottom:12px">Surprises found in the machine code</div>
+  <div class="b1" style="display:grid; grid-template-columns:48px 1fr; padding:14px 0; border-top:2px solid var(--blue)"><span class="semi blue">1</span><span>The compiler moved a slow 64-bit conversion into the loop, so it ran for every single output value</span></div>
+  <div class="b1" style="display:grid; grid-template-columns:48px 1fr; padding:14px 0; border-top:1px solid var(--rule)"><span class="semi blue">2</span><span>512 bytes of memory were cleared before every batch of work, though nothing read them</span></div>
+  <div class="b1" style="display:grid; grid-template-columns:48px 1fr; padding:14px 0; border-top:1px solid var(--rule)"><span class="semi blue">3</span><span>Results were read out one byte at a time: 200 instructions for 40 bytes</span></div>
+  <div class="b1" style="display:grid; grid-template-columns:48px 1fr; padding:14px 0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule)"><span class="semi blue">4</span><span>A helper we asked the compiler to inline became a real function call, once per value</span></div>
+  <div style="display:flex; align-items:baseline; gap:16px; margin-top:22px">
+    <span class="b1 grey" style="width:230px; font-size:22px">Fixing these, plus packing the weights (EdgeFace-XXS):</span><span class="big num" style="font-size:56px; color:var(--grey)">1,560</span><span class="b1 grey">→</span><span class="big num" style="font-size:56px">1,006 ms</span>
+  </div>
+</div>
+<div class="note"><b class="blue">Memory has a price, too:</b> the PSRAM chip delivers about 40 MB/s, flash about 10 MB/s. A 3 × 3 depthwise layer costs 1.15 ticks per multiplication from internal RAM, 3.24 from PSRAM.</div>
