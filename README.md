@@ -58,9 +58,12 @@ You work inside a development container (Dev Container). The container has
 the Rust toolchain for the ESP32-S3 and all other tools. You do not install
 them on your computer.
 
-To install all necessary tools for running Dev Containers using the [Rust Dev Environment Setup](https://dev.azure.com/erniegh/ERNI-Rust-Techstack/_git/erni-rust-local-dev-setup).
+You need two things on your computer:
 
-After installing:
+- [Visual Studio Code](https://code.visualstudio.com/)
+- its [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
+
+Then:
 
 1. Open the repository folder in VS Code.
 2. Choose **Reopen in Container** when VS Code asks. You can also run the

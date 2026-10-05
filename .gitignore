@@ -2,4 +2,4 @@
 **/target/
 firmware.bin
 .claude/worktrees/
-node_modules/
+**/node_modules/
