@@ -3,7 +3,7 @@
 //! against the whole one.
 
 use hack_and_hike_vision::nn::s8::{
-    self, Depthwise, LANES, Plan, Pointwise, Prelu, Store,
+    self, Depthwise, GroupPrelu, LANES, Plan, Pointwise, Prelu, Store,
     block::{self, Block},
     decode_lanes, encode_lanes, model,
 };
@@ -78,18 +78,23 @@ fn image_puts_lane_i_at_bit_20_i() {
 fn plan_holds_what_the_assembly_reads() {
     assert_eq!(core::mem::size_of::<Plan>(), s8::PLAN_BYTES);
     let bias: [i32; LANES] = core::array::from_fn(|i| i as i32 * 100 - 800);
-    let alpha: Vec<i8> = (0..32).map(|i| i as i8 - 16).collect();
-    let prelu = Prelu {
-        alpha: &alpha,
+    let alpha: [i8; LANES] = core::array::from_fn(|i| i as i8 - 8);
+    let prelu = GroupPrelu {
+        alpha,
         positive: 1,
         shift: 7,
     };
-    let plan = Plan::new(&bias, 7, Some((&prelu, 16)));
+    let plan = Plan::new(&bias, 7, Some(&prelu));
     assert_eq!(decode_lanes(&plan.image), bias.map(|b| b + 64));
     assert_eq!(decode_lanes(&plan.prelu_image), [64; LANES]);
-    assert_eq!(plan.alpha[..], alpha[16..32]);
-    assert_eq!((plan.positive, plan.prelu_shift), (1, 7));
-    assert_eq!(Plan::new(&bias, 0, None).image, encode_lanes(&bias));
+    assert_eq!(plan.alpha, alpha);
+    assert_eq!(
+        (plan.positive, plan.prelu_shift, plan.shift, plan.prelu),
+        (1, 7, 7, 1)
+    );
+    assert_eq!(plan.group_prelu(), Some(prelu));
+    let plain = Plan::new(&bias, 0, None);
+    assert_eq!((plain.image, plain.prelu), (encode_lanes(&bias), 0));
 }
 
 #[test]
@@ -120,7 +125,8 @@ fn reference_value(sum: f64, shift: u32, prelu: Option<(&[i8], u32, u32)>, chann
     }
 }
 
-/// A layer's random weights and biases, in the kernels' layout and plain.
+/// A layer's random weights and biases, in the kernels' layout and plain,
+/// and its plans; every group with the same shifts until [`Weights::reshift`].
 struct Weights {
     /// `[output / 16][taps][16]`.
     packed: Vec<i8>,
@@ -164,12 +170,41 @@ impl Weights {
         }
     }
 
-    fn prelu(&self, prelu: Option<(u32, u32)>) -> Option<Prelu<'_>> {
-        prelu.map(|(positive, shift)| Prelu {
-            alpha: &self.alpha,
-            positive,
-            shift,
-        })
+    /// Give group `group` its own shift (and PReLU shift), as ESP-DL's
+    /// split layers have.
+    fn reshift(&mut self, group: usize, shift: u32) {
+        let mut bias = [0i32; LANES];
+        bias.copy_from_slice(&self.bias[group * LANES..(group + 1) * LANES]);
+        let prelu = self.plans[group].group_prelu().map(|p| GroupPrelu {
+            shift: p.shift + 1,
+            ..p
+        });
+        self.plans[group] = Plan::new(&bias, shift, prelu.as_ref());
+    }
+
+    /// The expected value of channel `o` for the products `sum`.
+    fn expected(&self, o: usize, sum: f64) -> i8 {
+        let plan = &self.plans[o / LANES];
+        let prelu = plan
+            .group_prelu()
+            .map(|p| (&self.alpha[..], p.positive, p.shift));
+        reference_value(sum, plan.shift, prelu, o)
+    }
+
+    fn pointwise(&self, input: usize) -> Pointwise<'_> {
+        Pointwise {
+            input,
+            weights: &self.packed,
+            plans: &self.plans,
+        }
+    }
+
+    fn depthwise(&self, stride: usize) -> Depthwise<'_> {
+        Depthwise {
+            weights: &self.packed,
+            plans: &self.plans,
+            stride,
+        }
     }
 }
 
@@ -177,26 +212,21 @@ impl Weights {
 fn pointwise_matches_the_plain_reference() {
     let mut random = Random(7);
     let cases = [
-        (5, 16, 16, 6, None, Store::Write),
-        (9, 64, 128, 8, Some((1, 7)), Store::Write),
-        (3, 512, 64, 9, Some((0, 6)), Store::Add),
-        (1, 32, 48, 0, None, Store::Add),
+        (5, 16, 16, 6, None, Store::Write, false),
+        (9, 64, 128, 8, Some((1, 7)), Store::Write, true),
+        (3, 512, 64, 9, Some((0, 6)), Store::Add, false),
+        (1, 32, 48, 0, None, Store::Add, true),
     ];
-    for (pixels, input, output, shift, prelu, store) in cases {
-        let w = Weights::random(&mut random, input, output, shift, prelu);
-        let layer = Pointwise {
-            input,
-            weights: &w.packed,
-            bias: &w.bias,
-            plans: &w.plans,
-            shift,
-            prelu: w.prelu(prelu),
-        };
+    for (pixels, input, output, shift, prelu, store, split) in cases {
+        let mut w = Weights::random(&mut random, input, output, shift, prelu);
+        if split {
+            w.reshift(output / LANES - 1, shift + 1);
+        }
+        let layer = w.pointwise(input);
         let data = random.bytes(pixels * input, 64);
         let before = random.bytes(pixels * output, 128);
         let mut out = before.clone();
         s8::pointwise(&layer, store, &data, &mut out);
-        let alpha = prelu.map(|(positive, shift)| (&w.alpha[..], positive, shift));
         for (p, pixel) in data.chunks_exact(input).enumerate() {
             for o in 0..output {
                 let sum = f64::from(w.bias[o])
@@ -205,7 +235,7 @@ fn pointwise_matches_the_plain_reference() {
                         .zip(&w.plain[o * input..(o + 1) * input])
                         .map(|(&x, &w)| f64::from(x) * f64::from(w))
                         .sum::<f64>();
-                let mut expected = reference_value(sum, shift, alpha, o);
+                let mut expected = w.expected(o, sum);
                 if store == Store::Add {
                     expected = before[p * output + o].saturating_add(expected);
                 }
@@ -223,20 +253,11 @@ fn pointwise_matches_the_plain_reference() {
 fn depthwise_matches_the_plain_reference() {
     let mut random = Random(11);
     for (height, width, channels, stride) in [(4, 5, 32, 1), (5, 7, 16, 2), (1, 1, 16, 1)] {
-        let prelu = Some((1, 7));
-        let w = Weights::random(&mut random, 9, channels, 6, prelu);
-        let layer = Depthwise {
-            channels,
-            weights: &w.packed,
-            bias: &w.bias,
-            plans: &w.plans,
-            shift: 6,
-            stride,
-            prelu: w.prelu(prelu),
-        };
+        let w = Weights::random(&mut random, 9, channels, 6, Some((1, 7)));
+        let layer = w.depthwise(stride);
         let data = random.bytes(height * width * channels, 64);
         let row = width * channels;
-        let out_width = layer.output_width(width);
+        let out_width = layer.output_size(width);
         for oy in (0..height).step_by(stride) {
             let rows = [
                 oy.checked_sub(1).map(|r| &data[r * row..(r + 1) * row]),
@@ -260,10 +281,9 @@ fn depthwise_matches_the_plain_reference() {
                                 * f64::from(w.plain[c * 9 + ky * 3 + kx]);
                         }
                     }
-                    let expected = reference_value(sum, 6, Some((&w.alpha, 1, 7)), c);
                     assert_eq!(
                         out[ox * channels + c],
-                        expected,
+                        w.expected(c, sum),
                         "row {oy} pixel {ox} channel {c}"
                     );
                 }
@@ -275,46 +295,33 @@ fn depthwise_matches_the_plain_reference() {
 #[test]
 fn banded_block_equals_whole_block() {
     let mut random = Random(13);
-    for (height, width, channels) in [(6, 5, 16), (14, 14, 128), (1, 3, 32)] {
-        let expanded = 2 * channels;
+    let shapes = [
+        (6, 5, 16, 32, 16, 1, true),
+        (14, 14, 128, 256, 128, 1, true),
+        (1, 3, 32, 64, 32, 1, true),
+        (8, 8, 32, 64, 48, 2, false),
+        (7, 9, 16, 32, 16, 2, false),
+        (5, 4, 16, 32, 32, 1, false),
+    ];
+    for (height, width, channels, expanded, outputs, stride, residual) in shapes {
         let expand = Weights::random(&mut random, channels, expanded, 8, Some((0, 7)));
         let depth = Weights::random(&mut random, 9, expanded, 6, Some((1, 7)));
-        let project = Weights::random(&mut random, expanded, channels, 9, None);
+        let project = Weights::random(&mut random, expanded, outputs, 9, None);
         let block = Block {
             height,
             width,
-            expand: Pointwise {
-                input: channels,
-                weights: &expand.packed,
-                bias: &expand.bias,
-                plans: &expand.plans,
-                shift: 8,
-                prelu: expand.prelu(Some((0, 7))),
-            },
-            depthwise: Depthwise {
-                channels: expanded,
-                weights: &depth.packed,
-                bias: &depth.bias,
-                plans: &depth.plans,
-                shift: 6,
-                stride: 1,
-                prelu: depth.prelu(Some((1, 7))),
-            },
-            project: Pointwise {
-                input: expanded,
-                weights: &project.packed,
-                bias: &project.bias,
-                plans: &project.plans,
-                shift: 9,
-                prelu: None,
-            },
+            expand: expand.pointwise(channels),
+            depthwise: depth.depthwise(stride),
+            project: project.pointwise(expanded),
+            residual,
         };
         let input = random.bytes(height * width * channels, 64);
-        let mut whole = vec![0i8; input.len()];
-        let (mut wide, mut filtered) = (vec![0i8; block.whole_len()], vec![0i8; block.whole_len()]);
+        let mut whole = vec![0i8; block.output_len()];
+        let mut wide = vec![0i8; block.wide_len()];
+        let mut filtered = vec![0i8; block.filtered_whole_len()];
         block::run_whole(&block, &input, &mut wide, &mut filtered, &mut whole);
         for band in [1, 2, 3, 4, 7, 20] {
-            let mut banded = vec![0i8; input.len()];
+            let mut banded = vec![0i8; block.output_len()];
             let mut ring = vec![0i8; block.ring_len(band)];
             let mut filtered = vec![0i8; block.filtered_len(band)];
             let mut staging = vec![0i8; block.staging_len(band)];
@@ -327,8 +334,50 @@ fn banded_block_equals_whole_block() {
                 &mut staging,
                 &mut banded,
             );
-            assert_eq!(banded, whole, "{height}x{width}x{channels}, band {band}");
+            assert_eq!(
+                banded, whole,
+                "{height}x{width}x{channels}/{stride}, band {band}"
+            );
         }
-        assert_ne!(whole, input, "the block changed something");
+        assert!(
+            whole.iter().any(|&v| v != 0),
+            "the block computed something"
+        );
+        assert_eq!(
+            block.band_for(
+                block.ring_len(3),
+                block.filtered_len(3),
+                block.staging_len(3)
+            ),
+            3.min(block.out_height())
+        );
     }
+}
+
+#[test]
+fn whole_block_matches_the_layers_one_by_one() {
+    let mut random = Random(17);
+    let (height, width, channels, expanded) = (4, 6, 16, 32);
+    let expand = Weights::random(&mut random, channels, expanded, 8, Some((0, 7)));
+    let depth = Weights::random(&mut random, 9, expanded, 6, Some((1, 7)));
+    let project = Weights::random(&mut random, expanded, channels, 9, None);
+    let block = Block {
+        height,
+        width,
+        expand: expand.pointwise(channels),
+        depthwise: depth.depthwise(1),
+        project: project.pointwise(expanded),
+        residual: true,
+    };
+    let input = random.bytes(height * width * channels, 64);
+    let mut out = vec![0i8; block.output_len()];
+    let mut wide = vec![0i8; block.wide_len()];
+    let mut filtered = vec![0i8; block.filtered_whole_len()];
+    block::run_whole(&block, &input, &mut wide, &mut filtered, &mut out);
+    let mut wide_ref = vec![0i8; block.wide_len()];
+    model::pointwise(&block.expand, Store::Write, &input, &mut wide_ref);
+    assert_eq!(wide, wide_ref);
+    let mut expected = input.clone();
+    model::pointwise(&block.project, Store::Add, &filtered, &mut expected);
+    assert_eq!(out, expected);
 }

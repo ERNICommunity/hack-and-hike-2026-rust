@@ -16,10 +16,12 @@ mod calibrate;
 mod crops;
 mod data;
 mod embed;
+mod espdl;
 mod eval;
 mod export;
 mod golden;
 mod inspect;
+mod mfn;
 mod names;
 mod onnx;
 mod quantize;
@@ -71,6 +73,26 @@ enum Command {
         #[arg(long, value_delimiter = ',')]
         input_shape: Vec<usize>,
     },
+    /// Turn Espressif's MFN_S8_V1 face recognizer (`.espdl`) into the
+    /// FKB1 file the firmware runs, after checking that the graph is the
+    /// one the firmware implements.
+    ImportEspdl {
+        /// The `.espdl` file.
+        model: PathBuf,
+        /// The FKB1 file to write.
+        out: PathBuf,
+    },
+    /// Write the reference input and embedding of MFN_S8_V1 for an aligned
+    /// 112x112 crop, from an interpreter of the `.espdl` graph, for the
+    /// tests of the firmware's implementation.
+    GoldenEspdl {
+        /// The `.espdl` file.
+        model: PathBuf,
+        /// The aligned 112x112 crop (PNG or JPEG).
+        image: PathBuf,
+        /// The FKB1 file to write.
+        out: PathBuf,
+    },
     /// Write reference inputs and outputs of a model as an FKB1 file, for
     /// the tests of the firmware's implementation.
     Golden {
@@ -108,15 +130,16 @@ enum Command {
         /// The YuNet ONNX file (the dynamic-size variant), to find the
         /// faces in the photos.
         detector: PathBuf,
-        /// The `f32` FKB1 weights of the recognizer.
+        /// The recognizer's FKB1 weights (`import-espdl`).
         weights: PathBuf,
         /// The folder with one subfolder of photos per person.
         images: PathBuf,
         /// The protocol file (`pairs.txt`).
         pairs: PathBuf,
-        /// Also measure the integer recognizer with these weights.
+        /// Also run this `.espdl` file through the interpreter, as a
+        /// reference: slow, but it shares no code with the firmware.
         #[arg(long)]
-        int8: Option<PathBuf>,
+        reference: Option<PathBuf>,
         /// Use at most this many pairs.
         #[arg(long)]
         limit: Option<usize>,
@@ -130,16 +153,12 @@ enum Command {
     Bank {
         /// The YuNet ONNX file (the dynamic-size variant).
         detector: PathBuf,
-        /// The `f32` FKB1 weights of the recognizer.
+        /// The recognizer's FKB1 weights (`import-espdl`).
         weights: PathBuf,
         /// The folder with one subfolder of photos per person.
         images: PathBuf,
         /// The FKB1 file to write.
         out: PathBuf,
-        /// The integer weights; when given, the bank holds what the
-        /// integer recognizer produces, which is what the board runs.
-        #[arg(long)]
-        int8: Option<PathBuf>,
         /// How many people to put in the bank.
         #[arg(long, default_value_t = 200)]
         count: usize,
@@ -150,16 +169,12 @@ enum Command {
     Calibrate {
         /// The YuNet ONNX file (the dynamic-size variant).
         detector: PathBuf,
-        /// The `f32` FKB1 weights of the recognizer.
+        /// The recognizer's FKB1 weights (`import-espdl`).
         weights: PathBuf,
         /// The folder with one subfolder of photos per person.
         images: PathBuf,
         /// The impostor bank from `bank`.
         bank: PathBuf,
-        /// The integer weights; when given, the integer recognizer is
-        /// measured, which is what the board runs.
-        #[arg(long)]
-        int8: Option<PathBuf>,
         /// How many photos to enroll per person.
         #[arg(long, default_value_t = 5)]
         templates: usize,
@@ -200,6 +215,8 @@ fn main() -> Result<()> {
             out,
             input_shape,
         } => export::run(&model, &input_shape, &out),
+        Command::ImportEspdl { model, out } => espdl::import(&model, &out),
+        Command::GoldenEspdl { model, image, out } => espdl::golden(&model, &image, &out),
         Command::Golden {
             preset,
             model,
@@ -214,13 +231,13 @@ fn main() -> Result<()> {
             weights,
             images,
             pairs,
-            int8,
+            reference,
             limit,
             pick,
         } => eval::run(
             &detector,
             &weights,
-            int8.as_deref(),
+            reference.as_deref(),
             &images,
             &pairs,
             limit,
@@ -231,22 +248,19 @@ fn main() -> Result<()> {
             weights,
             images,
             out,
-            int8,
             count,
-        } => bank::run(&detector, &weights, int8.as_deref(), &images, &out, count),
+        } => bank::run(&detector, &weights, &images, &out, count),
         Command::Calibrate {
             detector,
             weights,
             images,
             bank,
-            int8,
             templates,
             people,
             impostors,
         } => calibrate::run(
             &detector,
             &weights,
-            int8.as_deref(),
             &images,
             &bank,
             templates,

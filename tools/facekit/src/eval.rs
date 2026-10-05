@@ -36,7 +36,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     data,
     embed::{Embeddings, Pick, cosine, embed_all},
-    tensors::Tensors,
+    mfn::Recognizer,
 };
 
 /// One pair of the protocol.
@@ -60,7 +60,7 @@ struct Pair {
 pub fn run(
     detector: &Path,
     weights: &Path,
-    integer_weights: Option<&Path>,
+    reference: Option<&Path>,
     images: &Path,
     pairs_file: &Path,
     limit: Option<usize>,
@@ -78,31 +78,21 @@ pub fn run(
     photos.dedup();
     println!("{} photos to embed", photos.len());
 
-    let f32s = Tensors::read(weights)?;
-    let i8s = integer_weights
-        .map(|path| {
-            Tensors::read(path).map(|mut tensors| {
-                tensors.pack_for_lanes();
-                tensors
-            })
-        })
-        .transpose()?;
-    let embeddings = embed_all(detector, &f32s, i8s.as_ref(), &photos, pick)?;
+    let recognizer = Recognizer::load(weights, reference)?;
+    let embeddings = embed_all(detector, &recognizer, &photos, pick)?;
     let missing = photos.len() - embeddings.len();
     println!("{} photos with a face, {missing} without", embeddings.len());
 
-    report("f32", &pairs, &embeddings, |e| &e.float);
-    if i8s.is_some() {
-        report("int8", &pairs, &embeddings, |e| &e.integer);
-        let agreement: Vec<f32> = embeddings
+    report("MFN_S8_V1 as the board runs it", &pairs, &embeddings, |e| &e.integer);
+    if recognizer.has_reference() {
+        report("the .espdl interpreter", &pairs, &embeddings, |e| &e.reference);
+        let same = embeddings
             .values()
-            .map(|e| cosine(&e.float, &e.integer))
-            .collect();
-        let worst = agreement.iter().copied().fold(f32::INFINITY, f32::min);
-        let mean = agreement.iter().sum::<f32>() / agreement.len() as f32;
+            .filter(|e| e.integer == e.reference)
+            .count();
         println!(
-            "\nembedding cosine int8 vs f32 over {} photos: worst {worst:.4}, mean {mean:.4}",
-            agreement.len()
+            "\nembeddings identical to the interpreter's: {same} of {} photos",
+            embeddings.len()
         );
     }
     Ok(())

@@ -1,0 +1,3 @@
+input                                                    i8    HWC    [112, 112, 3]
+embedding                                                i8    C      [512]
+2 tensors, 38144 bytes of data

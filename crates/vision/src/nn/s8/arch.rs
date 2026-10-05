@@ -88,8 +88,6 @@ struct GroupArgs {
     output: *mut i8,
     /// 24: bytes from one pixel's outputs to the next.
     stride: usize,
-    /// 28: the right shift.
-    shift: u32,
 }
 
 /// One 1x1 group over its pixels.
@@ -110,7 +108,7 @@ macro_rules! pointwise_group {
             "l32i {n}, {args}, 12",
             "l32i {out}, {args}, 20",
             "l32i {stride}, {args}, 24",
-            "l32i {shift}, {args}, 28",
+            "l32i {shift}, {plan}, 152",
             "1:",
             load_image!(),
             "l32i {w}, {args}, 4",
@@ -147,14 +145,19 @@ macro_rules! pointwise_group {
 
 /// [`super::pointwise`] on the vector unit; `false` when an operand does
 /// not fit the instructions' rules.
-pub fn pointwise(layer: &Pointwise<'_>, store: Store, input: &[i8], output: &mut [i8]) -> bool {
+pub fn pointwise(
+    layer: &Pointwise<'_>,
+    prelu: bool,
+    store: Store,
+    input: &[i8],
+    output: &mut [i8],
+) -> bool {
     let (channels, outputs) = (layer.input, layer.output());
     if !(aligned16(layer.weights) && aligned16(output) && aligned16(layer.plans)) {
         return false;
     }
     let pixels = input.len() / channels;
     let batch = (BATCH_BYTES / channels).max(1);
-    let prelu = layer.prelu.is_some();
     for first in (0..pixels).step_by(batch) {
         let count = batch.min(pixels - first);
         let pixels_in = &input[first * channels..(first + count) * channels];
@@ -170,7 +173,6 @@ pub fn pointwise(layer: &Pointwise<'_>, store: Store, input: &[i8], output: &mut
                 pairs: (channels - 2) / 2,
                 output: out.as_mut_ptr(),
                 stride: outputs,
-                shift: layer.shift,
             };
             // SAFETY: the pixels lie inside the input, the group's
             // weights inside the weights, every pixel's sixteen outputs
@@ -216,14 +218,12 @@ struct PixelArgs {
     groups: usize,
     /// 20: the output pixel's first channel.
     output: *mut i8,
-    /// 24: the right shift.
-    shift: u32,
 }
 
 /// Every group of one depthwise output pixel: per group, the plan's
 /// image into the accumulator, then per tap sixteen inputs times sixteen
 /// weights lane by lane, the epilogue, and a store; then the next
-/// group's weights (144 bytes on), plan (160 on) and channels (16 on).
+/// group's weights (144 bytes on), plan (224 on) and channels (16 on).
 macro_rules! depthwise_pixel {
     ($args:expr, $epilogue:tt) => {
         asm!(
@@ -232,9 +232,9 @@ macro_rules! depthwise_pixel {
             "l32i {plan}, {args}, 12",
             "l32i {wg}, {args}, 8",
             "l32i {out}, {args}, 20",
-            "l32i {shift}, {args}, 24",
             "movi {goff}, 0",
             "1:",
+            "l32i {shift}, {plan}, 152",
             load_image!(),
             "l32i {r}, {args}, 0",
             "l32i {n}, {args}, 4",
@@ -252,8 +252,8 @@ macro_rules! depthwise_pixel {
             "ee.vst.128.ip q2, {out}, 16",
             "addi {wg}, {wg}, 72",
             "addi {wg}, {wg}, 72",
-            "addi {plan}, {plan}, 80",
-            "addi {plan}, {plan}, 80",
+            "addi {plan}, {plan}, 112",
+            "addi {plan}, {plan}, 112",
             "addi {goff}, {goff}, 16",
             "addi {groups}, {groups}, -1",
             "bnez {groups}, 1b",
@@ -278,11 +278,12 @@ macro_rules! depthwise_pixel {
 /// does not fit the instructions' rules.
 pub fn depthwise_row(
     layer: &Depthwise<'_>,
+    prelu: bool,
     rows: [Option<&[i8]>; 3],
     width: usize,
     output: &mut [i8],
 ) -> bool {
-    let channels = layer.channels;
+    let channels = layer.channels();
     let fits = aligned16(layer.weights)
         && aligned16(layer.plans)
         && aligned16(output)
@@ -290,7 +291,6 @@ pub fn depthwise_row(
     if !fits || core::mem::size_of::<Plan>() != super::PLAN_BYTES {
         return false;
     }
-    let prelu = layer.prelu.is_some();
     for (ox, out) in output.chunks_exact_mut(channels).enumerate() {
         let centre = ox * layer.stride;
         let mut taps = [Tap {
@@ -321,7 +321,6 @@ pub fn depthwise_row(
             plans: layer.plans.as_ptr(),
             groups: channels / LANES,
             output: out.as_mut_ptr(),
-            shift: layer.shift,
         };
         // SAFETY: every tap's pixel lies inside its row and has
         // `channels` values, every group's weights and plan lie inside

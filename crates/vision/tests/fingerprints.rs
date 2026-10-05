@@ -15,7 +15,7 @@
 //! write the new fingerprints down. The test prints them all.
 
 use hack_and_hike_vision::{
-    align::{CROP_SIZE, align_face, recognizer_input_i8, source_region},
+    align::{CROP_SIZE, align_face, source_region},
     blob::Blob,
     detect::{
         CONTENT_HEIGHT, CONTENT_WIDTH, DEFAULT_NMS_THRESHOLD, DEFAULT_SCORE_THRESHOLD, DOWNSCALE,
@@ -25,24 +25,21 @@ use hack_and_hike_vision::{
         GrayImageMut, Rgb565Frame, RgbImageMut, downscale_to_rgb, downscale_to_rgb_within,
         rgb_to_gray,
     },
-    nn::{
-        BlobWeights, check, edgeface,
-        lanes::{GeluTable, GroupPlan, NormPlan},
-        pack, yunet,
-    },
+    nn::{BlobWeights, check, lanes::GroupPlan, mfn, pack, s8::Plan, yunet},
     quality::laplacian_variance,
 };
 
-/// The recognizer's integer weights, as the firmware carries them.
-const EDGEFACE: &[u8] = include_bytes!("../../../assets/models/edgeface_xxs.int8.fkb");
+/// The recognizer's weights (MFN_S8_V1), as the firmware carries them.
+const MFN: &[u8] = include_bytes!("../../../assets/models/mfn_s8_v1.fkb");
 /// The detector's integer weights, as the firmware carries them.
 const YUNET: &[u8] = include_bytes!("../../../assets/models/yunet.int8.fkb");
 /// The fixture face at the board's frame size.
 const PHOTO: &[u8] = include_bytes!("fixtures/face_320x240.jpg");
 
-/// The fingerprints since faceid-12, where the detector moved to the lane
-/// kernels (faceid-9 to faceid-11 had the same numbers up to the
-/// detector: heads `0x470c7ea90ef6060d`).
+/// The fingerprints since faceid-16, where the recognizer became
+/// MFN_S8_V1 (faceid-12 to faceid-15 had the same numbers up to the
+/// sharpness; faceid-9 to faceid-11 up to the detector, heads
+/// `0x470c7ea90ef6060d`).
 const EXPECTED: [(&str, u64); 9] = [
     ("frame scaled down by 4", 0xe72f_b550_889e_b1ad),
     ("frame scaled down by 2", 0x9309_0712_1d5b_5551),
@@ -51,8 +48,8 @@ const EXPECTED: [(&str, u64); 9] = [
     ("aligned crop", 0x8888_a8dd_7225_dc2d),
     ("gray crop", 0xf560_5afd_1cb4_1082),
     ("sharpness", 0x8534_7d80_58ad_5088),
-    ("recognizer input", 0xc0b8_36bc_d425_edce),
-    ("embedding", 0x6763_5a7b_e5ec_460a),
+    ("recognizer input", 0x4e73_d3df_6123_b40f),
+    ("embedding", 0x95ed_e776_4213_a3a3),
 ];
 
 /// FNV-1a over bytes, as [`check::fingerprint`] over the bits of `f32`
@@ -223,7 +220,7 @@ fn the_board_path_is_bit_for_bit_what_it_was() {
     rgb_to_gray(&crop_image.as_image(), &mut gray_image);
     let sharpness = laplacian_variance(&gray_image.as_image());
     let mut recognizer_input = vec![0i8; CROP_SIZE * CROP_SIZE * 3];
-    recognizer_input_i8(&crop_image.as_image(), &mut recognizer_input);
+    mfn::input_i8(&crop_image.as_image(), &mut recognizer_input);
     actual.push(("frame scaled down by 2", fingerprint(half.iter().copied())));
     actual.push(("aligned crop", fingerprint(crop.iter().copied())));
     actual.push(("gray crop", fingerprint(gray.iter().copied())));
@@ -233,43 +230,18 @@ fn the_board_path_is_bit_for_bit_what_it_was() {
         fingerprint(recognizer_input.iter().map(|&value| value as u8)),
     ));
 
-    // The recognizer.
-    let recognizer_file = packed_copy(EDGEFACE);
-    let recognizer = BlobWeights::new(recognizer_file.bytes()).expect("the recognizer's weights");
-    let mut gelu_storage = vec![0i16; GeluTable::LEN];
-    let gelu = GeluTable::build(&mut gelu_storage);
-    let mut plans = vec![GroupPlan::ZERO; edgeface::int8::MODEL_PLANS];
-    let mut norm_plans =
-        vec![NormPlan::new(&[1.0; 8], &[0.0; 8], &[1.0; 8]); edgeface::int8::MODEL_NORM_PLANS];
-    let mut model_weights = Aligned::new(edgeface::int8::MODEL_WEIGHTS_LEN);
-    let mut model_constants = Aligned::new(edgeface::int8::MODEL_CONSTANTS_LEN * 2);
-    let mut model_wide = Aligned::new(edgeface::int8::MODEL_WIDE_LEN * 2);
-    let model = edgeface::int8::Model::compile(
-        &recognizer,
-        edgeface::int8::ModelStorage {
-            plans: &mut plans,
-            norm_plans: &mut norm_plans,
-            weights: bytemuck::cast_slice_mut(model_weights.bytes_mut()),
-            constants: model_constants.i16s_mut(),
-            wide: model_wide.i16s_mut(),
-        },
-    );
-    let mut recognizer_i16 = Aligned::new(edgeface::int8::SCRATCH_I16_LEN * 2);
-    let mut recognizer_f32 = vec![0.0f32; edgeface::int8::SCRATCH_F32_LEN];
-    let mut hidden_strip = Aligned::new(edgeface::int8::HIDDEN_STRIP_LEN * 2);
-    let mut embedding = vec![0.0f32; edgeface::EMBEDDING_LEN];
-    // Twice, as the board runs one model on face after face: the second
-    // pass must not depend on what the first left in the buffers. With
-    // the board's strip of the MLP's hidden tensor.
-    for _ in 0..2 {
-        model.forward(
-            &gelu,
-            &recognizer_input,
-            edgeface::int8::Scratch::new(recognizer_i16.i16s_mut(), &mut recognizer_f32)
-                .with_hidden(hidden_strip.i16s_mut()),
-            &mut embedding,
-        );
-    }
+    // The recognizer, twice, as the board runs one model on face after
+    // face: the second pass must not depend on what the first left in the
+    // buffers.
+    let blob = Blob::parse(MFN).expect("the recognizer's weights");
+    let mut plans = vec![Plan::ZERO; mfn::MODEL_PLANS];
+    let model = mfn::Model::compile(&blob, &mut plans);
+    let mut embedding = recognize(&model, &recognizer_input, Bands::Fast);
+    embedding = {
+        let again = recognize(&model, &recognizer_input, Bands::Fast);
+        assert_eq!(again, embedding, "a second pass");
+        again
+    };
     actual.push(("embedding", fingerprint_f32(&embedding)));
 
     println!(
@@ -321,60 +293,20 @@ fn the_networks_on_made_up_inputs_give_the_pinned_fingerprints() {
             .copied(),
     );
 
-    let recognizer_file = packed_copy(EDGEFACE);
-    let recognizer = BlobWeights::new(recognizer_file.bytes()).expect("the recognizer's weights");
-    let mut gelu_storage = vec![0i16; GeluTable::LEN];
-    let gelu = GeluTable::build(&mut gelu_storage);
-    let mut plans = vec![GroupPlan::ZERO; edgeface::int8::MODEL_PLANS];
-    let mut norm_plans =
-        vec![NormPlan::new(&[1.0; 8], &[0.0; 8], &[1.0; 8]); edgeface::int8::MODEL_NORM_PLANS];
-    let mut model_weights = Aligned::new(edgeface::int8::MODEL_WEIGHTS_LEN);
-    let mut model_constants = Aligned::new(edgeface::int8::MODEL_CONSTANTS_LEN * 2);
-    let mut model_wide = Aligned::new(edgeface::int8::MODEL_WIDE_LEN * 2);
-    let model = edgeface::int8::Model::compile(
-        &recognizer,
-        edgeface::int8::ModelStorage {
-            plans: &mut plans,
-            norm_plans: &mut norm_plans,
-            weights: bytemuck::cast_slice_mut(model_weights.bytes_mut()),
-            constants: model_constants.i16s_mut(),
-            wide: model_wide.i16s_mut(),
-        },
-    );
+    let blob = Blob::parse(MFN).expect("the recognizer's weights");
+    let mut plans = vec![Plan::ZERO; mfn::MODEL_PLANS];
+    let model = mfn::Model::compile(&blob, &mut plans);
     let mut input = vec![0i8; CROP_SIZE * CROP_SIZE * 3];
     check::noise(check::RECOGNIZER_SEED, &mut input);
-    let mut recognizer_i16 = Aligned::new(edgeface::int8::SCRATCH_I16_LEN * 2);
-    let mut recognizer_f32 = vec![0.0f32; edgeface::int8::SCRATCH_F32_LEN];
-    let mut embedding = vec![0.0f32; edgeface::EMBEDDING_LEN];
-    model.forward(
-        &gelu,
-        &input,
-        edgeface::int8::Scratch::new(recognizer_i16.i16s_mut(), &mut recognizer_f32),
-        &mut embedding,
-    );
+    let embedding = recognize(&model, &input, Bands::Fast);
     let recognizer_print = check::fingerprint(embedding.iter().copied());
-    // The MLP's hidden tensor in strips, as short as allowed, of the
-    // board's length and of a length that leaves a short last strip: the
-    // same numbers.
-    for strip in [
-        edgeface::int8::MIN_HIDDEN_LEN,
-        edgeface::int8::HIDDEN_STRIP_LEN,
-        5000,
-    ] {
-        let mut hidden = Aligned::new(strip * 2);
-        model.forward(
-            &gelu,
-            &input,
-            edgeface::int8::Scratch::new(recognizer_i16.i16s_mut(), &mut recognizer_f32)
-                .with_hidden(hidden.i16s_mut()),
-            &mut embedding,
-        );
-        assert_eq!(
-            check::fingerprint(embedding.iter().copied()),
-            recognizer_print,
-            "the recognizer with a hidden strip of {strip}"
-        );
-    }
+    // With the least band buffers the board may fall back to: the same
+    // numbers.
+    assert_eq!(
+        check::fingerprint(recognize(&model, &input, Bands::Least).iter().copied()),
+        recognizer_print,
+        "the recognizer with the least buffers"
+    );
 
     println!("pub const DETECTOR: u64 = {detector_print:#018x};");
     println!("pub const RECOGNIZER: u64 = {recognizer_print:#018x};");
@@ -388,4 +320,40 @@ fn the_networks_on_made_up_inputs_give_the_pinned_fingerprints() {
         check::RECOGNIZER,
         "the recognizer's fingerprint"
     );
+}
+
+/// The band buffers of a pass: the board's, or the least it may fall back
+/// to.
+#[derive(Clone, Copy)]
+enum Bands {
+    /// `mfn::FAST_*`.
+    Fast,
+    /// `mfn::MIN_*`.
+    Least,
+}
+
+/// The recognizer's raw embedding of `input`, as numbers, as the board
+/// computes it.
+fn recognize(model: &mfn::Model<'_>, input: &[i8], bands: Bands) -> Vec<f32> {
+    let (ring, filtered, staging) = match bands {
+        Bands::Fast => (mfn::FAST_RING, mfn::FAST_FILTERED, mfn::FAST_STAGING),
+        Bands::Least => (mfn::MIN_RING, mfn::MIN_FILTERED, mfn::MIN_STAGING),
+    };
+    let (mut first, mut second) = (vec![0i8; mfn::TENSOR_LEN], vec![0i8; mfn::TENSOR_LEN]);
+    let (mut ring, mut filtered, mut staging) =
+        (vec![0i8; ring], vec![0i8; filtered], vec![0i8; staging]);
+    let mut columns = vec![0i8; mfn::COLUMNS_LEN];
+    let mut raw = vec![0i8; mfn::EMBEDDING_LEN];
+    model.forward(
+        input,
+        mfn::Scratch {
+            tensors: [&mut first, &mut second],
+            ring: &mut ring,
+            filtered: &mut filtered,
+            staging: &mut staging,
+            columns: &mut columns,
+        },
+        &mut raw,
+    );
+    raw.iter().map(|&value| f32::from(value)).collect()
 }

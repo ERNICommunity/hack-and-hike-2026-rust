@@ -46,7 +46,7 @@ use hack_and_hike_vision::{
 use crate::{
     data,
     embed::{Embeddings, Pick, embed_all},
-    tensors::Tensors,
+    mfn::Recognizer,
 };
 
 /// The accept thresholds that are tried.
@@ -76,16 +76,6 @@ const CANDIDATE_STEPS: [[f32; FUSION_FRAMES]; 5] = [
     [0.20, 0.15, 0.10],
     [0.25, 0.20, 0.15],
 ];
-
-/// The embedding the board would use: the integer one when integer
-/// weights were given, otherwise the `f32` one.
-fn pick(embeddings: &Embeddings) -> &[f32] {
-    if embeddings.integer.is_empty() {
-        &embeddings.float
-    } else {
-        &embeddings.integer
-    }
-}
 
 /// What an attempt scored: against the enrolled person's templates,
 /// against the closest stranger, and whether it really was the person.
@@ -117,7 +107,6 @@ impl Attempt {
 pub fn run(
     detector: &Path,
     weights: &Path,
-    integer_weights: Option<&Path>,
     images: &Path,
     bank_file: &Path,
     templates: usize,
@@ -167,17 +156,9 @@ pub fn run(
     needed.dedup();
     println!("{} photos to embed", needed.len());
 
-    let f32s = Tensors::read(weights)?;
-    let i8s = integer_weights
-        .map(|path| {
-            Tensors::read(path).map(|mut tensors| {
-                tensors.pack_for_lanes();
-                tensors
-            })
-        })
-        .transpose()?;
-    let embedded = embed_all(detector, &f32s, i8s.as_ref(), &needed, Pick::Centre)?;
-    let vector = |path: &PathBuf| embedded.get(path).map(|e| Embedding::from_raw(pick(e)));
+    let recognizer = Recognizer::load(weights, None)?;
+    let embedded = embed_all(detector, &recognizer, &needed, Pick::Centre)?;
+    let vector = |path: &PathBuf| embedded.get(path).map(|e| Embedding::from_raw(&e.integer));
     let stranger_probes: Vec<Embedding> = strangers.iter().filter_map(vector).collect();
 
     let mut single = Vec::new();
@@ -486,13 +467,13 @@ fn check_against_the_firmware(
         .enroll(&name.chars().take(16).collect::<String>())
         .context("the gallery refused the name")?;
     for shot in shots.iter().take(templates.min(MAX_TEMPLATES)) {
-        if let Some(embedding) = embedded.get(shot).map(|e| Embedding::from_raw(pick(e))) {
+        if let Some(embedding) = embedded.get(shot).map(|e| Embedding::from_raw(&e.integer)) {
             person.add_template(embedding);
         }
     }
     let probes: Vec<Embedding> = shots[templates..]
         .iter()
-        .filter_map(|shot| embedded.get(shot).map(|e| Embedding::from_raw(pick(e))))
+        .filter_map(|shot| embedded.get(shot).map(|e| Embedding::from_raw(&e.integer)))
         .chain(strangers.iter().copied())
         .collect();
     let mut checked = 0;

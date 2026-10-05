@@ -345,23 +345,25 @@ pub struct Thresholds {
 
 impl Thresholds {
     /// The operating point `facekit calibrate` measured on Labeled Faces
-    /// in the Wild: 120 people enrolled with five photos each, 1,351
-    /// genuine attempts and 22,920 attempts by strangers, against a bank
-    /// of 200 strangers.
+    /// in the Wild with MFN_S8_V1: 120 people enrolled with five photos
+    /// each, 1,351 genuine attempts and 22,920 attempts by strangers,
+    /// against a bank of 200 strangers.
     ///
-    /// At `accept` 0.35 it recognized 98.8 percent of the genuine
+    /// At `accept` 0.40 it recognized 99.0 percent of the genuine
     /// attempts and let through 0.02 percent of the strangers (five of
-    /// 22,920). Raising `margin` to 0.10 cost two points of recognition
-    /// and stopped no further stranger, so the margin stays at 0: a face
-    /// must still beat the closest stranger in the bank, but by nothing
-    /// in particular.
+    /// 22,920). MFN_S8_V1 scores strangers a little higher than
+    /// EdgeFace-XXS did (0.027 on average against 0.006): at EdgeFace's
+    /// 0.35 it would let in 31 of them. Raising `margin` to 0.10 cost two
+    /// points of recognition and stopped no further stranger, so the
+    /// margin stays at 0: a face must still beat the closest stranger in
+    /// the bank, but by nothing in particular.
     ///
     /// Those photos are of one person on different days, which is harder
     /// than enrolling and recognizing in one sitting in front of the
     /// board, so these numbers are on the safe side. Step 10 checks them
     /// on the device.
     pub const DEFAULT: Self = Self {
-        accept: 0.35,
+        accept: 0.40,
         margin: 0.0,
     };
 }
@@ -790,21 +792,20 @@ impl SureSteps {
         steps: [f32::INFINITY; FUSION_FRAMES],
     };
 
-    /// The steps `facekit calibrate` chose on Labeled Faces in the Wild,
-    /// with [`Thresholds::DEFAULT`]: sure from 0.55 on one frame, 0.50
-    /// on two and 0.45 on three.
+    /// The steps `facekit calibrate` chose on Labeled Faces in the Wild
+    /// with MFN_S8_V1, with [`Thresholds::DEFAULT`]: sure from 0.50 on
+    /// one, two or three frames.
     ///
-    /// The highest score of a stranger was 0.430 on one frame (22,920
-    /// attempts), 0.369 on two frames averaged (11,400) and 0.401 on
-    /// three (7,560), so every limit is 0.049 or more above all of them.
+    /// The highest score of a stranger was 0.438 on one frame (22,920
+    /// attempts), 0.448 on two frames averaged (11,400) and 0.448 on
+    /// three (7,560), so every limit is 0.052 or more above all of them.
     /// In the play of the application (223 visits of five frames by an
     /// enrolled person, 27,480 by strangers) the person was named after
-    /// the first frame in 95.5 percent of the visits, after the second in
-    /// 98.7 percent, and the shortcut named no stranger that the rule
-    /// without it did not name. Smaller steps named three of them sooner
-    /// and one more.
+    /// the first frame in 98.7 percent of the visits and after the second
+    /// in all of them, and the shortcut named no stranger that the rule
+    /// without it did not name. Smaller steps named one stranger more.
     pub const DEFAULT: Self = Self {
-        steps: [0.20, 0.15, 0.10],
+        steps: [0.10, 0.10, 0.10],
     };
 
     /// The smallest sure score of a probe averaged from `frames` frames,

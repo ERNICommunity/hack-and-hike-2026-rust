@@ -697,11 +697,13 @@ fn a_name_gives_way_to_unknown_only_by_the_vote() {
 }
 
 #[test]
-fn the_sure_limits_fall_with_the_frames() {
+fn the_sure_limits_never_rise_with_the_frames() {
+    // More frames averaged never make a sure name harder to reach. (With
+    // MFN_S8_V1 the calibrated limits are the same for every count.)
     let sure = SureSteps::DEFAULT;
     let accept = Thresholds::DEFAULT.accept;
     for frames in 1..FUSION_FRAMES {
-        assert!(sure.limit(accept, frames) > sure.limit(accept, frames + 1));
+        assert!(sure.limit(accept, frames) >= sure.limit(accept, frames + 1));
     }
     assert!(sure.limit(accept, FUSION_FRAMES) > accept);
     // More frames than the average holds count as all of them.

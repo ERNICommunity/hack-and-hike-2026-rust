@@ -2,7 +2,7 @@
 //! vector unit computes (the sums of MFN_S8_V1 never come near the 20
 //! bits of a lane).
 
-use super::{Depthwise, LANES, Pointwise, Prelu, Store};
+use super::{Depthwise, GroupPrelu, LANES, Plan, Pointwise, Store};
 
 /// Half of `2^shift` (zero without a shift): added before the shift so
 /// that it rounds half up.
@@ -16,31 +16,21 @@ pub fn requantize(sum: i64, shift: u32) -> i8 {
     ((sum + i64::from(half(shift))) >> shift).clamp(-128, 127) as i8
 }
 
-/// Channel `channel`'s PReLU of `value`.
-pub fn prelu(prelu: &Prelu<'_>, channel: usize, value: i8) -> i8 {
+/// Lane `lane`'s PReLU of `value`.
+pub fn prelu(prelu: &GroupPrelu, lane: usize, value: i8) -> i8 {
     if value >= 0 {
         (i32::from(value) << prelu.positive).min(127) as i8
     } else {
-        requantize(
-            i64::from(value) * i64::from(prelu.alpha[channel]),
-            prelu.shift,
-        )
+        requantize(i64::from(value) * i64::from(prelu.alpha[lane]), prelu.shift)
     }
 }
 
-/// A finished sum of channel `channel` through the requantization, the
-/// PReLU and the store.
-fn finish(
-    sum: i64,
-    shift: u32,
-    activation: Option<&Prelu<'_>>,
-    channel: usize,
-    store: Store,
-    target: &mut i8,
-) {
-    let mut value = requantize(sum, shift);
-    if let Some(activation) = activation {
-        value = prelu(activation, channel, value);
+/// The products `sum` of lane `lane` of `plan`'s group through the bias,
+/// the requantization, the PReLU and the store.
+pub fn finish(plan: &Plan, lane: usize, sum: i32, store: Store, target: &mut i8) {
+    let mut value = requantize(i64::from(plan.bias[lane]) + i64::from(sum), plan.shift);
+    if let Some(activation) = plan.group_prelu() {
+        value = prelu(&activation, lane, value);
     }
     *target = match store {
         Store::Write => value,
@@ -64,14 +54,7 @@ pub fn pointwise(layer: &Pointwise<'_>, store: Store, input: &[i8], output: &mut
             for (c, &x) in pixel.iter().enumerate() {
                 sum += i32::from(x) * i32::from(filter[c * LANES + lane]);
             }
-            finish(
-                i64::from(layer.bias[o]) + i64::from(sum),
-                layer.shift,
-                layer.prelu.as_ref(),
-                o,
-                store,
-                target,
-            );
+            finish(&layer.plans[o / LANES], lane, sum, store, target);
         }
     }
 }
@@ -83,7 +66,7 @@ pub fn depthwise_row(
     width: usize,
     output: &mut [i8],
 ) {
-    let channels = layer.channels;
+    let channels = layer.channels();
     for (ox, out) in output.chunks_exact_mut(channels).enumerate() {
         let centre = ox * layer.stride;
         for (c, target) in out.iter_mut().enumerate() {
@@ -100,14 +83,7 @@ pub fn depthwise_row(
                         * i32::from(filter[(ky * 3 + kx) * LANES + lane]);
                 }
             }
-            finish(
-                i64::from(layer.bias[c]) + i64::from(sum),
-                layer.shift,
-                layer.prelu.as_ref(),
-                c,
-                Store::Write,
-                target,
-            );
+            finish(&layer.plans[c / LANES], lane, sum, Store::Write, target);
         }
     }
 }

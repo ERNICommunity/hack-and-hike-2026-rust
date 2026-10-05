@@ -12,9 +12,8 @@
 //!   tensors move between `f32` and `i8`,
 //! - [`lanes`]: the integer pipeline of the vector unit, which both
 //!   networks run on the board (`yunet::int8`, `edgeface::int8`),
-//! - [`s8`]: kernels on the vector unit's 8-bit mode, for networks
-//!   quantized to `i8` the way Espressif's ESP-DL does it (being
-//!   measured, not used by the firmware yet),
+//! - [`mfn`]: Espressif's MFN_S8_V1 face recognizer, all `i8`,
+//! - [`s8`]: the kernels on the vector unit's 8-bit mode it runs on,
 //! - [`pack`]: the weights grouped by eight output channels, the layout
 //!   the vector unit reads,
 //! - [`check`]: a check of both networks on the board against the
@@ -43,6 +42,7 @@
 pub mod check;
 pub mod edgeface;
 pub mod lanes;
+pub mod mfn;
 pub mod pack;
 pub mod quant;
 pub mod s8;

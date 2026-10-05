@@ -21,15 +21,15 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result, bail};
 use hack_and_hike_vision::{
     blob::DataType,
-    nn::{edgeface::EMBEDDING_LEN, quant::Quant},
+    nn::{mfn::EMBEDDING_LEN, quant::Quant},
 };
 use sha2::{Digest, Sha256};
 
 use crate::{
     blob::{Tensor, Writer},
     data,
-    embed::{Embeddings, Pick, embed_all},
-    tensors::Tensors,
+    embed::{Pick, embed_all},
+    mfn::Recognizer,
 };
 
 /// Write an impostor bank of `count` people to `out`.
@@ -41,7 +41,6 @@ use crate::{
 pub fn run(
     detector: &Path,
     weights: &Path,
-    integer_weights: Option<&Path>,
     images: &Path,
     out: &Path,
     count: usize,
@@ -73,16 +72,8 @@ pub fn run(
     }
     println!("{} people, one photo each", photos.len());
 
-    let f32s = Tensors::read(weights)?;
-    let i8s = integer_weights
-        .map(|path| {
-            Tensors::read(path).map(|mut tensors| {
-                tensors.pack_for_lanes();
-                tensors
-            })
-        })
-        .transpose()?;
-    let embeddings = embed_all(detector, &f32s, i8s.as_ref(), &photos, Pick::Centre)?;
+    let recognizer = Recognizer::load(weights, None)?;
+    let embeddings = embed_all(detector, &recognizer, &photos, Pick::Centre)?;
     println!("{} of them have a face", embeddings.len());
     if embeddings.len() < count / 2 {
         bail!(
@@ -91,18 +82,9 @@ pub fn run(
         );
     }
 
-    // The board runs the integer recognizer, so the bank must hold what
-    // that recognizer produces.
-    let pick = |e: &Embeddings| {
-        if e.integer.is_empty() {
-            e.float.clone()
-        } else {
-            e.integer.clone()
-        }
-    };
     let mut vectors: Vec<Vec<f32>> = photos
         .iter()
-        .filter_map(|path| embeddings.get(path).map(pick))
+        .filter_map(|path| embeddings.get(path).map(|e| e.integer.clone()))
         .collect();
     vectors.sort_by(|a, b| a[0].total_cmp(&b[0]));
 

@@ -11,13 +11,15 @@ use std::{
 
 use anyhow::Result;
 use hack_and_hike_vision::{
-    align::{CROP_SIZE, align_face, recognizer_input, recognizer_input_i8},
+    align::{CROP_SIZE, align_face},
     image::RgbImage,
-    nn::edgeface,
 };
 use rayon::prelude::*;
 
-use crate::{crops::Detector, recognizer::Runner, tensors::Tensors};
+use crate::{
+    crops::Detector,
+    mfn::{Buffers, Recognizer},
+};
 
 /// Which face of a photo to measure, when the photo holds more than one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -31,21 +33,20 @@ pub enum Pick {
     Largest,
 }
 
-/// The embeddings of one photo: from the `f32` recognizer and, when
-/// integer weights were given, from the integer one.
+/// The embeddings of one photo: the board's, and the `.espdl`
+/// interpreter's when the recognizer has a reference.
 #[derive(Clone)]
 pub struct Embeddings {
-    /// The `f32` embedding, L2-normalized.
-    pub float: Vec<f32>,
-    /// The integer embedding, L2-normalized; empty without integer weights.
+    /// The embedding as the board computes it, L2-normalized.
     pub integer: Vec<f32>,
+    /// The interpreter's, L2-normalized; empty without a reference.
+    pub reference: Vec<f32>,
 }
 
 /// Embed every photo, in parallel. Photos without a face are left out.
 pub fn embed_all(
     detector: &Path,
-    f32s: &Tensors,
-    i8s: Option<&Tensors>,
+    recognizer: &Recognizer,
     photos: &[PathBuf],
     pick: Pick,
 ) -> Result<HashMap<PathBuf, Embeddings>> {
@@ -61,7 +62,7 @@ pub fn embed_all(
                     println!("  {count} of {}", photos.len());
                 }
                 worker
-                    .embed(f32s, i8s, path, pick)
+                    .embed(recognizer, path, pick)
                     .map(|e| (path.clone(), e))
             },
         )
@@ -73,10 +74,8 @@ pub fn embed_all(
 pub struct Worker {
     /// The detector, at the size of an LFW photo.
     detector: Detector,
-    /// The integer recognizer's buffers.
-    runner: Runner,
-    /// The `f32` recognizer's scratch.
-    scratch: Vec<f32>,
+    /// The recognizer's working memory.
+    buffers: Buffers,
 }
 
 impl Worker {
@@ -84,20 +83,13 @@ impl Worker {
     pub fn new(detector: &Path) -> Result<Self> {
         Ok(Self {
             detector: Detector::new(detector),
-            runner: Runner::new(),
-            scratch: vec![0.0f32; edgeface::SCRATCH_LEN],
+            buffers: Buffers::default(),
         })
     }
 
     /// The embeddings of the best face in `path`, or `None` when the
     /// photo cannot be read or holds no face.
-    fn embed(
-        &mut self,
-        f32s: &Tensors,
-        i8s: Option<&Tensors>,
-        path: &Path,
-        pick: Pick,
-    ) -> Option<Embeddings> {
+    fn embed(&mut self, recognizer: &Recognizer, path: &Path, pick: Pick) -> Option<Embeddings> {
         let photo = image::open(path).ok()?.to_rgb8();
         let (width, height) = (photo.width() as usize, photo.height() as usize);
         let faces = self.detector.detect(&photo).ok()?;
@@ -122,21 +114,9 @@ impl Worker {
         align_face(&face.landmarks, &source, &mut crop_image)?;
         let crop = crop_image.as_image();
 
-        let mut input = vec![0.0f32; CROP_SIZE * CROP_SIZE * 3];
-        recognizer_input(&crop, &mut input);
-        let mut float = vec![0.0f32; edgeface::EMBEDDING_LEN];
-        edgeface::forward(f32s, &input, &mut self.scratch, &mut float);
-        normalize(&mut float);
-
-        let mut integer = Vec::new();
-        if let Some(i8s) = i8s {
-            let mut input_i8 = vec![0i8; CROP_SIZE * CROP_SIZE * 3];
-            recognizer_input_i8(&crop, &mut input_i8);
-            integer = vec![0.0f32; edgeface::EMBEDDING_LEN];
-            self.runner.forward(i8s, &input_i8, &mut integer);
-            normalize(&mut integer);
-        }
-        Some(Embeddings { float, integer })
+        let integer = recognizer.embed(&crop, &mut self.buffers);
+        let reference = recognizer.reference(&crop).unwrap_or_default();
+        Some(Embeddings { integer, reference })
     }
 }
 

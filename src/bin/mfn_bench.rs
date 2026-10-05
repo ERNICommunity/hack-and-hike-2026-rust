@@ -296,7 +296,7 @@ impl Layer {
         channels: usize,
         shift: u32,
         prelu: Option<(u32, u32)>,
-    ) -> (&[i8], &[i32], &[i8], &[Plan]) {
+    ) -> (&[i8], &[Plan]) {
         let weights = &mut self.weights[..taps * channels];
         fill(seed, weights);
         let mut noise = [0i8; MAX_CHANNELS];
@@ -314,7 +314,7 @@ impl Layer {
             shift,
         });
         s8::plans(bias, shift, activation.as_ref(), plans);
-        (weights, bias, alpha, plans)
+        (weights, plans)
     }
 }
 
@@ -413,18 +413,11 @@ fn measure_kernels(
     let [expand, depth, project] = layers;
     let mut matched = true;
 
-    let (weights, bias, alpha, plans) = expand.randomize(10, channels, expanded, 8, Some((0, 7)));
+    let (weights, plans) = expand.randomize(10, channels, expanded, 8, Some((0, 7)));
     let layer = Pointwise {
         input: channels,
         weights,
-        bias,
         plans,
-        shift: 8,
-        prelu: Some(Prelu {
-            alpha,
-            positive: 0,
-            shift: 7,
-        }),
     };
     let input = &mut tensors.input[..pixels * channels];
     fill(20, input);
@@ -441,19 +434,11 @@ fn measure_kernels(
         if ok { "bit-exact" } else { "WRONG" }
     );
 
-    let (weights, bias, alpha, plans) = depth.randomize(30, 9, expanded, 6, Some((1, 7)));
+    let (weights, plans) = depth.randomize(30, 9, expanded, 6, Some((1, 7)));
     let layer = Depthwise {
-        channels: expanded,
         weights,
-        bias,
         plans,
-        shift: 6,
         stride: 1,
-        prelu: Some(Prelu {
-            alpha,
-            positive: 1,
-            shift: 7,
-        }),
     };
     let source = &*expected;
     let row = 14 * expanded;
@@ -522,14 +507,11 @@ fn measure_kernels(
         );
     }
 
-    let (weights, bias, _, plans) = project.randomize(40, expanded, channels, 9, None);
+    let (weights, plans) = project.randomize(40, expanded, channels, 9, None);
     let layer = Pointwise {
         input: expanded,
         weights,
-        bias,
         plans,
-        shift: 9,
-        prelu: None,
     };
     let source = &tensors.expected[..pixels * expanded];
     let expected = &mut tensors.wide[..pixels * channels];
@@ -565,57 +547,40 @@ fn measure_block(
     let expanded = 2 * channels;
     let seed = 100 + index as u32 * 10;
     let [expand, depth, project] = layers;
-    let (ew, eb, ea, ep) = expand.randomize(seed, channels, expanded, 8, Some((0, 7)));
-    let (dw, db, da, dp) = depth.randomize(seed + 3, 9, expanded, 6, Some((1, 7)));
-    let (pw, pb, _, pp) = project.randomize(seed + 6, expanded, channels, 9, None);
+    let (ew, ep) = expand.randomize(seed, channels, expanded, 8, Some((0, 7)));
+    let (dw, dp) = depth.randomize(seed + 3, 9, expanded, 6, Some((1, 7)));
+    let (pw, pp) = project.randomize(seed + 6, expanded, channels, 9, None);
     let block = Block {
         height: side,
         width: side,
         expand: Pointwise {
             input: channels,
             weights: ew,
-            bias: eb,
             plans: ep,
-            shift: 8,
-            prelu: Some(Prelu {
-                alpha: ea,
-                positive: 0,
-                shift: 7,
-            }),
         },
         depthwise: Depthwise {
-            channels: expanded,
             weights: dw,
-            bias: db,
             plans: dp,
-            shift: 6,
             stride: 1,
-            prelu: Some(Prelu {
-                alpha: da,
-                positive: 1,
-                shift: 7,
-            }),
         },
         project: Pointwise {
             input: expanded,
             weights: pw,
-            bias: pb,
             plans: pp,
-            shift: 9,
-            prelu: None,
         },
+        residual: true,
     };
     let len = side * side * channels;
     let input = &mut tensors.input[..len];
     fill(seed + 9, input);
     let expected = &mut tensors.expected[..len];
     let actual = &mut tensors.actual[..len];
-    let whole = block.whole_len();
+    let (wide_len, filtered_len) = (block.wide_len(), block.filtered_whole_len());
     reference(
         &block,
         input,
-        &mut tensors.wide[..whole],
-        &mut tensors.filtered[..whole],
+        &mut tensors.wide[..wide_len],
+        &mut tensors.filtered[..filtered_len],
         expected,
     );
     let products = block.products() as u64;
@@ -626,8 +591,8 @@ fn measure_block(
         block::run_whole(
             &block,
             input,
-            &mut tensors.wide[..whole],
-            &mut tensors.filtered[..whole],
+            &mut tensors.wide[..wide_len],
+            &mut tensors.filtered[..filtered_len],
             actual,
         );
     });

@@ -4,17 +4,17 @@
 //! [`lanes`](super::lanes) keeps every tensor `i16` and multiplies eight
 //! 16-bit lanes per instruction. ESP-DL quantizes every tensor to `i8`
 //! with one power-of-two scale per tensor, weights included; Espressif's
-//! MFN_S8_V1 face recognizer is such a network. Its values fit the
-//! vector unit's 8-bit mode: `ee.vmulas.s8.qacc` multiplies sixteen pairs
-//! at once into sixteen 20-bit accumulator lanes, twice the products of
-//! the 16-bit mode, from half the bytes.
+//! MFN_S8_V1 face recognizer ([`mfn`](super::mfn)) is such a network. Its
+//! values fit the vector unit's 8-bit mode: `ee.vmulas.s8.qacc`
+//! multiplies sixteen pairs at once into sixteen 20-bit accumulator
+//! lanes, twice the products of the 16-bit mode, from half the bytes.
 //!
-//! So far this module holds what decides whether such a network is fast
-//! enough on the board, and `src/bin/mfn_bench.rs` measures it: the 1x1
-//! convolution (93 percent of MFN_S8_V1's products), the depthwise 3x3
-//! convolution, both with the PReLU that follows them, and the
-//! network's building block ([`block`]), the expanding 1x1, the
-//! depthwise 3x3 and the projecting 1x1 with the residual add.
+//! The kernels: the 1x1 convolution ([`pointwise`], 93 percent of
+//! MFN_S8_V1's products) and the depthwise 3x3 ([`depthwise_row`]), both
+//! with the PReLU that follows them, and the network's building block
+//! ([`block`]): the widening 1x1, the depthwise 3x3 and the narrowing
+//! 1x1, with or without the residual add. `src/bin/mfn_bench.rs`
+//! measures them on the board.
 //!
 //! # Arithmetic
 //!
@@ -31,11 +31,16 @@
 //! sums of MFN_S8_V1 stay below 87,000 on every LFW photo, far inside
 //! ±524,287. [`model`] computes them exactly.
 //!
-//! A [`Prelu`] after the convolution works on that `i8` value `v`, as
+//! A PReLU after the convolution works on that `i8` value `v`, as
 //! ESP-DL's separate PReLU layer does: `v * 2^positive` (saturated) when
-//! `v >= 0`, else `v * alpha[o]` shifted right by `shift`, rounded half
-//! up, saturated. Its `positive` shift is 0 or 1 in MFN_S8_V1, its
+//! `v >= 0`, else `v * alpha[o]` shifted right by its own shift, rounded
+//! half up, saturated. Its `positive` shift is 0 or 1 in MFN_S8_V1, its
 //! negative one 6 to 8.
+//!
+//! The shift and the PReLU belong to a group of sixteen channels, not to
+//! the layer: ESP-DL splits a few of MFN_S8_V1's layers into two halves
+//! with scales of their own and concatenates them, and here such a layer
+//! is one layer whose groups differ.
 //!
 //! A residual add ([`Store::Add`]) adds the result to what the output
 //! already holds, saturating: MFN_S8_V1's adds have the same scale on
@@ -65,10 +70,10 @@ pub const LANE_BITS: u32 = 20;
 pub const BATCH_BYTES: usize = 16 * 1024;
 
 /// The bytes of a [`Plan`], as the assembly steps from one to the next.
-pub const PLAN_BYTES: usize = 160;
+pub const PLAN_BYTES: usize = 224;
 
 /// What one group of sixteen output channels needs, laid out as the
-/// assembly reads it (160 bytes, 16-byte aligned).
+/// assembly reads it (224 bytes, 16-byte aligned).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, align(16))]
 pub struct Plan {
@@ -85,8 +90,24 @@ pub struct Plan {
     /// The PReLU's right shift of negative values times `alpha`. Offset
     /// 148.
     pub prelu_shift: u32,
-    /// Padding to 160 bytes.
-    pub reserved: [u32; 2],
+    /// The right shift from product units to output units. Offset 152.
+    pub shift: u32,
+    /// 1 when the group has a PReLU, else 0. Offset 156.
+    pub prelu: u32,
+    /// The bias of each channel, in product units, for the scalar model.
+    /// Offset 160.
+    pub bias: [i32; LANES],
+}
+
+/// One group's PReLU: see the module's arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupPrelu {
+    /// The slope of each channel, applied to negative values.
+    pub alpha: [i8; LANES],
+    /// The left shift of non-negative values: 0 or 1.
+    pub positive: u32,
+    /// The right shift of a negative value times its slope.
+    pub shift: u32,
 }
 
 impl Plan {
@@ -97,31 +118,50 @@ impl Plan {
         alpha: [0; LANES],
         positive: 0,
         prelu_shift: 0,
-        reserved: [0; 2],
+        shift: 0,
+        prelu: 0,
+        bias: [0; LANES],
     };
 
     /// The plan for sixteen channels with `bias` (in product units) whose
     /// sums are shifted right by `shift`, rounding half up, then go
-    /// through `prelu` (channels `first..first + 16` of it).
+    /// through `prelu`.
     ///
     /// # Panics
     ///
-    /// When the PReLU's positive shift is above 1.
-    pub fn new(bias: &[i32; LANES], shift: u32, prelu: Option<(&Prelu<'_>, usize)>) -> Self {
+    /// When the PReLU's positive shift is above 1, or a bias does not fit
+    /// a 20-bit lane.
+    pub fn new(bias: &[i32; LANES], shift: u32, prelu: Option<&GroupPrelu>) -> Self {
         let half = model::half(shift);
+        let limit = 1 << (LANE_BITS - 1);
+        assert!(
+            bias.iter().all(|&b| (-limit..limit - half).contains(&b)),
+            "biases fit a 20-bit lane"
+        );
         let mut plan = Self {
             image: encode_lanes(&bias.map(|b| b + half)),
+            shift,
+            bias: *bias,
             ..Self::ZERO
         };
-        if let Some((prelu, first)) = prelu {
+        if let Some(prelu) = prelu {
             assert!(prelu.positive <= 1, "a positive shift of 0 or 1");
             plan.prelu_image = encode_lanes(&[model::half(prelu.shift); LANES]);
-            plan.alpha
-                .copy_from_slice(&prelu.alpha[first..first + LANES]);
+            plan.alpha = prelu.alpha;
             plan.positive = prelu.positive;
             plan.prelu_shift = prelu.shift;
+            plan.prelu = 1;
         }
         plan
+    }
+
+    /// The group's PReLU, if it has one.
+    pub fn group_prelu(&self) -> Option<GroupPrelu> {
+        (self.prelu != 0).then_some(GroupPrelu {
+            alpha: self.alpha,
+            positive: self.positive,
+            shift: self.prelu_shift,
+        })
     }
 }
 
@@ -168,7 +208,8 @@ pub fn decode_lanes(words: &[u32; 16]) -> [i32; LANES] {
     values
 }
 
-/// A PReLU after a convolution; see the module's arithmetic.
+/// A PReLU with one shift for every channel of a layer: what [`plans`]
+/// splits into groups.
 #[derive(Clone, Copy, Debug)]
 pub struct Prelu<'a> {
     /// The slope of each channel, applied to negative values.
@@ -179,8 +220,8 @@ pub struct Prelu<'a> {
     pub shift: u32,
 }
 
-/// Fill `plans` (one per sixteen channels) for `bias`, `shift` and
-/// `prelu`.
+/// Fill `plans` (one per sixteen channels) for `bias`, one `shift` for
+/// every group, and `prelu`.
 ///
 /// # Panics
 ///
@@ -193,8 +234,27 @@ pub fn plans(bias: &[i32], shift: u32, prelu: Option<&Prelu<'_>>, plans: &mut [P
     for (g, (plan, bias)) in plans.iter_mut().zip(bias.chunks_exact(LANES)).enumerate() {
         let mut group = [0i32; LANES];
         group.copy_from_slice(bias);
-        *plan = Plan::new(&group, shift, prelu.map(|p| (p, g * LANES)));
+        let group_prelu = prelu.map(|p| {
+            let mut alpha = [0i8; LANES];
+            alpha.copy_from_slice(&p.alpha[g * LANES..(g + 1) * LANES]);
+            GroupPrelu {
+                alpha,
+                positive: p.positive,
+                shift: p.shift,
+            }
+        });
+        *plan = Plan::new(&group, shift, group_prelu.as_ref());
     }
+}
+
+/// Whether every plan has a PReLU (`Some(true)`), none has
+/// (`Some(false)`), or they differ (`None`).
+fn uniform_prelu(plans: &[Plan]) -> Option<bool> {
+    let first = plans.first().is_some_and(|plan| plan.prelu != 0);
+    plans
+        .iter()
+        .all(|plan| (plan.prelu != 0) == first)
+        .then_some(first)
 }
 
 /// A 1x1 convolution as this module runs it.
@@ -204,46 +264,38 @@ pub struct Pointwise<'a> {
     pub input: usize,
     /// The weights, `[output / 16][input][16]`.
     pub weights: &'a [i8],
-    /// The bias of each output channel, in product units.
-    pub bias: &'a [i32],
-    /// One plan per group of sixteen output channels, from [`plans`].
+    /// One plan per group of sixteen output channels: biases, shifts,
+    /// PReLU.
     pub plans: &'a [Plan],
-    /// The right shift from product units to output units.
-    pub shift: u32,
-    /// The PReLU that follows, if any (also in the plans).
-    pub prelu: Option<Prelu<'a>>,
 }
 
 impl Pointwise<'_> {
     /// Output channels.
     pub fn output(&self) -> usize {
-        self.bias.len()
+        self.plans.len() * LANES
     }
 }
 
 /// A depthwise 3x3 convolution with padding 1, as this module runs it.
 #[derive(Clone, Copy, Debug)]
 pub struct Depthwise<'a> {
-    /// Channels: a multiple of 16.
-    pub channels: usize,
     /// The weights, `[channels / 16][3][3][16]`.
     pub weights: &'a [i8],
-    /// The bias of each channel, in product units.
-    pub bias: &'a [i32],
-    /// One plan per group of sixteen channels, from [`plans`].
+    /// One plan per group of sixteen channels.
     pub plans: &'a [Plan],
-    /// The right shift from product units to output units.
-    pub shift: u32,
     /// The step between output pixels in the input: 1 or 2.
     pub stride: usize,
-    /// The PReLU that follows, if any (also in the plans).
-    pub prelu: Option<Prelu<'a>>,
 }
 
 impl Depthwise<'_> {
-    /// The output width for an input `width` wide.
-    pub fn output_width(&self, width: usize) -> usize {
-        (width - 1) / self.stride + 1
+    /// Channels.
+    pub fn channels(&self) -> usize {
+        self.plans.len() * LANES
+    }
+
+    /// The output width (or height) for an input `size` wide (or high).
+    pub fn output_size(&self, size: usize) -> usize {
+        (size - 1) / self.stride + 1
     }
 }
 
@@ -279,55 +331,53 @@ fn note_fallback() {
 ///
 /// # Panics
 ///
-/// When the shapes do not match or a channel count is not a multiple of
-/// 16.
+/// When the shapes do not match, a channel count is not a multiple of
+/// 16, or some groups have a PReLU and others not.
 pub fn pointwise(layer: &Pointwise<'_>, store: Store, input: &[i8], output: &mut [i8]) {
     let (channels, outputs) = (layer.input, layer.output());
     assert!(
-        channels >= LANES && channels.is_multiple_of(LANES) && outputs.is_multiple_of(LANES),
+        channels >= LANES && channels.is_multiple_of(LANES) && outputs > 0,
         "channel counts must be multiples of 16"
     );
     assert_eq!(layer.weights.len(), channels * outputs, "weights");
-    assert_eq!(layer.plans.len(), outputs / LANES, "plans");
     assert!(input.len().is_multiple_of(channels), "whole input pixels");
     assert_eq!(
         output.len(),
         input.len() / channels * outputs,
         "output size"
     );
+    let prelu = uniform_prelu(layer.plans).expect("every group with a PReLU or none");
     #[cfg(target_arch = "xtensa")]
     {
-        if arch::pointwise(layer, store, input, output) {
+        if arch::pointwise(layer, prelu, store, input, output) {
             return;
         }
         note_fallback();
     }
+    let _ = prelu;
     model::pointwise(layer, store, input, output);
 }
 
 /// One output row of the depthwise convolution `layer`: `rows` are the
 /// input rows above, at and below the centre row (`width` pixels each;
 /// `None` outside the image, which counts as zeros), `output` the row's
-/// [`Depthwise::output_width`] pixels. On the board it runs on the
+/// [`Depthwise::output_size`] pixels. On the board it runs on the
 /// vector unit; elsewhere, or when a buffer is off a 16-byte boundary,
 /// it runs [`model::depthwise_row`], with the same result.
 ///
 /// # Panics
 ///
-/// When the shapes do not match.
+/// When the shapes do not match, or some groups have a PReLU and others
+/// not.
 pub fn depthwise_row(
     layer: &Depthwise<'_>,
     rows: [Option<&[i8]>; 3],
     width: usize,
     output: &mut [i8],
 ) {
-    let channels = layer.channels;
-    assert!(
-        channels >= LANES && channels.is_multiple_of(LANES),
-        "channels must be a multiple of 16"
-    );
+    let channels = layer.channels();
+    assert!(channels > 0, "at least one group");
     assert_eq!(layer.weights.len(), channels * 9, "weights");
-    assert_eq!(layer.plans.len(), channels / LANES, "plans");
     assert!(
         rows.iter()
             .flatten()
@@ -336,16 +386,18 @@ pub fn depthwise_row(
     );
     assert_eq!(
         output.len(),
-        layer.output_width(width) * channels,
+        layer.output_size(width) * channels,
         "output row"
     );
+    let prelu = uniform_prelu(layer.plans).expect("every group with a PReLU or none");
     #[cfg(target_arch = "xtensa")]
     {
-        if arch::depthwise_row(layer, rows, width, output) {
+        if arch::depthwise_row(layer, prelu, rows, width, output) {
             return;
         }
         note_fallback();
     }
+    let _ = prelu;
     model::depthwise_row(layer, rows, width, output);
 }
 

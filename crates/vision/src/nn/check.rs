@@ -23,7 +23,7 @@ pub const RECOGNIZER_SEED: u32 = 2;
 pub const DETECTOR: u64 = 0x2809_abed_1200_e534;
 /// The fingerprint of the recognizer's raw embedding on
 /// `noise(RECOGNIZER_SEED)`.
-pub const RECOGNIZER: u64 = 0x7349_3343_282a_6a08;
+pub const RECOGNIZER: u64 = 0x1c6b_22a9_9159_49f4;
 
 /// Fill `values` with numbers that look random, the same for the same
 /// `seed` on every machine: a linear congruential generator.

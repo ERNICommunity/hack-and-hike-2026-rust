@@ -96,7 +96,7 @@ use hack_and_hike::{
     ui::{Canvas, common, theme},
 };
 use hack_and_hike_vision::{
-    align::{CROP_SIZE, align_face, recognizer_input_i8, source_region},
+    align::{CROP_SIZE, align_face, source_region},
     blob::Blob,
     detect::{
         CONTENT_HEIGHT, CONTENT_WIDTH, DEFAULT_NMS_THRESHOLD, DEFAULT_SCORE_THRESHOLD, DOWNSCALE,
@@ -110,9 +110,12 @@ use hack_and_hike_vision::{
     },
     include_fkb,
     nn::{
-        BlobWeights, check, edgeface,
-        lanes::{self, GeluTable, GroupPlan, NormPlan},
-        pack, yunet,
+        BlobWeights, check,
+        lanes::{self, GroupPlan},
+        mfn::{self, Model as Recognizer},
+        pack,
+        s8::{self, Plan},
+        yunet,
     },
     quality::laplacian_variance,
 };
@@ -122,10 +125,10 @@ use static_cell::StaticCell;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// Which build this is, in the log and on the screen at start-up.
-const BUILD_ID: &str = "faceid-15";
+const BUILD_ID: &str = "faceid-16";
 
-/// The recognizer's integer weights, in flash.
-static EDGEFACE: &[u8] = include_fkb!("../../assets/models/edgeface_xxs.int8.fkb");
+/// The recognizer's weights (MFN_S8_V1, `facekit import-espdl`), in flash.
+static MFN: &[u8] = include_fkb!("../../assets/models/mfn_s8_v1.fkb");
 /// The detector's integer weights, in flash.
 static YUNET: &[u8] = include_fkb!("../../assets/models/yunet.int8.fkb");
 /// Two hundred strangers' embeddings: the impostor bank of the decision.
@@ -252,16 +255,84 @@ struct Buffers {
     detector_f32: &'static mut [f32],
     /// The recognizer's input.
     recognizer_input: &'static mut [i8],
-    /// The recognizer's `i16` scratch.
-    recognizer_i16: &'static mut [i16],
-    /// The recognizer's `f32` scratch.
-    recognizer_f32: &'static mut [f32],
-    /// A strip of the recognizer's MLP hidden tensor, in internal RAM:
-    /// the kernels write each value once and read it once, which costs
-    /// about 36 cycles per value in PSRAM (`Scratch::with_hidden`).
-    hidden: &'static mut [i16],
+    /// The recognizer's two tensors between blocks.
+    recognizer_tensors: [&'static mut [i8]; 2],
+    /// The recognizer's bands, in internal RAM.
+    bands: Bands,
+    /// The recognizer's stem columns, in internal RAM.
+    columns: &'static mut [i8],
     /// The raw embedding.
+    raw_embedding: &'static mut [i8],
+    /// The embedding as numbers, for `Embedding::from_raw`.
     embedding: &'static mut [f32],
+}
+
+/// The recognizer's band buffers in internal RAM (`mfn::Scratch`): the
+/// taller the bands they hold, the fewer times each layer reads its
+/// weights from PSRAM. Bands of seven rows ran the 14x14 blocks in
+/// 21 ms, bands of four in 26, single rows in 41 (`mfnbench-4`).
+struct Bands {
+    /// The ring of wide rows.
+    ring: &'static mut [i8],
+    /// A band of depthwise rows.
+    filtered: &'static mut [i8],
+    /// A band of output rows.
+    staging: &'static mut [i8],
+}
+
+impl Bands {
+    /// The buffers for bands of seven rows, or of four, or the least the
+    /// recognizer runs with, as internal RAM allows.
+    ///
+    /// # Panics
+    ///
+    /// When not even the least fits.
+    fn allocate() -> Self {
+        let sizes = [
+            (mfn::FAST_RING, mfn::FAST_FILTERED, mfn::FAST_STAGING),
+            (mfn::MIN_RING, 4 * 14 * 256, 4 * 14 * 128),
+            (mfn::MIN_RING, mfn::MIN_FILTERED, mfn::MIN_STAGING),
+        ];
+        for (ring, filtered, staging) in sizes {
+            if let (Some(ring), Some(filtered), Some(staging)) = (
+                try_internal(ring),
+                try_internal(filtered),
+                try_internal(staging),
+            ) {
+                info!(
+                    "recognizer bands: {} + {} + {} bytes of internal RAM",
+                    ring.len(),
+                    filtered.len(),
+                    staging.len()
+                );
+                return Self {
+                    ring: leak_aligned(ring),
+                    filtered: leak_aligned(filtered),
+                    staging: leak_aligned(staging),
+                };
+            }
+        }
+        panic!("not enough internal RAM for the recognizer's bands");
+    }
+}
+
+/// `len` bytes of internal RAM with room to start them on a 16-byte
+/// boundary, or nothing when no free block is that large. Dropped again
+/// when not kept.
+fn try_internal(len: usize) -> Option<alloc::vec::Vec<i8>> {
+    let mut raw = alloc::vec::Vec::new();
+    raw.try_reserve_exact(len + 16).ok()?;
+    raw.resize(len + 16, 0i8);
+    Some(raw)
+}
+
+/// `raw` (from [`try_internal`]) kept for good, from its first 16-byte
+/// boundary.
+fn leak_aligned(raw: alloc::vec::Vec<i8>) -> &'static mut [i8] {
+    let len = raw.len() - 16;
+    let raw = raw.leak();
+    let skip = raw.as_ptr().align_offset(16);
+    &mut raw[skip..skip + len]
 }
 
 impl Buffers {
@@ -277,11 +348,42 @@ impl Buffers {
             detector_i16: aligned_psram(yunet::int8::SCRATCH_I16_LEN, 0),
             detector_f32: aligned_psram(yunet::int8::F32_SCRATCH_LEN, 0.0),
             recognizer_input: psram::leaked_slice(CROP_SIZE * CROP_SIZE * 3, 0),
-            recognizer_i16: aligned_psram(edgeface::int8::SCRATCH_I16_LEN, 0),
-            recognizer_f32: aligned_psram(edgeface::int8::SCRATCH_F32_LEN, 0.0),
-            hidden: aligned_internal(edgeface::int8::HIDDEN_STRIP_LEN),
-            embedding: psram::leaked_slice(edgeface::EMBEDDING_LEN, 0.0),
+            recognizer_tensors: [
+                aligned_psram(mfn::TENSOR_LEN, 0),
+                aligned_psram(mfn::TENSOR_LEN, 0),
+            ],
+            bands: Bands::allocate(),
+            columns: leak_aligned(
+                try_internal(mfn::COLUMNS_LEN).expect("internal RAM for the stem's columns"),
+            ),
+            raw_embedding: psram::leaked_slice(mfn::EMBEDDING_LEN, 0),
+            embedding: psram::leaked_slice(mfn::EMBEDDING_LEN, 0.0),
         }
+    }
+
+    /// The recognizer's working memory for one pass.
+    fn recognizer_scratch(&mut self) -> mfn::Scratch<'_> {
+        let [first, second] = &mut self.recognizer_tensors;
+        mfn::Scratch {
+            tensors: [first, second],
+            ring: &mut *self.bands.ring,
+            filtered: &mut *self.bands.filtered,
+            staging: &mut *self.bands.staging,
+            columns: &mut *self.columns,
+        }
+    }
+
+    /// Run the recognizer on its input into the embedding, calling
+    /// `trace` after each part (see `mfn::Model::forward_traced`).
+    fn recognize(&mut self, model: &Recognizer<'_>, trace: impl FnMut(&str)) {
+        let input = core::mem::take(&mut self.recognizer_input);
+        let raw = core::mem::take(&mut self.raw_embedding);
+        model.forward_traced(input, self.recognizer_scratch(), raw, trace);
+        for (value, &raw) in self.embedding.iter_mut().zip(raw.iter()) {
+            *value = f32::from(raw);
+        }
+        self.recognizer_input = input;
+        self.raw_embedding = raw;
     }
 }
 
@@ -310,37 +412,29 @@ async fn packed_copy(file: &'static [u8]) -> &'static BlobWeights<'static> {
     ))
 }
 
-/// A copy of the impostor bank in PSRAM, which the decision reads four
-/// times as fast as flash; in pieces with a pause after each, like the
-/// weights.
-async fn bank_copy() -> &'static [u8] {
+/// A copy of `file` in PSRAM, which reads about four times as fast as
+/// flash, on a 16-byte boundary; in pieces with a pause after each, so
+/// the tasks on CPU1, which run from the same flash, keep their share
+/// of it.
+async fn psram_copy(file: &'static [u8]) -> &'static [u8] {
     const PIECE: usize = 16 * 1024;
-    let copy = aligned_psram::<u8>(IMPOSTORS.len(), 0);
-    for (target, source) in copy.chunks_mut(PIECE).zip(IMPOSTORS.chunks(PIECE)) {
+    let copy = aligned_psram::<u8>(file.len(), 0);
+    for (target, source) in copy.chunks_mut(PIECE).zip(file.chunks(PIECE)) {
         target.copy_from_slice(source);
         Timer::after(Duration::from_millis(2)).await;
     }
     copy
 }
 
-/// The recognizer with every tensor found and every plan made. The model
-/// and its plans are in PSRAM: in the main task they would take internal
-/// RAM from the stack.
-fn compile_recognizer(
-    weights: &'static BlobWeights<'static>,
-) -> &'static edgeface::int8::Model<'static> {
+/// The recognizer with every tensor found and every plan made. Its
+/// weights are read in place from `weights` (the copy in PSRAM); the
+/// model and its plans are in PSRAM too: in the main task they would
+/// take internal RAM from the stack.
+fn compile_recognizer(weights: &'static [u8]) -> &'static Recognizer<'static> {
     let start = Instant::now();
-    let storage = edgeface::int8::ModelStorage {
-        plans: psram::leaked_slice(edgeface::int8::MODEL_PLANS, GroupPlan::ZERO),
-        norm_plans: psram::leaked_slice(
-            edgeface::int8::MODEL_NORM_PLANS,
-            NormPlan::new(&[1.0; 8], &[0.0; 8], &[1.0; 8]),
-        ),
-        weights: aligned_psram(edgeface::int8::MODEL_WEIGHTS_LEN, 0),
-        constants: aligned_psram(edgeface::int8::MODEL_CONSTANTS_LEN, 0),
-        wide: aligned_psram(edgeface::int8::MODEL_WIDE_LEN, 0),
-    };
-    let model = psram::leaked_value(|| edgeface::int8::Model::compile(weights, storage));
+    let blob = Blob::parse(weights).expect("the recognizer's weights are a valid file");
+    let plans = psram::leaked_slice(mfn::MODEL_PLANS, Plan::ZERO);
+    let model = psram::leaked_value(|| Recognizer::compile(&blob, plans));
     info!(
         "compiled the recognizer in {} ms",
         start.elapsed().as_millis()
@@ -370,13 +464,6 @@ fn compile_detector(
 fn aligned_psram<T: Clone + 'static>(len: usize, value: T) -> &'static mut [T] {
     let spare = 16 / core::mem::size_of::<T>().max(1);
     let raw = psram::leaked_slice::<T>(len + spare, value);
-    let skip = raw.as_ptr().align_offset(16);
-    &mut raw[skip..skip + len]
-}
-
-/// [`aligned_psram`] in internal RAM, for `i16` values.
-fn aligned_internal(len: usize) -> &'static mut [i16] {
-    let raw = alloc::vec![0i16; len + 8].leak();
     let skip = raw.as_ptr().align_offset(16);
     &mut raw[skip..skip + len]
 }
@@ -417,18 +504,15 @@ async fn main(_spawner: Spawner) -> ! {
         Ok(people) => info!("flash: {people} people loaded"),
         Err(error) => warn!("flash: could not read the enrollments: {error:?}"),
     }
-    let recognizer = compile_recognizer(packed_copy(EDGEFACE).await);
+    let recognizer = compile_recognizer(psram_copy(MFN).await);
     let detector = compile_detector(packed_copy(YUNET).await);
-    let impostors = Blob::parse(bank_copy().await).expect("the impostor bank is a valid file");
+    let impostors =
+        Blob::parse(psram_copy(IMPOSTORS).await).expect("the impostor bank is a valid file");
     let impostors = impostors.get("impostors").expect("the impostors tensor");
     let bank = ImpostorBank::from_i8(impostors.i8_slice(), impostors.scale);
-    // The GELU table (15 KB), built once in internal RAM: its reads are
-    // random, and internal RAM needs no cache (in PSRAM, the 64 KB table
-    // of earlier builds missed the cache on half of them).
-    let gelu = GeluTable::build(alloc::vec![0i16; GeluTable::LEN].leak());
     logging::report_memory("face id ready");
     // Before the camera starts: the networks alone on CPU0.
-    let checked = check_networks(detector, recognizer, &gelu, &mut buffers);
+    let checked = check_networks(detector, recognizer, &mut buffers);
 
     let mut app = App {
         thresholds: Thresholds::DEFAULT,
@@ -511,7 +595,6 @@ async fn main(_spawner: Spawner) -> ! {
         {
             let embedding = embed(
                 recognizer,
-                &gelu,
                 &judged.face,
                 &mut buffers,
                 &app.limits,
@@ -729,8 +812,7 @@ async fn stream_loop(mut camera: Camera, mut display: Display) -> ! {
 /// times are those of each network alone on CPU0.
 fn check_networks(
     detector: &yunet::int8::Model<'_>,
-    recognizer: &edgeface::int8::Model<'_>,
-    gelu: &GeluTable<'_>,
+    recognizer: &Recognizer<'_>,
     buffers: &mut Buffers,
 ) -> bool {
     check::noise(check::DETECTOR_SEED, buffers.detector_input);
@@ -750,22 +832,16 @@ fn check_networks(
 
     check::noise(check::RECOGNIZER_SEED, buffers.recognizer_input);
     let started = Instant::now();
-    recognizer.forward(
-        gelu,
-        buffers.recognizer_input,
-        edgeface::int8::Scratch::new(buffers.recognizer_i16, buffers.recognizer_f32)
-            .with_hidden(buffers.hidden),
-        buffers.embedding,
-    );
+    buffers.recognize(recognizer, |_| {});
     let recognizer_ms = started.elapsed().as_millis();
     let recognizer_print = check::fingerprint(buffers.embedding.iter().copied());
-    profile_recognizer(recognizer, gelu, buffers);
+    profile_recognizer(recognizer, buffers);
 
     let same = detector_print == check::DETECTOR && recognizer_print == check::RECOGNIZER;
     // Lane kernel calls that did not run on the vector unit: none is
     // expected. (The detector's heads and its upsampling run on the
     // kernels of `quant`, and are not counted here.)
-    let fallbacks = lanes::fallbacks();
+    let fallbacks = lanes::fallbacks() + s8::fallbacks();
     if same {
         info!(
             "self-test: detector {detector_ms} ms, recognizer {recognizer_ms} ms alone, {fallbacks} scalar fallbacks; both compute what the computer computes"
@@ -782,60 +858,36 @@ fn check_networks(
 
 /// Where the recognizer's time goes, from a pass with a trace: the time
 /// between two trace calls is booked to the part the second one ends.
-/// Each part includes the copy of its output to `f32` for the trace, so
-/// the parts add up to a little more than a pass without one.
 #[derive(Default)]
 struct Profile {
     /// The stem, in microseconds.
     stem: u64,
-    /// Each stage.
-    stages: [StageProfile; 4],
-    /// The head: pooling, LayerNorm, linear layer.
+    /// The blocks of each stage (28x28, 14x14, 7x7), in microseconds:
+    /// the block that halves the image first.
+    stages: [ArrayVec<u64, 7>; 3],
+    /// The head.
     head: u64,
-}
-
-/// The parts of one stage of a [`Profile`], in microseconds.
-#[derive(Default)]
-struct StageProfile {
-    /// The downsample; stage 0 has none.
-    downsample: u64,
-    /// Each ConvBlock.
-    blocks: ArrayVec<u64, 5>,
-    /// The SplitTransposeBlock up to its attention's projection: the
-    /// split convolutions, the positional encoding, the attention.
-    attention: u64,
-    /// The SplitTransposeBlock's MLP.
-    mlp: u64,
 }
 
 impl Profile {
     /// Book `micros` to the part that the trace `name` ends (the names of
-    /// `edgeface::int8::Model::forward_traced`).
+    /// `mfn::Model::forward_traced`).
     fn book(&mut self, name: &str, micros: u64) {
-        if let Some(rest) = name.strip_prefix("stages.") {
-            let Some(part) = rest
-                .bytes()
-                .next()
-                .and_then(|digit| digit.checked_sub(b'0'))
-                .and_then(|stage| self.stages.get_mut(usize::from(stage)))
-            else {
-                return;
-            };
-            if rest.contains(".downsample") {
-                part.downsample += micros;
-            } else if rest.ends_with(".Add") {
-                let _ = part.blocks.try_push(micros);
-            } else {
-                // One of the SplitTransposeBlock's adds (`Add_1`, ...):
-                // the last is its MLP's.
-                part.attention += part.mlp;
-                part.mlp = micros;
-            }
-        } else if name.starts_with("stem") {
-            self.stem += micros;
+        let stage = if name.starts_with("dconv_23") || name.starts_with("res_3") {
+            0
+        } else if name.starts_with("dconv_34") || name.starts_with("res_4") {
+            1
+        } else if name.starts_with("dconv_45") || name.starts_with("res_5") {
+            2
         } else {
-            self.head += micros;
-        }
+            if name == "stem" {
+                self.stem += micros;
+            } else {
+                self.head += micros;
+            }
+            return;
+        };
+        let _ = self.stages[stage].try_push(micros);
     }
 }
 
@@ -850,46 +902,30 @@ impl core::fmt::Display for Millis {
 
 /// Run the recognizer once more with a trace and log where its time goes,
 /// one line per stage.
-fn profile_recognizer(
-    recognizer: &edgeface::int8::Model<'_>,
-    gelu: &GeluTable<'_>,
-    buffers: &mut Buffers,
-) {
+fn profile_recognizer(recognizer: &Recognizer<'_>, buffers: &mut Buffers) {
     let mut profile = Profile::default();
     let started = Instant::now();
     let mut last = started;
-    recognizer.forward_traced(
-        gelu,
-        buffers.recognizer_input,
-        edgeface::int8::Scratch::new(buffers.recognizer_i16, buffers.recognizer_f32)
-            .with_hidden(buffers.hidden),
-        buffers.embedding,
-        |name, _, _| {
-            let now = Instant::now();
-            profile.book(name, (now - last).as_micros());
-            last = now;
-        },
-    );
+    buffers.recognize(recognizer, |name| {
+        let now = Instant::now();
+        profile.book(name, (now - last).as_micros());
+        last = now;
+    });
     info!(
         "profile: recognizer {} ms traced; stem {} ms, head {} ms",
         Millis(started.elapsed().as_micros()),
         Millis(profile.stem),
         Millis(profile.head)
     );
-    for (index, stage) in profile.stages.iter().enumerate() {
-        let mut blocks = ArrayString::<64>::new();
-        for (block, &micros) in stage.blocks.iter().enumerate() {
+    for (side, stage) in [28, 14, 7].iter().zip(&profile.stages) {
+        let mut blocks = ArrayString::<96>::new();
+        for (block, &micros) in stage.iter().enumerate() {
             let separator = if block == 0 { "" } else { " + " };
             let _ = write!(blocks, "{separator}{}", Millis(micros));
         }
-        let total =
-            stage.downsample + stage.blocks.iter().sum::<u64>() + stage.attention + stage.mlp;
         info!(
-            "profile: stage {index} {} ms: downsample {}, conv blocks {blocks}, attention {}, mlp {}",
-            Millis(total),
-            Millis(stage.downsample),
-            Millis(stage.attention),
-            Millis(stage.mlp)
+            "profile: {side}x{side} stage {} ms: {blocks}",
+            Millis(stage.iter().sum())
         );
     }
 }
@@ -921,8 +957,7 @@ fn detect(
 /// recognizer. `None` when the crop is blurred or the landmarks are
 /// degenerate.
 fn embed(
-    model: &edgeface::int8::Model<'_>,
-    gelu: &GeluTable<'_>,
+    model: &Recognizer<'_>,
     face: &Face,
     buffers: &mut Buffers,
     limits: &Limits,
@@ -934,13 +969,7 @@ fn embed(
     cut?;
 
     let started = Instant::now();
-    model.forward(
-        gelu,
-        buffers.recognizer_input,
-        edgeface::int8::Scratch::new(buffers.recognizer_i16, buffers.recognizer_f32)
-            .with_hidden(buffers.hidden),
-        buffers.embedding,
-    );
+    buffers.recognize(model, |_| {});
     timing.embed_ms = started.elapsed().as_millis() as u32;
     Some(Embedding::from_raw(buffers.embedding))
 }
@@ -974,7 +1003,7 @@ fn cut_out(face: &Face, buffers: &mut Buffers, limits: &Limits) -> Option<()> {
         info!("crop too blurred: sharpness {sharpness:.0}");
         return None;
     }
-    recognizer_input_i8(&crop.as_image(), buffers.recognizer_input);
+    mfn::input_i8(&crop.as_image(), buffers.recognizer_input);
     let done = started.elapsed();
     info!(
         "align: {}x{} of {SOURCE_WIDTH}x{SOURCE_HEIGHT} scaled in {} us, warp {} us, sharpness {} us, input {} us",
@@ -1652,8 +1681,10 @@ mod store {
     const BLOCK: usize = MAX_TEMPLATES * EMBEDDING_LEN * 4;
     /// The header's magic.
     const MAGIC: [u8; 4] = *b"FACE";
-    /// The format version.
-    const VERSION: u32 = 1;
+    /// The format version: 2 since `faceid-16`, whose recognizer
+    /// (MFN_S8_V1) makes embeddings that cannot be compared with the
+    /// EdgeFace-XXS ones of version 1.
+    const VERSION: u32 = 2;
     /// Per slot in the header: the name's length, its bytes, the template
     /// count.
     const SLOT_HEADER: usize = 4 + MAX_NAME + 4;
