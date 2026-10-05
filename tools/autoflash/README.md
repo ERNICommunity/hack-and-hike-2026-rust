@@ -19,7 +19,7 @@ A small Rust server sends the page to the browser and decodes the backtraces. [S
 2. Start the server in a second terminal:
 
    ```bash
-   cd autoflash
+   cd tools/autoflash
    cargo run --release
    ```
 
@@ -108,7 +108,7 @@ The wire format, in short:
 - The body starts with the magic byte `0xfe`, then the kind: Hello (the screen size) or Rect (a rectangle of RGB565 pixels, packed into runs). It ends with a CRC-16 (checksum).
 - Any byte to the device is a refresh request. Autoflash sends `R`.
 
-The firmware side, with the full description, is [`crates/core/src/screen.rs`](../crates/core/src/screen.rs). The page side is `src/stream.ts` (splits text and packets) and `src/screen.ts` (draws the packets).
+The firmware side, with the full description, is [`crates/core/src/screen.rs`](../../crates/core/src/screen.rs). The page side is `src/stream.ts` (splits text and packets) and `src/screen.ts` (draws the packets).
 
 ## Firmware file
 

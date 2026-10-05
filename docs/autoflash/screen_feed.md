@@ -16,7 +16,7 @@ every application, with no application code involved.
 
 - Dev container. `CARGO_TARGET_DIR=/tmp/cargo-target` is set. The repository
   root's `.cargo/config.toml` builds for `xtensa-esp32s3-none-elf` with
-  `build-std`. Host-side tools (`autoflash/`, `tools/facekit/`) are their own
+  `build-std`. Host-side tools (`tools/autoflash/`, `tools/facekit/`) are their own
   Cargo workspaces with their own `.cargo/config.toml`; always run Cargo from
   inside their folder.
 - Host tests of the firmware logic: `./scripts/test.sh` (runs
@@ -25,7 +25,7 @@ every application, with no application code involved.
   start the autoflash server unasked. At the end, hand over the command
   `cargo dist --bin demo` (run in the repository root; it writes
   `firmware.bin`, which autoflash picks up).
-- `autoflash/` may be read and edited for this task (an earlier rule said
+- `tools/autoflash/` may be read and edited for this task (an earlier rule said
   not to; the user lifted it for this feature).
 - Documentation style of this repository: plain English, short sentences,
   every abbreviation expanded on first use, every item has a doc comment
@@ -81,7 +81,7 @@ every application, with no application code involved.
   (`try_write`, `free_capacity`, async `read`) and
   `zerocopy_channel::Channel` (`new(&mut [T])`, `split()`, async `send()`
   returning `&mut T`, `send_done()`, async `receive()`, `receive_done()`).
-- Autoflash (`autoflash/`): a Vite + TypeScript page (`src/main.ts`, 1,800
+- Autoflash (`tools/autoflash/`): a Vite + TypeScript page (`src/main.ts`, 1,800
   lines) served by a dependency-free Rust server (`server/`). The page uses
   Web Serial. `startMonitor(session)` opens the port and runs a read loop that
   decodes bytes with a streaming `TextDecoder` and calls
@@ -267,9 +267,9 @@ One USB Serial/JTAG port carries both the log and the screen feed.
   ignored). Node has no `ImageData`; keep the pixel decoding in a pure
   function over a `Uint8ClampedArray` so it is testable.
 - Rebuild `site/` (`npm ci && npm run build:selfhost`) and run
-  `cargo test` in `autoflash/`. Commit the rebuilt `site/` together with the
+  `cargo test` in `tools/autoflash/`. Commit the rebuilt `site/` together with the
   sources.
-- `autoflash/README.md`: a "Screen feed" section (what the dock shows, the
+- `tools/autoflash/README.md`: a "Screen feed" section (what the dock shows, the
   refresh button, fullscreen, that it needs firmware with the feed, and the
   wire format in a few lines with a pointer to `crates/core/src/screen.rs`).
 
@@ -302,7 +302,7 @@ One USB Serial/JTAG port carries both the log and the screen feed.
 
 1. `cargo build --release` in the repository root (all binaries, Xtensa).
 2. `./scripts/test.sh` (core tests, including the new `screen` module).
-3. `cd autoflash && npm ci && npm test && npm run build:selfhost && cargo test`.
+3. `cd tools/autoflash && npm ci && npm test && npm run build:selfhost && cargo test`.
 4. Report results faithfully. Then hand over `cargo dist --bin demo` and this
    hardware checklist for the user:
    - flash with autoflash; after the reset the device tab shows the dock

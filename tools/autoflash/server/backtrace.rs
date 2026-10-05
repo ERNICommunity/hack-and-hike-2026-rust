@@ -136,7 +136,7 @@ impl Symbolizer {
     ///
     /// `ESP_AUTOFLASH_ELF_DIRS` lists the Cargo target directories, separated
     /// like in `PATH`. When it is not set, the server searches
-    /// `$CARGO_TARGET_DIR` (only when set), `./target` and `../target`.
+    /// `$CARGO_TARGET_DIR` (only when set), `./target` and `../../target`.
     /// `ESP_AUTOFLASH_ADDR2LINE` sets one `addr2line` program for all ELF
     /// files.
     pub fn from_env() -> Self {
@@ -145,7 +145,7 @@ impl Symbolizer {
             None => env::var_os("CARGO_TARGET_DIR")
                 .map(PathBuf::from)
                 .into_iter()
-                .chain([PathBuf::from("target"), PathBuf::from("../target")])
+                .chain([PathBuf::from("target"), PathBuf::from("../../target")])
                 .collect(),
         };
         Symbolizer {

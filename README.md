@@ -95,10 +95,10 @@ To put an application on the board:
    cargo dist --bin imu_color
    ```
 
-2. Start [autoflash](autoflash/README.md) in a second terminal:
+2. Start [autoflash](tools/autoflash/README.md) in a second terminal:
 
    ```bash
-   cd autoflash && cargo run --release
+   cd tools/autoflash && cargo run --release
    ```
 
 3. Open <http://localhost:8080> in Chrome or Edge.
@@ -997,6 +997,7 @@ crates/vision/      image processing and the two face networks, with tests
 crates/face/        the face math of face_unlock, with tests
 assets/models/      the face networks' weights and the impostor bank
 tools/facekit/      developer tool for the face models (runs on your computer)
+tools/autoflash/    browser tool that flashes each new firmware.bin (runs on your computer)
 src/
 ├── lib.rs          the library every application uses
 ├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, face_unlock.rs, face_id.rs, template.rs

@@ -16,7 +16,7 @@ You do not need Node, npm or an internet connection:
 
 ## Start the server
 
-In the `autoflash/` directory, run:
+In the `tools/autoflash/` directory, run:
 
 ```bash
 cargo run --release
@@ -24,7 +24,7 @@ cargo run --release
 
 The server prints its address, the device filter and the directories where it searches for ELF files. Open <http://localhost:8080>.
 
-The repository around `autoflash/` builds firmware for the ESP32-S3. `.cargo/config.toml` in `autoflash/` builds the server for your computer instead. In this repository, the first build takes longer: Cargo also compiles `core` and `alloc` from source. The repository's Cargo configuration asks for this, and `autoflash/` cannot turn it off.
+The repository around `tools/autoflash/` builds firmware for the ESP32-S3. `.cargo/config.toml` in `tools/autoflash/` builds the server for your computer instead. In this repository, the first build takes longer: Cargo also compiles `core` and `alloc` from source. The repository's Cargo configuration asks for this, and `tools/autoflash/` cannot turn it off.
 
 ## Network access
 
@@ -74,7 +74,7 @@ Set these environment variables when you start the server:
 | `ESP_AUTOFLASH_BIND` | `127.0.0.1` | The address that the server listens on. `0.0.0.0` accepts connections from other computers and from `docker run -p`. See [Network access](#network-access). |
 | `ESP_AUTOFLASH_PORT` | `8080` | The TCP port that the server listens on. |
 | `ESP_AUTOFLASH_SERIAL_PORT_SEARCH` | `303a:*` | The device filter: `vvvv:pppp`, `vvvv:*` or `*`. See [Device filter](README.md#device-filter). |
-| `ESP_AUTOFLASH_ELF_DIRS` | `$CARGO_TARGET_DIR`, `target`, `../target` | The Cargo target directories where the server searches for ELF files. Separate several directories like in `PATH` (with `:` on Linux and macOS). |
+| `ESP_AUTOFLASH_ELF_DIRS` | `$CARGO_TARGET_DIR`, `target`, `../../target` | The Cargo target directories where the server searches for ELF files. Separate several directories like in `PATH` (with `:` on Linux and macOS). |
 | `ESP_AUTOFLASH_ADDR2LINE` | Searched, see below | The `addr2line` program that decodes backtraces. |
 
 Example:
@@ -86,7 +86,7 @@ ESP_AUTOFLASH_PORT=9000 ESP_AUTOFLASH_SERIAL_PORT_SEARCH=10c4:ea60 cargo run --r
 ### ELF directories
 
 - If you set `ESP_AUTOFLASH_ELF_DIRS`, the server uses only these directories.
-- A relative directory is relative to the directory where you start the server. With `cargo run` in `autoflash/`, `../target` is the target directory of the repository.
+- A relative directory is relative to the directory where you start the server. With `cargo run` in `tools/autoflash/`, `../../target` is the target directory of the repository.
 - `$CARGO_TARGET_DIR` is used only when it is set. The dev container of this repository sets it to `/tmp/cargo-target`.
 - In each directory, the server searches `release/`, `debug/`, `*/release/` and `*/debug/`, for example `target/xtensa-esp32s3-none-elf/release/`. It does not search deeper.
 - It uses only Xtensa and RISC-V ELF files. It checks the newest files first.

@@ -4,7 +4,7 @@
 //! mixed with the log text. The autoflash page shows it. This module holds
 //! the parts of the format that need no hardware: the packet writers, the
 //! pixel run encoder, COBS and the checksum. The decoders are here for the
-//! tests; they mirror the TypeScript decoders in `autoflash/src/`.
+//! tests; they mirror the TypeScript decoders in `tools/autoflash/src/`.
 //!
 //! # Framing
 //!
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(parse_body(&body), None);
     }
 
-    /// The packet that `autoflash/src/stream.test.ts` decodes too: a 3x2
+    /// The packet that `tools/autoflash/src/stream.test.ts` decodes too: a 3x2
     /// rectangle at (1, 2) with black, red and white pixels.
     const GOLDEN: &str = "0004fe02010202020302020101010383f80105ffffdf3c00";
 

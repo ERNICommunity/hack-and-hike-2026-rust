@@ -228,7 +228,7 @@ export async function decodeBacktrace(elfSha256: string, addresses: string[]): P
   // Only the Rust server has this path. The Vite dev server and the Cloudflare
   // Worker answer unknown paths with the page (HTML), not with JSON.
   if (!response.headers.get("Content-Type")?.includes("application/json")) {
-    throw new Error("this server does not decode backtraces; run the Rust server from autoflash/ where the firmware is built");
+    throw new Error("this server does not decode backtraces; run the Rust server from tools/autoflash/ where the firmware is built");
   }
   const body =(await response.json().catch(() => undefined)) as
     | (Partial<DecodedBacktrace> & { error?: string })
