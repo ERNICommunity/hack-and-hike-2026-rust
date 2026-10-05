@@ -8,7 +8,8 @@
 //!   `undefined-symbol malloc`. For some known missing symbols, it prints a
 //!   hint that names the likely cause.
 //!
-//! Copied from the esp-generate template.
+//! Copied from the esp-generate template (esp-rs/esp-generate, MIT OR
+//! Apache-2.0).
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

@@ -50,6 +50,7 @@ gives your code access to that piece of hardware.
 - [Where does my code go?](#where-does-my-code-go)
 - [Reading order](#reading-order)
 - [Going deeper](#going-deeper)
+- [License](#license)
 
 ## Setup
 
@@ -1051,3 +1052,28 @@ built:
 - the camera path
 - the network protocol
 - common mistakes, a glossary, and the design rules behind the structure
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+Some parts come from others and keep their own licences: the two neural
+networks (MIT), a camera register table (Apache-2.0), audio and I/O
+expander start values (MIT), the IMU's configuration blob and compass
+equations (BSD-3-Clause), the bundles of the flashing page, the Rust
+logo (CC BY 4.0) and the presentation's fonts (SIL OFL 1.1).
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists them with their
+notices. The ERNI name and logos are trademarks of ERNI, used with its
+permission, and are not covered by this licence.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms
+or conditions.

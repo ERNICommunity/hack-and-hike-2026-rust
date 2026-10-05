@@ -3,6 +3,7 @@ name = "hack-and-hike-core"
 version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
+license.workspace = true
 publish = false
 description = "Hardware-independent logic of the Hack & Hike firmware: IMU math and the network protocol"
 

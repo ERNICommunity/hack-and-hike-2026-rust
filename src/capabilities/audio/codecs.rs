@@ -8,7 +8,8 @@
 //!
 //! Both chips are configured once, over I2C, for the same I2S (Inter-IC
 //! Sound) format: 16 kHz, stereo, 16-bit samples. The register values come
-//! from M5Stack's M5Unified library for this board.
+//! from M5Stack's M5Unified library for this board (Copyright (c) 2021
+//! M5Stack, MIT license; the notice is in `THIRD_PARTY_NOTICES.md`).
 
 use esp_hal::delay::Delay;
 

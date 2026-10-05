@@ -5,6 +5,15 @@
 //! bring-up, over the shared I2C bus. The sensor's documentation calls this
 //! control bus SCCB (Serial Camera Control Bus). After that, capturing uses
 //! only the parallel bus and never uses I2C again.
+//!
+//! `DEFAULT_REGS` and the reset before it come from Espressif's
+//! esp32-camera driver (`sensors/private_include/gc0308_settings.h` and
+//! `sensors/gc0308.c`), Copyright 2015-2021 Espressif Systems (Shanghai)
+//! PTE LTD, licensed under the Apache License, Version 2.0 (`LICENSE-APACHE`
+//! at the root of this repository). Changes: the table is a Rust array
+//! without the rows that are commented out upstream, and `program` adds
+//! the 320x240 subsampling, the RGB565 format and the orientation after it.
+//! `THIRD_PARTY_NOTICES.md` lists this and every other borrowed part.
 
 use esp_hal::delay::Delay;
 
@@ -36,7 +45,8 @@ const ORIENTATION_VERTICAL_FLIP_MASK: u8 = 0x02;
 /// `ORIENTATION`.
 const ORIENTATION_MASK: u8 = ORIENTATION_HORIZONTAL_MIRROR_MASK | ORIENTATION_VERTICAL_FLIP_MASK;
 
-// Espressif's basic GC0308 register program. `program` writes the QVGA
+// Espressif's basic GC0308 register program (esp32-camera, Apache-2.0; see
+// the module documentation). `program` writes the QVGA
 // subsampling changes after it. On the CoreS3 Lite, the sensor has no XCLK
 // (external clock) pin from the ESP32-S3. It uses the clock on the board,
 // and LCD_CAM runs in slave mode.

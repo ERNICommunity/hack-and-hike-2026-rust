@@ -3,6 +3,7 @@ name = "hack-and-hike-vision"
 version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
+license.workspace = true
 publish = false
 description = "Hardware-independent image processing of the Hack & Hike face recognition app: pixel formats, downscaling, face alignment and a blur score"
 

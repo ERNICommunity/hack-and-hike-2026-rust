@@ -3,6 +3,7 @@ name = "facekit"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.0"
+license = "MIT OR Apache-2.0"
 publish = false
 description = "Developer-machine tool for the face ID app: inspects, exports and evaluates the neural-network models"
 

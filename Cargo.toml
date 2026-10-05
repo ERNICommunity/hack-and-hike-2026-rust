@@ -2,6 +2,7 @@
 edition = "2024"
 name = "hack-and-hike"
 rust-version.workspace = true
+license.workspace = true
 version = "0.1.0"
 
 [lib]
@@ -20,6 +21,9 @@ members = ["crates/core", "crates/vision", "crates/face"]
 # scripts/test.sh read it from here; .devcontainer/Dockerfile repeats it
 # because a Dockerfile cannot read it.
 rust-version = "1.97.0"
+# The licence of every crate of the workspace: see LICENSE-MIT and
+# LICENSE-APACHE, and THIRD_PARTY_NOTICES.md for what is not ours.
+license = "MIT OR Apache-2.0"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
