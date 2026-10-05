@@ -5,6 +5,12 @@ of, what was decided on the way, and what was measured. The work went in
 numbered steps, from the models on the computer to the application on the
 board; the sections below keep that order.
 
+Steps 1 to 10 were done with EdgeFace-XXS as the recognizer. Since
+`faceid-16` the recognizer is Espressif's MFN_S8_V1, for its licence:
+see [The recognizer since `faceid-16`](#the-recognizer-since-faceid-16-mfn_s8_v1).
+The findings about EdgeFace-XXS below are kept as the record of the
+work; its code and weights are in the git history.
+
 | Part | Where |
 | --- | --- |
 | The application | `src/bin/face_id.rs` |
@@ -17,7 +23,6 @@ board; the sections below keep that order.
 | --- | --- |
 | [`performance.md`](performance.md) | the speed work on the board: the cost model, the builds, what went wrong, room for improvement |
 | [`kernels.md`](kernels.md) | every ONNX operator of the two models and how the firmware handles it (Step 1 acceptance) |
-| [`inventory_edgeface_xxs.md`](inventory_edgeface_xxs.md) | `facekit inspect` of the EdgeFace-XXS embedding model at 112x112 |
 | [`inventory_yunet_2023mar.md`](inventory_yunet_2023mar.md) | `facekit inspect` of the YuNet detector, fixed 640x640 variant |
 | [`inventory_yunet_2026may.md`](inventory_yunet_2026may.md) | `facekit inspect` of the YuNet detector, dynamic variant, at 64x96 |
 
@@ -26,11 +31,12 @@ board; the sections below keep that order.
 | Role | Model | Parameters | Input | Output | Licence |
 | --- | --- | --- | --- | --- | --- |
 | Detector + 5 landmarks | YuNet (OpenCV Zoo, 2026may dynamic variant) | 53,121 | `[1,3,H,W]` BGR, values 0..255, H and W multiples of 32 | per stride 8/16/32: `cls`, `obj`, `bbox[4]`, `kps[10]` per anchor | MIT |
-| Face embedding | EdgeFace-XXS (Idiap; ONNX export by yakhyo) | 1,244,744 | `[1,3,112,112]` RGB, `(x/255 - 0.5) / 0.5` | `[1,512]` | CC BY-NC-SA 4.0 |
+| Face embedding, since `faceid-16` | MFN_S8_V1 (Espressif ESP-DL, a MobileFaceNet), all `i8` | 1,186,321 | `[1,112,112,3]` RGB, `(x - 127.5) / 127.5` in units of 2^-6 | `[512]` | MIT |
+| Face embedding, up to `faceid-15` | EdgeFace-XXS (Idiap; ONNX export by yakhyo) | 1,244,744 | `[1,3,112,112]` RGB, `(x/255 - 0.5) / 0.5` | `[1,512]` | CC BY-NC-SA 4.0 |
 
-The input conventions above are the published ones for both model families;
-Step 3 (`facekit golden`) verifies them against a real face before anything
-depends on them.
+The input conventions above are the published ones for the model families;
+Step 3 (`facekit golden`) verified them against a real face before anything
+depended on them, and `facekit golden-espdl` does so for MFN_S8_V1.
 
 ## Findings from Step 1
 
@@ -280,13 +286,63 @@ The question this step answers is the one the golden vectors cannot: not
   photos of an LFW pair are already "in the wild". Step 10 is where it
   gets its real verdict, on the device.
 
+## The recognizer since `faceid-16`: MFN_S8_V1
+
+EdgeFace-XXS's weights are licensed CC BY-NC-SA 4.0: no commercial use,
+and every copy and derivative under the same terms. Of the face
+recognizers with a permissive licence, only Espressif's MFN_S8_V1 (MIT,
+`esp-dl/models/human_face_recognition`) is small enough for the board:
+OpenCV's SFace (Apache-2.0) is 9.9 MB even in `int8`, fal's AuraFace a
+ResNet100, dlib's model a ResNet at 150x150. Espressif does not say what
+MFN_S8_V1 was trained on.
+
+- **Espressif publishes it quantized**, as an `.espdl` file: ONNX in a
+  FlatBuffer, every tensor `i8` with one power-of-two scale. Espressif's
+  loader is a closed library; `facekit` reads the format itself
+  (`tools/facekit/src/espdl.rs`), interprets the graph as the reference,
+  and imports it (`import-espdl`), checking every assumption of the
+  firmware's kernels. ESP-DL splits three layers into two halves with
+  scales of their own; the import merges each pair into one layer whose
+  groups of sixteen channels carry their own shifts.
+- **The network** (`nn::mfn`) is a MobileFaceNet: a 3x3 stem, fifteen
+  blocks of a widening 1x1, a depthwise 3x3 and a narrowing 1x1 (three of
+  them halve the image), PReLU after nearly every layer, and a head with
+  a 7x7 depthwise layer over the whole map. 221 million products per
+  face, more than twice EdgeFace-XXS's; 93 percent in 1x1 layers.
+- **It runs on the vector unit's 8-bit mode** (`nn::s8`): sixteen
+  `i8 x i8` products per instruction, twice the 16-bit lanes. Each block
+  runs in bands of rows whose wide tensors stay in internal RAM;
+  `performance.md` has the measurements behind that.
+- **The firmware computes what the interpreter computes, bit for bit**,
+  on the fixture face (`tests/mfn.rs`) and on all 7,701 LFW photos of the
+  pair protocol (`facekit eval --reference`).
+- **LFW: 99.27 % +- 0.54** with the firmware's detector and alignment
+  (`--pick centre`), against 99.42 % for EdgeFace-XXS; at false-accept
+  rates of 1e-3 and 1e-4 it accepts 98.23 % and 97.60 % (EdgeFace-XXS
+  98.33 % and 97.50 %). Swapping the input to BGR costs 0.2 points, so
+  RGB is the order it was trained on.
+- **The decision moved with it.** MFN_S8_V1 scores strangers a little
+  higher (0.027 on average against 0.006), so at the old accept
+  threshold of 0.35 it let in 31 of 22,920 strangers. `facekit
+  calibrate` chose **accept 0.40** (five of 22,920, as before, with 99.0
+  percent of genuine attempts recognized against 98.8) and a sure limit
+  of **0.50 on any number of frames**, 0.05 above the highest stranger:
+  a name after the first frame in 98.7 percent of the visits (95.5
+  before) and after the second in all, with no stranger named that the
+  rule without the shortcut did not name. The impostor bank was made
+  again from the same 200 strangers.
+- **On the board** (`faceid-16`): 432 ms per face alone, against 383 for
+  EdgeFace-XXS; about 910 ms per recognizing cycle in the application,
+  against 860. The enrollments' format version went to 2: EdgeFace's
+  enrollments cannot be compared with MFN_S8_V1's embeddings.
+
 ## Step 8 onward: on the board
 
 Both networks compute on the board exactly what they compute on the
-computer, bit for bit. Alone on CPU0 the recognizer takes 0.39 s per
-face and the detector 0.10 s per frame (build `faceid-13`); in the
-application a cycle without a face takes 0.17 s and one that recognizes
-0.86 s. The first run took 8.8 s and 1.6 s for the two networks; how
+computer, bit for bit. Alone on CPU0 the recognizer takes 0.43 s per
+face and the detector 0.10 s per frame (build `faceid-16`, MFN_S8_V1;
+EdgeFace-XXS took 0.39 s in `faceid-13`); in the application a cycle
+without a face takes 0.17 s and one that recognizes 0.91 s. The first run took 8.8 s and 1.6 s for the two networks; how
 that became the present numbers, what the board taught on the way, and
 what is left to gain is in [`performance.md`](performance.md).
 

@@ -1,18 +1,18 @@
 //! The FKB1 reader, on a hand-made file and on the fixtures that facekit
 //! wrote.
 //!
-//! The fixtures in `tests/fixtures/` are the weights of both models and
-//! the golden vectors of both models. `tests/fixtures/README.md` says how
+//! The fixtures are the weights of both models and their golden vectors
+//! (the recognizer's weights are the firmware's own, in `assets/models`). `tests/fixtures/README.md` says how
 //! to make them again.
 
 use hack_and_hike_vision::blob::{
     Blob, BlobError, DATA_ALIGN, DataType, ENTRY_LEN, HEADER_LEN, MAGIC,
 };
 
-/// The weights of EdgeFace-XXS, as exported by facekit.
-const EDGEFACE_WEIGHTS: &[u8] = include_bytes!("fixtures/edgeface_xxs.f32.fkb");
-/// Reference outputs of EdgeFace-XXS on `face_112x112.jpg`.
-const EDGEFACE_GOLDEN: &[u8] = include_bytes!("fixtures/edgeface_xxs.golden.fkb");
+/// The weights of MFN_S8_V1, as `facekit import-espdl` wrote them.
+const MFN_WEIGHTS: &[u8] = include_bytes!("../../../assets/models/mfn_s8_v1.fkb");
+/// Reference input and embedding of MFN_S8_V1 on `face_112x112.jpg`.
+const MFN_GOLDEN: &[u8] = include_bytes!("fixtures/mfn.golden.fkb");
 /// The weights of YuNet, as exported by facekit.
 const YUNET_WEIGHTS: &[u8] = include_bytes!("fixtures/yunet.f32.fkb");
 /// Reference outputs of YuNet on `face_320x240.jpg`.
@@ -111,55 +111,43 @@ fn rejects_broken_files() {
 }
 
 #[test]
-fn edgeface_weights_have_the_expected_shapes() {
-    let blob = Blob::parse(EDGEFACE_WEIGHTS).expect("valid weights file");
-    assert_eq!(blob.len(), 161);
-    let stem = blob.get("stem.0.weight").expect("stem weight");
-    assert_eq!(
-        (stem.layout, stem.shape()),
-        ("OHWI", &[24usize, 4, 4, 3][..])
-    );
-    let depthwise = blob
-        .get("stages.3.blocks.0.conv_dw.weight")
-        .expect("depthwise weight");
-    assert_eq!(
-        (depthwise.layout, depthwise.shape()),
-        ("HWC", &[9usize, 9, 168][..])
-    );
-    let linear = blob
-        .get("stages.0.blocks.0.mlp.fc1.weight")
-        .expect("linear weight");
-    assert_eq!((linear.layout, linear.shape()), ("OI", &[96usize, 24][..]));
-    let head = blob.get("head.fc.weight").expect("head weight");
-    assert_eq!((head.layout, head.shape()), ("OI", &[512usize, 168][..]));
-    let temperature = blob
-        .get("stages.1.blocks.1.xca.temperature")
-        .expect("temperature");
-    assert_eq!(temperature.shape(), &[4]);
-    let positional = blob
-        .get("stages.1.blocks.1.pos_embd.constant")
-        .expect("folded constant");
-    assert_eq!(
-        (positional.layout, positional.shape()),
-        ("HWC", &[14usize, 14, 48][..])
-    );
-    assert!(positional.f32s().all(f32::is_finite));
-
-    // Every tensor is f32 and finite: a broken export would show up here.
-    let total: usize = blob.entries().map(|entry| entry.element_count()).sum();
-    assert_eq!(
-        total - positional.element_count(),
-        1_244_744,
-        "parameter count of EdgeFace-XXS"
-    );
-    for entry in blob.entries() {
-        assert_eq!(entry.data_type, DataType::F32, "{}", entry.name);
-        assert!(
-            entry.f32s().all(f32::is_finite),
-            "{} has a non-finite value",
-            entry.name
+fn mfn_weights_have_the_expected_shapes() {
+    let blob = Blob::parse(MFN_WEIGHTS).expect("valid weights file");
+    // Fifty layers with a weight, a bias and a shift, 33 of them with a
+    // PReLU's slopes and shifts, and the input's exponent.
+    assert_eq!(blob.len(), 50 * 3 + 33 * 2 + 1);
+    let exponent = blob.get("input.exponent").expect("input exponent");
+    assert_eq!(exponent.i32s().collect::<Vec<_>>(), [-6]);
+    for (name, shape) in [
+        ("conv_1.weight", [4usize, 32, 16]),
+        ("conv_2_dw.weight", [4, 9, 16]),
+        ("dconv_45_conv_sep.weight", [32, 128, 16]),
+        ("conv_6dw7_7.weight", [32, 49, 16]),
+        ("fc1.weight", [32, 512, 16]),
+    ] {
+        let entry = blob.get(name).expect(name);
+        assert_eq!(
+            (entry.data_type, entry.layout, entry.shape()),
+            (DataType::I8, "N16HWC16", &shape[..]),
+            "{name}"
         );
     }
+    // The halves ESP-DL split, merged with a shift per group of each.
+    let shifts: Vec<i32> = blob
+        .get("dconv_45_conv_sep.shift")
+        .expect("shifts")
+        .i32s()
+        .collect();
+    assert_eq!(shifts.len(), 32);
+    assert_ne!(shifts[0], shifts[31], "the two halves keep their scales");
+    // The stem's 27 taps padded to 32: 320 zeros on top of the model's
+    // weights.
+    let total: usize = blob
+        .entries()
+        .filter(|entry| entry.name.ends_with(".weight"))
+        .map(|entry| entry.element_count())
+        .sum();
+    assert_eq!(total - 320, 1_172_608, "weights of MFN_S8_V1");
 }
 
 #[test]
@@ -191,26 +179,17 @@ fn yunet_weights_have_the_expected_shapes() {
 
 #[test]
 fn golden_files_describe_the_expected_runs() {
-    let edgeface = Blob::parse(EDGEFACE_GOLDEN).expect("valid golden file");
-    let image = edgeface.get("image_rgb").expect("image");
+    let mfn = Blob::parse(MFN_GOLDEN).expect("valid golden file");
+    let input = mfn.get("input").expect("input");
     assert_eq!(
-        (image.data_type, image.shape()),
-        (DataType::U8, &[112usize, 112, 3][..])
+        (input.data_type, input.shape()),
+        (DataType::I8, &[112usize, 112, 3][..])
     );
-    let input = edgeface.get("input").expect("input");
-    assert_eq!(input.shape(), &[1, 3, 112, 112]);
-    assert!(input.f32s().all(|value| (-1.0..=1.0).contains(&value)));
-    let embedding = edgeface.get("embedding").expect("embedding");
-    assert_eq!(embedding.shape(), &[1, 512]);
-    let norm: f32 = embedding
-        .f32s()
-        .map(|value| value * value)
-        .sum::<f32>()
-        .sqrt();
-    assert!(norm.is_finite() && norm > 0.1, "embedding norm {norm}");
+    let embedding = mfn.get("embedding").expect("embedding");
+    assert_eq!(embedding.shape(), &[512]);
     assert!(
-        edgeface.get("stages.3.blocks.1.Add_4").is_some(),
-        "last block boundary"
+        embedding.i8s().any(|value| value != 0),
+        "an embedding of zeros"
     );
 
     let yunet = Blob::parse(YUNET_GOLDEN).expect("valid golden file");

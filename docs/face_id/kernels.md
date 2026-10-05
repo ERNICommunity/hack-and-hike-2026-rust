@@ -6,6 +6,13 @@ handles it. "Kernel" means a hand-written function in `crates/vision`.
 and the firmware never sees it. The counts come from the inventories in this
 folder.
 
+This table was the acceptance of Step 1, for YuNet and EdgeFace-XXS, the
+recognizer up to `faceid-15`. Its successor, MFN_S8_V1, has four
+operators only: `Conv` (a 3x3 stem, depthwise 3x3 with stride 1 and 2, a
+depthwise 7x7, and 1x1), `PRelu`, `Add` and `Concat`. `facekit
+import-espdl` checks that, merges each `Concat` of two halves into one
+layer, and the firmware runs it on the 8-bit kernels of `nn::s8`.
+
 ## Kernels with arithmetic
 
 | Operator | YuNet | EdgeFace | Kernel | Notes |

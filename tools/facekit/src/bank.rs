@@ -38,13 +38,7 @@ use crate::{
 ///
 /// When the folders cannot be read, too few faces are found, or the file
 /// cannot be written.
-pub fn run(
-    detector: &Path,
-    weights: &Path,
-    images: &Path,
-    out: &Path,
-    count: usize,
-) -> Result<()> {
+pub fn run(detector: &Path, weights: &Path, images: &Path, out: &Path, count: usize) -> Result<()> {
     // One photo per person, spread evenly over the listing.
     let people = data::people(images)?;
     if people.len() < count {

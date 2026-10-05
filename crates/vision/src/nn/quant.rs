@@ -158,7 +158,8 @@ fn wide_to_f32(sum: i64) -> f32 {
 ///
 /// Per-channel mappings are free for a depthwise convolution's input,
 /// where channels never mix, and they matter: the residual stream of
-/// EdgeFace has a few channels a hundred times larger than the rest.
+/// EdgeFace-XXS, the recognizer before MFN_S8_V1, had a few channels a
+/// hundred times larger than the rest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Granularity {
     /// One 8-bit mapping for the whole tensor.

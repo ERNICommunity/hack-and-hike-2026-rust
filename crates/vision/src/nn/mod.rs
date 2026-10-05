@@ -1,28 +1,30 @@
-//! Neural-network layers in `f32`, and the two networks built from them.
+//! Neural-network layers, and the two networks built from them.
 //!
 //! A network is a fixed sequence of arithmetic over arrays of numbers.
-//! This module has one function for each kind of arithmetic the two models
+//! This module has one function for each kind of arithmetic the models
 //! use (a "kernel"), and a module for each model that calls the kernels in
 //! the model's order with the model's weights:
 //!
-//! - [`yunet`]: the face detector, convolutions only,
-//! - [`edgeface`]: the face recognizer, convolutions, layer normalization,
-//!   small matrix products and attention,
+//! - [`yunet`]: the face detector, convolutions only, in `f32` and in
+//!   integers (`yunet::int8`),
+//! - [`mfn`]: the face recognizer, Espressif's MFN_S8_V1, all `i8`,
 //! - [`quant`]: the integer versions of the expensive kernels, and how
 //!   tensors move between `f32` and `i8`,
-//! - [`lanes`]: the integer pipeline of the vector unit, which both
-//!   networks run on the board (`yunet::int8`, `edgeface::int8`),
-//! - [`mfn`]: Espressif's MFN_S8_V1 face recognizer, all `i8`,
-//! - [`s8`]: the kernels on the vector unit's 8-bit mode it runs on,
+//! - [`lanes`]: the 16-bit integer pipeline of the vector unit, which the
+//!   detector runs on the board,
+//! - [`s8`]: the 8-bit pipeline of the vector unit, which the recognizer
+//!   runs on,
 //! - [`pack`]: the weights grouped by eight output channels, the layout
 //!   the vector unit reads,
 //! - [`check`]: a check of both networks on the board against the
 //!   computer.
 //!
-//! Everything here is the `f32` reference: plain loops, written for
-//! clarity and checked against the models' original outputs (see the
-//! golden files in `tests/fixtures/`). The faster integer kernels of a
-//! later step are checked against these.
+//! The kernels of this module itself are the `f32` reference: plain
+//! loops, written for clarity and checked against the models' original
+//! outputs (see the golden files in `tests/fixtures/`). The faster integer
+//! kernels of a later step are checked against these. MFN_S8_V1 has no
+//! `f32` version (Espressif publishes it quantized); its reference is
+//! `facekit`'s interpreter of its graph.
 //!
 //! # Layout
 //!
@@ -40,7 +42,6 @@
 //! in the heap or in PSRAM, never on the stack.
 
 pub mod check;
-pub mod edgeface;
 pub mod lanes;
 pub mod mfn;
 pub mod pack;

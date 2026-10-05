@@ -8,28 +8,26 @@
 //! 2. Choose each tensor's mapping by the clipping range with the least
 //!    mean squared error over the histogram: a heavy-tailed tensor gives
 //!    up its few extreme values for a finer step on all the others.
-//! 3. Fold every LayerNorm's scale and shift into the weights of the layer
-//!    after it (exact in `f32`), so the quantized tensor is the
-//!    standardized one; quantize every weight per output channel.
+//! 3. Quantize every weight per output channel.
 //! 4. Write the file, read it back, and run the integer network next to
 //!    the `f32` one on every sample: signal-to-noise per block, and what
-//!    the application sees (embedding similarity, or box and landmark
-//!    positions).
+//!    the application sees (box and landmark positions).
+//!
+//! Only the detector (YuNet) goes through here. The recognizer,
+//! MFN_S8_V1, comes quantized from Espressif: `import-espdl` reads it.
 
 use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use hack_and_hike_vision::{
-    align::{CROP_SIZE, recognizer_input, recognizer_input_i8},
     blob::DataType,
     detect::{
         CONTENT_HEIGHT, CONTENT_WIDTH, DEFAULT_NMS_THRESHOLD, DEFAULT_SCORE_THRESHOLD, DOWNSCALE,
         decode, detector_input, detector_input_i8,
     },
-    image::{Rgb565Frame, RgbImage, RgbImageMut, downscale_to_rgb},
+    image::{Rgb565Frame, RgbImageMut, downscale_to_rgb},
     nn::{
-        Shape, edgeface,
         lanes::GroupPlan,
         quant::{Granularity, Quant, quantize_weight_channels, quantize_weight_rows, snr_db},
         yunet,
@@ -40,15 +38,12 @@ use sha2::{Digest, Sha256};
 use crate::{
     blob::{Tensor, Writer},
     data,
-    recognizer::Runner,
     tensors::Tensors,
 };
 
 /// Which network to quantize.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Model {
-    /// The recognizer; samples are 112x112 aligned crops.
-    Edgeface,
     /// The detector; samples are 320x240 frames.
     Yunet,
 }
@@ -211,7 +206,7 @@ pub fn run(
     println!("{} quantized tensors", mappings.len());
     report_tensor_loss(model, &f32s, &inputs, &mappings);
 
-    let writer = quantize_file(model, &f32s, &mappings)?;
+    let writer = quantize_file(&f32s, &mappings)?;
     let manifest = writer.manifest();
     let bytes = writer.finish();
     fs::write(out, &bytes).with_context(|| format!("writing {}", out.display()))?;
@@ -226,7 +221,6 @@ pub fn run(
     let mut i8s = Tensors::read(out)?;
     i8s.pack_for_lanes();
     match model {
-        Model::Edgeface => report_edgeface(&f32s, &i8s, &inputs),
         Model::Yunet => report_yunet(&f32s, &i8s, &inputs),
     }
     Ok(())
@@ -258,18 +252,6 @@ fn load_samples(model: Model, dir: &Path, limit: Option<usize>) -> Result<Vec<Sa
             .to_string();
         let (width, height) = (photo.width() as usize, photo.height() as usize);
         let sample = match model {
-            Model::Edgeface => {
-                if (width, height) != (CROP_SIZE, CROP_SIZE) {
-                    println!("skip {name}: not {CROP_SIZE}x{CROP_SIZE}");
-                    continue;
-                }
-                let crop = RgbImage::new(photo.as_raw(), width, height);
-                let mut f32s = vec![0.0f32; CROP_SIZE * CROP_SIZE * 3];
-                let mut i8s = vec![0i8; CROP_SIZE * CROP_SIZE * 3];
-                recognizer_input(&crop, &mut f32s);
-                recognizer_input_i8(&crop, &mut i8s);
-                Sample { name, f32s, i8s }
-            }
             Model::Yunet => {
                 if (width, height) != (320, 240) {
                     println!("skip {name}: not 320x240");
@@ -313,20 +295,6 @@ fn run_probed(
     mut probe: impl FnMut(&str, Granularity, &[f32]),
 ) {
     match model {
-        Model::Edgeface => {
-            let mut scratch = vec![0.0f32; edgeface::SCRATCH_LEN];
-            let mut embedding = vec![0.0f32; edgeface::EMBEDDING_LEN];
-            for sample in samples {
-                edgeface::forward_probed(
-                    weights,
-                    &sample.f32s,
-                    &mut scratch,
-                    &mut embedding,
-                    |_, _, _| {},
-                    &mut probe,
-                );
-            }
-        }
         Model::Yunet => {
             let mut scratch = vec![0.0f32; yunet::SCRATCH_LEN];
             for sample in samples {
@@ -419,109 +387,32 @@ fn report_tensor_loss(model: Model, weights: &Tensors, samples: &[Sample], mappi
     }
 }
 
-/// The LayerNorms of EdgeFace whose scale and shift fold into the layer
-/// after them: `(norm prefix, consumer prefix)`. The stem's LayerNorm
-/// feeds the `f32` stream and stays.
-fn folded_norms(f32s: &Tensors) -> Vec<(String, String)> {
-    let mut pairs = Vec::new();
-    for name in &f32s.names {
-        // The head first: its name also ends in `.norm.weight`.
-        if name == "head.norm.weight" {
-            pairs.push(("head.norm".to_string(), "head.fc".to_string()));
-        } else if let Some(prefix) = name.strip_suffix(".norm.weight") {
-            pairs.push((format!("{prefix}.norm"), format!("{prefix}.mlp.fc1")));
-        } else if let Some(prefix) = name.strip_suffix(".norm_xca.weight") {
-            pairs.push((format!("{prefix}.norm_xca"), format!("{prefix}.xca.qkv")));
-        } else if let Some(prefix) = name.strip_suffix(".downsample.0.weight") {
-            pairs.push((
-                format!("{prefix}.downsample.0"),
-                format!("{prefix}.downsample.1"),
-            ));
-        }
-    }
-    // Every consumer must exist: a typo here would silently skip a fold.
-    for (norm, consumer) in &pairs {
-        assert!(
-            f32s.by_name.contains_key(&format!("{consumer}.weight")),
-            "{norm} folds into missing {consumer}"
-        );
-    }
-    pairs
-}
-
-/// `weight` and `bias` of the layer after a LayerNorm with `gamma` and
-/// `beta`, with the LayerNorm's affine part folded in:
-/// `W(gamma * x + beta) + b = (W diag gamma) x + (W beta + b)`. The
-/// input channel is the innermost dimension of the weight (`OI`, `OHWI`).
-fn fold_affine(weight: &[f32], bias: &[f32], gamma: &[f32], beta: &[f32]) -> (Vec<f32>, Vec<f32>) {
-    let channels = gamma.len();
-    let out_channels = bias.len();
-    let per_output = weight.len() / out_channels;
-    let mut folded = vec![0.0f32; weight.len()];
-    let mut folded_bias = bias.to_vec();
-    for o in 0..out_channels {
-        for (index, &w) in weight[o * per_output..(o + 1) * per_output]
-            .iter()
-            .enumerate()
-        {
-            let i = index % channels;
-            folded[o * per_output + index] = w * gamma[i];
-            folded_bias[o] += w * beta[i];
-        }
-    }
-    (folded, folded_bias)
-}
-
-/// The integer file: every weight quantized per output channel (with the
-/// LayerNorm affines folded in first), every other tensor copied, and the
-/// `q.<name>` mappings.
-fn quantize_file(model: Model, f32s: &Tensors, mappings: &Mappings) -> Result<Writer> {
-    let folds: BTreeMap<String, String> = match model {
-        Model::Edgeface => folded_norms(f32s)
-            .into_iter()
-            .map(|(norm, consumer)| (consumer, norm))
-            .collect(),
-        Model::Yunet => BTreeMap::new(),
-    };
-    // The biases of folded layers are written with their weights; the
-    // originals are skipped when the file order reaches them.
-    let folded_biases: std::collections::BTreeSet<String> =
-        folds.keys().map(|base| format!("{base}.bias")).collect();
+/// The integer file: every weight quantized per output channel, every
+/// other tensor copied, and the `q.<name>` mappings.
+fn quantize_file(f32s: &Tensors, mappings: &Mappings) -> Result<Writer> {
     let mut writer = Writer::new();
     for name in &f32s.names {
         let tensor = f32s.tensor(name);
-        if folded_biases.contains(name) {
-            continue;
-        }
         let Some(base) = name.strip_suffix(".weight") else {
             writer.add_f32(name, &tensor.layout, &tensor.shape, &tensor.f32s)?;
             continue;
         };
-        let (values, bias) = match folds.get(base) {
-            Some(norm) => {
-                let bias = &f32s.tensor(&format!("{base}.bias")).f32s;
-                let gamma = &f32s.tensor(&format!("{norm}.weight")).f32s;
-                let beta = &f32s.tensor(&format!("{norm}.bias")).f32s;
-                let (weight, bias) = fold_affine(&tensor.f32s, bias, gamma, beta);
-                (weight, Some(bias))
-            }
-            None => (tensor.f32s.clone(), None),
-        };
+        let values = &tensor.f32s;
         let mut data = vec![0i8; values.len()];
         let (scales, layout) = match tensor.layout.as_str() {
             "OHWI" | "OI" => {
                 let channel_len: usize = tensor.shape[1..].iter().product();
                 let mut scales = vec![0.0f32; tensor.shape[0]];
-                quantize_weight_rows(&values, channel_len, &mut data, &mut scales);
+                quantize_weight_rows(values, channel_len, &mut data, &mut scales);
                 (scales, "O")
             }
             "HWC" => {
                 let channels = tensor.shape[2];
                 let mut scales = vec![0.0f32; channels];
-                quantize_weight_channels(&values, channels, &mut data, &mut scales);
+                quantize_weight_channels(values, channels, &mut data, &mut scales);
                 (scales, "C")
             }
-            // LayerNorm weights and the like: not a matrix, stays f32.
+            // Anything that is not a matrix stays f32.
             _ => {
                 writer.add_f32(name, &tensor.layout, &tensor.shape, &tensor.f32s)?;
                 continue;
@@ -537,9 +428,6 @@ fn quantize_file(model: Model, f32s: &Tensors, mappings: &Mappings) -> Result<Wr
             data: data.iter().map(|&q| q as u8).collect(),
         })?;
         writer.add_f32(&format!("{base}.scales"), layout, &[scales.len()], &scales)?;
-        if let Some(bias) = bias {
-            writer.add_f32(&format!("{base}.bias"), "O", &[bias.len()], &bias)?;
-        }
     }
     for (name, (quants, wide)) in mappings {
         let pairs: Vec<f32> = quants
@@ -596,45 +484,10 @@ impl SnrTable {
     }
 }
 
-/// Compare the integer recognizer with the `f32` one on every sample.
-fn report_edgeface(f32s: &Tensors, i8s: &Tensors, samples: &[Sample]) {
-    let mut scratch = vec![0.0f32; edgeface::SCRATCH_LEN];
-    let mut runner = Runner::new();
-    let mut reference = vec![0.0f32; edgeface::EMBEDDING_LEN];
-    let mut embedding = vec![0.0f32; edgeface::EMBEDDING_LEN];
-    let mut table = SnrTable::new();
-    let (mut worst_cosine, mut sum_cosine) = (1.0f32, 0.0f32);
-    for sample in samples {
-        let mut traced: Vec<(String, Vec<f32>)> = Vec::new();
-        edgeface::forward_traced(
-            f32s,
-            &sample.f32s,
-            &mut scratch,
-            &mut reference,
-            |name, _, values| {
-                traced.push((name.to_string(), values.to_vec()));
-            },
-        );
-        // The integer pass traces the same blocks under the same names,
-        // except the LayerNorm outputs it folds away; match by name.
-        runner.forward_traced(i8s, &sample.i8s, &mut embedding, |name, _, values| {
-            if let Some(index) = traced.iter().position(|(expected, _)| expected == name) {
-                table.record(index, name, snr_db(&traced[index].1, values));
-            }
-        });
-        let cosine = cosine(&reference, &embedding);
-        worst_cosine = worst_cosine.min(cosine);
-        sum_cosine += cosine;
-        if cosine < 0.99 {
-            println!("{}: cosine {cosine:.4}", sample.name);
-        }
-    }
-    let worst = table.print();
-    println!(
-        "embedding cosine int8 vs f32: worst {worst_cosine:.4}, mean {:.4} over {} samples; worst block SNR {worst:.1} dB",
-        sum_cosine / samples.len() as f32,
-        samples.len()
-    );
+/// The part of `buffer` from its first 16-byte boundary.
+fn aligned<T>(buffer: &mut [T]) -> &mut [T] {
+    let skip = buffer.as_ptr().align_offset(16);
+    &mut buffer[skip..]
 }
 
 /// Compare the integer detector with the `f32` one on every sample.
@@ -647,7 +500,7 @@ fn report_yunet(f32s: &Tensors, i8s: &Tensors, samples: &[Sample]) {
     let model = yunet::int8::Model::compile(
         i8s,
         yunet::int8::ModelStorage {
-            weights: crate::recognizer::aligned(&mut padded),
+            weights: aligned(&mut padded),
             plans: &mut plans,
         },
     );
@@ -663,10 +516,7 @@ fn report_yunet(f32s: &Tensors, i8s: &Tensors, samples: &[Sample]) {
         let reference = decode(&heads, DEFAULT_SCORE_THRESHOLD, DEFAULT_NMS_THRESHOLD);
         let heads = model.forward_traced(
             &sample.i8s,
-            yunet::int8::Scratch::new(
-                crate::recognizer::aligned(&mut scratch_i16),
-                &mut scratch_f32,
-            ),
+            yunet::int8::Scratch::new(aligned(&mut scratch_i16), &mut scratch_f32),
             |name, _, values| {
                 if let Some(index) = traced.iter().position(|(expected, _)| expected == name) {
                     table.record(index, name, snr_db(&traced[index].1, values));
@@ -712,12 +562,4 @@ fn report_yunet(f32s: &Tensors, i8s: &Tensors, samples: &[Sample]) {
     println!(
         "detections agree on {agree} of {compared} frames; worst centre {worst_centre:.2} px, size {worst_size:.2} px, landmark {worst_landmark:.2} px, score {worst_score:.3} (detector pixels); worst node SNR {worst:.1} dB"
     );
-    let _ = Shape::new(0, 0, 0);
-}
-
-/// Cosine similarity.
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-    let norm = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    dot / (norm(a) * norm(b))
 }

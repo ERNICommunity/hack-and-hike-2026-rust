@@ -3,17 +3,17 @@
 Three facekit commands measure or tune the pipeline on photos of real
 faces, and two more prepare those photos. The photos are **not part of
 the repository**: they are 290 MB, and anyone can download them again.
-This page says how. Everything else (the ONNX models, the pair protocol,
-the list of portraits) is committed.
+This page says how. Everything else (the models, the pair protocol, the
+list of portraits) is committed.
 
-You only need the photos to regenerate the integer models or the impostor
-bank, or to measure accuracy. Building and flashing the firmware does not
+You only need the photos to regenerate the integer detector or the
+impostor bank, or to measure accuracy. Building and flashing the firmware does not
 need them: the generated files are committed in `assets/models/`.
 
 | Folder | What | Size | Needed by |
 | --- | --- | --- | --- |
 | `portraits/` | 28 public-domain NASA portraits and crew photos | 14 MB | `facekit crops` |
-| `calib/crops/`, `calib/frames/` | the faces of those photos, as the two networks see them: the calibration set | 9 MB | `facekit quantize` |
+| `calib/crops/`, `calib/frames/` | the faces of those photos, as aligned crops and as camera frames: the detector's calibration set is the frames | 9 MB | `facekit quantize` |
 | `lfw/lfw_funneled/` | Labeled Faces in the Wild: 13,233 photos of 5,749 people | 266 MB | `facekit eval`, `facekit bank`, `facekit calibrate` |
 
 When one of these folders is missing or empty, the command stops with a
@@ -62,14 +62,14 @@ ls data/calib/frames | wc -l    # 64
 ```
 
 This finds every face in every portrait and writes it twice:
-`data/calib/crops/` holds the 112x112 aligned faces the recognizer is
-calibrated on, `data/calib/frames/` the 320x240 frames the detector is
-calibrated on. Then the integer models can be made:
+`data/calib/crops/` holds the 112x112 aligned faces, `data/calib/frames/`
+the 320x240 frames the detector is calibrated on. Then the integer
+detector can be made (the recognizer comes quantized from Espressif and
+needs no calibration):
 
 ```bash
 F=../../crates/vision/tests/fixtures
 A=../../assets/models
-cargo run --release -- quantize edgeface $F/edgeface_xxs.f32.fkb data/calib/crops $A/edgeface_xxs.int8.fkb
 cargo run --release -- quantize yunet $F/yunet.f32.fkb data/calib/frames $A/yunet.int8.fkb
 ```
 
@@ -90,15 +90,17 @@ committed; [`lfw/README.md`](lfw/README.md) describes it and says where
 the files come from. Then:
 
 ```bash
-F=../../crates/vision/tests/fixtures
 A=../../assets/models
 M=models/face_detection_yunet_2026may.onnx
-cargo run --release -- eval $M $F/edgeface_xxs.f32.fkb data/lfw/lfw_funneled data/lfw/pairs.txt --int8 $A/edgeface_xxs.int8.fkb
-cargo run --release -- bank $M $F/edgeface_xxs.f32.fkb data/lfw/lfw_funneled $A/impostors.fkb --int8 $A/edgeface_xxs.int8.fkb --count 200
-cargo run --release -- calibrate $M $F/edgeface_xxs.f32.fkb data/lfw/lfw_funneled $A/impostors.fkb --int8 $A/edgeface_xxs.int8.fkb
+cargo run --release -- eval $M $A/mfn_s8_v1.fkb data/lfw/lfw_funneled data/lfw/pairs.txt --pick centre
+cargo run --release -- bank $M $A/mfn_s8_v1.fkb data/lfw/lfw_funneled $A/impostors.fkb --count 200
+cargo run --release -- calibrate $M $A/mfn_s8_v1.fkb data/lfw/lfw_funneled $A/impostors.fkb
 ```
 
-Add `--limit 600` to `eval` for a quick check on the first 600 pairs.
+Add `--limit 600` to `eval` for a quick check on the first 600 pairs,
+and `--reference models/human_face_feat_mfn_s8_v1.espdl` to run the
+`.espdl` interpreter beside the firmware's recognizer (slower: about
+two and a half minutes for all of LFW on twelve threads).
 
 Any folder with one subfolder of `jpg` photos per person works in place
 of `lfw_funneled` for `bank` and `calibrate`; `eval` also needs a pair

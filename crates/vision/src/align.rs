@@ -12,12 +12,12 @@ use core::ops::Range;
 
 use crate::{
     image::{RgbImage, RgbImageMut},
-    nn::edgeface::{INPUT_SIZE, int8::INPUT_QUANT},
     warp::{self, ARCFACE_TEMPLATE_112, Similarity},
 };
 
-/// Rows and columns of the aligned crop.
-pub const CROP_SIZE: usize = INPUT_SIZE;
+/// Rows and columns of the aligned crop: the size of the ArcFace
+/// template, and of the recognizer's input (`nn::mfn`).
+pub const CROP_SIZE: usize = 112;
 
 /// Cut the face with `landmarks` (in pixels of `source`) out of `source`
 /// into `crop`, a `CROP_SIZE` x `CROP_SIZE` RGB image. Returns the
@@ -57,49 +57,4 @@ pub fn source_region(
 ) -> Option<(Range<usize>, Range<usize>)> {
     let crop_to_source = warp::fit(landmarks, &ARCFACE_TEMPLATE_112)?.inverse()?;
     warp::footprint(&crop_to_source, CROP_SIZE, CROP_SIZE, width, height)
-}
-
-/// The recognizer's input from an aligned crop: `(byte / 255 - 0.5) / 0.5`
-/// per channel, R, G, B, channels-last, `CROP_SIZE * CROP_SIZE * 3`
-/// values.
-///
-/// # Panics
-///
-/// When the crop or the buffer has the wrong size.
-pub fn recognizer_input(crop: &RgbImage<'_>, input: &mut [f32]) {
-    assert_eq!(
-        (crop.width(), crop.height()),
-        (CROP_SIZE, CROP_SIZE),
-        "crop size"
-    );
-    let input = &mut input[..CROP_SIZE * CROP_SIZE * 3];
-    for (value, &byte) in input.iter_mut().zip(crop.data()) {
-        *value = (f32::from(byte) / 255.0 - 0.5) / 0.5;
-    }
-}
-
-/// The integer recognizer's input from an aligned crop: the same values
-/// as [`recognizer_input`], quantized with `edgeface::int8::INPUT_QUANT`.
-///
-/// A byte has 256 values, so the formula runs 256 times into a table and
-/// the 37,632 values of the crop are looked up. On the board a division
-/// is a software routine: the table saves 37,000 of them.
-///
-/// # Panics
-///
-/// When the crop or the buffer has the wrong size.
-pub fn recognizer_input_i8(crop: &RgbImage<'_>, input: &mut [i8]) {
-    assert_eq!(
-        (crop.width(), crop.height()),
-        (CROP_SIZE, CROP_SIZE),
-        "crop size"
-    );
-    let mut table = [0i8; 256];
-    for byte in 0..=255u8 {
-        table[usize::from(byte)] = INPUT_QUANT.quantize((f32::from(byte) / 255.0 - 0.5) / 0.5);
-    }
-    let input = &mut input[..CROP_SIZE * CROP_SIZE * 3];
-    for (value, &byte) in input.iter_mut().zip(crop.data()) {
-        *value = table[usize::from(byte)];
-    }
 }

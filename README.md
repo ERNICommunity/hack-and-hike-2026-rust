@@ -865,8 +865,8 @@ Face Unlock shows three patterns to copy:
 
 **Face ID** runs two neural networks on the board: a detector (YuNet)
 finds the face and its eyes, nose and mouth corners, and a recognizer
-(EdgeFace-XXS) turns the face into 512 numbers that are compared with the
-people it has learned. Put it on the board like any other application:
+(Espressif's MFN_S8_V1) turns the face into 512 numbers that are compared
+with the people it has learned. Put it on the board like any other application:
 
 ```bash
 cargo dist --bin face_id
@@ -916,7 +916,8 @@ preview stays live while the networks compute. The parts:
 | How to get the photos that tool works on (not in the repository) | [tools/facekit/data/README.md](tools/facekit/data/README.md) |
 | Design, accuracy, and what the board taught | [docs/face_id/](docs/face_id/README.md), [docs/face_id/performance.md](docs/face_id/performance.md) |
 
-EdgeFace-XXS is licensed **CC BY-NC-SA 4.0**: no commercial use.
+Both models are MIT-licensed: MFN_S8_V1 by Espressif, YuNet by Shiqi Yu
+(`assets/models/README.md` has the licence texts).
 
 **Demo** is the largest application. It has Network, IMU, Microphone,
 Speaker, Camera, Proximity (with ambient light), Settings (backlight, kept in

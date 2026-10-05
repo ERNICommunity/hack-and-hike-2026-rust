@@ -7,7 +7,8 @@ mod common;
 
 use common::Tensors;
 use hack_and_hike_vision::{
-    align::{CROP_SIZE, align_face, recognizer_input},
+    align::{CROP_SIZE, align_face},
+    blob::Blob,
     detect::{
         CONTENT_HEIGHT, CONTENT_WIDTH, DEFAULT_NMS_THRESHOLD, DEFAULT_SCORE_THRESHOLD, DOWNSCALE,
         Face, decode, detector_input,
@@ -16,7 +17,7 @@ use hack_and_hike_vision::{
     image::{
         GrayImage, GrayImageMut, Rgb565Frame, RgbImage, RgbImageMut, downscale_to_rgb, rgb_to_gray,
     },
-    nn::{edgeface, yunet},
+    nn::yunet,
     quality::laplacian_variance,
     warp::ARCFACE_TEMPLATE_112,
 };
@@ -25,10 +26,9 @@ use hack_and_hike_vision::{
 const YUNET_WEIGHTS: &[u8] = include_bytes!("fixtures/yunet.f32.fkb");
 /// The detector's golden run on the fixture face.
 const YUNET_GOLDEN: &[u8] = include_bytes!("fixtures/yunet.golden.fkb");
-/// The recognizer's weights.
-const EDGEFACE_WEIGHTS: &[u8] = include_bytes!("fixtures/edgeface_xxs.f32.fkb");
-/// The recognizer's golden run on the hand-cut crop of the same face.
-const EDGEFACE_GOLDEN: &[u8] = include_bytes!("fixtures/edgeface_xxs.golden.fkb");
+/// The recognizer's golden run on the hand-cut crop of the same face
+/// (`facekit golden-espdl`).
+const MFN_GOLDEN: &[u8] = include_bytes!("fixtures/mfn.golden.fkb");
 /// The fixture face at the board's frame size.
 const PHOTO: &[u8] = include_bytes!("fixtures/face_320x240.jpg");
 
@@ -350,13 +350,14 @@ fn the_board_path_from_frame_to_embedding() {
 
     // The recognizer on our crop, against its golden run on the hand-cut
     // crop of the same photo.
-    let weights = Tensors::load(EDGEFACE_WEIGHTS);
-    let mut recognizer_in = vec![0.0f32; CROP_SIZE * CROP_SIZE * 3];
-    recognizer_input(&crop_view, &mut recognizer_in);
-    let mut scratch = vec![0.0f32; edgeface::SCRATCH_LEN];
-    let mut embedding = vec![0.0f32; edgeface::EMBEDDING_LEN];
-    edgeface::forward(&weights, &recognizer_in, &mut scratch, &mut embedding);
-    let golden_embedding = Tensors::load(EDGEFACE_GOLDEN).flat("embedding").to_vec();
+    let embedding = common::mfn_embedding(&crop_view);
+    let golden = Blob::parse(MFN_GOLDEN).expect("the golden file");
+    let golden_embedding: Vec<f32> = golden
+        .get("embedding")
+        .expect("embedding")
+        .i8s()
+        .map(f32::from)
+        .collect();
     let similarity = cosine(&embedding, &golden_embedding);
     println!("embedding of the aligned crop vs the hand-cut crop: cosine {similarity:.3}");
     assert!(similarity > 0.8, "cosine {similarity}");
@@ -370,12 +371,7 @@ fn the_board_path_from_frame_to_embedding() {
         background[y * CROP_SIZE * 3..(y + 1) * CROP_SIZE * 3]
             .copy_from_slice(&row[..CROP_SIZE * 3]);
     }
-    recognizer_input(
-        &RgbImage::new(&background, CROP_SIZE, CROP_SIZE),
-        &mut recognizer_in,
-    );
-    let mut other = vec![0.0f32; edgeface::EMBEDDING_LEN];
-    edgeface::forward(&weights, &recognizer_in, &mut scratch, &mut other);
+    let other = common::mfn_embedding(&RgbImage::new(&background, CROP_SIZE, CROP_SIZE));
     let unrelated = cosine(&other, &golden_embedding);
     println!("embedding of a background patch vs the face: cosine {unrelated:.3}");
     assert!(unrelated < similarity - 0.3);

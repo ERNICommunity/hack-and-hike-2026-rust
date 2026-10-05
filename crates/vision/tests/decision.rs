@@ -3,34 +3,27 @@
 //! `facekit bank` built from 200 strangers.
 //!
 //! The other tests check the pieces. This one checks that they fit: the
-//! integer recognizer's embeddings, the bank's `i8` form, and the
+//! recognizer's embeddings, the bank's `i8` form, and the
 //! thresholds `facekit calibrate` chose.
 
 mod common;
 
-use common::Tensors;
 use hack_and_hike_vision::{
-    align::{CROP_SIZE, recognizer_input_i8},
+    align::CROP_SIZE,
     blob::Blob,
     gallery::{Embedding, Fusion, Gallery, ImpostorBank, Thresholds},
     image::RgbImage,
-    nn::edgeface,
 };
 
-/// The integer weights of the recognizer.
-const WEIGHTS: &[u8] = include_bytes!("../../../assets/models/edgeface_xxs.int8.fkb");
-/// The golden run, for its `image_rgb`: the fixture face crop.
-const GOLDEN: &[u8] = include_bytes!("fixtures/edgeface_xxs.golden.fkb");
 /// The impostor bank: 200 strangers from Labeled Faces in the Wild.
 const IMPOSTORS: &[u8] = include_bytes!("../../../assets/models/impostors.fkb");
 
-/// The embedding of a 112x112 RGB crop, through the integer recognizer.
-fn embed(weights: &Tensors, crop: &RgbImage<'_>) -> Embedding {
-    let mut input = vec![0i8; CROP_SIZE * CROP_SIZE * 3];
-    recognizer_input_i8(crop, &mut input);
-    let mut raw = vec![0.0f32; edgeface::EMBEDDING_LEN];
-    common::Runner::new().forward(weights, &input, &mut raw);
-    Embedding::from_raw(&raw)
+/// The embedding of the fixture face, through the recognizer as the
+/// board runs it.
+fn fixture_embedding() -> Embedding {
+    let rgb = common::fixture_face();
+    let crop = RgbImage::new(&rgb, CROP_SIZE, CROP_SIZE);
+    Embedding::from_raw(&common::mfn_embedding(&crop))
 }
 
 /// The bank as the firmware reads it: `i8` values with one scale.
@@ -73,12 +66,7 @@ fn the_bank_holds_unit_vectors_of_strangers() {
 
 #[test]
 fn the_fixture_face_is_recognized_and_a_stranger_is_not() {
-    let mut weights = Tensors::load(WEIGHTS);
-    weights.pack_for_lanes();
-    let golden = Tensors::load(GOLDEN);
-    let (dims, image) = golden.u8_tensor("image_rgb");
-    let crop = RgbImage::new(image, dims[1], dims[0]);
-    let face = embed(&weights, &crop);
+    let face = fixture_embedding();
 
     let (values, scale) = bank(IMPOSTORS);
     let impostors = ImpostorBank::from_i8(values, scale);
@@ -124,12 +112,7 @@ fn the_fixture_face_is_recognized_and_a_stranger_is_not() {
 
 #[test]
 fn fusion_of_one_face_leaves_it_alone() {
-    let mut weights = Tensors::load(WEIGHTS);
-    weights.pack_for_lanes();
-    let golden = Tensors::load(GOLDEN);
-    let (dims, image) = golden.u8_tensor("image_rgb");
-    let crop = RgbImage::new(image, dims[1], dims[0]);
-    let face = embed(&weights, &crop);
+    let face = fixture_embedding();
 
     // Three frames of the same still face: the average must be the face.
     let mut fusion = Fusion::new();

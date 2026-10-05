@@ -61,7 +61,10 @@ impl Buf<'_> {
     }
 
     fn u32(&self, at: usize) -> Result<u32> {
-        let b = self.0.get(at..at + 4).context("past the end of the model")?;
+        let b = self
+            .0
+            .get(at..at + 4)
+            .context("past the end of the model")?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
@@ -70,7 +73,10 @@ impl Buf<'_> {
     }
 
     fn i64(&self, at: usize) -> Result<i64> {
-        let b = self.0.get(at..at + 8).context("past the end of the model")?;
+        let b = self
+            .0
+            .get(at..at + 8)
+            .context("past the end of the model")?;
         Ok(i64::from_le_bytes(b.try_into()?))
     }
 }
@@ -333,7 +339,10 @@ impl Graph {
     /// When the file cannot be read, is encrypted, or does not parse.
     pub fn read(path: &Path) -> Result<Self> {
         let data = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        ensure!(data.len() > 16 && &data[..4] == b"EDL2", "not an EDL2 model");
+        ensure!(
+            data.len() > 16 && &data[..4] == b"EDL2",
+            "not an EDL2 model"
+        );
         let mode = u32::from_le_bytes(data[4..8].try_into()?);
         ensure!(mode == 0, "the model is encrypted (mode {mode})");
         let len = u32::from_le_bytes(data[8..12].try_into()?) as usize;
@@ -390,7 +399,9 @@ impl Graph {
                 let value = match attribute.i32_or(3, 0)? {
                     2 => Attribute::Int(attribute.i64_or(5, 0)?),
                     7 => Attribute::Ints(attribute.i64s(11)?),
-                    3 => Attribute::Text(String::from_utf8_lossy(&attribute.bytes(6, 1)?).into_owned()),
+                    3 => Attribute::Text(
+                        String::from_utf8_lossy(&attribute.bytes(6, 1)?).into_owned(),
+                    ),
                     _ => Attribute::Other,
                 };
                 attributes.insert(name, value);
@@ -477,8 +488,14 @@ impl Graph {
                     Map { data, ..x.clone() }
                 }
                 "Add" => {
-                    let (a, b) = (&maps[node.inputs[0].as_str()], &maps[node.inputs[1].as_str()]);
-                    let (ea, eb) = (self.exponent(&node.inputs[0])?, self.exponent(&node.inputs[1])?);
+                    let (a, b) = (
+                        &maps[node.inputs[0].as_str()],
+                        &maps[node.inputs[1].as_str()],
+                    );
+                    let (ea, eb) = (
+                        self.exponent(&node.inputs[0])?,
+                        self.exponent(&node.inputs[1])?,
+                    );
                     let e = ea.min(eb);
                     let data = a
                         .data
@@ -493,8 +510,14 @@ impl Graph {
                 }
                 "Concat" => {
                     ensure!(node.int("axis")? == 3, "a Concat over channels");
-                    let (a, b) = (&maps[node.inputs[0].as_str()], &maps[node.inputs[1].as_str()]);
-                    let (ea, eb) = (self.exponent(&node.inputs[0])?, self.exponent(&node.inputs[1])?);
+                    let (a, b) = (
+                        &maps[node.inputs[0].as_str()],
+                        &maps[node.inputs[1].as_str()],
+                    );
+                    let (ea, eb) = (
+                        self.exponent(&node.inputs[0])?,
+                        self.exponent(&node.inputs[1])?,
+                    );
                     let c = a.c + b.c;
                     let mut data = Vec::with_capacity(a.h * a.w * c);
                     for p in 0..a.h * a.w {
@@ -505,7 +528,11 @@ impl Graph {
                             data.push(requantize(i64::from(v), eb - out_exp));
                         }
                     }
-                    Map { c, data, ..a.clone() }
+                    Map {
+                        c,
+                        data,
+                        ..a.clone()
+                    }
                 }
                 other => bail!("operator {other} is not supported"),
             };
@@ -536,7 +563,10 @@ impl Graph {
         let channels = if depthwise { ci } else { co };
         let filters = unpack(weight, group)?;
         let biases = bias.i32s();
-        let (oh, ow) = ((x.h + 2 * pad - kh) / stride + 1, (x.w + 2 * pad - kw) / stride + 1);
+        let (oh, ow) = (
+            (x.h + 2 * pad - kh) / stride + 1,
+            (x.w + 2 * pad - kw) / stride + 1,
+        );
         let shift = in_exp + weight.exponent - out_exp;
         let mut data = vec![0i8; oh * ow * channels];
         for oy in 0..oh {
@@ -544,11 +574,13 @@ impl Graph {
                 for o in 0..channels {
                     let mut sum = i64::from(biases[o]);
                     for ky in 0..kh {
-                        let Some(iy) = (oy * stride + ky).checked_sub(pad).filter(|&y| y < x.h) else {
+                        let Some(iy) = (oy * stride + ky).checked_sub(pad).filter(|&y| y < x.h)
+                        else {
                             continue;
                         };
                         for kx in 0..kw {
-                            let Some(ix) = (ox * stride + kx).checked_sub(pad).filter(|&v| v < x.w) else {
+                            let Some(ix) = (ox * stride + kx).checked_sub(pad).filter(|&v| v < x.w)
+                            else {
                                 continue;
                             };
                             let pixel = &x.data[(iy * x.w + ix) * x.c..];
@@ -729,7 +761,10 @@ fn convolution(graph: &Graph, index: usize) -> Result<(Layer, String)> {
     let mut end = conv_out.clone();
     let users = consumers(graph);
 
-    if let [user] = users.get(conv_out.as_str()).map(Vec::as_slice).unwrap_or(&[])
+    if let [user] = users
+        .get(conv_out.as_str())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
         && graph.nodes[*user].op == "PRelu"
     {
         let prelu = &graph.nodes[*user];
@@ -737,7 +772,10 @@ fn convolution(graph: &Graph, index: usize) -> Result<(Layer, String)> {
         let out_exp = graph.exponent(&prelu.outputs[0])?;
         let positive = conv_exp - out_exp;
         let negative = out_exp - (conv_exp + alpha.exponent);
-        ensure!((0..=1).contains(&positive), "a PReLU positive shift of {positive}");
+        ensure!(
+            (0..=1).contains(&positive),
+            "a PReLU positive shift of {positive}"
+        );
         ensure!(negative >= 0, "a PReLU left shift of {}", -negative);
         layer.prelu = Some((alpha.i8s(), vec![[positive, negative]; groups]));
         end = prelu.outputs[0].clone();
@@ -821,7 +859,11 @@ pub fn import(model: &Path, out: &Path) -> Result<()> {
             "a residual at {name}"
         );
     }
-    ensure!(residual.len() == 12, "{} residual adds, expected 12", residual.len());
+    ensure!(
+        residual.len() == 12,
+        "{} residual adds, expected 12",
+        residual.len()
+    );
 
     let mut writer = Writer::new();
     let input_exponent = graph.input_exponent()?;
@@ -837,7 +879,12 @@ pub fn import(model: &Path, out: &Path) -> Result<()> {
     for (layer, _) in &layers {
         let channels = layer.bias.len();
         let groups = channels / 16;
-        let i32s = |values: &[i32]| values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let i32s = |values: &[i32]| {
+            values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
+        };
         writer.add(BlobTensor {
             name: format!("{}.weight", layer.name),
             layout: "N16HWC16".into(),
@@ -907,7 +954,10 @@ pub fn import(model: &Path, out: &Path) -> Result<()> {
             layer
                 .prelu
                 .as_ref()
-                .map(|(_, s)| format!(", PReLU {:?}", dedup(&s.iter().map(|p| p[0] * 100 + p[1]).collect::<Vec<_>>())))
+                .map(|(_, s)| format!(
+                    ", PReLU {:?}",
+                    dedup(&s.iter().map(|p| p[0] * 100 + p[1]).collect::<Vec<_>>())
+                ))
                 .unwrap_or_default()
         );
     }

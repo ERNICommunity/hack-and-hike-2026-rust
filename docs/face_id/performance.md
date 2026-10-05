@@ -8,16 +8,29 @@ each network on a test vector from the computer and compared the
 outputs bit for bit; that firmware is no longer in the repository, and
 the last section says how to build one again. From `faceid-10` on, the
 numbers come from the application's own log: its `self-test:`,
-`profile:` and `cycle:` lines.
+`profile:` and `cycle:` lines. The 8-bit kernels of `faceid-16` have a
+benchmark binary of their own, `src/bin/mfn_bench.rs`, whose probes
+check single instructions and whose runs check each kernel against the
+scalar model.
+
+The sections about the builds up to `faceid-15` name the code of
+EdgeFace-XXS (`nn::edgeface`, `edgeface::int8`), which was removed with
+it; it is in the git history up to the commit that introduced
+`faceid-16`.
 
 ## Where it stands
 
-| | First run | Smoke test | `faceid-12` | `faceid-13` |
-| --- | --- | --- | --- | --- |
-| Recognizer (EdgeFace-XXS), one face | 8,842 ms | 729 ms | 472 ms | **388 ms** |
-| Detector (YuNet, 96x64), one frame | 1,568 ms | 330 ms | 97 ms | **99 ms** |
-| Outputs against the computer | bit-identical | bit-identical | bit-identical | bit-identical |
-| LFW accuracy, integer recognizer | 99.37 % | 99.42 % | 99.42 % | 99.42 % |
+| | First run | Smoke test | `faceid-12` | `faceid-13` | `faceid-16` |
+| --- | --- | --- | --- | --- | --- |
+| Recognizer, one face | 8,842 ms | 729 ms | 472 ms | 388 ms | **432 ms** |
+| Detector (YuNet, 96x64), one frame | 1,568 ms | 330 ms | 97 ms | 99 ms | **99 ms** |
+| Outputs against the computer | bit-identical | bit-identical | bit-identical | bit-identical | bit-identical |
+| LFW accuracy, integer recognizer | 99.37 % | 99.42 % | 99.42 % | 99.42 % | 99.27 % |
+
+Up to `faceid-15` the recognizer was EdgeFace-XXS (CC BY-NC-SA 4.0: no
+commercial use); since `faceid-16` it is Espressif's MFN_S8_V1 (MIT),
+twice the products of EdgeFace-XXS, on kernels of its own (`nn::s8`).
+See "What `faceid-16` changes" below.
 
 The networks alone on CPU0: the first two columns from the smoke test,
 the others from the self-test when the application starts.
@@ -32,13 +45,13 @@ made the recognizer's kernels faster, with the same numbers.
 In the application they take longer, because the camera and the screen
 share CPU0 with them. Measured on 2026-09-28 (details further down):
 
-| In the application | `faceid-10` | `faceid-11` | `faceid-12` | `faceid-13` |
-| --- | --- | --- | --- | --- |
-| A cycle without a face | 505 ms, of which the detector 485 ms | 430 ms, of which the detector 406 ms | 170 ms, of which the detector 147 ms | **173 ms**, of which the detector 151 ms |
-| A cycle that recognizes | 1,710 to 1,750 ms, of which the recognizer 1,095 ms | 1,395 to 1,456 ms, of which the recognizer 904 ms | 929 to 983 ms, of which the recognizer 712 ms | **850 to 903 ms**, of which the recognizer 621 ms |
-| From a known face to its name | one cycle | one cycle | one cycle | one cycle |
-| Dropped camera frames | 256 in 81 s, with stalls of 100 ms: a third of all time | 6 in 52 s, no stalls | 4 in 30 s, no stalls | 2 in about 35 s, no stalls |
-| The stream task's share of CPU0 | not measured | 35 percent | 23 percent | 24 percent |
+| In the application | `faceid-10` | `faceid-11` | `faceid-12` | `faceid-13` | `faceid-16` |
+| --- | --- | --- | --- | --- | --- |
+| A cycle without a face | 505 ms, of which the detector 485 ms | 430 ms, of which the detector 406 ms | 170 ms, of which the detector 147 ms | 173 ms, of which the detector 151 ms | **144 to 195 ms**, of which the detector 129 to 177 ms |
+| A cycle that recognizes | 1,710 to 1,750 ms, of which the recognizer 1,095 ms | 1,395 to 1,456 ms, of which the recognizer 904 ms | 929 to 983 ms, of which the recognizer 712 ms | 850 to 903 ms, of which the recognizer 621 ms | **894 to 919 ms**, of which the recognizer 654 to 678 ms |
+| From a known face to its name | one cycle | one cycle | one cycle | one cycle | one cycle |
+| Dropped camera frames | 256 in 81 s, with stalls of 100 ms: a third of all time | 6 in 52 s, no stalls | 4 in 30 s, no stalls | 2 in about 35 s, no stalls | none in about 30 s |
+| The stream task's share of CPU0 | not measured | 35 percent | 23 percent | 24 percent | about 24 percent |
 
 Against `faceid-10`, the first build measured in the application, a
 cycle without a face is three times as fast and a cycle that recognizes
@@ -480,6 +493,76 @@ fingerprints are unchanged).
 - **Three visits of the enrolled person**, each named after its first
   frame (score 0.83 to 0.89), and `face gone` a second after each left.
 
+### What `faceid-16` changes: the recognizer becomes MFN_S8_V1
+
+EdgeFace-XXS's weights are licensed CC BY-NC-SA 4.0, which rules out
+commercial use. Espressif's MFN_S8_V1 (a MobileFaceNet from ESP-DL,
+MIT) was the only face recognizer with a permissive licence small enough
+for the board. It comes quantized by Espressif: every tensor `i8` with
+one power-of-two scale. On the computer, with the firmware's own
+detector and alignment, it scores 99.27 % on LFW (EdgeFace-XXS 99.42 %),
+but it needs 221 million products per face, more than twice as many.
+
+On the 16-bit lanes (0.7 cycles per product) its 1x1 layers alone would
+take 600 ms. A benchmark binary (`src/bin/mfn_bench.rs`, builds
+`mfnbench-1` to `-4`) measured the alternative before the port:
+
+| What | Measured |
+| --- | --- |
+| The vector unit's 8-bit mode (`ee.vmulas.s8.qacc`): 16 products per instruction into 20-bit lanes | lanes laid out like the 16-bit ones (lane `i` at bit `20 i`), `ee.srcmb.s8.qacc` floors, a lane saturates beyond 20 bits; MFN_S8_V1's sums stay below 87,000 on every LFW photo |
+| All 1x1 layers of the network, tensors in PSRAM | 345 ms (0.40 cycles per product), 600 ms on the 16-bit lanes |
+| The same layers when their tensors stay in the cache | 0.19 to 0.25 cycles per product |
+| The 14x14 block whole in PSRAM, in bands of 1, 2, 4 and 7 rows | 31, 41, 31, 26 and 21 ms: the 64 KB of 1x1 weights are read once per band |
+| The depthwise 3x3 from PSRAM, from internal RAM | 3.24 and 1.15 cycles per product |
+
+So the port (`nn::mfn` on `nn::s8`) keeps the tensors between blocks in
+PSRAM and runs each block in bands of up to seven rows whose wide
+tensors stay in 70 KB of internal RAM (freed by EdgeFace-XXS's GELU table
+and hidden strip). The stem's 3x3 convolution over three channels runs as
+a 1x1 over the 27 values around each output pixel. Everything is bit for
+bit what `facekit`'s interpreter of the `.espdl` graph computes.
+
+MFN_S8_V1 scores strangers a little higher than EdgeFace-XXS did, so
+`facekit calibrate` moved the accept threshold from 0.35 to 0.40 (five
+of 22,920 strangers let in, as before) and the sure limit to 0.50 on any
+number of frames (a name after the first frame in 98.7 percent of the
+visits, against 95.5).
+
+### What `faceid-16` measured
+
+- **The self-test**: detector 99 ms, recognizer 432 ms alone, 0 scalar
+  fallbacks, the same numbers as the computer.
+- **Internal RAM** holds bands of seven rows (32 + 25 + 12 KB) and ends
+  at 127 of 144 KiB.
+- **Where the recognizer's time goes** (traced, 434 ms):
+
+  | Part | ms |
+  | --- | --- |
+  | stem | 32.3 |
+  | `dconv_23`, then `res_3` x4 (28x28) | 52.2, then 23.3 to 23.8 each |
+  | `dconv_34`, then `res_4` x6 (14x14) | 33.3, then 20.7 to 24.0 each |
+  | `dconv_45`, then `res_5` x2 (7x7) | 57.0, then 6.6 each |
+  | head | 22.4 |
+
+- **In the application**: cycles without a face of 144 to 195 ms (the
+  detector as before), cycles that recognize of 894 to 919 ms with the
+  recognizer at 654 to 678 ms: about 6 percent slower than `faceid-13`.
+- **The enrolled person was named, sure, on the first frame** of a
+  visit (score 0.93 to 0.95), and `face gone` followed when they left.
+
+What is left to gain, by the profile:
+
+- `dconv_45` (57 ms) and `dconv_23` (52 ms) are the stride-2 blocks with
+  the widest rows: their ring holds one band of output rows, so
+  `dconv_45` reads its 64 KB of 1x1 weights seven times. Computing its
+  widened tensor whole once (100 KB, PSRAM) or a taller ring would read
+  them once.
+- The stem (32 ms) gathers its columns in scalar code, one row at a time.
+- The head (22 ms) spends about 10 ms reading the last layer's 256 KB of
+  weights from PSRAM for a single pixel.
+- The depthwise kernel still costs 1.15 cycles per product from internal
+  RAM, mostly its per-pixel setup.
+
 ## What went wrong, and how it was found
 
 Worth keeping, because each cost at least one build.
@@ -588,7 +671,7 @@ each network's output with the computer's, and `profile_recognizer` in
 `face_id.rs` times each block. The third part is what it lacks.
 
 - on the computer, run both integer networks on fixed inputs
-  (`Model::compile` once, then `Model::forward`, in `edgeface::int8` and
+  (`Model::compile` once, then `Model::forward`, in `nn::mfn` and
   `yunet::int8`, with the fixtures of `crates/vision/tests/fixtures/`)
   and write the inputs and outputs to an FKB1 file;
 - on the board, run the same inputs and compare the outputs bit for bit;

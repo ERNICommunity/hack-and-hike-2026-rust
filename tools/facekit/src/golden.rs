@@ -25,8 +25,6 @@ use crate::{
 /// preprocessing and block boundaries.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Preset {
-    /// EdgeFace-XXS: 112x112 RGB, normalized to -1..1.
-    Edgeface,
     /// YuNet: 64x96 BGR, 0..255, with the 80x60 image in the top-left
     /// corner and black padding, as on the board.
     Yunet,
@@ -57,7 +55,6 @@ pub fn run(
     out: &Path,
 ) -> Result<()> {
     let (height, width) = match preset {
-        Preset::Edgeface => (112, 96 + 16),
         Preset::Yunet => (64, 96),
     };
     let rgb = match image {
@@ -112,17 +109,16 @@ pub fn run(
     Ok(())
 }
 
-/// A photo as RGB bytes of the preset's input size. EdgeFace gets the
-/// whole photo scaled to 112x112. YuNet gets it scaled to 80x60 in the
-/// top-left corner of a black 96x64 image, which is what the board does
-/// with its 320x240 frame.
+/// A photo as RGB bytes of the preset's input size. YuNet gets it scaled
+/// to 80x60 in the top-left corner of a black 96x64 image, which is what
+/// the board does with its 320x240 frame. (MFN_S8_V1's golden file comes
+/// from `golden-espdl`.)
 fn load_image(path: &Path, preset: Preset, width: usize, height: usize) -> Result<Vec<u8>> {
     use image::imageops::FilterType;
     let photo = image::open(path)
         .with_context(|| format!("reading {}", path.display()))?
         .to_rgb8();
     let (content_width, content_height) = match preset {
-        Preset::Edgeface => (width, height),
         Preset::Yunet => (80, 60),
     };
     let scaled = image::imageops::resize(
@@ -147,8 +143,6 @@ fn preprocess(preset: Preset, rgb: &[u8], width: usize, height: usize) -> Vec<f3
             let pixel = &rgb[(y * width + x) * 3..(y * width + x) * 3 + 3];
             for (channel, &byte) in pixel.iter().enumerate() {
                 let (plane, value) = match preset {
-                    // RGB planes, -1..1.
-                    Preset::Edgeface => (channel, (f32::from(byte) / 255.0 - 0.5) / 0.5),
                     // BGR planes, 0..255.
                     Preset::Yunet => (2 - channel, f32::from(byte)),
                 };
@@ -165,18 +159,7 @@ fn boundaries(preset: Preset, graph: &GraphProto) -> (Vec<String>, Vec<String>) 
     let mut tensor_names = Vec::new();
     let mut entry_names = Vec::new();
     for node in &graph.node {
-        let segments = names::segments(&node.name);
         let wanted = match preset {
-            Preset::Edgeface => {
-                node.name == "/model/stem/stem.1/Transpose_1"
-                    || (node.op_type == "Add"
-                        && segments.len() == 3
-                        && segments[0].starts_with("stages.")
-                        && segments[1].starts_with("blocks."))
-                    || (node.op_type == "Conv" && node.name.contains("/downsample/"))
-                    || node.op_type == "GlobalAveragePool"
-                    || node.name == "/model/head/norm/LayerNormalization"
-            }
             Preset::Yunet => matches!(node.op_type.as_str(), "MaxPool" | "Add" | "Relu" | "Resize"),
         };
         if wanted {

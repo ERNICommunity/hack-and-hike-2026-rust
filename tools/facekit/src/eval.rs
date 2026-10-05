@@ -83,9 +83,13 @@ pub fn run(
     let missing = photos.len() - embeddings.len();
     println!("{} photos with a face, {missing} without", embeddings.len());
 
-    report("MFN_S8_V1 as the board runs it", &pairs, &embeddings, |e| &e.integer);
+    report("MFN_S8_V1 as the board runs it", &pairs, &embeddings, |e| {
+        &e.integer
+    });
     if recognizer.has_reference() {
-        report("the .espdl interpreter", &pairs, &embeddings, |e| &e.reference);
+        report("the .espdl interpreter", &pairs, &embeddings, |e| {
+            &e.reference
+        });
         let same = embeddings
             .values()
             .filter(|e| e.integer == e.reference)

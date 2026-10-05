@@ -24,7 +24,7 @@
 //!
 //! # How a cycle runs
 //!
-//! The detector takes about 150 ms and the recognizer about 600, and the
+//! The detector takes about 150 ms and the recognizer about 650, and the
 //! camera's buffer overflows within a few milliseconds if nobody empties
 //! it. So the camera and the screen belong to a task on an interrupt
 //! executor (see [`stream`]): it

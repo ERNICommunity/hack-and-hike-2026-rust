@@ -1,13 +1,13 @@
 //! facekit: the developer-machine side of the face ID app.
 //!
-//! It runs on your computer, never on the board. Step by step it grows the
-//! commands that turn the downloaded ONNX models into data the firmware can
-//! use, and that measure how well the pipeline works.
+//! It runs on your computer, never on the board. Its commands turn the
+//! downloaded models into data the firmware can use, and measure how well
+//! the pipeline works.
 //!
 //! ```text
-//! cargo run --release -- inspect --input-shape 1,3,112,112 models/edgeface_xxs.onnx
-//! cargo run --release -- export --input-shape 1,3,112,112 models/edgeface_xxs.onnx out.fkb
-//! cargo run --release -- golden edgeface models/edgeface_xxs.onnx out.fkb
+//! cargo run --release -- inspect --input-shape 1,3,64,96 models/face_detection_yunet_2026may.onnx
+//! cargo run --release -- export --input-shape 1,3,64,96 models/face_detection_yunet_2026may.onnx out.fkb
+//! cargo run --release -- import-espdl models/human_face_feat_mfn_s8_v1.espdl out.fkb
 //! ```
 
 mod bank;
@@ -25,7 +25,6 @@ mod mfn;
 mod names;
 mod onnx;
 mod quantize;
-mod recognizer;
 mod synthetic;
 mod tensors;
 
@@ -192,8 +191,7 @@ enum Command {
         model: quantize::Model,
         /// The `f32` FKB1 file from `export`.
         weights: PathBuf,
-        /// A folder of calibration images: 112x112 crops for edgeface,
-        /// 320x240 frames for yunet.
+        /// A folder of calibration images: 320x240 frames.
         samples: PathBuf,
         /// The integer FKB1 file to write.
         out: PathBuf,
@@ -259,13 +257,7 @@ fn main() -> Result<()> {
             people,
             impostors,
         } => calibrate::run(
-            &detector,
-            &weights,
-            &images,
-            &bank,
-            templates,
-            people,
-            impostors,
+            &detector, &weights, &images, &bank, templates, people, impostors,
         ),
         Command::Quantize {
             model,

@@ -1,7 +1,7 @@
 //! Who is this? The decision logic that turns embeddings into a name, or
 //! into "unknown".
 //!
-//! The recognizer in [`crate::nn::edgeface`] turns an aligned face crop
+//! The recognizer in [`crate::nn::mfn`] turns an aligned face crop
 //! into an *embedding*: [`EMBEDDING_LEN`] floats that describe the face and
 //! not the picture. The numbers themselves mean nothing on their own; only
 //! the angle between two embeddings does. Scale both to length 1 and their
@@ -66,13 +66,13 @@ use libm::sqrtf;
 
 /// The number of values in one embedding.
 ///
-/// This must match `nn::edgeface::EMBEDDING_LEN`. It is written down again
+/// This must match `nn::mfn::EMBEDDING_LEN`. It is written down again
 /// here so that reading this module needs no knowledge of the network; the
 /// check below keeps the two in step.
 pub const EMBEDDING_LEN: usize = 512;
 
 /// Refuses to compile if the recognizer ever changes its output size.
-const _: () = assert!(EMBEDDING_LEN == crate::nn::edgeface::EMBEDDING_LEN);
+const _: () = assert!(EMBEDDING_LEN == crate::nn::mfn::EMBEDDING_LEN);
 
 /// How many people a [`Gallery`] holds.
 pub const MAX_PEOPLE: usize = 4;
