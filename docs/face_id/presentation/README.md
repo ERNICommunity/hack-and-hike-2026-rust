@@ -12,7 +12,7 @@ the switch and why (EdgeFace-XXS's weights are CC BY-NC-SA 4.0).
 
 | File | Contents |
 | --- | --- |
-| `face-id.pdf` | the deck to present or send |
+| `face-id.pdf` | the deck to present or send; built by `render.sh` and not in git (`.gitignore`) |
 | `face-id.html` | the same deck as one web page (open it in a browser) |
 | `src/style.css` | the brand tokens and the grid |
 | `src/slides/*.html` | one file per slide |
@@ -37,5 +37,5 @@ bar codes are the real embedding from `crates/vision/tests/fixtures/mfn.golden.f
 To rebuild after an edit (needs Node, Chromium and poppler-utils):
 
 ```bash
-./render.sh out        # writes out/face-id.pdf and out/p-01.png ... p-21.png; copy out/face-id.pdf here
+./render.sh out        # writes out/face-id.pdf and out/p-01.png ... p-21.png; copy out/face-id.pdf here (git ignores it)
 ```
