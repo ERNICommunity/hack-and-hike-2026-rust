@@ -3,4 +3,4 @@
 firmware.bin
 .claude/worktrees/
 **/node_modules/
-docs/face_id/presentation/face-id.pdf
+.vscode/

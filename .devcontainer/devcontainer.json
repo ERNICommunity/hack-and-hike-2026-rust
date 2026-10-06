@@ -16,6 +16,13 @@
     ],
     "customizations": {
         "vscode": {
+            "settings": { // rust-analyzer checks the firmware target. The tests in crates/core and crates/face build
+                // for your computer instead, so they are excluded here; run them with
+                // scripts/test.sh, which also reports their compile errors.
+                "rust-analyzer.cargo.allTargets": false,
+                "rust-analyzer.check.allTargets": false,
+                "rust-analyzer.cargo.target": "xtensa-esp32s3-none-elf"
+            },
             // Editor settings live in .vscode/settings.json so they apply in
             // and outside the container.
             "extensions": [
