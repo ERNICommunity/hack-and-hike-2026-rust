@@ -44,6 +44,7 @@ gives your code access to that piece of hardware.
 - [How the hardware reaches your loop](#how-the-hardware-reaches-your-loop)
 - [The capabilities](#the-capabilities)
 - [The built-in applications](#the-built-in-applications)
+- [User-contributed applications](#user-contributed-applications)
 - [The Rust you will meet](#the-rust-you-will-meet)
 - [Ideas for the weekend](#ideas-for-the-weekend)
 - [Project folders](#project-folders)
@@ -715,6 +716,13 @@ with `begin_frame` and `finish`. "The camera path" in
 [docs/architecture.md](docs/architecture.md#the-camera-path) explains
 them.
 
+The sensor adjusts its exposure and its white balance to the light by
+itself. `camera.set_auto_adjust(false)` freezes both at their current
+values, so the brightness and the colours stop changing; `true` switches
+them on again. It never waits: a task on CPU1 writes the sensor's
+registers shortly after. The heart rate application (see
+[User-contributed applications](#user-contributed-applications)) uses it.
+
 **Light.** `light` is an `Option` too. `latest()` returns the newest sample,
 or `None` when nothing new arrived since the last call. The sensor measures
 ten times per second. After the sensor changes its gain (its sensitivity),
@@ -810,8 +818,6 @@ log::info!("button pressed at {}", point.x);
 | `light_meter` | display, light, proximity | Lux and proximity as numbers and a bar; dark colours in the dark |
 | `color_ping` | display, touch, network, speaker | One loop that combines four capabilities |
 | `panic_backtrace` | display, touch | A deliberate panic, for [reading a backtrace](#when-your-application-panics) |
-| `face_unlock` | display, touch, camera, storage | Enrol your face, then the board unlocks when it sees it again; the face survives a restart |
-| `face_id` | display, touch, camera | Two neural networks find and recognise up to four people, and keep them in flash (see below) |
 | `demo` | all capabilities | Several screens with navigation (see below) |
 
 **Color Ping** shows four colour bands below a short text. When you tap a
@@ -839,7 +845,32 @@ The whole application is one struct, `ColorPingApp`, that owns its handles
 and its state. Copy this pattern when your program becomes too large for
 `main`.
 
-**Face Unlock** shows the camera on the left, with an oval in the middle,
+**Demo** is the largest application. It has Network, IMU, Microphone,
+Speaker, Camera, Proximity (with ambient light), Settings (backlight, kept in
+the storage) and Log screens, and a navigation rail (a column of icons) to switch between
+them. Every screen implements the same small `Screen` trait. To add a
+screen, copy `src/bin/demo/screens/settings/`. It has a KDL layout file (a
+text file that describes the labels and their positions), a slider, and one
+capability handle. It also keeps its setting in the storage.
+
+## User-contributed applications
+
+People who hacked on the board wrote these applications. Each one belongs
+to its author: the table and the sections below say who wrote which. They
+are larger than the built-in applications and show what the capabilities
+can do together. Put them on the board like any other application, for
+example `cargo dist --bin face_id`.
+
+| Binary | Author | Uses | What it shows |
+| --- | --- | --- | --- |
+| `face_unlock` | Victor Martin | display, touch, camera, storage | Enrol your face, then the board unlocks when it sees it again; the face survives a restart |
+| `face_id` | [Alexander Walter](https://github.com/wackazong) | display, touch, camera | Two neural networks find and recognise up to four people, and keep them in flash |
+| `00_heart_rate_face_cv` | [Enric Domingo](https://github.com/enricd) | display, touch, camera | Your heart rate, measured from the colour of your face |
+| `01_2d_particle_physics_sim` | [Enric Domingo](https://github.com/enricd) | display, touch, IMU, speaker | Sand and water in a box that follow when you tilt or shake the board |
+
+### Face Unlock, by Victor Martin
+
+Face Unlock shows the camera on the left, with an oval in the middle,
 and the state of the lock on the right. Tap **ENROLL** and hold your face in
 the oval: the board keeps five samples in two seconds. After that, three
 matching frames in a row unlock the board. It locks again five seconds after
@@ -875,7 +906,9 @@ Face Unlock shows three patterns to copy:
   `crates/face`, with tests that run on your computer. Only this application
   uses it, so it is not in the shared `crates/core`.
 
-**Face ID** runs two neural networks on the board: a detector (YuNet)
+### Face ID, by [Alexander Walter](https://github.com/wackazong)
+
+Face ID runs two neural networks on the board: a detector (YuNet)
 finds the face and its eyes, nose and mouth corners, and a recognizer
 (Espressif's MFN_S8_V1) turns the face into 512 numbers that are compared
 with the people it has learned. Put it on the board like any other application:
@@ -931,13 +964,37 @@ preview stays live while the networks compute. The parts:
 Both models are MIT-licensed: MFN_S8_V1 by Espressif, YuNet by Shiqi Yu
 (`assets/models/README.md` has the licence texts).
 
-**Demo** is the largest application. It has Network, IMU, Microphone,
-Speaker, Camera, Proximity (with ambient light), Settings (backlight, kept in
-the storage) and Log screens, and a navigation rail (a column of icons) to switch between
-them. Every screen implements the same small `Screen` trait. To add a
-screen, copy `src/bin/demo/screens/settings/`. It has a KDL layout file (a
-text file that describes the labels and their positions), a slider, and one
-capability handle. It also keeps its setting in the storage.
+### Heart rate, by [Enric Domingo](https://github.com/enricd)
+
+`00_heart_rate_face_cv` measures your pulse with the camera. Each heartbeat
+changes the colour of your skin a tiny bit, most in the green channel
+(remote photoplethysmography, rPPG). Hold your face so that it fills the
+camera picture on the left. Every frame gives one sample: the mean green
+value of the whole picture. The right half shows the frames per second, the
+green signal of the last 20 seconds, and the heart rate with the spectrum
+of the last 10 seconds.
+
+Automatic exposure and white balance would change the colours more than
+your pulse does. So the application locks both three seconds after
+start-up, with `camera.set_auto_adjust(false)`. A tap switches them on
+again, and they lock again three seconds later: tap once your face fills
+the picture.
+
+The application is in `src/bin/00_heart_rate_face_cv/`, with the signal
+processing in `signal.rs`. `PLAN.md` in that folder describes how it was
+built, step by step.
+
+### Sand and water, by [Enric Domingo](https://github.com/enricd)
+
+`01_2d_particle_physics_sim` fills the screen with grains. Tilt or shake the
+board and they slide, fall and pile up like sand. A long press switches
+between sand and water. While the grains move, the speaker plays a soft
+drag noise: louder when more grains move, silent when everything is still.
+
+The accelerometer reading is the gravity the grains feel. It already
+contains the push of a shake, so the simulation needs no extra maths for
+it. The application is in `src/bin/01_2d_particle_physics_sim/`: the
+simulation in `sim.rs`, the noise in `sound.rs`, and the plan in `PLAN.md`.
 
 ## The Rust you will meet
 
@@ -1013,7 +1070,8 @@ tools/facekit/      developer tool for the face models (runs on your computer)
 tools/autoflash/    browser tool that flashes each new firmware.bin (runs on your computer)
 src/
 ├── lib.rs          the library every application uses
-├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, face_unlock.rs, face_id.rs, template.rs
+├── bin/            the applications: demo/, imu_color.rs, light_meter.rs, color_ping.rs, panic_backtrace.rs, template.rs,
+│                   and the user-contributed face_unlock.rs, face_id.rs, 00_heart_rate_face_cv/, 01_2d_particle_physics_sim/
 ├── board/          the PCB: pins, power rails, I2C bus, PSRAM, Board::init() and CPU1
 ├── capabilities/   one module per capability: the APIs you call
 ├── logging/        logging with on-device history, memory usage report, screen feed

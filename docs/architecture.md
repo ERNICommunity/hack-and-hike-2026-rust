@@ -128,7 +128,8 @@ The order of the steps matters:
 7. The audio codecs, and a check for the light and proximity sensor. Then
    the system I2C bus moves to CPU1.
 8. CPU1 starts the IMU, touch, light, audio, radio and backlight tasks,
-   and the USB tasks of the log and the screen feed.
+   the camera control task when the board has a camera, and the USB tasks
+   of the log and the screen feed.
 
 All of this stays inside `src/board/` and `camera::bring_up`.
 
@@ -168,6 +169,8 @@ The ESP32-S3 has two CPU cores, CPU0 and CPU1.
 - ESP-NOW beacons, sending and receiving (ESP-NOW: Espressif's protocol for
   short Wi-Fi messages between boards, without a router),
 - backlight changes over I2C,
+- camera exposure and white balance changes over I2C, only when an
+  application calls `camera.set_auto_adjust`,
 - the USB serial port: the writer that sends log text and screen packets,
   the reader that waits for refresh requests, and the screen encoder that
   turns screen changes into packets every 40 ms (see
@@ -188,6 +191,7 @@ flowchart LR
         Audio["Audio"]
         Network["Network"]
         Backlight["Backlight"]
+        CameraControl["Camera control"]
         Usb["USB writer, reader, screen encoder"]
     end
     IMU --> App
@@ -196,6 +200,7 @@ flowchart LR
     Audio <--> App
     Network <--> App
     App --> Backlight
+    App --> CameraControl
     App --> Usb
 ```
 
