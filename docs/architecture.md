@@ -586,6 +586,9 @@ The USB port moves a few hundred KB per second. User interface screens
 change little and appear at once. A camera screen changes every pixel, so
 its copy shows about 2 to 3 frames per second, sometimes with a tear line.
 
+Why the feed is built this way, and what it costs:
+[`docs/autoflash/screen_feed.md`](autoflash/screen_feed.md).
+
 ## Cooperative scheduling
 
 CPU0 runs an async executor: the part of the async runtime that runs tasks.
