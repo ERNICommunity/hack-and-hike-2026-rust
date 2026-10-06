@@ -13,8 +13,9 @@
 //! MFN_S8_V1's products) and the depthwise 3x3 ([`depthwise_row`]), both
 //! with the PReLU that follows them, and the network's building block
 //! ([`block`]): the widening 1x1, the depthwise 3x3 and the narrowing
-//! 1x1, with or without the residual add. `src/bin/mfn_bench.rs`
-//! measures them on the board.
+//! 1x1, with or without the residual add. A benchmark binary measured
+//! them on the board (builds `mfnbench-1` to `-4`, see
+//! `docs/face_id/performance.md`); it is no longer in the repository.
 //!
 //! # Arithmetic
 //!

@@ -8,10 +8,11 @@ each network on a test vector from the computer and compared the
 outputs bit for bit; that firmware is no longer in the repository, and
 the last section says how to build one again. From `faceid-10` on, the
 numbers come from the application's own log: its `self-test:`,
-`profile:` and `cycle:` lines. The 8-bit kernels of `faceid-16` have a
-benchmark binary of their own, `src/bin/mfn_bench.rs`, whose probes
-check single instructions and whose runs check each kernel against the
-scalar model.
+`profile:` and `cycle:` lines. The 8-bit kernels of `faceid-16` were
+measured by a benchmark binary of their own, whose probes checked single
+instructions and whose runs checked each kernel against the scalar
+model. That binary was removed with the builds it served; it is in the
+git history.
 
 The sections about the builds up to `faceid-15` name the code of
 EdgeFace-XXS (`nn::edgeface`, `edgeface::int8`), which was removed with
@@ -504,8 +505,8 @@ detector and alignment, it scores 99.27 % on LFW (EdgeFace-XXS 99.42 %),
 but it needs 221 million products per face, more than twice as many.
 
 On the 16-bit lanes (0.7 cycles per product) its 1x1 layers alone would
-take 600 ms. A benchmark binary (`src/bin/mfn_bench.rs`, builds
-`mfnbench-1` to `-4`) measured the alternative before the port:
+take 600 ms. The benchmark binary (builds `mfnbench-1` to `-4`)
+measured the alternative before the port:
 
 | What | Measured |
 | --- | --- |

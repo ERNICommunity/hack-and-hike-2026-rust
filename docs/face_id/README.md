@@ -9,7 +9,10 @@ Steps 1 to 10 were done with EdgeFace-XXS as the recognizer. Since
 `faceid-16` the recognizer is Espressif's MFN_S8_V1, for its licence:
 see [The recognizer since `faceid-16`](#the-recognizer-since-faceid-16-mfn_s8_v1).
 The findings about EdgeFace-XXS below are kept as the record of the
-work; its code and weights are in the git history.
+work. They name files and modules that were removed with it
+(`nn::edgeface`, `edgeface::int8`, their tests and fixtures, and
+`edgeface_xxs.int8.fkb`); those paths are in the git history up to the
+commit that introduced `faceid-16`, not in the working tree.
 
 | Part | Where |
 | --- | --- |
@@ -92,10 +95,10 @@ depended on them, and `facekit golden-espdl` does so for MFN_S8_V1.
 
 ## Findings from Step 4
 
-- **The `f32` reference of EdgeFace-XXS matches tract at every block.**
-  `crates/vision/src/nn/edgeface.rs` follows the PyTorch source block by
-  block; `tests/edgeface.rs` compares all 26 block outputs and the
-  embedding with the golden file at `1e-4 + 1e-4 * max|golden|`. The
+- **The `f32` reference of EdgeFace-XXS matched tract at every block.**
+  `nn::edgeface` followed the PyTorch source block by block, and its
+  test compared all 26 block outputs and the embedding with the golden
+  file at `1e-4 + 1e-4 * max|golden|`. The
   errors are 1e-7 to 1e-6 for most blocks and 1e-5 at the three residual
   sums whose values reach 13: pure `f32` summation-order noise. The exact
   GELU (`erf`) and the `F.normalize` epsilon of the attention are matched
@@ -126,7 +129,7 @@ depended on them, and `facekit golden-espdl` does so for MFN_S8_V1.
   (`conv2d`, `depthwise`, `linear`, `layer_norm`, `gelu`, `sigmoid`,
   `softmax_rows`, `max_pool_2x2`, `upsample_2x_add`) plus three trivial
   ones (`global_average`, `add`, `add_scaled`) and one composite
-  (cross-covariance attention, written out in `edgeface.rs`). Those are
+  (cross-covariance attention, written out in `nn::edgeface`). Those are
   the functions Step 6 quantizes and the board work vectorizes.
 
 ## Findings from Step 5
@@ -167,8 +170,8 @@ depended on them, and `facekit golden-espdl` does so for MFN_S8_V1.
 
 The integer version of both networks, and how the accuracy cost was
 measured and brought down. `facekit quantize` prints every number below;
-`tests/int8_edgeface.rs` and `tests/int8_yunet.rs` enforce them on the
-fixture face.
+`tests/int8_yunet.rs` enforces the detector's on the fixture face, and
+the recognizer's test did the same before EdgeFace-XXS was removed.
 
 - **Calibration data**: 28 public-domain NASA photos (portraits and crew
   group photos, `tools/facekit/data/portraits/`, not part of the
@@ -429,7 +432,7 @@ time with a pause after each (so the tasks on CPU1, which run from the
 same flash, keep their share of it), with the linear and convolution
 weights grouped by eight output channels as the vector kernels read
 them (`nn::pack`). Then it compiles both networks
-(`edgeface::int8::Model::compile`, `yunet::int8::Model::compile`): it
+(`nn::mfn::Model::compile`, `yunet::int8::Model::compile`): it
 looks every tensor up by its name and makes every plan, once. A cycle
 only computes. The log says how long both took. Last, before the camera
 starts, it runs the self-test (`nn::check`); the panel's terminal says
