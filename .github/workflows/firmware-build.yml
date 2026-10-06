@@ -32,10 +32,52 @@ jobs:
       - name: Lint the host crates and their tests
         run: |
           host_target="$(rustc +"$RUST_VERSION" -vV | sed -n 's/^host: //p')"
-          cargo +"$RUST_VERSION" clippy -p hack-and-hike-core -p hack-and-hike-face --all-targets --target "$host_target" -- -D warnings
+          cargo +"$RUST_VERSION" clippy -p hack-and-hike-core -p hack-and-hike-face -p hack-and-hike-vision --all-targets --target "$host_target" -- -D warnings
 
       - name: Run host tests
         run: RUSTFLAGS="-D warnings" ./scripts/test.sh
+
+  autoflash:
+    name: Autoflash page and server
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/autoflash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: tools/autoflash/package-lock.json
+
+      - name: Install the page's dependencies
+        run: npm ci
+
+      - name: Test the page
+        run: npm test
+
+      # site/ is committed and build.rs embeds it into the server, so the page
+      # that flashes boards is a build artefact in git. If it no longer matches
+      # the sources beside it, the sources are not what anyone is running.
+      - name: Check that the committed site/ still matches its sources
+        run: |
+          npm run build:selfhost
+          git diff --exit-code -- site/
+
+      # The server is its own Cargo workspace. It is built with the repository's
+      # toolchain, like every other Rust job here.
+      - name: Read the toolchain version from the root Cargo.toml
+        run: echo "RUST_VERSION=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' ../../Cargo.toml)" >> "$GITHUB_ENV"
+
+      - name: Install host Rust toolchain
+        run: rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy
+
+      - name: Lint and test the server
+        run: |
+          cargo +"$RUST_VERSION" clippy --locked --all-targets -- -D warnings
+          cargo +"$RUST_VERSION" test --locked
 
   firmware:
     name: Firmware lint and build
