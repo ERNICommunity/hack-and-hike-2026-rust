@@ -4,6 +4,7 @@ name = "hack-and-hike"
 rust-version.workspace = true
 license.workspace = true
 version = "0.1.0"
+publish = false
 
 [lib]
 path = "src/lib.rs"
