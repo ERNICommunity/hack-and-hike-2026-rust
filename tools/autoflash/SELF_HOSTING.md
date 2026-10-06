@@ -36,8 +36,6 @@ Always open the page from a `localhost` URL. Web Serial works only in a secure c
 
 VS Code forwards the port from the container to your computer. This works with the default address `127.0.0.1`. Open <http://localhost:8080> on your computer. If VS Code uses another port, use the `localhost` URL in the **Ports** panel.
 
-The dev container of this repository also uses `--net=host`. On Linux, the container then uses the network of your computer directly.
-
 To give the port a name in VS Code, add these values to `.devcontainer/devcontainer.json`:
 
 ```json

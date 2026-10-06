@@ -8,23 +8,30 @@
     "build": {
         "dockerfile": "Dockerfile"
     },
-    "runArgs": [
-        // Files you create in the container belong to you on the host.
-        "--userns=keep-id",
-        // Lets the container reach services on the host's localhost.
-        "--net=host"
-    ],
+    // No runArgs on purpose: this file is the same for Docker and for Podman.
+    // Dev Containers passes Podman what it needs by itself (--userns=keep-id and
+    // --security-opt label=disable) since devcontainers/cli 0.76.0. Writing
+    // --userns=keep-id here instead would break Docker, which accepts only
+    // --userns=host, and it clashes with --network=host under Podman
+    // (devcontainers/cli#1301). See "Setup" in README.md.
+    "containerUser": "vscode",
+    "remoteUser": "vscode",
+    // On Linux, give the container user your user id, so the files you create
+    // belong to you on both sides of the bind mount.
+    "updateRemoteUserUID": true,
     "customizations": {
         "vscode": {
-            "settings": { // rust-analyzer checks the firmware target. The tests in crates/core and crates/face build
-                // for your computer instead, so they are excluded here; run them with
-                // scripts/test.sh, which also reports their compile errors.
+            // Only what rust-analyzer needs to read this repository. It checks
+            // the firmware target; the host tests of crates/core, crates/face
+            // and crates/vision build for your computer instead, so they are
+            // excluded here. Run them with scripts/test.sh, which also reports
+            // their compile errors. Everything else is your own preference and
+            // belongs in your user settings.
+            "settings": {
                 "rust-analyzer.cargo.allTargets": false,
                 "rust-analyzer.check.allTargets": false,
                 "rust-analyzer.cargo.target": "xtensa-esp32s3-none-elf"
             },
-            // Editor settings live in .vscode/settings.json so they apply in
-            // and outside the container.
             "extensions": [
                 "rust-lang.rust-analyzer",
                 "tamasfe.even-better-toml",

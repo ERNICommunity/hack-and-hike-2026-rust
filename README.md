@@ -58,10 +58,18 @@ You work inside a development container (Dev Container). The container has
 the Rust toolchain for the ESP32-S3 and all other tools. You do not install
 them on your computer.
 
-You need two things on your computer:
+You need three things on your computer:
 
+- a container engine: [Docker](https://www.docker.com/products/docker-desktop/)
+  or [Podman](https://podman.io/)
 - [Visual Studio Code](https://code.visualstudio.com/)
 - its [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
+
+Docker needs no further setup. For Podman, set `dev.containers.dockerPath` to
+`podman` (in the settings editor: **Dev > Containers: Docker Path**). Put this
+in your own user settings, not in the workspace settings of this repository:
+those are shared, and the value would be wrong for everyone who uses Docker.
+Dev Containers gives Podman everything else it needs by itself.
 
 Then:
 

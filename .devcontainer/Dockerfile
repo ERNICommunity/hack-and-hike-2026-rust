@@ -1,4 +1,8 @@
-FROM mcr.microsoft.com/devcontainers/rust:latest
+# Pinned on purpose. With `:latest` the container changes under the
+# repository: another Debian, another default Rust, in principle another
+# `vscode` user id. Bump this deliberately, and rebuild the container when
+# you do. Tags: https://mcr.microsoft.com/v2/devcontainers/rust/tags/list
+FROM mcr.microsoft.com/devcontainers/rust:2.1.1-trixie
 
 # The Rust version is the `rust-version` of the root Cargo.toml; a Dockerfile
 # cannot read it, so it is repeated here. The Xtensa toolchain below adds a
@@ -9,6 +13,14 @@ ARG TOOLCHAIN_VERSION=1.97.0
 
 # The name of the user for the devcontainer session
 ARG USER_NAME=vscode
+
+# The host-side tools, pinned for the same reason as the base image: a new
+# release of espup or espflash must not silently change what a rebuild
+# installs. `cargo dist` in .cargo/config.toml is an espflash command line,
+# so espflash is part of the build interface of this repository.
+ARG BINSTALL_VERSION=1.24.0
+ARG ESPUP_VERSION=0.17.1
+ARG ESPFLASH_VERSION=4.6.0
 
 USER root
 
@@ -33,10 +45,10 @@ RUN rustup toolchain install "$TOOLCHAIN_VERSION" --component rustfmt --componen
     rustup default "$TOOLCHAIN_VERSION"
 
 # Install cargo-binstall and ESP utilities
-RUN cargo install cargo-binstall
+RUN cargo install cargo-binstall --version "$BINSTALL_VERSION"
 RUN cargo binstall -y --secure \
-        espup \
-        cargo-espflash
+        "espup@$ESPUP_VERSION" \
+        "cargo-espflash@$ESPFLASH_VERSION"
 
 # Install the matching ESP Xtensa toolchain.
 RUN espup install --toolchain-version "$TOOLCHAIN_VERSION.0" -t esp32s3
