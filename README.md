@@ -863,12 +863,12 @@ example `cargo dist --bin face_id`.
 
 | Binary | Author | Uses | What it shows |
 | --- | --- | --- | --- |
-| `face_unlock` | Victor Martin | display, touch, camera, storage | Enrol your face, then the board unlocks when it sees it again; the face survives a restart |
+| `face_unlock` | [Victor Martin](https://github.com/Korrd) | display, touch, camera, storage | Enrol your face, then the board unlocks when it sees it again; the face survives a restart |
 | `face_id` | [Alexander Walter](https://github.com/wackazong) | display, touch, camera | Two neural networks find and recognise up to four people, and keep them in flash |
 | `00_heart_rate_face_cv` | [Enric Domingo](https://github.com/enricd) | display, touch, camera | Your heart rate, measured from the colour of your face |
 | `01_2d_particle_physics_sim` | [Enric Domingo](https://github.com/enricd) | display, touch, IMU, speaker | Sand and water in a box that follow when you tilt or shake the board |
 
-### Face Unlock, by Victor Martin
+### Face Unlock, by [Victor Martin](https://github.com/Korrd)
 
 Face Unlock shows the camera on the left, with an oval in the middle,
 and the state of the lock on the right. Tap **ENROLL** and hold your face in
@@ -905,6 +905,11 @@ Face Unlock shows three patterns to copy:
 - **Application logic in its own crate.** The face math is in
   `crates/face`, with tests that run on your computer. Only this application
   uses it, so it is not in the shared `crates/core`.
+
+The comment at the top of [src/bin/face_unlock.rs](src/bin/face_unlock.rs)
+explains the screen and the buttons in more detail. The module
+documentation of [crates/face/src/lib.rs](crates/face/src/lib.rs) explains
+how two faces are compared, and the limits of the method.
 
 ### Face ID, by [Alexander Walter](https://github.com/wackazong)
 
@@ -966,35 +971,132 @@ Both models are MIT-licensed: MFN_S8_V1 by Espressif, YuNet by Shiqi Yu
 
 ### Heart rate, by [Enric Domingo](https://github.com/enricd)
 
-`00_heart_rate_face_cv` measures your pulse with the camera. Each heartbeat
-changes the colour of your skin a tiny bit, most in the green channel
-(remote photoplethysmography, rPPG). Hold your face so that it fills the
-camera picture on the left. Every frame gives one sample: the mean green
-value of the whole picture. The right half shows the frames per second, the
-green signal of the last 20 seconds, and the heart rate with the spectrum
-of the last 10 seconds.
+`00_heart_rate_face_cv` measures your pulse with the camera, without
+touching you. The method is called remote photoplethysmography (rPPG).
+Hold your face so that it fills the camera picture on the left, and keep
+still. The right half shows the frames per second, the green signal of the
+last 20 seconds, and the heart rate with the spectrum of the last 10
+seconds. It is a demo, not a medical device.
 
-Automatic exposure and white balance would change the colours more than
-your pulse does. So the application locks both three seconds after
-start-up, with `camera.set_auto_adjust(false)`. A tap switches them on
-again, and they lock again three seconds later: tap once your face fills
-the picture.
+**Why a camera can see your pulse.** Each heartbeat pushes a little more
+blood into the small vessels of the skin. The haemoglobin in blood absorbs
+green light strongly, so on each beat your skin gets a tiny bit darker in
+the green channel. Red light is hardly absorbed by blood, and blue light
+barely enters the skin, so green carries the strongest signal. This is also
+why smartwatches shine green LEDs into the wrist. Verkruysse, Svaasand and
+Nelson first showed this with an ordinary camera in 2008.
 
-The application is in `src/bin/00_heart_rate_face_cv/`, with the signal
-processing in `signal.rs`. `PLAN.md` in that folder describes how it was
-built, step by step.
+The change is far below 1% of the brightness: the green mean is about 30
+of 63, and the pulse moves it by a few tenths of a level. One pixel is far
+too noisy for that. So every frame gives one sample, the mean green value
+of all 38,400 pixels of the picture, and the noise of the mean is about 200
+times smaller than the noise of one pixel.
+
+**From green values to beats per minute.** The camera sends 20 frames per
+second, so it can see frequencies up to 10 Hz. The heart rate range of
+40–180 beats per minute (BPM) is 0.67–3 Hz. `signal.rs` turns the last 10
+seconds of samples into a heart rate in four steps:
+
+1. Resample onto an even 50 ms grid by linear interpolation, because frames
+   do not arrive at exactly even times and a few get lost.
+2. Subtract the best straight line through the samples (least squares).
+   This removes slow drifts of the light without changing the heart rate
+   band. A moving average would change the band.
+3. Multiply by a Hann window, a smooth bump that is 0 at both ends. Without
+   it, the hard edges of the 10 second cut add false frequencies.
+4. A DFT (discrete Fourier transform) for each whole BPM from 40 to 180:
+   how much of this frequency is in the signal? A cosine and a sine that
+   turn by a fixed step per sample replace most `sin` and `cos` calls, so
+   all 141 frequencies take about a millisecond. The strongest one is the
+   heart rate, refined with a parabola through the peak and its two
+   neighbours.
+
+A 10 second window resolves frequencies 6 BPM apart. A longer window gives
+a steadier result but reacts more slowly: a change of the heart rate shows
+fully only after about 10 seconds.
+
+**The camera must not adjust itself.** Automatic exposure and automatic
+white balance change the green value by many levels, while the pulse
+changes it by less than one. So the application locks both three seconds
+after start-up, with `camera.set_auto_adjust(false)`. A tap switches them
+on again, and they lock again three seconds later: tap once your face fills
+the picture. Enric added `set_auto_adjust` to the camera capability for
+this application. A task on CPU1 writes the sensor's registers over the
+shared I2C bus, the same way the backlight does. Applications that never
+call it see no change.
+
+Other things disturb the signal too: head movement, light that changes
+(clouds, people walking by) and lamps that flicker with the mains. Use
+steady daylight or good LED light. Melanin in the skin also absorbs green
+light, so the pulse is weaker on darker skin. This is a known problem of
+every optical heart rate sensor, in watches too.
+
+**Keeping up with the camera.** The application shows only every third
+frame, but reads every frame for its green value. Showing a frame takes
+about 28 ms, reading it for green about 16 ms, and the sensor sends a frame
+every 50 ms. The loop never sleeps, and every long job calls
+`camera.pump()` as it goes, also inside the row callback of the drawing
+code. The dashboard counts the dropped frames, so you see at once when
+something takes too long.
+
+The application is in `src/bin/00_heart_rate_face_cv/`: the signal
+processing in `signal.rs`, the camera picture in `view.rs` and the right
+half in `dashboard.rs`. [PLAN.md](src/bin/00_heart_rate_face_cv/PLAN.md)
+describes how it was built, step by step, with what was measured on the
+board.
 
 ### Sand and water, by [Enric Domingo](https://github.com/enricd)
 
-`01_2d_particle_physics_sim` fills the screen with grains. Tilt or shake the
-board and they slide, fall and pile up like sand. A long press switches
-between sand and water. While the grains move, the speaker plays a soft
-drag noise: louder when more grains move, silent when everything is still.
+`01_2d_particle_physics_sim` fills the screen with 1,200 grains. Tilt or
+shake the board and they slide, fall and pile up like sand. A long press
+switches between sand and water. While the grains move, the speaker plays a
+soft drag noise: louder when more grains move, silent when everything is
+still.
 
-The accelerometer reading is the gravity the grains feel. It already
-contains the push of a shake, so the simulation needs no extra maths for
-it. The application is in `src/bin/01_2d_particle_physics_sim/`: the
-simulation in `sim.rs`, the noise in `sound.rs`, and the plan in `PLAN.md`.
+**What the grains feel.** A grain in a box feels gravity minus the
+acceleration of the box: jerk the box to the left, and the grains are
+pushed to the right. That is exactly what the accelerometer measures. So
+the application uses the raw `acceleration_m_s2` of the IMU as the grains'
+gravity, and tilting and shaking both work without extra maths. The fused
+attitude (roll and pitch) would ignore the shakes. The IMU's screen frame
+has x out of the top edge and y to the right, while pixels have x to the
+right and y down. So the grains' gravity is `+y` to the right and `-x`
+down. A wrong sign makes the sand fall up, so check the signs on the board
+first.
+
+**Moving the grains.** Every 6 ms step, each grain's velocity grows with
+gravity, and then its position grows with its velocity (semi-implicit Euler
+integration). A little drag, for air and friction, slows them down. Checking
+every grain against every other grain would be 1.4 million checks per step.
+Instead, the box is a grid of 80x56 cells, and each cell holds at most one
+grain (the "pixel dust" method of many LED sand toys). A moving grain looks
+at only one cell:
+
+1. Empty: the grain moves there.
+2. Taken: the grain hops to the free neighbour cell that is most downhill.
+   This makes the piles and slopes.
+3. Water only: it also looks a few cells sideways for a lower place, so its
+   surface ends up level, even when the board is tilted.
+4. Nowhere to go: the grain bounces back.
+
+Sand takes only cells that are clearly downhill, so it keeps a slope like a
+real pile. Every hop goes downhill, so the grains always come to rest, and
+the speaker becomes really silent. A grain moves less than one cell per
+step, so it never jumps over another grain.
+
+**Drawing and sound.** There is no image buffer: the display asks for one
+row of pixels at a time (`render_scanlines`), and the application computes
+the row straight from the grid. Redrawing the whole box takes about 30 ms.
+The drag noise is random numbers from a tiny xorshift generator, made duller
+by a low-pass filter, plus tiny grain clicks. Its volume follows the motion:
+it rises in about 20 ms and falls in about 150 ms, because a volume that
+jumps makes clicks. The speaker queue holds 64 ms of sound, so the loop
+refills it before and after drawing.
+
+The application is in `src/bin/01_2d_particle_physics_sim/`: the simulation
+in `sim.rs`, the noise in `sound.rs`.
+[PLAN.md](src/bin/01_2d_particle_physics_sim/PLAN.md) describes how it was
+built, step by step.
 
 ## The Rust you will meet
 
